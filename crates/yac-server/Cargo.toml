@@ -1,0 +1,17 @@
+[package]
+name = "yac-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+serde_derive.workspace = true
+crossbeam-channel.workspace = true
+
+[dev-dependencies]
+env_logger = "0.11.6"
+anyhow = "1.0.95"
+lsp-types = "=0.95"
+ctrlc = "3.4.1"
