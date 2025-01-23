@@ -1,11 +1,8 @@
-use std::{
-    io::{self, stdin, stdout},
-    thread,
-};
-
-use log::debug;
+use std::io::{self, stdin, stdout};
+use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
+use log::debug;
 
 use crate::Message;
 
@@ -17,9 +14,7 @@ pub(crate) fn stdio_transport() -> (Sender<Message>, Receiver<Message>, IoThread
         .spawn(move || {
             let stdout = stdout();
             let mut stdout = stdout.lock();
-            writer_receiver
-                .into_iter()
-                .try_for_each(|it| it.write(&mut stdout))
+            writer_receiver.into_iter().try_for_each(|it| it.write(&mut stdout))
         })
         .unwrap();
     let (reader_sender, reader_receiver) = bounded::<Message>(0);

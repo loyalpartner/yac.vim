@@ -1,15 +1,11 @@
-use std::{
-    io::{self, BufReader},
-    net::TcpStream,
-    thread,
-};
+use std::io::{self, BufReader};
+use std::net::TcpStream;
+use std::thread;
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 
-use crate::{
-    stdio::{make_io_threads, IoThreads},
-    Message,
-};
+use crate::Message;
+use crate::stdio::{IoThreads, make_io_threads};
 
 pub(crate) fn socket_transport(
     stream: TcpStream,

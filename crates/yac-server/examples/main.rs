@@ -1,5 +1,3 @@
-use std::io::BufRead;
-
 use log::debug;
 use lsp_types::*;
 use yac_server::{Connection, Message};
