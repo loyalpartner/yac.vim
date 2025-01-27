@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::ExtractError;
 
@@ -35,6 +36,12 @@ impl From<Notification> for Message {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
 pub struct RequestId(IdRepr);
+
+impl RequestId {
+    pub fn generate_id() -> Self {
+        RequestId::from(Uuid::new_v4().to_string())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
@@ -170,7 +177,6 @@ impl Message {
         write_msg_text(w, &text)
     }
 }
-
 
 impl Request {
     pub fn new<P: Serialize>(id: RequestId, method: String, params: P) -> Request {

@@ -17,6 +17,7 @@ pub(crate) fn stdio_transport() -> (Sender<Message>, Receiver<Message>, IoThread
             writer_receiver.into_iter().try_for_each(|it| it.write(&mut stdout))
         })
         .unwrap();
+
     let (reader_sender, reader_receiver) = bounded::<Message>(0);
     let reader = thread::Builder::new()
         .name("YacServerReader".to_owned())

@@ -11,3 +11,7 @@ serde_json.workspace = true
 serde.workspace = true
 serde_derive.workspace = true
 regex = "1.11.1"
+derive_builder = "0.20.2"
+uuid = { version = "1.12.1", features = ["v4"] }
+anyhow = "1.0.95"
+thiserror = "2.0.11"
