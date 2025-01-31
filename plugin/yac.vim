@@ -14,3 +14,6 @@ if get(g:, 'yac_start_at_startup', 1) && !s:is_gvim
 endif
 
 
+command! -nargs=0 YacOpenLog :call yac#client#open_log()
+
+

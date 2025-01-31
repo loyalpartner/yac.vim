@@ -15,6 +15,7 @@ use anyhow::Result;
 use derive_builder::Builder;
 use lsp_bridge::{Message, Notification, Request, RequestId, Response};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 struct MessageQueue<T> {
     message_sender: Sender<T>,
@@ -36,14 +37,14 @@ impl<T> MessageQueue<T> {
     }
 }
 
-struct LspServerSender {
+struct LspClientSender {
     queue: MessageQueue<String>,
     child: Arc<Mutex<Child>>,
     server_name: String,
     project_name: String,
 }
 
-impl LspServerSender {
+impl LspClientSender {
     fn new(child: &Arc<Mutex<Child>>, server_name: &str, project_name: &str) -> Self {
         Self {
             queue: MessageQueue::new(),
@@ -92,14 +93,14 @@ impl LspServerSender {
     }
 }
 
-struct LspSenderReceiver {
+struct LspClientReceiver {
     queue: MessageQueue<Message>,
 
     event_sender: Sender<Event>,
     child: Arc<Mutex<Child>>,
 }
 
-impl LspSenderReceiver {
+impl LspClientReceiver {
     fn new(child: &Arc<Mutex<Child>>, event_sender: &Sender<Event>) -> Self {
         Self {
             queue: MessageQueue::new(),
@@ -205,9 +206,9 @@ enum Event {
 enum Action {}
 
 #[derive(Builder)]
-struct LspServer {
-    sender: Arc<LspServerSender>,
-    receiver: Arc<LspSenderReceiver>,
+struct LspClient {
+    sender: Arc<LspClientSender>,
+    receiver: Arc<LspClientReceiver>,
 
     event_sender: Sender<Event>,
 
@@ -233,13 +234,13 @@ struct LspServer {
     // semantic_tokens_provider
 }
 
-impl LspServer {
+impl LspClient {
     fn server_name(&self) -> String {
         format!("{}#{}", self.project_path, self.lsp_config.name)
     }
 }
 
-impl LspServer {
+impl LspClient {
     fn new(event_sender: &Sender<Event>, lsp_config: LspConfig, project_path: &str) -> Self {
         let child = std::process::Command::new("rust-analyzer")
             .stdin(std::process::Stdio::piped())
@@ -258,13 +259,13 @@ impl LspServer {
             .to_string_lossy()
             .to_string();
 
-        let receiver = LspSenderReceiver::new(&child, event_sender);
-        let sender = LspServerSender::new(&child, &lsp_config.name, &project_name);
+        let receiver = LspClientReceiver::new(&child, event_sender);
+        let sender = LspClientSender::new(&child, &lsp_config.name, &project_name);
 
         let receiver = Arc::new(receiver);
         let sender = Arc::new(sender);
 
-        let lsp = LspServerBuilder::default()
+        let lsp = LspClientBuilder::default()
             .sender(sender.clone())
             .receiver(receiver.clone())
             .event_sender(event_sender.clone())
@@ -354,8 +355,7 @@ impl IoThreads {
 struct LspBridge {
     event_chan: (Sender<Event>, Receiver<Event>),
 
-    // msg_chan: (Sender<Ev>)
-    lsp_servers: HashMap<String, Arc<LspServer>>,
+    lsp_clients: HashMap<String, Arc<LspClient>>,
 
     io_threads: IoThreads,
 
@@ -369,7 +369,7 @@ impl LspBridge {
 
         Self {
             event_chan: channel(),
-            lsp_servers: HashMap::new(),
+            lsp_clients: HashMap::new(),
             msg_sender: sender,
             msg_receiver: receiver,
             io_threads,
@@ -384,9 +384,11 @@ impl LspBridge {
                 let stdout = std::io::stdout();
                 let mut stdout = stdout.lock();
                 writer_receiver.into_iter().try_for_each(|it| {
+                    log::info!("..........{}", &it);
                     stdout
                         .write(it.as_bytes())
                         .map(|_| ())
+                        .inspect_err(|e| log::error!("{}", e))
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                 })
             })
@@ -420,18 +422,19 @@ impl LspBridge {
 
     fn init_lsp_servers(&mut self) {
         let lsp_config = LspConfig::default();
-        let lsp_server = Arc::new(LspServer::new(&self.event_chan.0, lsp_config, "/home/lee"));
+        let lsp_server = Arc::new(LspClient::new(&self.event_chan.0, lsp_config, "/home/lee"));
         std::thread::spawn({
             let lsp_server = lsp_server.clone();
             move || lsp_server.lsp_message_loop()
         });
 
         lsp_server.send_inittialize_request();
-        self.lsp_servers.insert("i......".into(), lsp_server);
+        self.lsp_clients.insert("i......".into(), lsp_server);
     }
 
     fn message_loop(&self) -> JoinHandle<()> {
         let msg_receiver = self.msg_receiver.clone();
+        let msg_sender = self.msg_sender.clone();
         std::thread::Builder::new()
             .name("LspBridgeMessageLoop".into())
             .spawn(move || {
@@ -440,6 +443,14 @@ impl LspBridge {
                         Err(e) => log::error!("error {:?}", e),
                         Ok(msg) => {
                             log::info!("recv msg from vim {}.", msg);
+
+                            // std::thread::sleep(time::Duration::from_secs(2));
+                            let mut excmd =
+                                serde_json::to_string(&json!(["ex", "echom 'hi there'"])).unwrap();
+                            excmd.push_str("\n");
+
+                            log::info!("send msg to vim {}.", excmd);
+                            msg_sender.send(excmd).unwrap();
                         }
                     }
                 }
@@ -482,13 +493,13 @@ fn main() -> Result<()> {
     let mut lsp_bridge = LspBridge::new();
     lsp_bridge.init_lsp_servers();
 
-    // let
-    lsp_bridge.try_completion();
+    // lsp_bridge.try_completion();
     let event_handle = lsp_bridge.event_loop();
     let msg_handle = lsp_bridge.message_loop();
 
     event_handle.join().unwrap();
     msg_handle.join().unwrap();
+    lsp_bridge.io_threads.join().unwrap();
 
     Ok(())
 }
