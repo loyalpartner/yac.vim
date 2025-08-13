@@ -1,4 +1,4 @@
-use yac_vim::lsp::{LspMessageParser, format_lsp_message, JsonRpcMessage};
+use yac_vim::lsp::{LspMessageParser, format_lsp_message, jsonrpc::JsonRpcMessage};
 
 #[test]
 fn test_lsp_message_format() {
@@ -37,7 +37,7 @@ fn test_lsp_message_parser_multiple_messages() {
     
     let msg1 = r#"{"jsonrpc":"2.0","method":"test1","params":{}}"#;
     let msg2 = r#"{"jsonrpc":"2.0","method":"test2","params":{}}"#;
-    let msg3 = r#"{"jsonrpc":"2.0","id":1,"result":{"success":true}}"#;
+    let msg3 = r#"{"jsonrpc":"2.0","id":"1","result":{"success":true}}"#;
     
     let formatted = format!(
         "{}{}{}",
@@ -102,7 +102,7 @@ fn test_lsp_message_parser_malformed_json() {
 
 #[test]
 fn test_json_rpc_request_parsing() {
-    let request_json = r#"{"jsonrpc":"2.0","method":"textDocument/completion","params":{"uri":"file:///test.rs","position":{"line":1,"character":5}},"id":1}"#;
+    let request_json = r#"{"jsonrpc":"2.0","method":"textDocument/completion","params":{"uri":"file:///test.rs","position":{"line":1,"character":5}},"id":"1"}"#;
     
     let parsed: Result<JsonRpcMessage, _> = serde_json::from_str(request_json);
     assert!(parsed.is_ok());
@@ -112,21 +112,27 @@ fn test_json_rpc_request_parsing() {
             assert_eq!(request.method, "textDocument/completion");
             assert!(request.params.is_some());
         }
-        _ => panic!("Expected request message"),
+        other => panic!("Expected request message, got: {:?}", other),
     }
 }
 
 #[test]
 fn test_json_rpc_response_parsing() {
-    let response_json = r#"{"jsonrpc":"2.0","id":1,"result":{"items":[{"label":"test"}]}}"#;
+    let response_json = r#"{"jsonrpc":"2.0","id":"1","result":{"items":[{"label":"test"}]}}"#;
     
     let parsed: Result<JsonRpcMessage, _> = serde_json::from_str(response_json);
     assert!(parsed.is_ok());
     
     match parsed.unwrap() {
         JsonRpcMessage::Response(response) => {
-            assert!(response.result.is_some());
-            assert!(response.error.is_none());
+            match &response.result {
+                yac_vim::lsp::jsonrpc::JsonRpcResponseResult::Success { .. } => {
+                    // Success case
+                },
+                yac_vim::lsp::jsonrpc::JsonRpcResponseResult::Error { .. } => {
+                    panic!("Expected success response");
+                }
+            }
         }
         _ => panic!("Expected response message"),
     }
@@ -154,7 +160,7 @@ fn test_lsp_protocol_compliance() {
     let mut parser = LspMessageParser::new();
     
     // Initialize request
-    let initialize_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"clientInfo":{"name":"test-client","version":"1.0"},"capabilities":{}}}"#;
+    let initialize_request = r#"{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"processId":null,"clientInfo":{"name":"test-client","version":"1.0"},"capabilities":{}}}"#;
     let formatted = format_lsp_message(initialize_request);
     
     let messages = parser.parse_messages(&formatted).unwrap();
