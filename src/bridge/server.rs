@@ -89,30 +89,101 @@ impl BridgeServer {
         Ok(server)
     }
 
-    /// 运行事件循环
-    async fn run_event_loop(&self) {
-        let mut event_handler = self.event_bus.create_handler();
-        info!("Event handler started");
+    /// 静态事件处理方法 - 用于tokio任务
+    async fn handle_event_static(
+        event: Event,
+        lsp_manager: &Arc<RwLock<LspServerManager>>,
+        client_manager: &Arc<RwLock<ClientManager>>,
+        file_manager: &Arc<RwLock<FileManager>>,
+        event_sender: &EventSender,
+        correlation_manager: &Arc<RequestCorrelationManager>,
+    ) -> Result<()> {
+        match event {
+            Event::ClientConnected {
+                client_id,
+                event_id,
+            } => {
+                info!(
+                    "Client {} connected ({})",
+                    client_id, event_id
+                );
+            }
 
-        loop {
-            match event_handler.handle_next().await {
-                Ok(Some(event)) => {
-                    if let Err(e) = self.handle_event(event).await {
-                        error!("Failed to handle event: {}", e);
-                    }
-                }
-                Ok(None) => {
-                    debug!("No more events to handle");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-                Err(e) => {
-                    error!("Error handling events: {}", e);
-                    break;
-                }
+            Event::VimEvent {
+                client_id,
+                event: vim_event,
+                event_id,
+            } => {
+                debug!(
+                    "Processing vim event from {}: {:?} ({})",
+                    client_id, vim_event, event_id
+                );
+                Self::handle_vim_event_static(vim_event, lsp_manager, client_manager, file_manager, event_sender, correlation_manager).await?;
+            }
+
+            Event::VimRequest {
+                client_id,
+                request_id,
+                request,
+                event_id,
+            } => {
+                info!(
+                    "Processing vim request from {}: {:?} ({})",
+                    client_id, request, event_id
+                );
+                Self::handle_vim_request_static(
+                    client_id, 
+                    request_id, 
+                    request, 
+                    lsp_manager, 
+                    client_manager,
+                    file_manager,
+                    event_sender, 
+                    correlation_manager
+                ).await?;
+            }
+
+            Event::LspResponse {
+                server_id,
+                response,
+                event_id,
+            } => {
+                debug!(
+                    "Processing LSP response from {}: {:?} ({})",
+                    server_id, response, event_id
+                );
+                Self::handle_lsp_response_static(
+                    server_id, 
+                    response, 
+                    event_id, 
+                    client_manager, 
+                    correlation_manager
+                ).await?;
+            }
+
+            Event::LspNotification {
+                server_id,
+                method,
+                params,
+                event_id,
+            } => {
+                debug!(
+                    "Processing LSP notification from {}: {} ({})",
+                    server_id, method, event_id
+                );
+                let notification = serde_json::json!({
+                    "method": method,
+                    "params": params
+                });
+                Self::handle_lsp_notification_static(server_id, notification, event_id, client_manager).await?;
+            }
+
+            _ => {
+                debug!("Unhandled event: {:?}", event);
             }
         }
 
-        warn!("Event handler stopped");
+        Ok(())
     }
 
     // 事件处理逻辑
@@ -120,6 +191,12 @@ impl BridgeServer {
         &self,
         event: Event,
     ) -> Result<()> {
+        // Clone shared resources for static method calls
+        let lsp_manager_clone = self.lsp_manager.clone();
+        let client_manager_clone = self.client_manager.clone();
+        let file_manager_clone = self.file_manager.clone();
+        let event_sender_clone = self.event_sender.clone();
+        let correlation_manager_clone = self.correlation_manager.clone();
         match event {
             Event::ClientConnected {
                 client_id,
@@ -151,7 +228,15 @@ impl BridgeServer {
                     "Processing vim event from {}: {:?} ({})",
                     client_id, vim_event, event_id
                 );
-                self.handle_vim_event(vim_event).await?;
+                // Handle vim event using static method  
+                Self::handle_vim_event_static(
+                    vim_event,
+                    &lsp_manager_clone,
+                    &client_manager_clone,
+                    &file_manager_clone,
+                    &event_sender_clone,
+                    &correlation_manager_clone
+                ).await?;
             }
 
             Event::VimRequest {
@@ -164,7 +249,17 @@ impl BridgeServer {
                     "Processing vim request from {}: {:?} ({})",
                     client_id, request, event_id
                 );
-                self.handle_vim_request(client_id, request_id, request).await?;
+                // Handle vim request using static method
+                Self::handle_vim_request_static(
+                    client_id,
+                    request_id,
+                    request,
+                    &lsp_manager_clone,
+                    &client_manager_clone,
+                    &file_manager_clone,
+                    &event_sender_clone,
+                    &correlation_manager_clone
+                ).await?;
             }
 
             Event::LspResponse {
@@ -198,10 +293,15 @@ impl BridgeServer {
         Ok(())
     }
 
-    // 处理Vim事件
-    async fn handle_vim_event(
-        &self,
+
+    // 处理Vim事件（静态版本）
+    async fn handle_vim_event_static(
         vim_event: crate::lsp::protocol::VimEvent,
+        lsp_manager: &Arc<RwLock<LspServerManager>>,
+        _client_manager: &Arc<RwLock<ClientManager>>,
+        _file_manager: &Arc<RwLock<FileManager>>,
+        _event_sender: &EventSender,
+        _correlation_manager: &Arc<RequestCorrelationManager>,
     ) -> Result<()> {
         use crate::lsp::protocol::VimEvent;
 
@@ -244,14 +344,10 @@ impl BridgeServer {
                 }
             }
 
-            VimEvent::FileChanged {
-                uri,
-                version,
-                changes,
-            } => {
-                debug!("File changed: {} (v{})", uri, version);
+            VimEvent::FileChanged { uri, version, changes } => {
+                debug!("File changed: {} (version {})", uri, version);
 
-                // 查找对应的LSP服务器
+                // 发送didChange通知到所有相关的LSP服务器
                 let mut lsp_manager = lsp_manager.write().await;
                 if let Ok(server_id) = lsp_manager.find_server_for_file(&uri).await {
                     let did_change_params = serde_json::json!({
@@ -275,35 +371,9 @@ impl BridgeServer {
                 }
             }
 
-            VimEvent::FileSaved { uri } => {
-                info!("File saved: {}", uri);
-
-                // 发送didSave通知
-                let mut lsp_manager = lsp_manager.write().await;
-                if let Ok(server_id) = lsp_manager.find_server_for_file(&uri).await {
-                    let did_save_params = serde_json::json!({
-                        "textDocument": {
-                            "uri": uri
-                        }
-                    });
-
-                    if let Err(e) = lsp_manager
-                        .send_notification(
-                            &server_id,
-                            "textDocument/didSave".to_string(),
-                            Some(did_save_params),
-                        )
-                        .await
-                    {
-                        warn!("Failed to send didSave to server {}: {}", server_id, e);
-                    }
-                }
-            }
-
             VimEvent::FileClosed { uri } => {
                 info!("File closed: {}", uri);
 
-                // 发送didClose通知
                 let mut lsp_manager = lsp_manager.write().await;
                 if let Ok(server_id) = lsp_manager.find_server_for_file(&uri).await {
                     let did_close_params = serde_json::json!({
@@ -341,12 +411,16 @@ impl BridgeServer {
         Ok(())
     }
 
-    // 处理Vim请求
-    async fn handle_vim_request(
-        &self,
+    // 处理Vim请求（静态版本）
+    async fn handle_vim_request_static(
         client_id: String,
         request_id: crate::lsp::jsonrpc::RequestId,
         vim_request: crate::lsp::protocol::VimRequest,
+        lsp_manager: &Arc<RwLock<LspServerManager>>,
+        _client_manager: &Arc<RwLock<ClientManager>>,
+        _file_manager: &Arc<RwLock<FileManager>>,
+        _event_sender: &EventSender,
+        correlation_manager: &Arc<RequestCorrelationManager>,
     ) -> Result<()> {
         use crate::lsp::protocol::VimRequest;
 
@@ -362,8 +436,12 @@ impl BridgeServer {
                 );
 
                 // 找到适当的LSP服务器并转发请求
-                let lsp_manager = self.lsp_manager.read().await;
-                if let Ok(server_id) = lsp_manager.find_server_for_file(&uri).await {
+                let server_id = {
+                    let mut lsp_manager_guard = lsp_manager.write().await;
+                    lsp_manager_guard.find_server_for_file(&uri).await
+                };
+                
+                if let Ok(server_id) = server_id {
                     let completion_params = serde_json::json!({
                         "textDocument": {
                             "uri": uri
@@ -376,12 +454,15 @@ impl BridgeServer {
                     });
 
                     // 使用新的关联机制发送请求
-                    if let Err(e) = self.send_lsp_request_with_correlation(
+                    if let Err(e) = Self::send_lsp_request_with_correlation_static(
                         &client_id,
                         Some(request_id), // Completion 请求可能需要Vim请求ID用于响应
                         &server_id,
                         "textDocument/completion".to_string(),
                         Some(completion_params),
+                        lsp_manager,
+                        correlation_manager,
+                        _event_sender,
                     ).await {
                         error!("Failed to send completion request with correlation: {}", e);
                     }
@@ -426,7 +507,7 @@ impl BridgeServer {
                                 }
                             };
                             let event = Event::lsp_response(server_id, result_value);
-                            if let Err(e) = event_sender.emit(event).await {
+                            if let Err(e) = _event_sender.emit(event).await {
                                 error!("Failed to emit hover response event: {}", e);
                             }
                         }
@@ -475,7 +556,7 @@ impl BridgeServer {
                                 }
                             };
                             let event = Event::lsp_response(server_id, result_value);
-                            if let Err(e) = event_sender.emit(event).await {
+                            if let Err(e) = _event_sender.emit(event).await {
                                 error!("Failed to emit definition response event: {}", e);
                             }
                         }
@@ -529,7 +610,7 @@ impl BridgeServer {
                                 }
                             };
                             let event = Event::lsp_response(server_id, result_value);
-                            if let Err(e) = event_sender.emit(event).await {
+                            if let Err(e) = _event_sender.emit(event).await {
                                 error!("Failed to emit references response event: {}", e);
                             }
                         }
@@ -658,12 +739,44 @@ impl BridgeServer {
             self.config.server.host, self.config.server.port
         );
 
-        // 启动事件循环
-        let server_ref = self as *const Self;
+        // 启动事件循环 - 使用Arc来安全地共享
+        let event_bus = self.event_bus.clone();
+        let lsp_manager = self.lsp_manager.clone();
+        let client_manager = self.client_manager.clone();
+        let file_manager = self.file_manager.clone();
+        let event_sender = self.event_sender.clone();
+        let correlation_manager = self.correlation_manager.clone();
+        
         tokio::spawn(async move {
-            // SAFETY: 我们知道server在整个run期间都是有效的
-            let server = unsafe { &*server_ref };
-            server.run_event_loop().await;
+            let mut event_handler = event_bus.create_handler();
+            info!("Event handler started");
+
+            loop {
+                match event_handler.handle_next().await {
+                    Ok(Some(event)) => {
+                        if let Err(e) = Self::handle_event_static(
+                            event,
+                            &lsp_manager,
+                            &client_manager,
+                            &file_manager,
+                            &event_sender,
+                            &correlation_manager,
+                        ).await {
+                            error!("Failed to handle event: {}", e);
+                        }
+                    }
+                    Ok(None) => {
+                        debug!("No more events to handle");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    }
+                    Err(e) => {
+                        error!("Error handling events: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            warn!("Event handler stopped");
         });
 
         loop {
@@ -728,6 +841,79 @@ impl BridgeServer {
     pub async fn get_client_count(&self) -> usize {
         let client_manager = self.client_manager.read().await;
         client_manager.client_count()
+    }
+
+    /// 发送LSP请求并建立关联（静态版本）
+    async fn send_lsp_request_with_correlation_static(
+        client_id: &str,
+        vim_request_id: Option<String>,
+        server_id: &str,
+        method: String,
+        params: Option<serde_json::Value>,
+        lsp_manager: &Arc<RwLock<LspServerManager>>,
+        correlation_manager: &Arc<RequestCorrelationManager>,
+        event_sender: &EventSender,
+    ) -> Result<()> {
+        // 生成LSP请求ID
+        let lsp_request_id = RequestCorrelationManager::generate_request_id();
+        
+        // 添加关联信息
+        correlation_manager
+            .add_correlation(
+                lsp_request_id.clone(),
+                client_id.to_string(),
+                vim_request_id,
+                server_id.to_string(),
+                method.clone(),
+                params.clone(),
+            )
+            .await?;
+
+        debug!(
+            "Sending LSP request {} to server {} for client {}",
+            lsp_request_id, server_id, client_id
+        );
+
+        // 发送异步请求（不等待响应）
+        let lsp_manager = lsp_manager.clone();
+        let server_id_clone = server_id.to_string();
+        let event_sender = event_sender.clone();
+        let correlation_manager = correlation_manager.clone();
+
+        tokio::spawn(async move {
+            let result = {
+                let mut manager = lsp_manager.write().await;
+                manager.send_request_with_id(&server_id_clone, lsp_request_id.clone(), method.clone(), params).await
+            };
+
+            match result {
+                Ok(response) => {
+                    // 发送LSP响应事件
+                    let event = Event::lsp_response(server_id_clone, serde_json::json!({
+                        "id": lsp_request_id,
+                        "result": match response.result {
+                            crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => result,
+                            crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
+                                serde_json::json!({ "error": error })
+                            }
+                        }
+                    }));
+
+                    if let Err(e) = event_sender.emit(event).await {
+                        error!("Failed to emit LSP response event: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("LSP request {} failed for server {} method {}: {}", 
+                          lsp_request_id, server_id_clone, method, e);
+                    
+                    // 移除失败的关联
+                    correlation_manager.take_correlation(&lsp_request_id).await;
+                }
+            }
+        });
+
+        Ok(())
     }
 
     /// 发送LSP请求并建立关联
@@ -797,6 +983,101 @@ impl BridgeServer {
                 }
             }
         });
+
+        Ok(())
+    }
+
+    /// 处理LSP响应（静态版本）
+    async fn handle_lsp_response_static(
+        server_id: String,
+        response: serde_json::Value,
+        _event_id: crate::bridge::event::EventId,
+        client_manager: &Arc<RwLock<ClientManager>>,
+        correlation_manager: &Arc<RequestCorrelationManager>,
+    ) -> Result<()> {
+        info!(
+            "Handling LSP response from server {}",
+            server_id
+        );
+
+        // 从响应中提取请求ID
+        if let Some(request_id) = response.get("id").and_then(|id| id.as_str()) {
+            // 查找关联信息
+            if let Some(correlation) = correlation_manager.take_correlation(&request_id.to_string()).await {
+                debug!(
+                    "Found correlation for request {}: client {}",
+                    request_id, correlation.client_id
+                );
+
+                // 获取客户端管理器并转发响应
+                let client_manager = client_manager.read().await;
+                if let Some(_client) = client_manager.get_client(&correlation.client_id) {
+                    // 构造Vim响应消息
+                    let _vim_response = if let Some(vim_req_id) = correlation.vim_request_id {
+                        // 如果有Vim请求ID，构造完整的响应
+                        serde_json::json!({
+                            "id": vim_req_id,
+                            "result": response.get("result").unwrap_or(&serde_json::Value::Null),
+                            "error": response.get("error")
+                        })
+                    } else {
+                        // 否则直接转发结果
+                        response.get("result").unwrap_or(&serde_json::Value::Null).clone()
+                    };
+
+                    // 发送响应给客户端（这里需要实现客户端的响应发送机制）
+                    info!(
+                        "Forwarding LSP response to client {} for method {}",
+                        correlation.client_id, correlation.method
+                    );
+
+                    // 注意：这里需要根据实际的客户端通信机制来发送响应
+                    // 可能需要通过TCP连接发送或者通过其他机制
+                } else {
+                    warn!("Client {} not found for LSP response", correlation.client_id);
+                }
+            } else {
+                warn!(
+                    "No correlation found for LSP request ID: {}. Response may be orphaned.",
+                    request_id
+                );
+            }
+        } else {
+            warn!("LSP response missing request ID, cannot correlate: {:?}", response);
+        }
+
+        Ok(())
+    }
+
+    /// 处理LSP通知（静态版本）
+    async fn handle_lsp_notification_static(
+        server_id: String,
+        notification: serde_json::Value,
+        _event_id: crate::bridge::event::EventId,
+        _client_manager: &Arc<RwLock<ClientManager>>,
+    ) -> Result<()> {
+        info!(
+            "Handling LSP notification from server {}: {:?}",
+            server_id, notification
+        );
+
+        // 处理LSP通知，例如诊断信息
+        // TODO: 转发诊断信息给客户端
+        if let Some(method) = notification.get("method").and_then(|m| m.as_str()) {
+            match method {
+                "textDocument/publishDiagnostics" => {
+                    debug!("Received diagnostics from server {}", server_id);
+                    // TODO: 转发诊断信息给客户端
+                }
+                "window/showMessage" => {
+                    debug!("Received message from server {}", server_id);
+                    // TODO: 显示消息给用户
+                }
+                _ => {
+                    debug!("Unhandled LSP notification method: {}", method);
+                }
+            }
+        }
 
         Ok(())
     }
