@@ -1,4 +1,5 @@
 pub mod client;
+pub mod correlation;
 pub mod event;
 pub mod server;
 

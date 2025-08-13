@@ -109,6 +109,29 @@ impl LspServerManager {
         client.send_request(method, params).await
     }
 
+    /// 使用指定的请求ID发送LSP请求
+    pub async fn send_request_with_id(
+        &mut self,
+        server_id: &ServerId,
+        request_id: String,
+        method: String,
+        params: Option<Value>,
+    ) -> Result<JsonRpcResponse> {
+        let client = self
+            .servers
+            .get_mut(server_id)
+            .ok_or_else(|| Error::lsp_server(format!("Server not found: {}", server_id)))?;
+
+        if !client.is_running() {
+            return Err(Error::lsp_server(format!(
+                "Server {} is not running",
+                server_id
+            )));
+        }
+
+        client.send_request_with_id(request_id, method, params).await
+    }
+
     pub async fn send_notification(
         &self,
         server_id: &ServerId,

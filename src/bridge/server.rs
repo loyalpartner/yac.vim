@@ -1,4 +1,5 @@
 use crate::bridge::event::{Event, EventBus, EventSender};
+use crate::bridge::correlation::RequestCorrelationManager;
 use crate::bridge::ClientManager;
 use crate::file::FileManager;
 use crate::lsp::LspServerManager;
@@ -17,6 +18,7 @@ pub struct BridgeServer {
     file_manager: Arc<RwLock<FileManager>>,
     event_bus: Arc<EventBus>,
     event_sender: EventSender,
+    correlation_manager: Arc<RequestCorrelationManager>,
 }
 
 impl BridgeServer {
@@ -41,6 +43,10 @@ impl BridgeServer {
         let event_bus = Arc::new(EventBus::new(&config.server.resource_limits));
         let event_sender = event_bus.get_sender();
 
+        let correlation_manager = Arc::new(RequestCorrelationManager::new());
+        // 启动关联管理器的清理任务
+        correlation_manager.start_cleanup_task().await;
+
         let server = Self {
             config,
             listener,
@@ -49,6 +55,7 @@ impl BridgeServer {
             file_manager: Arc::new(RwLock::new(file_manager)),
             event_bus: event_bus.clone(),
             event_sender: event_sender.clone(),
+            correlation_manager,
         };
 
         // 启动事件分发器
@@ -79,50 +86,39 @@ impl BridgeServer {
             }
         });
 
-        // 启动事件处理任务
-        let mut event_handler = event_bus.create_handler();
-        let lsp_manager_clone = server.lsp_manager.clone();
-        let file_manager_clone = server.file_manager.clone();
-        let event_sender_clone = event_sender.clone();
+        Ok(server)
+    }
 
-        tokio::spawn(async move {
-            info!("Event handler started");
+    /// 运行事件循环
+    async fn run_event_loop(&self) {
+        let mut event_handler = self.event_bus.create_handler();
+        info!("Event handler started");
 
-            loop {
-                match event_handler.handle_next().await {
-                    Ok(Some(event)) => {
-                        if let Err(e) = Self::handle_event(
-                            event,
-                            &lsp_manager_clone,
-                            &file_manager_clone,
-                            &event_sender_clone,
-                        )
-                        .await
-                        {
-                            error!("Failed to handle event: {}", e);
-                        }
-                    }
-                    Ok(None) => {
-                        info!("Event handler shutting down");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Error in event handler: {}", e);
-                        break;
+        loop {
+            match event_handler.handle_next().await {
+                Ok(Some(event)) => {
+                    if let Err(e) = self.handle_event(event).await {
+                        error!("Failed to handle event: {}", e);
                     }
                 }
+                Ok(None) => {
+                    debug!("No more events to handle");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => {
+                    error!("Error handling events: {}", e);
+                    break;
+                }
             }
-        });
+        }
 
-        Ok(server)
+        warn!("Event handler stopped");
     }
 
     // 事件处理逻辑
     async fn handle_event(
+        &self,
         event: Event,
-        lsp_manager: &Arc<RwLock<LspServerManager>>,
-        file_manager: &Arc<RwLock<FileManager>>,
-        event_sender: &EventSender,
     ) -> Result<()> {
         match event {
             Event::ClientConnected {
@@ -155,7 +151,7 @@ impl BridgeServer {
                     "Processing vim event from {}: {:?} ({})",
                     client_id, vim_event, event_id
                 );
-                Self::handle_vim_event(vim_event, lsp_manager, file_manager, event_sender).await?;
+                self.handle_vim_event(vim_event).await?;
             }
 
             Event::VimRequest {
@@ -168,8 +164,7 @@ impl BridgeServer {
                     "Processing vim request from {}: {:?} ({})",
                     client_id, request, event_id
                 );
-                Self::handle_vim_request(client_id, request_id, request, lsp_manager, event_sender)
-                    .await?;
+                self.handle_vim_request(client_id, request_id, request).await?;
             }
 
             Event::LspResponse {
@@ -182,7 +177,7 @@ impl BridgeServer {
                     server_id, response, event_id
                 );
                 // LSP响应的转发处理 - 需要根据请求ID找到对应的客户端
-                Self::handle_lsp_response(server_id, response, event_id).await?;
+                self.handle_lsp_response(server_id, response, event_id).await?;
             }
 
             Event::LspNotification {
@@ -205,10 +200,8 @@ impl BridgeServer {
 
     // 处理Vim事件
     async fn handle_vim_event(
+        &self,
         vim_event: crate::lsp::protocol::VimEvent,
-        lsp_manager: &Arc<RwLock<LspServerManager>>,
-        file_manager: &Arc<RwLock<FileManager>>,
-        event_sender: &EventSender,
     ) -> Result<()> {
         use crate::lsp::protocol::VimEvent;
 
@@ -350,11 +343,10 @@ impl BridgeServer {
 
     // 处理Vim请求
     async fn handle_vim_request(
+        &self,
         client_id: String,
         request_id: crate::lsp::jsonrpc::RequestId,
         vim_request: crate::lsp::protocol::VimRequest,
-        lsp_manager: &Arc<RwLock<LspServerManager>>,
-        event_sender: &EventSender,
     ) -> Result<()> {
         use crate::lsp::protocol::VimRequest;
 
@@ -370,7 +362,7 @@ impl BridgeServer {
                 );
 
                 // 找到适当的LSP服务器并转发请求
-                let mut lsp_manager = lsp_manager.write().await;
+                let lsp_manager = self.lsp_manager.read().await;
                 if let Ok(server_id) = lsp_manager.find_server_for_file(&uri).await {
                     let completion_params = serde_json::json!({
                         "textDocument": {
@@ -383,33 +375,15 @@ impl BridgeServer {
                         "context": context
                     });
 
-                    match lsp_manager
-                        .send_request(
-                            &server_id,
-                            "textDocument/completion".to_string(),
-                            Some(completion_params),
-                        )
-                        .await
-                    {
-                        Ok(response) => {
-                            info!("Received completion response from server: {}", server_id);
-                            // 需要将响应转发回客户端 - 这里可以发送事件
-                            let result_value = match response.result {
-                                crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => {
-                                    result
-                                }
-                                crate::lsp::jsonrpc::JsonRpcResponseResult::Error { .. } => {
-                                    serde_json::Value::Null
-                                }
-                            };
-                            let event = Event::lsp_response(server_id, result_value);
-                            if let Err(e) = event_sender.emit(event).await {
-                                error!("Failed to emit LSP response event: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Completion request failed for server {}: {}", server_id, e);
-                        }
+                    // 使用新的关联机制发送请求
+                    if let Err(e) = self.send_lsp_request_with_correlation(
+                        &client_id,
+                        Some(request_id), // Completion 请求可能需要Vim请求ID用于响应
+                        &server_id,
+                        "textDocument/completion".to_string(),
+                        Some(completion_params),
+                    ).await {
+                        error!("Failed to send completion request with correlation: {}", e);
                     }
                 } else {
                     warn!("No LSP server available for file: {}", uri);
@@ -574,19 +548,61 @@ impl BridgeServer {
 
     // 处理LSP响应
     async fn handle_lsp_response(
+        &self,
         server_id: String,
         response: serde_json::Value,
         event_id: crate::bridge::event::EventId,
     ) -> Result<()> {
-        // TODO: 根据请求ID找到对应的客户端并转发响应
-        // 这需要维护请求ID到客户端ID的映射
         info!(
             "Handling LSP response from server {} ({})",
             server_id, event_id
         );
 
-        // 解析响应并转发给对应的客户端
-        // 这里需要实现请求-响应的关联机制
+        // 从响应中提取请求ID
+        if let Some(request_id) = response.get("id").and_then(|id| id.as_str()) {
+            // 查找关联信息
+            if let Some(correlation) = self.correlation_manager.take_correlation(&request_id.to_string()).await {
+                debug!(
+                    "Found correlation for request {}: client {}",
+                    request_id, correlation.client_id
+                );
+
+                // 获取客户端管理器并转发响应
+                let client_manager = self.client_manager.read().await;
+                if let Some(client) = client_manager.get_client(&correlation.client_id) {
+                    // 构造Vim响应消息
+                    let vim_response = if let Some(vim_req_id) = correlation.vim_request_id {
+                        // 如果有Vim请求ID，构造完整的响应
+                        serde_json::json!({
+                            "id": vim_req_id,
+                            "result": response.get("result").unwrap_or(&serde_json::Value::Null),
+                            "error": response.get("error")
+                        })
+                    } else {
+                        // 否则直接转发结果
+                        response.get("result").unwrap_or(&serde_json::Value::Null).clone()
+                    };
+
+                    // 发送响应给客户端（这里需要实现客户端的响应发送机制）
+                    info!(
+                        "Forwarding LSP response to client {} for method {}",
+                        correlation.client_id, correlation.method
+                    );
+
+                    // 注意：这里需要根据实际的客户端通信机制来发送响应
+                    // 可能需要通过TCP连接发送或者通过其他机制
+                } else {
+                    warn!("Client {} not found for LSP response", correlation.client_id);
+                }
+            } else {
+                warn!(
+                    "No correlation found for LSP request ID: {}. Response may be orphaned.",
+                    request_id
+                );
+            }
+        } else {
+            warn!("LSP response missing request ID, cannot correlate: {:?}", response);
+        }
 
         Ok(())
     }
@@ -641,6 +657,14 @@ impl BridgeServer {
             "LSP Bridge server listening on {}:{}",
             self.config.server.host, self.config.server.port
         );
+
+        // 启动事件循环
+        let server_ref = self as *const Self;
+        tokio::spawn(async move {
+            // SAFETY: 我们知道server在整个run期间都是有效的
+            let server = unsafe { &*server_ref };
+            server.run_event_loop().await;
+        });
 
         loop {
             tokio::select! {
@@ -704,5 +728,76 @@ impl BridgeServer {
     pub async fn get_client_count(&self) -> usize {
         let client_manager = self.client_manager.read().await;
         client_manager.client_count()
+    }
+
+    /// 发送LSP请求并建立关联
+    async fn send_lsp_request_with_correlation(
+        &self,
+        client_id: &str,
+        vim_request_id: Option<String>,
+        server_id: &str,
+        method: String,
+        params: Option<serde_json::Value>,
+    ) -> Result<()> {
+        // 生成LSP请求ID
+        let lsp_request_id = RequestCorrelationManager::generate_request_id();
+        
+        // 添加关联信息
+        self.correlation_manager
+            .add_correlation(
+                lsp_request_id.clone(),
+                client_id.to_string(),
+                vim_request_id,
+                server_id.to_string(),
+                method.clone(),
+                params.clone(),
+            )
+            .await?;
+
+        debug!(
+            "Sending LSP request {} to server {} for client {}",
+            lsp_request_id, server_id, client_id
+        );
+
+        // 发送异步请求（不等待响应）
+        let lsp_manager = self.lsp_manager.clone();
+        let server_id_clone = server_id.to_string();
+        let event_sender = self.event_sender.clone();
+        let correlation_manager = self.correlation_manager.clone();
+
+        tokio::spawn(async move {
+            let result = {
+                let mut manager = lsp_manager.write().await;
+                manager.send_request_with_id(&server_id_clone, lsp_request_id.clone(), method.clone(), params).await
+            };
+
+            match result {
+                Ok(response) => {
+                    // 发送LSP响应事件
+                    let event = Event::lsp_response(server_id_clone, serde_json::json!({
+                        "id": lsp_request_id,
+                        "result": match response.result {
+                            crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => result,
+                            crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
+                                serde_json::json!({ "error": error })
+                            }
+                        }
+                    }));
+
+                    if let Err(e) = event_sender.emit(event).await {
+                        error!("Failed to emit LSP response event: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("LSP request {} failed for server {} method {}: {}", 
+                          lsp_request_id, server_id_clone, method, e);
+                    
+                    // 移除失败的关联
+                    correlation_manager.take_correlation(&lsp_request_id).await;
+                }
+            }
+        });
+
+        Ok(())
     }
 }

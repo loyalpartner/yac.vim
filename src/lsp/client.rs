@@ -278,6 +278,29 @@ impl LspClient {
         }
     }
 
+    /// 使用指定的请求ID发送LSP请求
+    pub async fn send_request_with_id(
+        &mut self,
+        request_id: String,
+        method: String,
+        params: Option<Value>,
+    ) -> Result<JsonRpcResponse> {
+        let request = JsonRpcRequest::new(request_id.clone(), method, params);
+        let (tx, mut rx) = mpsc::channel(1); // 一个请求只需要一个响应
+        self.pending_requests.insert(request_id, tx);
+        self.send_request_internal(request).await?;
+
+        // Wait for response (with timeout)
+        tokio::select! {
+            response = rx.recv() => {
+                response.ok_or_else(|| Error::Internal(anyhow::anyhow!("Response channel closed")))
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                Err(Error::Timeout)
+            }
+        }
+    }
+
     async fn send_request_internal(&self, request: JsonRpcRequest) -> Result<()> {
         self.request_tx
             .send(request)
