@@ -491,6 +491,12 @@ mod tests {
         let bus = EventBus::new(&limits);
         let sender = bus.get_sender();
 
+        // 启动事件分发器
+        bus.start_dispatcher().await.unwrap();
+
+        // 等待一点时间让分发器启动
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
         // 发送几个事件
         sender
             .emit(Event::client_connected("client1".to_string()))
@@ -500,6 +506,9 @@ mod tests {
             .emit(Event::client_disconnected("client1".to_string()))
             .await
             .unwrap();
+
+        // 等待事件被处理
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let stats = bus.get_stats().await;
         assert_eq!(stats.total_events, 2);
