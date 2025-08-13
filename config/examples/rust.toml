@@ -1,0 +1,175 @@
+# YAC.vim Configuration for rust-analyzer
+# Place this in ~/.config/yac-vim/config.toml or your project's .yac.toml
+
+[server]
+host = "127.0.0.1"
+port = 9527
+max_connections = 10
+timeout_ms = 30000
+
+[lsp_servers.rust-analyzer]
+command = ["rust-analyzer"]
+args = []
+filetypes = ["rust"]
+root_patterns = ["Cargo.toml", "Cargo.lock", "rust-project.json"]
+
+[lsp_servers.rust-analyzer.settings]
+"rust-analyzer" = {
+    assist = {
+        importEnforceGranularity = true
+        importPrefix = "crate"
+    }
+    cargo = {
+        allFeatures = true
+        buildScripts = {
+            enable = true
+        }
+        procMacro = {
+            enable = true
+        }
+    }
+    checkOnSave = {
+        command = "clippy"
+        extraArgs = ["--all-targets"]
+    }
+    completion = {
+        addCallParentheses = true
+        addCallArgumentSnippets = true
+        postfix = {
+            enable = true
+        }
+        autoimport = {
+            enable = true
+        }
+    }
+    diagnostics = {
+        enable = true
+        enableExperimental = false
+        disabled = ["unresolved-proc-macro"]
+    }
+    hover = {
+        actions = {
+            enable = true
+            implementations = {
+                enable = true
+            }
+            references = {
+                enable = true
+            }
+        }
+        documentation = {
+            enable = true
+        }
+        links = {
+            enable = true
+        }
+    }
+    inlayHints = {
+        bindingModeHints = {
+            enable = false
+        }
+        chainingHints = {
+            enable = true
+        }
+        closingBraceHints = {
+            enable = true
+            minLines = 25
+        }
+        closureCaptureHints = {
+            enable = false
+        }
+        closureReturnTypeHints = {
+            enable = "never"
+        }
+        discriminantHints = {
+            enable = "never"
+        }
+        expressionAdjustmentHints = {
+            enable = "never"
+        }
+        implicitDrops = {
+            enable = false
+        }
+        lifetimeElisionHints = {
+            enable = "never"
+            useParameterNames = false
+        }
+        maxLength = 25
+        parameterHints = {
+            enable = true
+        }
+        reborrowHints = {
+            enable = "never"
+        }
+        renderColons = true
+        typeHints = {
+            enable = true
+            hideClosureInitialization = false
+            hideNamedConstructor = false
+        }
+    }
+    lens = {
+        enable = true
+        debug = {
+            enable = true
+        }
+        implementations = {
+            enable = true
+        }
+        references = {
+            adt = {
+                enable = false
+            }
+            enumVariant = {
+                enable = false
+            }
+            method = {
+                enable = false
+            }
+            trait = {
+                enable = false
+            }
+        }
+        run = {
+            enable = true
+        }
+    }
+    notifications = {
+        cargoTomlNotFound = true
+    }
+    procMacro = {
+        enable = true
+        attributes = {
+            enable = true
+        }
+        ignored = {}
+        server = ""
+    }
+    references = {
+        excludeImports = false
+    }
+    runnables = {
+        command = ""
+        extraArgs = []
+    }
+    semanticHighlighting = {
+        strings = {
+            enable = true
+        }
+    }
+    signatureInfo = {
+        detail = "full"
+        documentation = {
+            enable = true
+        }
+    }
+    workspace = {
+        symbol = {
+            search = {
+                kind = "only_types"
+                limit = 128
+                scope = "workspace"
+            }
+        }
+    }
+}

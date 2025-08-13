@@ -1,2 +1,85 @@
-/target
+# Rust
+/target/
 Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Build artifacts
+/release/
+/debug/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.#*
+\#*#
+.*.kate-swp
+.*.sw[a-z]
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+[Tt]humbs.db
+
+# Vim temporary files
+*.tmp
+*.bak
+*.backup
+.netrwhist
+Session.vim
+.vim/
+
+# Test artifacts and logs
+/test_logs/
+test_*.log
+*.log
+
+# Temporary test files
+debug_connection.vim
+test_simple_connection.vim
+run_vim_tests.vim
+
+# LSP and language server logs
+lsp*.log
+rust-analyzer.log
+
+# Coverage reports
+/coverage/
+*.profraw
+*.profdata
+
+# Documentation build
+/doc/
+/docs/build/
+
+# Configuration overrides
+config/local.toml
+.env
+.env.local
+
+# Binary distributions
+*.tar.gz
+*.zip
+*.dmg
+*.pkg
+*.deb
+*.rpm
+
+# Cache
+.cache/
+node_modules/
+
+# Python cache (if used for tooling)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
