@@ -23,6 +23,12 @@ nnoremap <F1> :call yac#start()<CR>
 nnoremap <F2> :call yac#stop()<CR>
 nnoremap <F3> :call yac#status()<CR>
 
+" 补全功能快捷键
+inoremap <C-Space> <C-R>=yac#trigger_completion()<CR>
+inoremap <C-@> <C-R>=yac#trigger_completion()<CR>
+nnoremap <F4> :call yac#trigger_completion()<CR>
+nnoremap <F5> :call yac#show_hover()<CR>
+
 " 测试完成提示 (在非交互模式下不显示)
 if !exists('&ttimeout') || &ttimeout
     echo "📋 YAC.vim 测试环境已加载"
@@ -30,6 +36,9 @@ if !exists('&ttimeout') || &ttimeout
     echo "  F1 - 启动YAC"
     echo "  F2 - 停止YAC"
     echo "  F3 - 查看YAC状态"
+    echo "  F4 - 手动触发补全"
+    echo "  F5 - 显示悬停信息"
+    echo "  Ctrl+Space - 插入模式补全"
     echo "  :YACTest - 运行连接测试"
 endif
 

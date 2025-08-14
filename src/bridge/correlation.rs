@@ -220,7 +220,7 @@ impl RequestCorrelationManager {
 
     /// 生成新的LSP请求ID
     pub fn generate_request_id() -> RequestId {
-        Uuid::new_v4().to_string()
+        RequestId::String(Uuid::new_v4().to_string())
     }
 }
 
@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_correlation_basic_operations() {
         let manager = RequestCorrelationManager::new();
-        let request_id = "test-request-1".to_string();
+        let request_id = RequestId::String("test-request-1".to_string());
         let client_id = "client-1".to_string();
 
         // 添加关联
@@ -281,7 +281,7 @@ mod tests {
         let manager = RequestCorrelationManager::new();
         
         // 创建一个"已过期"的关联（通过修改时间戳）
-        let request_id = "expired-request".to_string();
+        let request_id = RequestId::String("expired-request".to_string());
         let mut correlation = RequestCorrelation::new(
             "client-1".to_string(),
             None,

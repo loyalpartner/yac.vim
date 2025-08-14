@@ -78,6 +78,49 @@ impl LspServerManager {
         Ok(server_id)
     }
 
+    pub async fn start_server_with_root(&mut self, server_name: &str, root_uri: Option<String>) -> Result<ServerId> {
+        // 检查并发LSP服务器数量限制
+        if self.servers.len() >= self.limits.max_concurrent_lsp_servers {
+            return Err(Error::Internal(anyhow::anyhow!(
+                "Maximum number of concurrent LSP servers reached: {}",
+                self.limits.max_concurrent_lsp_servers
+            )));
+        }
+
+        if let Some(existing_server) = self.servers.values().find(|s| s.server_name == server_name)
+        {
+            if existing_server.is_running() {
+                debug!("LSP server {} is already running", server_name);
+                return Ok(existing_server.server_name.clone());
+            }
+        }
+
+        let config = self
+            .configs
+            .get(server_name)
+            .ok_or_else(|| {
+                Error::config(format!(
+                    "No configuration found for server: {}",
+                    server_name
+                ))
+            })?
+            .clone();
+
+        let client = LspClient::new_with_root(server_name.to_string(), config, &self.limits, root_uri.clone()).await?;
+        let server_id = client.server_name.clone();
+
+        self.servers.insert(server_id.clone(), client);
+        info!(
+            "LSP server {} started with ID: {} and root: {:?} (total: {})",
+            server_name,
+            server_id,
+            root_uri,
+            self.servers.len()
+        );
+
+        Ok(server_id)
+    }
+
     pub async fn stop_server(&mut self, server_id: &ServerId) -> Result<()> {
         if let Some(mut client) = self.servers.remove(server_id) {
             client.shutdown().await?;

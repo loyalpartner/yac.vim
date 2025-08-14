@@ -2,14 +2,37 @@ use crate::utils::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub type RequestId = String;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum RequestId {
+    String(String),
+    Number(i64),
+}
+
+impl std::fmt::Display for RequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestId::String(s) => write!(f, "{}", s),
+            RequestId::Number(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+impl RequestId {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            RequestId::String(s) => s.is_empty(),
+            RequestId::Number(_) => false, // 数字永远不为空
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcMessage {
-    Request(JsonRpcRequest),
-    Response(JsonRpcResponse),
-    Notification(JsonRpcNotification),
+    Response(JsonRpcResponse),  // 最具体的，有 id 和 result/error
+    Request(JsonRpcRequest),    // 有 id 和 method，但没有 result/error
+    Notification(JsonRpcNotification), // 最不具体的，只有 method，没有 id
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +91,24 @@ impl JsonRpcRequest {
             params,
         }
     }
+    
+    pub fn new_with_string_id(id: String, method: String, params: Option<Value>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::String(id),
+            method,
+            params,
+        }
+    }
+    
+    pub fn new_with_number_id(id: i64, method: String, params: Option<Value>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id: RequestId::Number(id),
+            method,
+            params,
+        }
+    }
 }
 
 impl JsonRpcResponse {
@@ -85,6 +126,22 @@ impl JsonRpcResponse {
             id,
             result: JsonRpcResponseResult::Error { error },
         }
+    }
+    
+    pub fn success_with_string_id(id: String, result: Value) -> Self {
+        Self::success(RequestId::String(id), result)
+    }
+    
+    pub fn success_with_number_id(id: i64, result: Value) -> Self {
+        Self::success(RequestId::Number(id), result)
+    }
+    
+    pub fn error_with_string_id(id: String, error: JsonRpcError) -> Self {
+        Self::error(RequestId::String(id), error)
+    }
+    
+    pub fn error_with_number_id(id: i64, error: JsonRpcError) -> Self {
+        Self::error(RequestId::Number(id), error)
     }
 
     pub fn is_success(&self) -> bool {
@@ -168,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_request_serialization() {
-        let request = JsonRpcRequest::new(
+        let request = JsonRpcRequest::new_with_string_id(
             "1".to_string(),
             "textDocument/completion".to_string(),
             Some(serde_json::json!({"uri": "file:///test.rs"})),
@@ -183,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_response_success() {
-        let response = JsonRpcResponse::success("1".to_string(), serde_json::json!({"items": []}));
+        let response = JsonRpcResponse::success_with_string_id("1".to_string(), serde_json::json!({"items": []}));
 
         assert!(response.is_success());
         assert!(!response.is_error());
@@ -192,9 +249,29 @@ mod tests {
     #[test]
     fn test_response_error() {
         let error = JsonRpcError::method_not_found();
-        let response = JsonRpcResponse::error("1".to_string(), error);
+        let response = JsonRpcResponse::error_with_string_id("1".to_string(), error);
 
         assert!(!response.is_success());
         assert!(response.is_error());
+    }
+    
+    #[test]
+    fn test_numeric_id_parsing() {
+        // 测试数字 ID 解析
+        let json = r#"{"jsonrpc":"2.0","id":1,"method":"completion","params":{}}"#;
+        let parsed: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(parsed.id, RequestId::Number(1));
+        assert_eq!(parsed.method, "completion");
+    }
+    
+    #[test]
+    fn test_string_id_parsing() {
+        // 测试字符串 ID 解析
+        let json = r#"{"jsonrpc":"2.0","id":"1","method":"completion","params":{}}"#;
+        let parsed: JsonRpcRequest = serde_json::from_str(json).unwrap();
+        
+        assert_eq!(parsed.id, RequestId::String("1".to_string()));
+        assert_eq!(parsed.method, "completion");
     }
 }

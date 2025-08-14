@@ -3,6 +3,7 @@ use crate::bridge::correlation::RequestCorrelationManager;
 use crate::bridge::ClientManager;
 use crate::file::FileManager;
 use crate::lsp::LspServerManager;
+use crate::lsp::jsonrpc::RequestId;
 use crate::utils::{Config, Error, Result};
 use crate::utils::security::SecurityManager;
 use std::net::SocketAddr;
@@ -325,12 +326,27 @@ impl BridgeServer {
                 version,
                 content,
             } => {
-                info!("File opened: {} ({})", uri, language_id);
+                info!("📥 [v->b] File opened: {} ({})", uri, language_id);
+                debug!("📥 [v->b] File content preview: {:?}", content.chars().take(100).collect::<String>());
+
+                // 根据文件路径确定工作区根目录
+                let workspace_root = crate::utils::workspace::find_workspace_root(&uri);
+                debug!("📍 Workspace root for {}: {:?}", uri, workspace_root);
 
                 // 启动适当的LSP服务器
                 let mut lsp_manager = lsp_manager.write().await;
-                if let Ok(server_id) = lsp_manager.find_server_for_filetype(&language_id).await {
-                    info!("Found LSP server {} for {}", server_id, language_id);
+                
+                // 先尝试查找现有服务器
+                let server_result = if workspace_root.is_some() {
+                    // 如果有特定的工作区根目录，启动带有自定义根目录的服务器
+                    lsp_manager.start_server_with_root(&format!("{}-analyzer", language_id), workspace_root).await
+                } else {
+                    // 否则使用默认的服务器启动方式
+                    lsp_manager.find_server_for_filetype(&language_id).await
+                };
+                
+                if let Ok(server_id) = server_result {
+                    info!("✅ Found/Started LSP server {} for {} with workspace root", server_id, language_id);
 
                     // 发送didOpen通知到LSP服务器
                     let did_open_params = serde_json::json!({
@@ -342,6 +358,9 @@ impl BridgeServer {
                         }
                     });
 
+                    info!("📤 [b->l] Sending textDocument/didOpen to {}", server_id);
+                    debug!("📤 [b->l] didOpen params: {}", serde_json::to_string_pretty(&did_open_params).unwrap_or_default());
+
                     if let Err(e) = lsp_manager
                         .send_notification(
                             &server_id,
@@ -350,15 +369,18 @@ impl BridgeServer {
                         )
                         .await
                     {
-                        warn!("Failed to send didOpen to server {}: {}", server_id, e);
+                        warn!("❌ Failed to send didOpen to server {}: {}", server_id, e);
+                    } else {
+                        info!("✅ Successfully sent didOpen to server {}", server_id);
                     }
                 } else {
-                    warn!("No LSP server available for language: {}", language_id);
+                    warn!("⚠️ No LSP server available for language: {}", language_id);
                 }
             }
 
             VimEvent::FileChanged { uri, version, changes } => {
-                debug!("File changed: {} (version {})", uri, version);
+                info!("📥 [v->b] File changed: {} (version {})", uri, version);
+                debug!("📥 [v->b] File changes: {:?}", changes);
 
                 // 发送didChange通知到所有相关的LSP服务器
                 let mut lsp_manager = lsp_manager.write().await;
@@ -371,6 +393,9 @@ impl BridgeServer {
                         "contentChanges": changes
                     });
 
+                    info!("📤 [b->l] Sending textDocument/didChange to {}", server_id);
+                    debug!("📤 [b->l] didChange params: {}", serde_json::to_string_pretty(&did_change_params).unwrap_or_default());
+
                     if let Err(e) = lsp_manager
                         .send_notification(
                             &server_id,
@@ -379,8 +404,12 @@ impl BridgeServer {
                         )
                         .await
                     {
-                        warn!("Failed to send didChange to server {}: {}", server_id, e);
+                        warn!("❌ Failed to send didChange to server {}: {}", server_id, e);
+                    } else {
+                        info!("✅ Successfully sent didChange to server {}", server_id);
                     }
+                } else {
+                    warn!("⚠️ No LSP server found for file: {}", uri);
                 }
             }
 
@@ -461,9 +490,10 @@ impl BridgeServer {
                 }
 
                 info!(
-                    "Completion request for {} at {}:{} from client {}",
+                    "📥 [v->b] Completion request for {} at {}:{} from client {}",
                     uri, position.line, position.character, client_id
                 );
+                debug!("📥 [v->b] Completion context: {:?}", context);
 
                 // 找到适当的LSP服务器并转发请求
                 let server_id = {
@@ -472,6 +502,8 @@ impl BridgeServer {
                 };
                 
                 if let Ok(server_id) = server_id {
+                    info!("✅ Found LSP server {} for completion request", server_id);
+                    
                     let mut completion_params = serde_json::json!({
                         "textDocument": {
                             "uri": uri
@@ -490,10 +522,13 @@ impl BridgeServer {
                         });
                     }
 
+                    info!("📤 [b->l] Sending textDocument/completion request to {}", server_id);
+                    debug!("📤 [b->l] Completion params: {}", serde_json::to_string_pretty(&completion_params).unwrap_or_default());
+
                     // 使用新的关联机制发送请求
                     if let Err(e) = Self::send_lsp_request_with_correlation_static(
                         &client_id,
-                        Some(request_id.clone()), // Completion 请求需要Vim请求ID用于响应
+                        Some(request_id.to_string()), // Completion 请求需要Vim请求ID用于响应
                         &server_id,
                         "textDocument/completion".to_string(),
                         Some(completion_params),
@@ -501,10 +536,12 @@ impl BridgeServer {
                         correlation_manager,
                         _event_sender,
                     ).await {
-                        error!("Failed to send completion request with correlation: {}", e);
+                        error!("❌ Failed to send completion request with correlation: {}", e);
+                    } else {
+                        info!("✅ Successfully sent completion request to server {}", server_id);
                     }
                 } else {
-                    warn!("No LSP server available for file: {}", uri);
+                    warn!("⚠️ No LSP server available for file: {}", uri);
                 }
             }
 
@@ -672,14 +709,25 @@ impl BridgeServer {
         event_id: crate::bridge::event::EventId,
     ) -> Result<()> {
         info!(
-            "Handling LSP response from server {} ({})",
+            "📥 [b<-l] Handling LSP response from server {} ({})",
             server_id, event_id
         );
+        debug!("📥 [b<-l] LSP response content: {}", serde_json::to_string_pretty(&response).unwrap_or_default());
 
         // 从响应中提取请求ID
-        if let Some(request_id) = response.get("id").and_then(|id| id.as_str()) {
+        if let Some(request_id_value) = response.get("id") {
+            // 将 JSON Value 转换为 RequestId
+            let request_id = if let Some(s) = request_id_value.as_str() {
+                RequestId::String(s.to_string())
+            } else if let Some(n) = request_id_value.as_i64() {
+                RequestId::Number(n)
+            } else {
+                warn!("Invalid request ID format in response: {:?}", request_id_value);
+                return Ok(());
+            };
+            
             // 查找关联信息
-            if let Some(correlation) = self.correlation_manager.take_correlation(&request_id.to_string()).await {
+            if let Some(correlation) = self.correlation_manager.take_correlation(&request_id).await {
                 debug!(
                     "Found correlation for request {}: client {}",
                     request_id, correlation.client_id
@@ -703,9 +751,10 @@ impl BridgeServer {
 
                     // 发送响应给客户端（这里需要实现客户端的响应发送机制）
                     info!(
-                        "Forwarding LSP response to client {} for method {}",
+                        "📤 [v<-b] Forwarding LSP response to client {} for method {}",
                         correlation.client_id, correlation.method
                     );
+                    debug!("📤 [v<-b] Vim response content: {}", serde_json::to_string_pretty(&vim_response).unwrap_or_default());
 
                     // 注意：这里需要根据实际的客户端通信机制来发送响应
                     // 可能需要通过TCP连接发送或者通过其他机制
@@ -938,21 +987,30 @@ impl BridgeServer {
         tokio::spawn(async move {
             let result = {
                 let mut manager = lsp_manager.write().await;
-                manager.send_request_with_id(&server_id_clone, lsp_request_id.clone(), method.clone(), params).await
+                manager.send_request_with_id(&server_id_clone, lsp_request_id.to_string(), method.clone(), params).await
             };
 
             match result {
                 Ok(response) => {
                     // 发送LSP响应事件
-                    let event = Event::lsp_response(server_id_clone, serde_json::json!({
-                        "id": lsp_request_id,
-                        "result": match response.result {
-                            crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => result,
-                            crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
-                                serde_json::json!({ "error": error })
-                            }
+                    let response_json = match response.result {
+                        crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": lsp_request_id,
+                                "result": result
+                            })
                         }
-                    }));
+                        crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", 
+                                "id": lsp_request_id,
+                                "error": error
+                            })
+                        }
+                    };
+                    
+                    let event = Event::lsp_response(server_id_clone, response_json);
 
                     if let Err(e) = event_sender.emit(event).await {
                         error!("Failed to emit LSP response event: {}", e);
@@ -1009,21 +1067,30 @@ impl BridgeServer {
         tokio::spawn(async move {
             let result = {
                 let mut manager = lsp_manager.write().await;
-                manager.send_request_with_id(&server_id_clone, lsp_request_id.clone(), method.clone(), params).await
+                manager.send_request_with_id(&server_id_clone, lsp_request_id.to_string(), method.clone(), params).await
             };
 
             match result {
                 Ok(response) => {
                     // 发送LSP响应事件
-                    let event = Event::lsp_response(server_id_clone, serde_json::json!({
-                        "id": lsp_request_id,
-                        "result": match response.result {
-                            crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => result,
-                            crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
-                                serde_json::json!({ "error": error })
-                            }
+                    let response_json = match response.result {
+                        crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": lsp_request_id,
+                                "result": result
+                            })
                         }
-                    }));
+                        crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", 
+                                "id": lsp_request_id,
+                                "error": error
+                            })
+                        }
+                    };
+                    
+                    let event = Event::lsp_response(server_id_clone, response_json);
 
                     if let Err(e) = event_sender.emit(event).await {
                         error!("Failed to emit LSP response event: {}", e);
@@ -1056,9 +1123,19 @@ impl BridgeServer {
         );
 
         // 从响应中提取请求ID
-        if let Some(request_id) = response.get("id").and_then(|id| id.as_str()) {
+        if let Some(request_id_value) = response.get("id") {
+            // 将 JSON Value 转换为 RequestId
+            let request_id = if let Some(s) = request_id_value.as_str() {
+                RequestId::String(s.to_string())
+            } else if let Some(n) = request_id_value.as_i64() {
+                RequestId::Number(n)
+            } else {
+                warn!("Invalid request ID format in response: {:?}", request_id_value);
+                return Ok(());
+            };
+            
             // 查找关联信息
-            if let Some(correlation) = correlation_manager.take_correlation(&request_id.to_string()).await {
+            if let Some(correlation) = correlation_manager.take_correlation(&request_id).await {
                 debug!(
                     "Found correlation for request {}: client {}",
                     request_id, correlation.client_id

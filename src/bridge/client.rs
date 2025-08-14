@@ -244,13 +244,8 @@ impl VimClient {
         let event = match method {
             "client_connect" => {
                 debug!("Client connecting with info: {:?}", params);
-                // 客户端连接事件，暂时创建一个占位事件
-                return Ok(VimEvent::FileOpened {
-                    uri: "client_connect".to_string(),
-                    language_id: "system".to_string(),
-                    version: 1,
-                    content: "".to_string(),
-                });
+                // 客户端连接不需要生成 VimEvent，直接跳过
+                return Err(crate::utils::Error::Internal(anyhow::anyhow!("client_connect is not a vim event")));
             }
             "file_opened" => {
                 let uri = params["uri"].as_str().unwrap_or("").to_string();

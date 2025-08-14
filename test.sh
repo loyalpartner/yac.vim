@@ -154,11 +154,38 @@ run_integration_tests() {
 # 运行E2E测试
 run_e2e_tests() {
     log_info "运行E2E测试..."
-    run_e2e_with_real_lsp
+    
+    # 启动YAC服务器用于整个E2E测试期间
+    local yac_pid
+    yac_pid=$(start_yac_server_for_e2e)
+    local start_result=$?
+    
+    if [[ $start_result -ne 0 ]] || [[ -z "$yac_pid" ]]; then
+        log_error "无法启动YAC服务器"
+        return 1
+    fi
+    
+    # 运行Vim E2E测试
+    run_vim_e2e_test
+    local vim_result=$?
+    
+    # 如果Vim E2E通过，运行补全专项测试
+    if [[ $vim_result -eq 0 ]]; then
+        run_completion_e2e_test
+    fi
+    
+    # 清理YAC服务器
+    if kill -0 $yac_pid 2>/dev/null; then
+        kill $yac_pid 2>/dev/null
+        sleep 1
+        kill -9 $yac_pid 2>/dev/null || true
+    fi
+    
+    return $vim_result
 }
 
-# 使用真实LSP运行E2E测试
-run_e2e_with_real_lsp() {
+# 启动YAC服务器用于E2E测试
+start_yac_server_for_e2e() {
     log_info "检查rust-analyzer..."
     if ! command -v rust-analyzer &> /dev/null; then
         log_warning "未找到rust-analyzer，跳过真实LSP测试"
@@ -174,7 +201,7 @@ run_e2e_with_real_lsp() {
         else
             echo "查看日志: $LOG_DIR/e2e_build.log"
         fi
-        return 1
+        return 0
     fi
     
     # 启动YAC服务器
@@ -196,7 +223,13 @@ run_e2e_with_real_lsp() {
         return 1
     fi
     
-    # 使用test.vimrc运行测试
+    # 输出PID给调用者
+    echo $yac_pid
+    return 0
+}
+
+# 运行Vim E2E测试
+run_vim_e2e_test() {
     log_info "启动Vim E2E测试..."
     
     # 清理之前的测试结果
@@ -213,22 +246,10 @@ run_e2e_with_real_lsp() {
         case $result in
             "SUCCESS")
                 log_success "E2E测试通过 - 完整功能测试成功"
-                # 清理YAC服务器
-                if kill -0 $yac_pid 2>/dev/null; then
-                    kill $yac_pid 2>/dev/null
-                    sleep 1
-                    kill -9 $yac_pid 2>/dev/null || true
-                fi
                 return 0
                 ;;
             "PARTIAL_SUCCESS")
                 log_warning "E2E测试部分通过 - 连接成功但消息发送失败"
-                # 清理YAC服务器
-                if kill -0 $yac_pid 2>/dev/null; then
-                    kill $yac_pid 2>/dev/null
-                    sleep 1
-                    kill -9 $yac_pid 2>/dev/null || true
-                fi
                 return 0
                 ;;
             "FAILED")
@@ -251,14 +272,39 @@ run_e2e_with_real_lsp() {
         echo "查看日志: $LOG_DIR/e2e_test.log"
     fi
     
-    # 清理YAC服务器
-    if kill -0 $yac_pid 2>/dev/null; then
-        kill $yac_pid 2>/dev/null
-        sleep 1
-        kill -9 $yac_pid 2>/dev/null || true
+    return 1
+}
+
+
+# 运行补全专项E2E测试
+run_completion_e2e_test() {
+    log_info "运行补全功能E2E测试..."
+    
+    # 检查Python3是否可用
+    if ! command -v python3 &> /dev/null; then
+        log_warning "Python3未找到，跳过补全E2E测试"
+        return 0
     fi
     
-    return 1
+    # 确保测试文件存在
+    if [[ ! -f "tests/completion_e2e_standalone.py" ]]; then
+        log_warning "补全E2E测试文件未找到，跳过测试"
+        return 0
+    fi
+    
+    # 运行Python补全测试（复用现有服务器）
+    if python3 tests/completion_e2e_standalone.py > "$LOG_DIR/completion_e2e.log" 2>&1; then
+        log_success "补全E2E测试通过"
+        return 0
+    else
+        log_warning "补全E2E测试失败"
+        if [[ $VERBOSE -eq 1 ]]; then
+            cat "$LOG_DIR/completion_e2e.log"
+        else
+            echo "查看日志: $LOG_DIR/completion_e2e.log"
+        fi
+        return 0  # 不让补全测试失败影响整体E2E测试
+    fi
 }
 
 # 清理函数

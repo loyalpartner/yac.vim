@@ -47,7 +47,7 @@ impl CompletionHandler {
             if !file_manager.is_file_open(&uri) {
                 warn!("Completion requested for unopened file: {}", uri);
                 return self
-                    .send_empty_completion(&client_id, &request_id, position)
+                    .send_empty_completion(&client_id, &request_id.to_string(), position)
                     .await;
             }
 
@@ -65,7 +65,7 @@ impl CompletionHandler {
                 Err(e) => {
                     warn!("No LSP server available for {}: {}", language, e);
                     return self
-                        .send_empty_completion(&client_id, &request_id, position)
+                        .send_empty_completion(&client_id, &request_id.to_string(), position)
                         .await;
                 }
             }
@@ -99,7 +99,7 @@ impl CompletionHandler {
             Err(e) => {
                 error!("LSP completion request failed for {}: {}", uri, e);
                 self.pending_completions.remove(&request_id);
-                self.send_empty_completion(&client_id, &request_id, position)
+                self.send_empty_completion(&client_id, &request_id.to_string(), position)
                     .await?;
             }
         }
@@ -151,7 +151,7 @@ impl CompletionHandler {
         match result {
             crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => {
                 let completion_items = self.parse_lsp_completion_response(result)?;
-                self.send_completion_to_client(&client_id, &request_id, &uri, completion_items)
+                self.send_completion_to_client(&client_id, &request_id.to_string(), &uri, completion_items)
                     .await?;
             }
             crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
@@ -163,7 +163,7 @@ impl CompletionHandler {
                     line: 0,
                     character: 0,
                 }; // Default position
-                self.send_empty_completion(&client_id, &request_id, position)
+                self.send_empty_completion(&client_id, &request_id.to_string(), position)
                     .await?;
             }
         }

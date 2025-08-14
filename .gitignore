@@ -50,6 +50,7 @@ test_result.tmp
 
 # E2E test artifacts
 /tests/debug/*.py
+/tests/fixtures/target
 /tests/e2e/fixtures/*.rs
 
 # LSP and language server logs
