@@ -1415,7 +1415,17 @@ impl BridgeServer {
 
         let locations = if result.is_array() {
             // Location[]
-            result.as_array().unwrap().clone()
+            let array = result.as_array().unwrap();
+            
+            // 安全检查：限制数组大小防止资源耗尽
+            const MAX_LOCATIONS: usize = 100;
+            if array.len() > MAX_LOCATIONS {
+                warn!("Definition response contains {} locations, limiting to {}", 
+                      array.len(), MAX_LOCATIONS);
+                array.iter().take(MAX_LOCATIONS).cloned().collect()
+            } else {
+                array.clone()
+            }
         } else if result.is_object() {
             // Single Location
             vec![result]
@@ -1430,18 +1440,40 @@ impl BridgeServer {
                 location.get("uri").and_then(|u| u.as_str()),
                 location.get("range"),
             ) {
+                // 安全检查：验证URI格式和内容
+                if let Err(e) = Self::validate_definition_uri(uri) {
+                    warn!("Invalid URI in definition response: {} - {}", uri, e);
+                    continue; // 跳过无效的位置
+                }
+                
                 if let (Some(start), Some(end)) = (
                     range_json.get("start"),
                     range_json.get("end"),
                 ) {
+                    // 安全检查：防止整数溢出
+                    let start_line = start.get("line").and_then(|l| l.as_i64()).unwrap_or(0);
+                    let start_char = start.get("character").and_then(|c| c.as_i64()).unwrap_or(0);
+                    let end_line = end.get("line").and_then(|l| l.as_i64()).unwrap_or(0);
+                    let end_char = end.get("character").and_then(|c| c.as_i64()).unwrap_or(0);
+                    
+                    // 验证位置参数范围
+                    if let Err(e) = Self::validate_position_bounds(start_line, start_char) {
+                        warn!("Invalid start position in definition response: {}", e);
+                        continue;
+                    }
+                    if let Err(e) = Self::validate_position_bounds(end_line, end_char) {
+                        warn!("Invalid end position in definition response: {}", e);
+                        continue;
+                    }
+                    
                     let start_pos = Position {
-                        line: start.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                        character: start.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                        line: start_line as i32,
+                        character: start_char as i32,
                     };
 
                     let end_pos = Position {
-                        line: end.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                        character: end.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                        line: end_line as i32,
+                        character: end_char as i32,
                     };
 
                     let range = Range {
@@ -1455,15 +1487,26 @@ impl BridgeServer {
                         .or_else(|| location.get("selectionRange"))
                         .and_then(|sr| {
                             if let (Some(start), Some(end)) = (sr.get("start"), sr.get("end")) {
-                                let start_pos = Position {
-                                    line: start.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                                    character: start.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
-                                };
-                                let end_pos = Position {
-                                    line: end.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
-                                    character: end.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
-                                };
-                                Some(Range { start: start_pos, end: end_pos })
+                                let sel_start_line = start.get("line").and_then(|l| l.as_i64()).unwrap_or(0);
+                                let sel_start_char = start.get("character").and_then(|c| c.as_i64()).unwrap_or(0);
+                                let sel_end_line = end.get("line").and_then(|l| l.as_i64()).unwrap_or(0);
+                                let sel_end_char = end.get("character").and_then(|c| c.as_i64()).unwrap_or(0);
+                                
+                                // 验证选择范围位置参数
+                                if Self::validate_position_bounds(sel_start_line, sel_start_char).is_err() ||
+                                   Self::validate_position_bounds(sel_end_line, sel_end_char).is_err() {
+                                    None // 跳过无效的选择范围
+                                } else {
+                                    let start_pos = Position {
+                                        line: sel_start_line as i32,
+                                        character: sel_start_char as i32,
+                                    };
+                                    let end_pos = Position {
+                                        line: sel_end_line as i32,
+                                        character: sel_end_char as i32,
+                                    };
+                                    Some(Range { start: start_pos, end: end_pos })
+                                }
                             } else {
                                 None
                             }
@@ -1480,5 +1523,160 @@ impl BridgeServer {
 
         debug!("Parsed {} definition locations", parsed_locations.len());
         Ok(parsed_locations)
+    }
+
+    /// 验证定义响应中的URI安全性
+    fn validate_definition_uri(uri: &str) -> Result<()> {
+        // 检查URI长度
+        if uri.len() > 4096 {
+            return Err(Error::security(format!(
+                "Definition URI too long: {} characters", uri.len()
+            )));
+        }
+
+        // 检查允许的URI schemes
+        if !uri.starts_with("file://") {
+            return Err(Error::security(format!(
+                "Definition URI scheme not allowed: {}", uri
+            )));
+        }
+
+        // 检查路径遍历攻击
+        if uri.contains("..") {
+            return Err(Error::security(
+                "Path traversal detected in definition URI".to_string()
+            ));
+        }
+
+        // 检查危险字符
+        if uri.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r') {
+            return Err(Error::security(
+                "Invalid control characters in definition URI".to_string()
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// 验证位置参数边界防止整数溢出
+    fn validate_position_bounds(line: i64, character: i64) -> Result<()> {
+        // 检查是否为负数
+        if line < 0 || character < 0 {
+            return Err(Error::security(
+                "Position parameters cannot be negative".to_string()
+            ));
+        }
+
+        // 检查是否超出i32范围（防止转换溢出）
+        if line > i32::MAX as i64 || character > i32::MAX as i64 {
+            return Err(Error::security(
+                "Position parameters exceed i32 range".to_string()
+            ));
+        }
+
+        // 检查合理的文件大小限制
+        if line > 1_000_000 || character > 10_000 {
+            return Err(Error::security(
+                "Position parameters exceed reasonable file size limits".to_string()
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use super::BridgeServer;
+
+    #[test]
+    fn test_validate_definition_uri() {
+        // 有效的file URI
+        assert!(BridgeServer::validate_definition_uri("file:///path/to/file.rs").is_ok());
+
+        // 过长的URI
+        let long_uri = "file:///".to_string() + &"a".repeat(5000);
+        assert!(BridgeServer::validate_definition_uri(&long_uri).is_err());
+
+        // 不允许的scheme
+        assert!(BridgeServer::validate_definition_uri("http://example.com/file.rs").is_err());
+
+        // 路径遍历攻击
+        assert!(BridgeServer::validate_definition_uri("file:///path/../../../etc/passwd").is_err());
+
+        // 控制字符
+        assert!(BridgeServer::validate_definition_uri("file:///path/to/file\x00.rs").is_err());
+    }
+
+    #[test]
+    fn test_validate_position_bounds() {
+        // 有效的位置参数
+        assert!(BridgeServer::validate_position_bounds(10, 20).is_ok());
+        assert!(BridgeServer::validate_position_bounds(0, 0).is_ok());
+
+        // 负数
+        assert!(BridgeServer::validate_position_bounds(-1, 20).is_err());
+        assert!(BridgeServer::validate_position_bounds(10, -1).is_err());
+
+        // 超出i32范围
+        assert!(BridgeServer::validate_position_bounds(i32::MAX as i64 + 1, 20).is_err());
+        assert!(BridgeServer::validate_position_bounds(10, i32::MAX as i64 + 1).is_err());
+
+        // 超出合理文件大小限制
+        assert!(BridgeServer::validate_position_bounds(2_000_000, 20).is_err());
+        assert!(BridgeServer::validate_position_bounds(10, 20_000).is_err());
+    }
+
+    #[test]
+    fn test_parse_definition_locations_with_security_checks() {
+        // 测试数组大小限制
+        let large_array = json!((0..150).map(|i| json!({
+            "uri": format!("file:///test{}.rs", i),
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 10}
+            }
+        })).collect::<Vec<_>>());
+        
+        let result = BridgeServer::parse_definition_locations(large_array);
+        assert!(result.is_ok());
+        let locations = result.unwrap();
+        // 应该限制为100个
+        assert_eq!(locations.len(), 100);
+
+        // 测试无效URI被过滤
+        let invalid_uris = json!([
+            {
+                "uri": "http://evil.com/file.rs", // 无效scheme
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 10}}
+            },
+            {
+                "uri": "file:///valid/file.rs", // 有效URI
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 10}}
+            }
+        ]);
+
+        let result = BridgeServer::parse_definition_locations(invalid_uris);
+        assert!(result.is_ok());
+        let locations = result.unwrap();
+        assert_eq!(locations.len(), 1); // 只有有效的URI被保留
+        assert_eq!(locations[0].uri, "file:///valid/file.rs");
+
+        // 测试整数溢出保护
+        let overflow_positions = json!([
+            {
+                "uri": "file:///test.rs",
+                "range": {
+                    "start": {"line": 9223372036854775807i64, "character": 0}, // 超出i32范围
+                    "end": {"line": 0, "character": 0}
+                }
+            }
+        ]);
+
+        let result = BridgeServer::parse_definition_locations(overflow_positions);
+        assert!(result.is_ok());
+        let locations = result.unwrap();
+        assert_eq!(locations.len(), 0); // 无效位置被过滤掉
     }
 }
