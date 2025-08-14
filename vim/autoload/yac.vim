@@ -164,6 +164,16 @@ function! yac#trigger_completion() abort
     return ''
   endif
 
+  " Check if we have stored completion from a previous async response
+  if exists('s:stored_completion') && localtime() - s:stored_completion.timestamp <= 5
+    call YACLog('Using stored completion data')
+    let items = s:stored_completion.items
+    let startcol = s:stored_completion.startcol
+    unlet s:stored_completion
+    call complete(startcol, items)
+    return ''
+  endif
+
   let uri = s:get_file_uri()
   let pos = s:get_cursor_position()
   let request_id = s:get_next_request_id()
@@ -177,6 +187,37 @@ function! yac#trigger_completion() abort
   let s:pending_completions[request_id] = {'startcol': col('.'), 'uri': uri}
   
   return ''
+endfunction
+
+" Omnifunc implementation for reliable completion
+function! yac#omnifunc(findstart, base) abort
+  if a:findstart
+    " First call - find the start of the completion
+    if exists('s:completion_startcol')
+      let startcol = s:completion_startcol - 1
+      unlet s:completion_startcol
+      return startcol
+    endif
+    
+    " Fallback: find word start
+    let line = getline('.')
+    let col = col('.') - 1
+    while col > 0 && line[col - 1] =~ '\w'
+      let col -= 1
+    endwhile
+    return col
+  else
+    " Second call - return the completion items
+    if exists('s:completion_items')
+      let items = s:completion_items
+      unlet s:completion_items
+      return items
+    endif
+    
+    " If no stored items, trigger async completion and return empty for now
+    call yac#trigger_completion()
+    return []
+  endif
 endfunction
 
 function! yac#show_hover() abort
@@ -369,7 +410,10 @@ function! s:handle_command(message) abort
   let method = a:message.method
   let params = get(a:message, 'params', {})
   
+  call YACLog('🎬 Handling command: ' . method)
+  
   if method ==# 'show_completion'
+    call YACLog('📋 About to show completion with ' . len(get(params, 'items', [])) . ' items')
     call s:show_completion(params)
   elseif method ==# 'show_hover'
     call s:show_hover(params)
@@ -405,7 +449,7 @@ function! s:show_completion(params) abort
   let completion_info = s:pending_completions[request_id]
   unlet s:pending_completions[request_id]
   
-  " Convert to Vim completion format
+  " Convert to Vim completion format first
   let vim_items = []
   for item in items
     let vim_item = {
@@ -420,8 +464,34 @@ function! s:show_completion(params) abort
     call add(vim_items, vim_item)
   endfor
   
-  call complete(completion_info.startcol, vim_items)
+  call YACLog('Received completion with ' . len(vim_items) . ' items for mode: ' . mode())
+  
+  " Store completion data for omnifunc approach (primary method)
+  let s:completion_items = vim_items
+  let s:completion_startcol = completion_info.startcol
+  
+  " Try completion based on current mode
+  if mode() == 'i'
+    " Primary: Direct completion in insert mode
+    try
+      call complete(completion_info.startcol, vim_items)
+      call YACLog('Direct completion successful with ' . len(vim_items) . ' items')
+      return
+    catch
+      call YACLog('Direct completion failed: ' . v:exception . ', using omnifunc')
+    endtry
+  endif
+  
+  " Fallback: Omnifunc approach for all other cases
+  call YACLog('Using omnifunc approach for completion')
+  " Store with timestamp for omnifunc access
+  let s:stored_completion = {
+    \ 'items': vim_items,
+    \ 'startcol': completion_info.startcol,
+    \ 'timestamp': localtime()
+    \ }
 endfunction
+
 
 function! s:show_hover(params) abort
   let content = a:params.content.value
@@ -485,4 +555,20 @@ endfunction
 " 检查YAC连接状态 (用于测试)
 function! yac#is_connected() abort
   return s:yac_connected
+endfunction
+
+" 检查是否有补全数据 (用于测试)
+function! yac#has_completion_data() abort
+  return exists('s:completion_items') || exists('s:stored_completion')
+endfunction
+
+" 获取补全数据计数 (用于测试)
+function! yac#get_completion_count() abort
+  if exists('s:completion_items')
+    return len(s:completion_items)
+  elseif exists('s:stored_completion')
+    return len(s:stored_completion.items)
+  else
+    return 0
+  endif
 endfunction

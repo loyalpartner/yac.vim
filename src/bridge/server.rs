@@ -285,7 +285,15 @@ impl BridgeServer {
                     server_id, response, event_id
                 );
                 // LSP响应的转发处理 - 需要根据请求ID找到对应的客户端
-                self.handle_lsp_response(server_id, response, event_id).await?;
+                debug!("Processing LSP response for server: {}", server_id);
+                Self::handle_lsp_response_static(
+                    server_id, 
+                    response, 
+                    event_id, 
+                    &self.client_manager, 
+                    &self.correlation_manager
+                ).await?;
+                debug!("LSP response processing completed");
             }
 
             Event::LspNotification {

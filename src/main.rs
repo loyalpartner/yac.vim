@@ -31,5 +31,6 @@ fn setup_logging() {
         .with_env_filter(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "yac_vim=debug,info".to_string()),
         )
+        .with_ansi(false)
         .init();
 }
