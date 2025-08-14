@@ -7,6 +7,17 @@ port = 9527
 max_connections = 10
 timeout_ms = 30000
 
+# Resource limits and security settings
+[server.resource_limits]
+client_message_queue_size = 1000
+client_command_queue_size = 100
+lsp_request_queue_size = 1000
+lsp_response_queue_size = 1000
+event_queue_size = 1000
+max_message_size = 1048576  # 1MB
+max_concurrent_clients = 50
+max_concurrent_lsp_servers = 10
+
 [lsp_servers.rust-analyzer]
 command = ["rust-analyzer"]
 args = []

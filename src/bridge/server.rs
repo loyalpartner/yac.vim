@@ -4,6 +4,7 @@ use crate::bridge::ClientManager;
 use crate::file::FileManager;
 use crate::lsp::LspServerManager;
 use crate::utils::{Config, Error, Result};
+use crate::utils::security::SecurityManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -19,6 +20,7 @@ pub struct BridgeServer {
     event_bus: Arc<EventBus>,
     event_sender: EventSender,
     correlation_manager: Arc<RequestCorrelationManager>,
+    security_manager: Arc<SecurityManager>,
 }
 
 impl BridgeServer {
@@ -47,6 +49,11 @@ impl BridgeServer {
         // 启动关联管理器的清理任务
         correlation_manager.start_cleanup_task().await;
 
+        // 创建安全管理器
+        let rate_config = crate::utils::security::RateLimitConfig::default();
+        let validator = crate::utils::security::InputValidator::default();
+        let security_manager = Arc::new(SecurityManager::new(rate_config, validator));
+
         let server = Self {
             config,
             listener,
@@ -56,6 +63,7 @@ impl BridgeServer {
             event_bus: event_bus.clone(),
             event_sender: event_sender.clone(),
             correlation_manager,
+            security_manager,
         };
 
         // 启动事件分发器
@@ -97,6 +105,7 @@ impl BridgeServer {
         file_manager: &Arc<RwLock<FileManager>>,
         event_sender: &EventSender,
         correlation_manager: &Arc<RequestCorrelationManager>,
+        security_manager: &Arc<SecurityManager>,
     ) -> Result<()> {
         match event {
             Event::ClientConnected {
@@ -118,7 +127,7 @@ impl BridgeServer {
                     "Processing vim event from {}: {:?} ({})",
                     client_id, vim_event, event_id
                 );
-                Self::handle_vim_event_static(vim_event, lsp_manager, client_manager, file_manager, event_sender, correlation_manager).await?;
+                Self::handle_vim_event_static(vim_event, lsp_manager, client_manager, file_manager, event_sender, correlation_manager, security_manager).await?;
             }
 
             Event::VimRequest {
@@ -139,7 +148,8 @@ impl BridgeServer {
                     client_manager,
                     file_manager,
                     event_sender, 
-                    correlation_manager
+                    correlation_manager,
+                    security_manager
                 ).await?;
             }
 
@@ -235,7 +245,8 @@ impl BridgeServer {
                     &client_manager_clone,
                     &file_manager_clone,
                     &event_sender_clone,
-                    &correlation_manager_clone
+                    &correlation_manager_clone,
+                    &self.security_manager
                 ).await?;
             }
 
@@ -258,7 +269,8 @@ impl BridgeServer {
                     &client_manager_clone,
                     &file_manager_clone,
                     &event_sender_clone,
-                    &correlation_manager_clone
+                    &correlation_manager_clone,
+                    &self.security_manager
                 ).await?;
             }
 
@@ -302,6 +314,7 @@ impl BridgeServer {
         _file_manager: &Arc<RwLock<FileManager>>,
         _event_sender: &EventSender,
         _correlation_manager: &Arc<RequestCorrelationManager>,
+        security_manager: &Arc<SecurityManager>,
     ) -> Result<()> {
         use crate::lsp::protocol::VimEvent;
 
@@ -417,10 +430,11 @@ impl BridgeServer {
         request_id: crate::lsp::jsonrpc::RequestId,
         vim_request: crate::lsp::protocol::VimRequest,
         lsp_manager: &Arc<RwLock<LspServerManager>>,
-        _client_manager: &Arc<RwLock<ClientManager>>,
+        client_manager: &Arc<RwLock<ClientManager>>,
         _file_manager: &Arc<RwLock<FileManager>>,
         _event_sender: &EventSender,
         correlation_manager: &Arc<RequestCorrelationManager>,
+        security_manager: &Arc<SecurityManager>,
     ) -> Result<()> {
         use crate::lsp::protocol::VimRequest;
 
@@ -430,9 +444,25 @@ impl BridgeServer {
                 position,
                 context,
             } => {
+                // 安全检查：请求速率限制
+                if let Err(e) = security_manager.check_request_rate(&client_id, "completion").await {
+                    warn!("Completion request from {} rejected due to rate limiting: {}", client_id, e);
+                    return Ok(());
+                }
+
+                // 安全检查：输入验证
+                if let Err(e) = security_manager.validate_uri(&uri) {
+                    warn!("Invalid URI in completion request from {}: {}", client_id, e);
+                    return Ok(());
+                }
+                if let Err(e) = security_manager.validate_position(&position) {
+                    warn!("Invalid position in completion request from {}: {}", client_id, e);
+                    return Ok(());
+                }
+
                 info!(
-                    "Completion request for {} at {}:{}",
-                    uri, position.line, position.character
+                    "Completion request for {} at {}:{} from client {}",
+                    uri, position.line, position.character, client_id
                 );
 
                 // 找到适当的LSP服务器并转发请求
@@ -442,21 +472,28 @@ impl BridgeServer {
                 };
                 
                 if let Ok(server_id) = server_id {
-                    let completion_params = serde_json::json!({
+                    let mut completion_params = serde_json::json!({
                         "textDocument": {
                             "uri": uri
                         },
                         "position": {
                             "line": position.line,
                             "character": position.character
-                        },
-                        "context": context
+                        }
                     });
+                    
+                    // 添加context，转换为LSP协议的camelCase格式
+                    if let Some(ctx) = context {
+                        completion_params["context"] = serde_json::json!({
+                            "triggerKind": ctx.trigger_kind,
+                            "triggerCharacter": ctx.trigger_character
+                        });
+                    }
 
                     // 使用新的关联机制发送请求
                     if let Err(e) = Self::send_lsp_request_with_correlation_static(
                         &client_id,
-                        Some(request_id), // Completion 请求可能需要Vim请求ID用于响应
+                        Some(request_id.clone()), // Completion 请求需要Vim请求ID用于响应
                         &server_id,
                         "textDocument/completion".to_string(),
                         Some(completion_params),
@@ -746,6 +783,7 @@ impl BridgeServer {
         let file_manager = self.file_manager.clone();
         let event_sender = self.event_sender.clone();
         let correlation_manager = self.correlation_manager.clone();
+        let security_manager = self.security_manager.clone();
         
         tokio::spawn(async move {
             let mut event_handler = event_bus.create_handler();
@@ -761,6 +799,7 @@ impl BridgeServer {
                             &file_manager,
                             &event_sender,
                             &correlation_manager,
+                            &security_manager,
                         ).await {
                             error!("Failed to handle event: {}", e);
                         }
@@ -809,8 +848,24 @@ impl BridgeServer {
     async fn handle_new_client(&self, stream: tokio::net::TcpStream) {
         let client_manager = self.client_manager.clone();
         let event_sender = self.event_sender.clone();
+        let security_manager = self.security_manager.clone();
 
         tokio::spawn(async move {
+            // 获取客户端地址用于安全检查
+            let peer_addr = match stream.peer_addr() {
+                Ok(addr) => addr.ip().to_string(),
+                Err(e) => {
+                    error!("Failed to get client address: {}", e);
+                    return;
+                }
+            };
+
+            // 安全检查：速率限制
+            if let Err(e) = security_manager.check_connection_rate(&peer_addr).await {
+                warn!("Connection from {} rejected due to rate limiting: {}", peer_addr, e);
+                return;
+            }
+
             let mut client_manager = client_manager.write().await;
             match client_manager.add_client(stream).await {
                 Ok(client_id) => {
@@ -818,10 +873,10 @@ impl BridgeServer {
                     if let Err(e) = event_sender.emit(event).await {
                         error!("Failed to emit client connected event: {}", e);
                     }
-                    info!("Client {} connected successfully", client_id);
+                    info!("Client {} connected successfully from {}", client_id, peer_addr);
                 }
                 Err(e) => {
-                    error!("Failed to add client: {}", e);
+                    error!("Failed to add client from {}: {}", peer_addr, e);
                 }
             }
         });
@@ -1011,28 +1066,44 @@ impl BridgeServer {
 
                 // 获取客户端管理器并转发响应
                 let client_manager = client_manager.read().await;
-                if let Some(_client) = client_manager.get_client(&correlation.client_id) {
-                    // 构造Vim响应消息
-                    let _vim_response = if let Some(vim_req_id) = correlation.vim_request_id {
-                        // 如果有Vim请求ID，构造完整的响应
-                        serde_json::json!({
-                            "id": vim_req_id,
-                            "result": response.get("result").unwrap_or(&serde_json::Value::Null),
-                            "error": response.get("error")
-                        })
-                    } else {
-                        // 否则直接转发结果
-                        response.get("result").unwrap_or(&serde_json::Value::Null).clone()
-                    };
-
-                    // 发送响应给客户端（这里需要实现客户端的响应发送机制）
-                    info!(
-                        "Forwarding LSP response to client {} for method {}",
-                        correlation.client_id, correlation.method
-                    );
-
-                    // 注意：这里需要根据实际的客户端通信机制来发送响应
-                    // 可能需要通过TCP连接发送或者通过其他机制
+                if let Some(client) = client_manager.get_client(&correlation.client_id) {
+                    // 根据请求方法处理不同类型的响应
+                    match correlation.method.as_str() {
+                        "textDocument/completion" => {
+                            let vim_req_id = correlation.vim_request_id.clone().unwrap_or_default();
+                            if let Some(result) = response.get("result") {
+                                // 解析LSP completion响应并转换为Vim命令
+                                match Self::parse_completion_response(&correlation.client_id, &vim_req_id, result.clone()) {
+                                    Ok(vim_command) => {
+                                        if let Err(e) = client.send_command(vim_command).await {
+                                            error!("Failed to send completion to client {}: {}", correlation.client_id, e);
+                                        } else {
+                                            info!("Successfully sent completion to client {}", correlation.client_id);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to parse completion response: {}", e);
+                                        // 发送空的completion作为fallback
+                                        let empty_completion = crate::lsp::protocol::VimCommand::ShowCompletion {
+                                            request_id: vim_req_id,
+                                            position: crate::lsp::protocol::Position { line: 0, character: 0 },
+                                            items: vec![],
+                                            incomplete: false,
+                                        };
+                                        let _ = client.send_command(empty_completion).await;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // 对于其他类型的请求，使用通用响应处理
+                            info!(
+                                "Forwarding LSP response to client {} for method {}",
+                                correlation.client_id, correlation.method
+                            );
+                            // TODO: 实现其他类型响应的处理
+                        }
+                    }
                 } else {
                     warn!("Client {} not found for LSP response", correlation.client_id);
                 }
@@ -1080,5 +1151,85 @@ impl BridgeServer {
         }
 
         Ok(())
+    }
+
+    /// 解析LSP completion响应并转换为VimCommand
+    pub fn parse_completion_response(
+        _client_id: &str,
+        request_id: &str,
+        result: serde_json::Value,
+    ) -> Result<crate::lsp::protocol::VimCommand> {
+        // 解析completion items
+        let items = if result.is_array() {
+            // CompletionItem[]
+            result.as_array().unwrap().clone()
+        } else if result.is_object() && result.get("items").is_some() {
+            // CompletionList
+            result["items"].as_array().unwrap().clone()
+        } else {
+            return Ok(crate::lsp::protocol::VimCommand::ShowCompletion {
+                request_id: request_id.to_string(),
+                position: crate::lsp::protocol::Position { line: 0, character: 0 },
+                items: vec![],
+                incomplete: false,
+            });
+        };
+
+        let mut completion_items = Vec::new();
+
+        for (index, item) in items.iter().enumerate() {
+            let label = item["label"].as_str().unwrap_or("").to_string();
+            if label.is_empty() {
+                continue;
+            }
+
+            let kind = item["kind"].as_i64().unwrap_or(1) as i32;
+            let detail = item["detail"].as_str().map(|s| s.to_string());
+            let documentation = item["documentation"]
+                .as_str()
+                .or_else(|| item["documentation"]["value"].as_str())
+                .map(|s| s.to_string());
+
+            let insert_text = item["insertText"]
+                .as_str()
+                .or_else(|| item["textEdit"]["newText"].as_str())
+                .unwrap_or(&label)
+                .to_string();
+
+            let sort_text = item["sortText"]
+                .as_str()
+                .unwrap_or(&format!("{:04}", index))
+                .to_string();
+
+            let completion_item = crate::lsp::protocol::CompletionItem {
+                id: format!("completion_item_{}", index),
+                label,
+                kind,
+                detail,
+                documentation,
+                insert_text: Some(insert_text),
+                sort_text: Some(sort_text),
+            };
+
+            completion_items.push(completion_item);
+        }
+
+        // 按sort_text排序
+        completion_items.sort_by(|a, b| {
+            let a_sort = a.sort_text.as_ref().unwrap_or(&a.label);
+            let b_sort = b.sort_text.as_ref().unwrap_or(&b.label);
+            a_sort.cmp(b_sort)
+        });
+
+        let incomplete = result.get("isIncomplete").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        debug!("Parsed {} completion items", completion_items.len());
+
+        Ok(crate::lsp::protocol::VimCommand::ShowCompletion {
+            request_id: request_id.to_string(),
+            position: crate::lsp::protocol::Position { line: 0, character: 0 }, // TODO: Get actual position
+            items: completion_items,
+            incomplete,
+        })
     }
 }

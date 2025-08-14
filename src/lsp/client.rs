@@ -1,4 +1,4 @@
-use crate::lsp::jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, RequestId};
+use crate::lsp::jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, JsonRpcResponseResult, JsonRpcNotification, RequestId};
 use crate::utils::{
     config::{LspServerConfig, ResourceLimits},
     Error, Result,
@@ -6,9 +6,10 @@ use crate::utils::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -26,8 +27,9 @@ pub struct LspClient {
     pub status: LspServerStatus,
     process: Option<Child>,
     request_tx: mpsc::Sender<JsonRpcRequest>,
+    notification_tx: mpsc::Sender<JsonRpcNotification>,
     response_rx: mpsc::Receiver<JsonRpcResponse>,
-    pending_requests: HashMap<RequestId, mpsc::Sender<JsonRpcResponse>>,
+    pending_requests: Arc<RwLock<HashMap<RequestId, mpsc::Sender<JsonRpcResponse>>>>,
 }
 
 impl LspClient {
@@ -70,31 +72,56 @@ impl LspClient {
 
         let (request_tx, mut request_rx) =
             mpsc::channel::<JsonRpcRequest>(limits.lsp_request_queue_size);
+        let (notification_tx, mut notification_rx) =
+            mpsc::channel::<JsonRpcNotification>(limits.lsp_request_queue_size);
         let (response_tx, response_rx) =
             mpsc::channel::<JsonRpcResponse>(limits.lsp_response_queue_size);
+        
+        let pending_requests = Arc::new(RwLock::new(HashMap::<RequestId, mpsc::Sender<JsonRpcResponse>>::new()));
 
         // Spawn stdin writer task
         let server_name_clone = server_name.clone();
         tokio::spawn(async move {
             let mut stdin = stdin;
-            while let Some(request) = request_rx.recv().await {
-                if let Ok(json) = serde_json::to_string(&request) {
-                    let message = format!("Content-Length: {}\r\n\r\n{}", json.len(), json);
-                    if let Err(e) = stdin.write_all(message.as_bytes()).await {
-                        error!("Failed to write to LSP server {}: {}", server_name_clone, e);
-                        break;
+            loop {
+                tokio::select! {
+                    request_opt = request_rx.recv() => {
+                        if let Some(request) = request_opt {
+                            if let Ok(json) = serde_json::to_string(&request) {
+                                let message = format!("Content-Length: {}\r\n\r\n{}", json.len(), json);
+                                if let Err(e) = stdin.write_all(message.as_bytes()).await {
+                                    error!("Failed to write request to LSP server {}: {}", server_name_clone, e);
+                                    break;
+                                }
+                            } else {
+                                error!("Failed to serialize request for server {}", server_name_clone);
+                            }
+                        } else {
+                            break; // Channel closed
+                        }
                     }
-                } else {
-                    error!(
-                        "Failed to serialize request for server {}",
-                        server_name_clone
-                    );
+                    notification_opt = notification_rx.recv() => {
+                        if let Some(notification) = notification_opt {
+                            if let Ok(json) = serde_json::to_string(&notification) {
+                                let message = format!("Content-Length: {}\r\n\r\n{}", json.len(), json);
+                                if let Err(e) = stdin.write_all(message.as_bytes()).await {
+                                    error!("Failed to write notification to LSP server {}: {}", server_name_clone, e);
+                                    break;
+                                }
+                            } else {
+                                error!("Failed to serialize notification for server {}", server_name_clone);
+                            }
+                        } else {
+                            break; // Channel closed
+                        }
+                    }
                 }
             }
         });
 
         // Spawn stdout reader task
         let server_name_clone = server_name.clone();
+        let pending_requests_clone = pending_requests.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut headers = HashMap::new();
@@ -157,18 +184,17 @@ impl LspClient {
                 // Parse JSON-RPC message
                 match serde_json::from_str::<JsonRpcMessage>(&content_str) {
                     Ok(JsonRpcMessage::Response(response)) => {
-                        match response_tx.try_send(response) {
-                            Ok(_) => {}
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                warn!(
-                                    "Response queue full for server {}, dropping response",
-                                    server_name_clone
-                                );
+                        // Route response to the waiting request
+                        let response_id = response.id.clone();
+                        let mut pending = pending_requests_clone.write().await;
+                        if let Some(sender) = pending.remove(&response_id) {
+                            if let Err(_) = sender.send(response).await {
+                                warn!("Failed to send response for request {}", response_id);
+                            } else {
+                                debug!("Routed response for request {} to waiting caller", response_id);
                             }
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                warn!("Response channel closed for server {}", server_name_clone);
-                                break;
-                            }
+                        } else {
+                            warn!("Received response for unknown request {}", response_id);
                         }
                     }
                     Ok(JsonRpcMessage::Notification(notif)) => {
@@ -198,8 +224,9 @@ impl LspClient {
             status: LspServerStatus::Starting,
             process: Some(process),
             request_tx,
+            notification_tx,
             response_rx,
-            pending_requests: HashMap::new(),
+            pending_requests,
         };
 
         // Send initialize request
@@ -213,7 +240,7 @@ impl LspClient {
 
         let initialize_params = serde_json::json!({
             "processId": std::process::id(),
-            "rootUri": null,
+            "rootUri": format!("file://{}", std::env::current_dir().unwrap().display()),
             "capabilities": {
                 "textDocument": {
                     "completion": {
@@ -238,16 +265,50 @@ impl LspClient {
             Some(initialize_params),
         );
 
+        // Send initialize request and wait for response
+        let request_id = request.id.clone();
+        let (tx, mut rx) = mpsc::channel(1);
+        {
+            let mut pending = self.pending_requests.write().await;
+            pending.insert(request_id, tx);
+        }
         self.send_request_internal(request).await?;
 
-        // Send initialized notification
-        let initialized_notification = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "initialized",
-            "params": {}
-        });
+        // Wait for initialize response
+        tokio::select! {
+            response = rx.recv() => {
+                match response {
+                    Some(resp) => {
+                        match resp.result {
+                            JsonRpcResponseResult::Error { error } => {
+                                return Err(Error::lsp_server(format!("LSP initialization failed: {:?}", error)));
+                            }
+                            JsonRpcResponseResult::Success { .. } => {
+                                info!("LSP server {} initialization response received", self.server_name);
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(Error::lsp_server("Initialize response channel closed".to_string()));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                return Err(Error::lsp_server("LSP initialization timeout".to_string()));
+            }
+        }
 
-        // For now, just mark as running
+        // Send initialized notification (only after successful initialize response)
+        // Send initialized notification (required by LSP protocol)
+        let initialized_notification = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "initialized".to_string(),
+            params: Some(serde_json::json!({})),
+        };
+        
+        self.notification_tx.send(initialized_notification).await
+            .map_err(|_| Error::lsp_server("Failed to send initialized notification".to_string()))?;
+
         self.status = LspServerStatus::Running;
         info!("LSP server {} initialized successfully", self.server_name);
 
@@ -263,7 +324,10 @@ impl LspClient {
         let request = JsonRpcRequest::new(request_id.clone(), method, params);
 
         let (tx, mut rx) = mpsc::channel(1); // 一个请求只需要一个响应
-        self.pending_requests.insert(request_id, tx);
+        {
+            let mut pending = self.pending_requests.write().await;
+            pending.insert(request_id, tx);
+        }
 
         self.send_request_internal(request).await?;
 
@@ -287,7 +351,10 @@ impl LspClient {
     ) -> Result<JsonRpcResponse> {
         let request = JsonRpcRequest::new(request_id.clone(), method, params);
         let (tx, mut rx) = mpsc::channel(1); // 一个请求只需要一个响应
-        self.pending_requests.insert(request_id, tx);
+        {
+            let mut pending = self.pending_requests.write().await;
+            pending.insert(request_id, tx);
+        }
         self.send_request_internal(request).await?;
 
         // Wait for response (with timeout)
@@ -309,14 +376,15 @@ impl LspClient {
     }
 
     pub async fn send_notification(&self, method: String, params: Option<Value>) -> Result<()> {
-        let notification = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        });
+        let notification = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: method.clone(),
+            params,
+        };
 
         debug!("Sending notification to {}: {}", self.server_name, method);
-        // For now, just log. In a real implementation, we'd send this through a notification channel
+        self.notification_tx.send(notification).await
+            .map_err(|_| Error::lsp_server(format!("Failed to send notification {}", method)))?;
         Ok(())
     }
 

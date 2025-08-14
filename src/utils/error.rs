@@ -65,4 +65,12 @@ impl Error {
     pub fn file_not_found(path: impl Into<String>) -> Self {
         Self::FileNotFound { path: path.into() }
     }
+
+    pub fn timeout() -> Self {
+        Self::Timeout
+    }
+
+    pub fn security(msg: impl Into<String>) -> Self {
+        Self::Internal(anyhow::anyhow!(msg.into()))
+    }
 }

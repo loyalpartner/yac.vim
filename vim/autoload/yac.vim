@@ -342,7 +342,7 @@ endfunction
 
 function! s:get_next_request_id() abort
   let s:yac_request_id += 1
-  return string(s:yac_request_id)
+  return s:yac_request_id
 endfunction
 
 function! s:reset_state() abort

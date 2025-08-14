@@ -5,7 +5,7 @@ set nocompatible
 filetype off
 
 " 设置运行时路径，加载YAC.vim插件
-let s:project_root = expand('<sfile>:p:h')
+let s:project_root = expand('<sfile>:p:h:h:h')  " 回到项目根目录
 execute 'set runtimepath+=' . s:project_root . '/vim'
 
 " YAC.vim 配置
@@ -19,17 +19,19 @@ filetype plugin indent on
 syntax on
 
 " 测试用的快捷键绑定
-nnoremap <F1> :call yac#connect()<CR>
-nnoremap <F2> :call yac#disconnect()<CR>
-nnoremap <F3> :echo "YAC Status: " . (exists('g:yac_channel') ? ch_status(g:yac_channel) : 'Not connected')<CR>
+nnoremap <F1> :call yac#start()<CR>
+nnoremap <F2> :call yac#stop()<CR>
+nnoremap <F3> :call yac#status()<CR>
 
-" 测试完成提示
-echo "📋 YAC.vim 测试环境已加载"
-echo "使用方法:"
-echo "  F1 - 连接到YAC服务器"
-echo "  F2 - 断开连接"
-echo "  F3 - 查看连接状态"
-echo "  :YACTest - 运行连接测试"
+" 测试完成提示 (在非交互模式下不显示)
+if !exists('&ttimeout') || &ttimeout
+    echo "📋 YAC.vim 测试环境已加载"
+    echo "使用方法:"
+    echo "  F1 - 启动YAC"
+    echo "  F2 - 停止YAC"
+    echo "  F3 - 查看YAC状态"
+    echo "  :YACTest - 运行连接测试"
+endif
 
 " 定义测试命令
 command! YACTest call s:RunConnectionTest()
@@ -38,38 +40,40 @@ function! s:RunConnectionTest()
     echo "🧪 开始YAC连接测试..."
     
     try
-        " 尝试连接
-        call yac#connect()
-        echo "✅ 连接尝试完成"
+        " 尝试启动YAC服务器
+        call yac#start()
+        echo "✅ YAC启动尝试完成"
         
         " 等待连接建立
-        sleep 500m
+        sleep 1
         
         " 检查连接状态
-        if exists('g:yac_channel') && ch_status(g:yac_channel) == 'open'
-            echo "🎉 连接成功!"
+        if yac#is_connected()
+            echo "🎉 YAC连接成功!"
             
-            " 发送测试消息
+            " 测试基本功能
             try
-                call ch_sendexpr(g:yac_channel, {
-                    \ 'jsonrpc': '2.0',
-                    \ 'method': 'test_connection', 
-                    \ 'params': {'message': 'Hello from Vim test'}
-                    \ })
-                echo "📤 测试消息已发送"
+                " 测试触发补全
+                call yac#trigger_completion()
+                echo "📤 测试补全功能"
+                
+                " 稍等一下再停止
+                sleep 1
+                call yac#stop()
+                echo "🔌 YAC已停止"
+                echo "✅ 测试完成 - 所有功能正常"
+                
+                " 写入成功标志
+                call writefile(['SUCCESS'], 'test_result.tmp')
             catch
-                echo "⚠️  消息发送失败: " . v:exception
+                echo "⚠️  功能测试失败: " . v:exception
+                call writefile(['PARTIAL_SUCCESS'], 'test_result.tmp')
             endtry
-            
-            " 稍等一下再断开
-            sleep 1
-            call yac#disconnect()
-            echo "🔌 连接已断开"
-            echo "✅ 测试完成 - 所有功能正常"
         else
-            echo "❌ 连接失败"
+            echo "❌ YAC连接失败"
             echo "💡 请确保YAC服务器已启动: ./target/release/yac-vim"
             echo "💡 检查端口是否被占用: netstat -an | grep 9527"
+            call writefile(['FAILED'], 'test_result.tmp')
         endif
         
     catch
@@ -78,5 +82,6 @@ function! s:RunConnectionTest()
         echo "   1. YAC服务器是否启动"
         echo "   2. 端口9527是否可用"
         echo "   3. 防火墙设置"
+        call writefile(['ERROR'], 'test_result.tmp')
     endtry
 endfunction

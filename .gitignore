@@ -45,6 +45,12 @@ test_*.log
 debug_connection.vim
 test_simple_connection.vim
 run_vim_tests.vim
+test_result.tmp
+*_result.tmp
+
+# E2E test artifacts
+/tests/debug/*.py
+/tests/e2e/fixtures/*.rs
 
 # LSP and language server logs
 lsp*.log
@@ -83,3 +89,35 @@ __pycache__/
 *.pyd
 .Python
 .pytest_cache/
+
+# Development and debugging
+*.orig
+*.rej
+.gdb_history
+core
+core.*
+vgcore.*
+
+# Security and keys
+*.key
+*.pem
+*.crt
+*.p12
+secrets.toml
+.secrets
+
+# Editor specific
+.editorconfig
+*.sublime-*
+*.atom/
+
+# Benchmarks and profiling
+/bench/
+/benchmarks/
+criterion/
+flamegraph.svg
+perf.data*
+
+# Backup files
+*.backup
+*.bck

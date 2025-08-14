@@ -102,8 +102,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_creation() {
-        // 测试服务器创建
-        let config = Config::default();
+        // 测试服务器创建 - 使用随机端口避免冲突
+        let mut config = Config::default();
+        config.server.port = 0; // 使用0让系统自动分配可用端口
         let result = BridgeServer::new(config).await;
         assert!(result.is_ok(), "服务器创建应该成功");
 

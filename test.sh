@@ -32,15 +32,13 @@ usage() {
     echo "  all          所有测试"
     echo ""
     echo "选项:"
-    echo "  --mock       使用Mock LSP (E2E测试)"
-    echo "  --real       使用真实LSP服务器"
     echo "  --verbose    详细输出"
     echo "  --help       显示帮助"
     echo ""
     echo "示例:"
     echo "  $0               # 运行单元测试"
     echo "  $0 integration   # 运行集成测试"
-    echo "  $0 e2e --mock    # 运行E2E测试(Mock LSP)"
+    echo "  $0 e2e           # 运行E2E测试"
     echo "  $0 all --verbose # 运行所有测试(详细输出)"
 }
 
@@ -52,21 +50,12 @@ log_error() { echo -e "${RED}❌ $1${NC}"; }
 
 # 解析命令行参数
 LEVEL="unit"
-USE_MOCK=1
 VERBOSE=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         unit|integration|e2e|all)
             LEVEL="$1"
-            shift
-            ;;
-        --mock)
-            USE_MOCK=1
-            shift
-            ;;
-        --real)
-            USE_MOCK=0
             shift
             ;;
         --verbose)
@@ -165,21 +154,7 @@ run_integration_tests() {
 # 运行E2E测试
 run_e2e_tests() {
     log_info "运行E2E测试..."
-    
-    if [[ $USE_MOCK -eq 1 ]]; then
-        log_info "使用Mock LSP服务器"
-        run_e2e_with_mock
-    else
-        log_info "使用真实LSP服务器"
-        run_e2e_with_real_lsp
-    fi
-}
-
-# 使用Mock LSP运行E2E测试
-run_e2e_with_mock() {
-    # TODO: 实现Mock LSP E2E测试
-    log_warning "Mock LSP E2E测试尚未实现"
-    return 0
+    run_e2e_with_real_lsp
 }
 
 # 使用真实LSP运行E2E测试
@@ -190,26 +165,106 @@ run_e2e_with_real_lsp() {
         return 0
     fi
     
-    # 使用test.vimrc运行测试
-    log_info "启动Vim E2E测试..."
-    if vim -u tests/config/test.vimrc -c "YACTest" -c "qa!" > "$LOG_DIR/e2e_test.log" 2>&1; then
-        log_success "E2E测试通过"
-    else
-        log_error "E2E测试失败"
+    # 确保项目已编译
+    log_info "编译项目..."
+    if ! cargo build --release > "$LOG_DIR/e2e_build.log" 2>&1; then
+        log_error "项目编译失败"
         if [[ $VERBOSE -eq 1 ]]; then
-            cat "$LOG_DIR/e2e_test.log"
+            cat "$LOG_DIR/e2e_build.log"
         else
-            echo "查看日志: $LOG_DIR/e2e_test.log"
+            echo "查看日志: $LOG_DIR/e2e_build.log"
         fi
         return 1
     fi
+    
+    # 启动YAC服务器
+    log_info "启动YAC服务器..."
+    ./target/release/yac-vim --config config/examples/rust.toml > "$LOG_DIR/yac_server.log" 2>&1 &
+    local yac_pid=$!
+    
+    # 等待服务器启动
+    sleep 3
+    
+    # 检查服务器是否启动成功
+    if ! kill -0 $yac_pid 2>/dev/null; then
+        log_error "YAC服务器启动失败"
+        if [[ $VERBOSE -eq 1 ]]; then
+            cat "$LOG_DIR/yac_server.log"
+        else
+            echo "查看日志: $LOG_DIR/yac_server.log"
+        fi
+        return 1
+    fi
+    
+    # 使用test.vimrc运行测试
+    log_info "启动Vim E2E测试..."
+    
+    # 清理之前的测试结果
+    rm -f test_result.tmp
+    
+    # 运行Vim测试
+    timeout 30 vim -u tests/config/test.vimrc -c "YACTest" -c "qa!" < /dev/null > "$LOG_DIR/e2e_test.log" 2>&1
+    
+    # 检查测试结果
+    if [[ -f test_result.tmp ]]; then
+        local result=$(cat test_result.tmp)
+        rm -f test_result.tmp
+        
+        case $result in
+            "SUCCESS")
+                log_success "E2E测试通过 - 完整功能测试成功"
+                # 清理YAC服务器
+                if kill -0 $yac_pid 2>/dev/null; then
+                    kill $yac_pid 2>/dev/null
+                    sleep 1
+                    kill -9 $yac_pid 2>/dev/null || true
+                fi
+                return 0
+                ;;
+            "PARTIAL_SUCCESS")
+                log_warning "E2E测试部分通过 - 连接成功但消息发送失败"
+                # 清理YAC服务器
+                if kill -0 $yac_pid 2>/dev/null; then
+                    kill $yac_pid 2>/dev/null
+                    sleep 1
+                    kill -9 $yac_pid 2>/dev/null || true
+                fi
+                return 0
+                ;;
+            "FAILED")
+                log_error "E2E测试失败 - 无法连接到YAC服务器"
+                ;;
+            "ERROR")
+                log_error "E2E测试错误 - 测试过程中发生异常"
+                ;;
+            *)
+                log_error "E2E测试失败 - 未知结果状态"
+                ;;
+        esac
+    else
+        log_error "E2E测试失败 - Vim测试超时或崩溃"
+    fi
+    
+    if [[ $VERBOSE -eq 1 ]]; then
+        cat "$LOG_DIR/e2e_test.log"
+    else
+        echo "查看日志: $LOG_DIR/e2e_test.log"
+    fi
+    
+    # 清理YAC服务器
+    if kill -0 $yac_pid 2>/dev/null; then
+        kill $yac_pid 2>/dev/null
+        sleep 1
+        kill -9 $yac_pid 2>/dev/null || true
+    fi
+    
+    return 1
 }
 
 # 清理函数
 cleanup() {
     log_info "清理测试环境..."
     pkill -f "yac-vim" 2>/dev/null || true
-    pkill -f "mock-lsp" 2>/dev/null || true
 }
 
 # 注册清理函数

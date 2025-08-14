@@ -1,23 +1,34 @@
-# YAC.vim 测试配置文件
-
+# YAC.vim Test Configuration for rust-analyzer
 [server]
 host = "127.0.0.1"
 port = 9527
-
-[test]
-# 测试超时时间(毫秒)
-timeout = 5000
-# Mock LSP服务器端口
-mock_lsp_port = 9530
-# 测试日志级别
-log_level = "debug"
-
-[lsp_servers.mock-rust]
-command = ["mock-lsp"]  # 由测试框架提供
-filetypes = ["rust"]
-root_patterns = ["Cargo.toml"]
+max_connections = 10
+timeout_ms = 30000
 
 [lsp_servers.rust-analyzer]
 command = ["rust-analyzer"]
+args = []
 filetypes = ["rust"]
-root_patterns = ["Cargo.toml", "Cargo.lock"]
+root_patterns = ["Cargo.toml", "Cargo.lock", "rust-project.json"]
+
+[lsp_servers.rust-analyzer.settings]
+"rust-analyzer" = {
+    completion = {
+        addCallParentheses = true
+        addCallArgumentSnippets = false
+        postfix = {
+            enable = true
+        }
+        autoimport = {
+            enable = true
+        }
+    }
+    diagnostics = {
+        enable = true
+    }
+    hover = {
+        documentation = {
+            enable = true
+        }
+    }
+}
