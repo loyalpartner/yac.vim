@@ -227,6 +227,19 @@ impl VimClient {
 
                 VimRequest::Hover { uri, position }
             }
+            "goto_definition" => {
+                let uri = params["uri"].as_str().unwrap_or("").to_string();
+                let position = serde_json::from_value(params["position"].clone())?;
+
+                VimRequest::GotoDefinition { uri, position }
+            }
+            "references" => {
+                let uri = params["uri"].as_str().unwrap_or("").to_string();
+                let position = serde_json::from_value(params["position"].clone())?;
+                let context = serde_json::from_value(params["context"].clone())?;
+
+                VimRequest::References { uri, position, context }
+            }
             _ => {
                 return Err(Error::protocol(format!(
                     "Unknown request method: {}",

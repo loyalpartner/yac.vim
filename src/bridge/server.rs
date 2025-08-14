@@ -603,9 +603,19 @@ impl BridgeServer {
             }
 
             VimRequest::GotoDefinition { uri, position } => {
+                // 安全检查：输入验证
+                if let Err(e) = security_manager.validate_uri(&uri) {
+                    warn!("Invalid URI in goto definition request from {}: {}", client_id, e);
+                    return Ok(());
+                }
+                if let Err(e) = security_manager.validate_position(&position) {
+                    warn!("Invalid position in goto definition request from {}: {}", client_id, e);
+                    return Ok(());
+                }
+
                 info!(
-                    "Go to definition request for {} at {}:{}",
-                    uri, position.line, position.character
+                    "📍 [v->b] Go to definition request for {} at {}:{} from client {}",
+                    uri, position.line, position.character, client_id
                 );
 
                 let mut lsp_manager = lsp_manager.write().await;
@@ -619,6 +629,7 @@ impl BridgeServer {
                             "character": position.character
                         }
                     });
+                    let definition_params_clone = definition_params.clone();
 
                     match lsp_manager
                         .send_request(
@@ -629,21 +640,48 @@ impl BridgeServer {
                         .await
                     {
                         Ok(response) => {
-                            let result_value = match response.result {
-                                crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => {
-                                    result
-                                }
-                                crate::lsp::jsonrpc::JsonRpcResponseResult::Error { .. } => {
-                                    serde_json::Value::Null
-                                }
-                            };
-                            let event = Event::lsp_response(server_id, result_value);
-                            if let Err(e) = _event_sender.emit(event).await {
-                                error!("Failed to emit definition response event: {}", e);
-                            }
+                            debug!("📍 [b<-l] Received definition response from LSP server");
+                            Self::handle_definition_response(
+                                client_id.clone(),
+                                response,
+                                client_manager,
+                            ).await?;
                         }
                         Err(e) => {
                             warn!("Definition request failed for server {}: {}", server_id, e);
+                            
+                            // 如果是通道关闭错误，尝试重启服务器
+                            if e.to_string().contains("channel closed") || e.to_string().contains("Broken pipe") {
+                                info!("🔄 Attempting to restart LSP server {} due to connection failure", server_id);
+                                
+                                // 尝试重启服务器并重新发送请求
+                                if let Ok(restarted_server_id) = lsp_manager.find_server_for_file(&uri).await {
+                                    info!("🔄 Retrying definition request with restarted server {}", restarted_server_id);
+                                    
+                                    match lsp_manager
+                                        .send_request(
+                                            &restarted_server_id,
+                                            "textDocument/definition".to_string(),
+                                            Some(definition_params_clone),
+                                        )
+                                        .await
+                                    {
+                                        Ok(retry_response) => {
+                                            debug!("📍 [b<-l] Received definition response from restarted LSP server");
+                                            Self::handle_definition_response(
+                                                client_id.clone(),
+                                                retry_response,
+                                                client_manager,
+                                            ).await?;
+                                        }
+                                        Err(retry_e) => {
+                                            error!("Definition retry request also failed: {}", retry_e);
+                                        }
+                                    }
+                                } else {
+                                    error!("Failed to restart LSP server for definition request");
+                                }
+                            }
                         }
                     }
                 } else {
@@ -1316,5 +1354,131 @@ impl BridgeServer {
             items: completion_items,
             incomplete,
         })
+    }
+
+    async fn handle_definition_response(
+        client_id: String,
+        response: crate::lsp::jsonrpc::JsonRpcResponse,
+        client_manager: &Arc<RwLock<ClientManager>>,
+    ) -> Result<()> {
+        let result_value = match response.result {
+            crate::lsp::jsonrpc::JsonRpcResponseResult::Success { result } => result,
+            crate::lsp::jsonrpc::JsonRpcResponseResult::Error { error } => {
+                warn!("LSP definition request failed: {} - {}", error.code, error.message);
+                return Ok(());
+            }
+        };
+
+        // Parse LSP definition response
+        let locations = Self::parse_definition_locations(result_value)?;
+        
+        if locations.is_empty() {
+            debug!("No definition found for client {}", client_id);
+            return Ok(());
+        }
+
+        // Use first location (most common case)
+        let location = &locations[0];
+        let vim_command = crate::lsp::protocol::VimCommand::JumpToLocation {
+            uri: location.uri.clone(),
+            range: location.range.clone(),
+            selection_range: location.selection_range.clone(),
+        };
+
+        info!(
+            "📍 [b->v] Sending jump to definition command to client {} for {}",
+            client_id, location.uri
+        );
+
+        // Send jump command to client
+        let client_manager_guard = client_manager.read().await;
+        if let Some(client) = client_manager_guard.get_client(&client_id) {
+            if let Err(e) = client.send_command(vim_command).await {
+                error!("Failed to send jump command to client {}: {}", client_id, e);
+            }
+        } else {
+            warn!("Client {} not found when sending jump command", client_id);
+        }
+
+        Ok(())
+    }
+
+    fn parse_definition_locations(
+        result: serde_json::Value,
+    ) -> Result<Vec<crate::handlers::definition::Location>> {
+        use crate::handlers::definition::Location;
+        use crate::lsp::protocol::{Position, Range};
+
+        if result.is_null() {
+            return Ok(vec![]);
+        }
+
+        let locations = if result.is_array() {
+            // Location[]
+            result.as_array().unwrap().clone()
+        } else if result.is_object() {
+            // Single Location
+            vec![result]
+        } else {
+            return Ok(vec![]);
+        };
+
+        let mut parsed_locations = Vec::new();
+
+        for location in locations {
+            if let (Some(uri), Some(range_json)) = (
+                location.get("uri").and_then(|u| u.as_str()),
+                location.get("range"),
+            ) {
+                if let (Some(start), Some(end)) = (
+                    range_json.get("start"),
+                    range_json.get("end"),
+                ) {
+                    let start_pos = Position {
+                        line: start.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                        character: start.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                    };
+
+                    let end_pos = Position {
+                        line: end.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                        character: end.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                    };
+
+                    let range = Range {
+                        start: start_pos,
+                        end: end_pos,
+                    };
+
+                    // Parse optional selection range
+                    let selection_range = location
+                        .get("targetSelectionRange")
+                        .or_else(|| location.get("selectionRange"))
+                        .and_then(|sr| {
+                            if let (Some(start), Some(end)) = (sr.get("start"), sr.get("end")) {
+                                let start_pos = Position {
+                                    line: start.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                                    character: start.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                                };
+                                let end_pos = Position {
+                                    line: end.get("line").and_then(|l| l.as_i64()).unwrap_or(0) as i32,
+                                    character: end.get("character").and_then(|c| c.as_i64()).unwrap_or(0) as i32,
+                                };
+                                Some(Range { start: start_pos, end: end_pos })
+                            } else {
+                                None
+                            }
+                        });
+
+                    parsed_locations.push(Location {
+                        uri: uri.to_string(),
+                        range,
+                        selection_range,
+                    });
+                }
+            }
+        }
+
+        debug!("Parsed {} definition locations", parsed_locations.len());
+        Ok(parsed_locations)
     }
 }
