@@ -1,56 +1,5 @@
-[package]
-name = "yac-vim"
-version = "0.1.0"
-edition = "2021"
-authors = ["LSP Bridge Team"]
-description = "Yet Another Code completion for Vim - Rust-based LSP bridge with inverted control architecture"
-license = "MIT"
-repository = "https://github.com/username/yac.vim"
-keywords = ["lsp", "vim", "completion", "rust", "bridge"]
-
-[dependencies]
-# Async runtime
-tokio = { version = "1.35", features = ["full"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-
-# JSON and serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# LSP protocol types
-lsp-types = "0.94"
-
-# Networking and IO
-bytes = "1.5"
-futures = "0.3"
-
-# Error handling
-thiserror = "1.0"
-anyhow = "1.0"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Configuration
-toml = "0.8"
-
-# Process management
-nix = "0.27"
-
-# File watching
-notify = "6.1"
-
-# String utilities
-uuid = { version = "1.6", features = ["v4", "serde"] }
-
-[dev-dependencies]
-tempfile = "3.8"
-criterion = "0.5"
-
-[[bin]]
-name = "yac-vim"
-path = "src/main.rs"
+[workspace]
+members = ["crates/lsp-client", "test_data"]
 
 [profile.release]
 lto = true

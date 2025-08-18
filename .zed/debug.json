@@ -1,0 +1,26 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+
+  {
+    "adapter": "CodeLLDB",
+    "label": "yac-vim (CodeLLDB)",
+    "request": "launch",
+    "name": "yac-vim (CodeLLDB)",
+    "program": "target/debug/yac-vim",
+    "stopOnEntry": false,
+    "env": {
+      "RUST_LOG": "debug"
+    },
+    "cwd": "/home/lee/study/rust/source/yac.vim",
+    "build": {
+      "command": "cargo build",
+      "args": [],
+      "options": {
+        "cwd": "/home/lee/study/rust/source/yac.vim"
+      }
+    }
+  }
+]
