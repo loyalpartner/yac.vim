@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lsp-client", "test_data"]
+members = ["crates/lsp-client", "crates/lsp-bridge", "test_data"]
 
 [profile.release]
 lto = true
