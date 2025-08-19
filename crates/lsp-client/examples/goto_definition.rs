@@ -46,9 +46,10 @@ async fn main() -> Result<()> {
             println!("Initializing rust-analyzer...");
 
             // Initialize
+            use lsp_types::request::Initialize;
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
-                client.request("initialize", serde_json::to_value(init_params)?),
+                client.request::<Initialize>(init_params),
             )
             .await;
 
@@ -82,7 +83,7 @@ async fn main() -> Result<()> {
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
                         // Test specific positions from test_data/src/lib.rs (zero-based)
-                        let test_cases = vec![
+                        let test_cases = [
                             (
                                 Position {
                                     line: 47,
@@ -137,18 +138,16 @@ async fn main() -> Result<()> {
                                 partial_result_params: Default::default(),
                             };
 
+                            use lsp_types::request::GotoDefinition;
                             let def_result = tokio::time::timeout(
                                 std::time::Duration::from_secs(3),
-                                client.request(
-                                    "textDocument/definition",
-                                    serde_json::to_value(definition_params)?,
-                                ),
+                                client.request::<GotoDefinition>(definition_params),
                             )
                             .await;
 
                             match def_result {
                                 Ok(Ok(response)) => {
-                                    if response.is_null() {
+                                    if response.is_none() {
                                         println!("  📍 No definition found at this position");
                                     } else {
                                         println!("  ✅ Definition found:");

@@ -1,6 +1,5 @@
 use lsp_client::{LspClient, Result as LspResult};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::path::PathBuf;
 
 // Legacy structs removed - now using VimCommand only
@@ -51,8 +50,8 @@ pub struct CompletionItem {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReferenceLocation {
     pub file: String,
-    pub line: u32,    // 0-based
-    pub column: u32,  // 0-based
+    pub line: u32,   // 0-based
+    pub column: u32, // 0-based
 }
 
 // Using VimAction directly - no legacy support
@@ -62,12 +61,16 @@ pub struct LspBridge {
     client: Option<LspClient>,
 }
 
+impl Default for LspBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspBridge {
     pub fn new() -> Self {
         Self { client: None }
     }
-
-    /// Legacy method removed - use handle_command instead
 
     /// 处理高层命令
     pub async fn handle_command(&mut self, command: VimCommand) -> VimAction {
@@ -90,10 +93,6 @@ impl LspBridge {
         // 处理Vim命令
         self.handle_vim_command(command).await
     }
-
-    /// Legacy unified request handler removed
-
-    /// Legacy request handler removed
 
     /// 处理高层Vim命令
     async fn handle_vim_command(&self, command: VimCommand) -> VimAction {
@@ -149,7 +148,8 @@ impl LspBridge {
             partial_result_params: Default::default(),
         };
 
-        match client.goto_definition(params).await {
+        use lsp_types::request::GotoDefinition;
+        match client.request::<GotoDefinition>(params).await {
             Ok(Some(response)) => {
                 use tracing::debug;
                 debug!("Got LSP definition response: {:?}", response);
@@ -157,11 +157,11 @@ impl LspBridge {
                 // 处理 GotoDefinitionResponse (可能是 Location 或 LocationLink)
                 match response {
                     lsp_types::GotoDefinitionResponse::Scalar(location) => {
-                        location.to_vim_action()
+                        VimAction::from(location)
                     }
                     lsp_types::GotoDefinitionResponse::Array(locations) => {
                         if let Some(first) = locations.first() {
-                            first.to_vim_action()
+                            VimAction::from(first)
                         } else {
                             VimAction::Error {
                                 message: "No definition found".to_string(),
@@ -170,7 +170,7 @@ impl LspBridge {
                     }
                     lsp_types::GotoDefinitionResponse::Link(links) => {
                         if let Some(first_link) = links.first() {
-                            first_link.to_vim_action()
+                            VimAction::from(first_link)
                         } else {
                             VimAction::Error {
                                 message: "No definition found".to_string(),
@@ -190,7 +190,9 @@ impl LspBridge {
 
     /// 处理悬停信息
     async fn handle_hover(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
 
         // 确保文件已打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -219,11 +221,9 @@ impl LspBridge {
             work_done_progress_params: Default::default(),
         };
 
-        match client.hover(params).await {
-            Ok(Some(hover)) => {
-                let content = hover.to_hover_content();
-                VimAction::ShowHover { content }
-            }
+        use lsp_types::request::HoverRequest;
+        match client.request::<HoverRequest>(params).await {
+            Ok(Some(hover)) => VimAction::from(hover),
             Ok(None) => VimAction::Error {
                 message: "No hover information available".to_string(),
             },
@@ -238,7 +238,6 @@ impl LspBridge {
         use lsp_types::{
             CompletionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
-        use serde_json::json;
 
         // 确保文件已经打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -269,9 +268,10 @@ impl LspBridge {
             context: None,
         };
 
+        use lsp_types::request::Completion;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            client.request("textDocument/completion", json!(params)),
+            client.request::<Completion>(params),
         )
         .await;
 
@@ -280,7 +280,10 @@ impl LspBridge {
                 use tracing::debug;
                 debug!("Got LSP completion result: {:?}", completions);
 
-                let items = self.extract_completion_items(&completions);
+                let items = match completions {
+                    Some(response) => self.extract_completion_items_from_response(&response),
+                    None => vec![],
+                };
                 VimAction::Completions { items }
             }
             Ok(Err(e)) => VimAction::Error {
@@ -291,7 +294,6 @@ impl LspBridge {
             },
         }
     }
-
 
     /// 处理查找引用
     async fn handle_references(&self, client: &LspClient, command: &VimCommand) -> VimAction {
@@ -331,7 +333,8 @@ impl LspBridge {
             },
         };
 
-        match client.references(params).await {
+        use lsp_types::request::References;
+        match client.request::<References>(params).await {
             Ok(Some(locations)) => {
                 use tracing::debug;
                 debug!("Got LSP references result: {:?}", locations);
@@ -351,9 +354,7 @@ impl LspBridge {
                     locations: ref_locations,
                 }
             }
-            Ok(None) => VimAction::References {
-                locations: vec![],
-            },
+            Ok(None) => VimAction::References { locations: vec![] },
             Err(e) => VimAction::Error {
                 message: e.to_string(),
             },
@@ -397,65 +398,19 @@ impl LspBridge {
         Ok(())
     }
 
+    /// 从强类型 CompletionResponse 中提取补全项
+    fn extract_completion_items_from_response(
+        &self,
+        response: &lsp_types::CompletionResponse,
+    ) -> Vec<CompletionItem> {
+        use lsp_types::CompletionResponse;
 
-    /// 从补全结果中提取补全项
-    fn extract_completion_items(&self, completions: &Value) -> Vec<CompletionItem> {
-        let mut items = Vec::new();
-
-        // 处理 CompletionList 或 CompletionItem[]
-        let completion_items = if let Some(list) = completions.get("items") {
-            // CompletionList 格式
-            list.as_array()
-        } else {
-            // 直接是 CompletionItem[] 格式
-            completions.as_array()
+        let lsp_items = match response {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => &list.items,
         };
 
-        if let Some(items_array) = completion_items {
-            for item in items_array {
-                if let Some(label) = item.get("label").and_then(|l| l.as_str()) {
-                    let kind = item
-                        .get("kind")
-                        .and_then(|k| k.as_u64())
-                        .map(|k| self.completion_kind_to_string(k))
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    items.push(CompletionItem {
-                        label: label.to_string(),
-                        kind,
-                    });
-                }
-            }
-        }
-
-        items
-    }
-
-
-
-    /// 将LSP CompletionItemKind转换为字符串
-    fn completion_kind_to_string(&self, kind: u64) -> String {
-        match kind {
-            1 => "Text".to_string(),
-            2 => "Method".to_string(),
-            3 => "Function".to_string(),
-            4 => "Constructor".to_string(),
-            5 => "Field".to_string(),
-            6 => "Variable".to_string(),
-            7 => "Class".to_string(),
-            8 => "Interface".to_string(),
-            9 => "Module".to_string(),
-            10 => "Property".to_string(),
-            11 => "Unit".to_string(),
-            12 => "Value".to_string(),
-            13 => "Enum".to_string(),
-            14 => "Keyword".to_string(),
-            15 => "Snippet".to_string(),
-            16 => "Color".to_string(),
-            17 => "File".to_string(),
-            18 => "Reference".to_string(),
-            _ => "Unknown".to_string(),
-        }
+        lsp_items.iter().map(CompletionItem::from).collect()
     }
 
     /// 根据文件扩展名检测语言
@@ -470,8 +425,6 @@ impl LspBridge {
             "text".to_string()
         }
     }
-
-    /// Legacy is_notification method removed
 
     /// 根据语言类型创建对应的 LSP 客户端
     async fn create_client(&self, language: &str, file_path: &str) -> LspResult<LspClient> {
@@ -514,9 +467,8 @@ impl LspBridge {
                 };
 
                 // 发送初始化请求
-                client
-                    .request("initialize", serde_json::to_value(init_params)?)
-                    .await?;
+                use lsp_types::request::Initialize;
+                client.request::<Initialize>(init_params).await?;
                 client.notify("initialized", json!({})).await?;
 
                 Ok(client)
@@ -543,12 +495,71 @@ impl LspBridge {
     }
 }
 
-// Type conversion implementations using From trait for our own types - Linus approved!
+// Type conversion implementations using From trait - Linus approved!
+
+// Direct From implementations for clean conversions
+impl From<lsp_types::Location> for VimAction {
+    fn from(location: lsp_types::Location) -> Self {
+        match location.uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: location.range.start.line,
+                column: location.range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
+
+impl From<&lsp_types::Location> for VimAction {
+    fn from(location: &lsp_types::Location) -> Self {
+        match location.uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: location.range.start.line,
+                column: location.range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
+
+impl From<lsp_types::LocationLink> for VimAction {
+    fn from(link: lsp_types::LocationLink) -> Self {
+        match link.target_uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: link.target_selection_range.start.line,
+                column: link.target_selection_range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
+
+impl From<&lsp_types::LocationLink> for VimAction {
+    fn from(link: &lsp_types::LocationLink) -> Self {
+        match link.target_uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: link.target_selection_range.start.line,
+                column: link.target_selection_range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
 
 impl From<&lsp_types::Location> for ReferenceLocation {
     fn from(location: &lsp_types::Location) -> Self {
-        // Only convert if URI is valid, otherwise this will panic
-        // Caller should validate before using this conversion
         let path = location.uri.to_file_path().expect("Invalid file URI");
         ReferenceLocation {
             file: path.to_string_lossy().to_string(),
@@ -558,53 +569,52 @@ impl From<&lsp_types::Location> for ReferenceLocation {
     }
 }
 
-// Helper trait for type conversion - avoids orphan rule issues
-trait ToVimAction {
-    fn to_vim_action(&self) -> VimAction;
-}
+// Convert LSP CompletionItem to our CompletionItem
+impl From<&lsp_types::CompletionItem> for CompletionItem {
+    fn from(item: &lsp_types::CompletionItem) -> Self {
+        use lsp_types::CompletionItemKind;
 
-impl ToVimAction for lsp_types::Location {
-    fn to_vim_action(&self) -> VimAction {
-        match self.uri.to_file_path() {
-            Ok(path) => VimAction::Jump {
-                file: path.to_string_lossy().to_string(),
-                line: self.range.start.line,
-                column: self.range.start.character,
-            },
-            Err(_) => VimAction::Error {
-                message: "Invalid file URI".to_string(),
-            },
+        let kind = item
+            .kind
+            .map(|k| match k {
+                CompletionItemKind::TEXT => "Text".to_string(),
+                CompletionItemKind::METHOD => "Method".to_string(),
+                CompletionItemKind::FUNCTION => "Function".to_string(),
+                CompletionItemKind::CONSTRUCTOR => "Constructor".to_string(),
+                CompletionItemKind::FIELD => "Field".to_string(),
+                CompletionItemKind::VARIABLE => "Variable".to_string(),
+                CompletionItemKind::CLASS => "Class".to_string(),
+                CompletionItemKind::INTERFACE => "Interface".to_string(),
+                CompletionItemKind::MODULE => "Module".to_string(),
+                CompletionItemKind::PROPERTY => "Property".to_string(),
+                CompletionItemKind::UNIT => "Unit".to_string(),
+                CompletionItemKind::VALUE => "Value".to_string(),
+                CompletionItemKind::ENUM => "Enum".to_string(),
+                CompletionItemKind::KEYWORD => "Keyword".to_string(),
+                CompletionItemKind::SNIPPET => "Snippet".to_string(),
+                CompletionItemKind::COLOR => "Color".to_string(),
+                CompletionItemKind::FILE => "File".to_string(),
+                CompletionItemKind::REFERENCE => "Reference".to_string(),
+                _ => "Unknown".to_string(),
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        CompletionItem {
+            label: item.label.clone(),
+            kind,
         }
     }
 }
 
-impl ToVimAction for lsp_types::LocationLink {
-    fn to_vim_action(&self) -> VimAction {
-        match self.target_uri.to_file_path() {
-            Ok(path) => VimAction::Jump {
-                file: path.to_string_lossy().to_string(),
-                line: self.target_selection_range.start.line,
-                column: self.target_selection_range.start.character,
-            },
-            Err(_) => VimAction::Error {
-                message: "Invalid file URI".to_string(),
-            },
-        }
-    }
-}
-
-trait ToHoverContent {
-    fn to_hover_content(&self) -> String;
-}
-
-impl ToHoverContent for lsp_types::Hover {
-    fn to_hover_content(&self) -> String {
+// Convert LSP Hover to VimAction
+impl From<lsp_types::Hover> for VimAction {
+    fn from(hover: lsp_types::Hover) -> Self {
         use lsp_types::HoverContents;
-        
-        match &self.contents {
+
+        let content = match hover.contents {
             HoverContents::Scalar(content) => match content {
-                lsp_types::MarkedString::String(s) => s.clone(),
-                lsp_types::MarkedString::LanguageString(ls) => ls.value.clone(),
+                lsp_types::MarkedString::String(s) => s,
+                lsp_types::MarkedString::LanguageString(ls) => ls.value,
             },
             HoverContents::Array(contents) => {
                 let mut result = String::new();
@@ -614,7 +624,7 @@ impl ToHoverContent for lsp_types::Hover {
                             if !result.is_empty() {
                                 result.push('\n');
                             }
-                            result.push_str(s);
+                            result.push_str(&s);
                         }
                         lsp_types::MarkedString::LanguageString(ls) => {
                             if !result.is_empty() {
@@ -626,7 +636,9 @@ impl ToHoverContent for lsp_types::Hover {
                 }
                 result
             }
-            HoverContents::Markup(markup) => markup.value.clone(),
-        }
+            HoverContents::Markup(markup) => markup.value,
+        };
+
+        VimAction::ShowHover { content }
     }
 }

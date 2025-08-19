@@ -113,6 +113,12 @@ pub struct MessageFramer {
     buffer: BytesMut,
 }
 
+impl Default for MessageFramer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageFramer {
     pub fn new() -> Self {
         Self {
@@ -146,7 +152,7 @@ impl MessageFramer {
         self.buffer.extend_from_slice(data);
         let mut messages = Vec::new();
 
-        while self.buffer.len() > 0 {
+        while !self.buffer.is_empty() {
             // Look for Content-Length header
             let header_end = self.find_header_end()?;
             if header_end.is_none() {
@@ -186,8 +192,7 @@ impl MessageFramer {
             .map_err(|_| LspError::Protocol("Invalid UTF-8 in header".to_string()))?;
 
         for line in header_str.lines() {
-            if line.starts_with(CONTENT_LENGTH_HEADER) {
-                let length_str = &line[CONTENT_LENGTH_HEADER.len()..];
+            if let Some(length_str) = line.strip_prefix(CONTENT_LENGTH_HEADER) {
                 return length_str
                     .parse()
                     .map_err(|_| LspError::Protocol("Invalid Content-Length".to_string()));
@@ -296,12 +301,12 @@ pub struct PendingRequest {
 enum ClientCommand {
     SendRequest {
         method: String,
-        params: Value,
+        params_json: String, // Pre-serialized JSON to avoid double serialization
         response_tx: oneshot::Sender<Result<Value>>,
     },
     SendNotification {
         method: String,
-        params: Value,
+        params_json: String, // Pre-serialized JSON
     },
     Shutdown,
 }
@@ -346,12 +351,20 @@ impl LspClient {
         })
     }
 
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+    /// Type-safe request method using lsp-types Request trait
+    pub async fn request<R>(&self, params: R::Params) -> Result<R::Result>
+    where
+        R: lsp_types::request::Request,
+        R::Params: Send + 'static,
+    {
         let (response_tx, response_rx) = oneshot::channel();
 
+        // Serialize params at call site to avoid double serialization
+        let params_json = serde_json::to_string(&params)?;
+
         let command = ClientCommand::SendRequest {
-            method: method.to_string(),
-            params,
+            method: R::METHOD.to_string(), // Compile-time method name
+            params_json,
             response_tx,
         };
 
@@ -360,13 +373,22 @@ impl LspClient {
             .await
             .map_err(|_| LspError::ChannelClosed)?;
 
-        response_rx.await.map_err(|_| LspError::ChannelClosed)?
+        let response = response_rx.await.map_err(|_| LspError::ChannelClosed)??;
+
+        // Direct deserialization to target type
+        Ok(serde_json::from_value(response)?)
     }
 
-    pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
+    /// Type-safe notification method
+    pub async fn notify<P>(&self, method: &str, params: P) -> Result<()>
+    where
+        P: Serialize,
+    {
+        let params_json = serde_json::to_string(&params)?;
+
         let command = ClientCommand::SendNotification {
             method: method.to_string(),
-            params,
+            params_json,
         };
 
         self.command_tx
@@ -385,68 +407,12 @@ impl LspClient {
         Ok(())
     }
 
-    // Type-safe LSP methods
-    
-    /// Goto definition with type safety
-    pub async fn goto_definition(
-        &self,
-        params: lsp_types::GotoDefinitionParams,
-    ) -> Result<Option<lsp_types::GotoDefinitionResponse>> {
-        let response = self
-            .request("textDocument/definition", serde_json::to_value(params)?)
-            .await?;
-        
-        if response.is_null() {
-            return Ok(None);
-        }
-        
-        Ok(Some(serde_json::from_value(response)?))
-    }
-
-    /// Hover information with type safety
-    pub async fn hover(&self, params: lsp_types::HoverParams) -> Result<Option<lsp_types::Hover>> {
-        let response = self
-            .request("textDocument/hover", serde_json::to_value(params)?)
-            .await?;
-        
-        if response.is_null() {
-            return Ok(None);
-        }
-        
-        Ok(Some(serde_json::from_value(response)?))
-    }
-
-    /// Find references with type safety
-    pub async fn references(
-        &self,
-        params: lsp_types::ReferenceParams,
-    ) -> Result<Option<Vec<lsp_types::Location>>> {
-        let response = self
-            .request("textDocument/references", serde_json::to_value(params)?)
-            .await?;
-        
-        if response.is_null() {
-            return Ok(None);
-        }
-        
-        Ok(Some(serde_json::from_value(response)?))
-    }
-
-    /// Code completion with type safety
-    pub async fn completion(
-        &self,
-        params: lsp_types::CompletionParams,
-    ) -> Result<Option<lsp_types::CompletionResponse>> {
-        let response = self
-            .request("textDocument/completion", serde_json::to_value(params)?)
-            .await?;
-        
-        if response.is_null() {
-            return Ok(None);
-        }
-        
-        Ok(Some(serde_json::from_value(response)?))
-    }
+    // No wrapper methods needed - use request::<RequestType>(params) directly
+    // Examples:
+    // client.request::<lsp_types::request::GotoDefinition>(params).await?
+    // client.request::<lsp_types::request::HoverRequest>(params).await?
+    // client.request::<lsp_types::request::References>(params).await?
+    // client.request::<lsp_types::request::Completion>(params).await?
 }
 
 impl LspClientInner {
@@ -461,13 +427,13 @@ impl LspClientInner {
                 // Handle commands from the main client
                 cmd = self.command_rx.recv() => {
                     match cmd {
-                        Some(ClientCommand::SendRequest { method, params, response_tx }) => {
-                            if let Err(e) = self.handle_send_request(&method, params, response_tx).await {
+                        Some(ClientCommand::SendRequest { method, params_json, response_tx }) => {
+                            if let Err(e) = self.handle_send_request(&method, params_json, response_tx).await {
                                 error!("Failed to handle request {}: {}", method, e);
                             }
                         }
-                        Some(ClientCommand::SendNotification { method, params }) => {
-                            if let Err(e) = self.handle_send_notification(&method, params).await {
+                        Some(ClientCommand::SendNotification { method, params_json }) => {
+                            if let Err(e) = self.handle_send_notification(&method, params_json).await {
                                 error!("Failed to handle notification {}: {}", method, e);
                             }
                         }
@@ -505,10 +471,14 @@ impl LspClientInner {
     async fn handle_send_request(
         &mut self,
         method: &str,
-        params: Value,
+        params_json: String,
         response_tx: oneshot::Sender<Result<Value>>,
     ) -> Result<()> {
         let id = self.next_request_id();
+
+        // Parse pre-serialized JSON back to Value for JsonRpcRequest
+        let params: Value = serde_json::from_str(&params_json)?;
+
         let request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: id.clone(),
@@ -555,7 +525,10 @@ impl LspClientInner {
         Ok(())
     }
 
-    async fn handle_send_notification(&mut self, method: &str, params: Value) -> Result<()> {
+    async fn handle_send_notification(&mut self, method: &str, params_json: String) -> Result<()> {
+        // Parse pre-serialized JSON back to Value for JsonRpcNotification
+        let params: Value = serde_json::from_str(&params_json)?;
+
         let notification = JsonRpcNotification {
             jsonrpc: JSONRPC_VERSION.to_string(),
             method: method.to_string(),

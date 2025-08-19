@@ -5,9 +5,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+/// Type alias for request handler function
+type RequestHandler = Box<dyn Fn(&JsonRpcRequest) -> Result<Value> + Send + Sync>;
+
 /// A mock LSP server that can be programmed to respond to specific requests
 pub struct MockLspServer {
-    handlers: HashMap<String, Box<dyn Fn(&JsonRpcRequest) -> Result<Value> + Send + Sync>>,
+    handlers: HashMap<String, RequestHandler>,
     message_tx: mpsc::Sender<String>,
     message_rx: mpsc::Receiver<String>,
 }
@@ -48,52 +51,47 @@ impl MockLspServer {
     /// Run the mock server, processing incoming requests
     pub async fn run(&mut self) -> Result<()> {
         while let Some(message) = self.message_rx.recv().await {
-            if let Ok(msg) = serde_json::from_str::<JsonRpcMessage>(&message) {
-                match msg {
-                    JsonRpcMessage::Request(request) => {
-                        let response = if let Some(handler) = self.handlers.get(&request.method) {
-                            match handler(&request) {
-                                Ok(result) => JsonRpcResponse {
-                                    jsonrpc: "2.0".to_string(),
-                                    id: request.id.clone(),
-                                    result: Some(result),
-                                    error: None,
-                                },
-                                Err(e) => JsonRpcResponse {
-                                    jsonrpc: "2.0".to_string(),
-                                    id: request.id.clone(),
-                                    result: None,
-                                    error: Some(crate::JsonRpcError {
-                                        code: -1,
-                                        message: e.to_string(),
-                                        data: None,
-                                    }),
-                                },
-                            }
-                        } else {
-                            JsonRpcResponse {
-                                jsonrpc: "2.0".to_string(),
-                                id: request.id.clone(),
-                                result: None,
-                                error: Some(crate::JsonRpcError {
-                                    code: -32601,
-                                    message: format!("Method not found: {}", request.method),
-                                    data: None,
-                                }),
-                            }
-                        };
-
-                        let response_msg = JsonRpcMessage::Response(response);
-                        let response_str =
-                            serde_json::to_string(&response_msg).map_err(|e| LspError::Json(e))?;
-
-                        let _ = self.message_tx.send(response_str).await;
+            if let Ok(JsonRpcMessage::Request(request)) =
+                serde_json::from_str::<JsonRpcMessage>(&message)
+            {
+                let response = if let Some(handler) = self.handlers.get(&request.method) {
+                    match handler(&request) {
+                        Ok(result) => JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: Some(result),
+                            error: None,
+                        },
+                        Err(e) => JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id.clone(),
+                            result: None,
+                            error: Some(crate::JsonRpcError {
+                                code: -1,
+                                message: e.to_string(),
+                                data: None,
+                            }),
+                        },
                     }
-                    _ => {
-                        // Ignore notifications and responses
+                } else {
+                    JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: request.id.clone(),
+                        result: None,
+                        error: Some(crate::JsonRpcError {
+                            code: -32601,
+                            message: format!("Method not found: {}", request.method),
+                            data: None,
+                        }),
                     }
-                }
+                };
+
+                let response_msg = JsonRpcMessage::Response(response);
+                let response_str = serde_json::to_string(&response_msg).map_err(LspError::Json)?;
+
+                let _ = self.message_tx.send(response_str).await;
             }
+            // Ignore non-request messages (notifications and responses)
         }
         Ok(())
     }
