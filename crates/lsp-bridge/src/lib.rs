@@ -117,66 +117,119 @@ impl LspBridge {
 
     /// 处理跳转到定义
     async fn handle_goto_definition(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        match self
-            .make_text_document_position_request(client, command, "textDocument/definition", None)
-            .await
-        {
-            Ok(locations) => {
+        use lsp_types::{
+            GotoDefinitionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        match client.goto_definition(params).await {
+            Ok(Some(response)) => {
                 use tracing::debug;
-                debug!("Got LSP result: {:?}", locations);
-                
-                // 解析位置信息
-                if let Some(locations) = locations.as_array() {
-                    debug!("Locations array length: {}", locations.len());
-                    if let Some(first_location) = locations.first() {
-                        if let (Some(uri), Some(range)) = (
-                            first_location.get("uri").and_then(|u| u.as_str()),
-                            first_location.get("range"),
-                        ) {
-                            if let Some(start) = range.get("start") {
-                                if let (Some(line), Some(character)) = (
-                                    start.get("line").and_then(|l| l.as_u64()),
-                                    start.get("character").and_then(|c| c.as_u64()),
-                                ) {
-                                    if let Ok(url) = lsp_types::Url::parse(uri) {
-                                        if let Ok(path) = url.to_file_path() {
-                                            return VimAction::Jump {
-                                                file: path.to_string_lossy().to_string(),
-                                                line: line as u32,
-                                                column: character as u32,
-                                            };
-                                        }
-                                    }
-                                }
+                debug!("Got LSP definition response: {:?}", response);
+
+                // 处理 GotoDefinitionResponse (可能是 Location 或 LocationLink)
+                match response {
+                    lsp_types::GotoDefinitionResponse::Scalar(location) => {
+                        location.to_vim_action()
+                    }
+                    lsp_types::GotoDefinitionResponse::Array(locations) => {
+                        if let Some(first) = locations.first() {
+                            first.to_vim_action()
+                        } else {
+                            VimAction::Error {
+                                message: "No definition found".to_string(),
+                            }
+                        }
+                    }
+                    lsp_types::GotoDefinitionResponse::Link(links) => {
+                        if let Some(first_link) = links.first() {
+                            first_link.to_vim_action()
+                        } else {
+                            VimAction::Error {
+                                message: "No definition found".to_string(),
                             }
                         }
                     }
                 }
-                VimAction::Error {
-                    message: "No definition found".to_string(),
-                }
             }
-            Err(e) => VimAction::Error { message: e },
+            Ok(None) => VimAction::Error {
+                message: "No definition found".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
         }
     }
 
     /// 处理悬停信息
     async fn handle_hover(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        match self
-            .make_text_document_position_request(client, command, "textDocument/hover", None)
-            .await
-        {
-            Ok(result) => {
-                if let Some(contents) = result.get("contents") {
-                    let content = self.extract_hover_content(contents);
-                    VimAction::ShowHover { content }
-                } else {
-                    VimAction::Error {
-                        message: "No hover information available".to_string(),
-                    }
+        use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
                 }
             }
-            Err(e) => VimAction::Error { message: e },
+        };
+
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        match client.hover(params).await {
+            Ok(Some(hover)) => {
+                let content = hover.to_hover_content();
+                VimAction::ShowHover { content }
+            }
+            Ok(None) => VimAction::Error {
+                message: "No hover information available".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
         }
     }
 
@@ -239,76 +292,71 @@ impl LspBridge {
         }
     }
 
-    /// 通用 LSP 文本文档位置请求处理
-    async fn make_text_document_position_request(
-        &self,
-        client: &LspClient,
-        command: &VimCommand,
-        method: &str,
-        extra_params: Option<Value>,
-    ) -> Result<Value, String> {
-        use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
-        use serde_json::json;
-
-        // 确保文件已打开
-        self.ensure_file_open(client, &command.file)
-            .await
-            .map_err(|e| format!("Failed to open file: {}", e))?;
-
-        // 验证文件路径
-        let uri = lsp_types::Url::from_file_path(&command.file)
-            .map_err(|_| format!("Invalid file path: {}", command.file))?;
-
-        // 构建基础参数
-        let mut params = json!({
-            "textDocument": {"uri": uri},
-            "position": {
-                "line": command.line,
-                "character": command.column
-            }
-        });
-
-        // 合并额外参数
-        if let Some(extra) = extra_params {
-            if let (Some(base_obj), Some(extra_obj)) = (params.as_object_mut(), extra.as_object()) {
-                for (key, value) in extra_obj {
-                    base_obj.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        // 执行请求
-        tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            client.request(method, params),
-        )
-        .await
-        .map_err(|_| format!("{} request timed out", method))?
-        .map_err(|e| format!("{} failed: {}", method, e))
-    }
 
     /// 处理查找引用
     async fn handle_references(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use serde_json::json;
+        use lsp_types::{
+            Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let extra_params = json!({
-            "context": {"includeDeclaration": true}
-        });
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
 
-        match self
-            .make_text_document_position_request(client, command, "textDocument/references", Some(extra_params))
-            .await
-        {
-            Ok(locations) => {
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: ReferenceContext {
+                include_declaration: true,
+            },
+        };
+
+        match client.references(params).await {
+            Ok(Some(locations)) => {
                 use tracing::debug;
                 debug!("Got LSP references result: {:?}", locations);
 
-                let ref_locations = self.extract_reference_locations(&locations);
+                let ref_locations: Vec<ReferenceLocation> = locations
+                    .iter()
+                    .filter_map(|loc| {
+                        // 只转换有效的 URI，跳过无效的
+                        if loc.uri.to_file_path().is_ok() {
+                            Some(ReferenceLocation::from(loc))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 VimAction::References {
                     locations: ref_locations,
                 }
             }
-            Err(e) => VimAction::Error { message: e },
+            Ok(None) => VimAction::References {
+                locations: vec![],
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
         }
     }
 
@@ -349,21 +397,6 @@ impl LspBridge {
         Ok(())
     }
 
-    /// 从悬停结果中提取内容
-    fn extract_hover_content(&self, contents: &Value) -> String {
-        // 简化实现：直接转换为字符串
-        if let Some(s) = contents.as_str() {
-            s.to_string()
-        } else if let Some(obj) = contents.as_object() {
-            if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
-                value.to_string()
-            } else {
-                serde_json::to_string_pretty(contents).unwrap_or_default()
-            }
-        } else {
-            serde_json::to_string_pretty(contents).unwrap_or_default()
-        }
-    }
 
     /// 从补全结果中提取补全项
     fn extract_completion_items(&self, completions: &Value) -> Vec<CompletionItem> {
@@ -398,40 +431,6 @@ impl LspBridge {
         items
     }
 
-    /// 从引用结果中提取引用位置
-    fn extract_reference_locations(&self, locations: &Value) -> Vec<ReferenceLocation> {
-        let mut ref_locations = Vec::new();
-
-        if let Some(locations_array) = locations.as_array() {
-            for location in locations_array {
-                if let (Some(uri), Some(range)) = (
-                    location.get("uri").and_then(|u| u.as_str()),
-                    location.get("range"),
-                ) {
-                    if let Some(start) = range.get("start") {
-                        if let (Some(line), Some(character)) = (
-                            start.get("line").and_then(|l| l.as_u64()),
-                            start.get("character").and_then(|c| c.as_u64()),
-                        ) {
-                            if let Ok(url) = lsp_types::Url::parse(uri) {
-                                if let Ok(path) = url.to_file_path() {
-                                    let file_path = path.to_string_lossy().to_string();
-                                    
-                                    ref_locations.push(ReferenceLocation {
-                                        file: file_path,
-                                        line: line as u32,
-                                        column: character as u32,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        ref_locations
-    }
 
 
     /// 将LSP CompletionItemKind转换为字符串
@@ -512,7 +511,6 @@ impl LspBridge {
                     }),
                     client_info: None,
                     locale: None,
-                    work_done_progress_params: Default::default(),
                 };
 
                 // 发送初始化请求
@@ -542,5 +540,93 @@ impl LspBridge {
         }
 
         None
+    }
+}
+
+// Type conversion implementations using From trait for our own types - Linus approved!
+
+impl From<&lsp_types::Location> for ReferenceLocation {
+    fn from(location: &lsp_types::Location) -> Self {
+        // Only convert if URI is valid, otherwise this will panic
+        // Caller should validate before using this conversion
+        let path = location.uri.to_file_path().expect("Invalid file URI");
+        ReferenceLocation {
+            file: path.to_string_lossy().to_string(),
+            line: location.range.start.line,
+            column: location.range.start.character,
+        }
+    }
+}
+
+// Helper trait for type conversion - avoids orphan rule issues
+trait ToVimAction {
+    fn to_vim_action(&self) -> VimAction;
+}
+
+impl ToVimAction for lsp_types::Location {
+    fn to_vim_action(&self) -> VimAction {
+        match self.uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: self.range.start.line,
+                column: self.range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
+
+impl ToVimAction for lsp_types::LocationLink {
+    fn to_vim_action(&self) -> VimAction {
+        match self.target_uri.to_file_path() {
+            Ok(path) => VimAction::Jump {
+                file: path.to_string_lossy().to_string(),
+                line: self.target_selection_range.start.line,
+                column: self.target_selection_range.start.character,
+            },
+            Err(_) => VimAction::Error {
+                message: "Invalid file URI".to_string(),
+            },
+        }
+    }
+}
+
+trait ToHoverContent {
+    fn to_hover_content(&self) -> String;
+}
+
+impl ToHoverContent for lsp_types::Hover {
+    fn to_hover_content(&self) -> String {
+        use lsp_types::HoverContents;
+        
+        match &self.contents {
+            HoverContents::Scalar(content) => match content {
+                lsp_types::MarkedString::String(s) => s.clone(),
+                lsp_types::MarkedString::LanguageString(ls) => ls.value.clone(),
+            },
+            HoverContents::Array(contents) => {
+                let mut result = String::new();
+                for content in contents {
+                    match content {
+                        lsp_types::MarkedString::String(s) => {
+                            if !result.is_empty() {
+                                result.push('\n');
+                            }
+                            result.push_str(s);
+                        }
+                        lsp_types::MarkedString::LanguageString(ls) => {
+                            if !result.is_empty() {
+                                result.push('\n');
+                            }
+                            result.push_str(&ls.value);
+                        }
+                    }
+                }
+                result
+            }
+            HoverContents::Markup(markup) => markup.value.clone(),
+        }
     }
 }

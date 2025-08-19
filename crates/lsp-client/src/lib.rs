@@ -384,6 +384,69 @@ impl LspClient {
             .map_err(|_| LspError::ChannelClosed)?;
         Ok(())
     }
+
+    // Type-safe LSP methods
+    
+    /// Goto definition with type safety
+    pub async fn goto_definition(
+        &self,
+        params: lsp_types::GotoDefinitionParams,
+    ) -> Result<Option<lsp_types::GotoDefinitionResponse>> {
+        let response = self
+            .request("textDocument/definition", serde_json::to_value(params)?)
+            .await?;
+        
+        if response.is_null() {
+            return Ok(None);
+        }
+        
+        Ok(Some(serde_json::from_value(response)?))
+    }
+
+    /// Hover information with type safety
+    pub async fn hover(&self, params: lsp_types::HoverParams) -> Result<Option<lsp_types::Hover>> {
+        let response = self
+            .request("textDocument/hover", serde_json::to_value(params)?)
+            .await?;
+        
+        if response.is_null() {
+            return Ok(None);
+        }
+        
+        Ok(Some(serde_json::from_value(response)?))
+    }
+
+    /// Find references with type safety
+    pub async fn references(
+        &self,
+        params: lsp_types::ReferenceParams,
+    ) -> Result<Option<Vec<lsp_types::Location>>> {
+        let response = self
+            .request("textDocument/references", serde_json::to_value(params)?)
+            .await?;
+        
+        if response.is_null() {
+            return Ok(None);
+        }
+        
+        Ok(Some(serde_json::from_value(response)?))
+    }
+
+    /// Code completion with type safety
+    pub async fn completion(
+        &self,
+        params: lsp_types::CompletionParams,
+    ) -> Result<Option<lsp_types::CompletionResponse>> {
+        let response = self
+            .request("textDocument/completion", serde_json::to_value(params)?)
+            .await?;
+        
+        if response.is_null() {
+            return Ok(None);
+        }
+        
+        Ok(Some(serde_json::from_value(response)?))
+    }
 }
 
 impl LspClientInner {
