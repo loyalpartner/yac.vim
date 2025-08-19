@@ -10,16 +10,18 @@ endif
 let g:lsp_bridge_command = get(g:, 'lsp_bridge_command', ['lsp-bridge'])
 
 " 用户命令
-command! LspStart      call lsp_bridge#start()
-command! LspStop       call lsp_bridge#stop()
-command! LspDefinition call lsp_bridge#goto_definition()
-command! LspHover      call lsp_bridge#hover()
-command! LspComplete   call lsp_bridge#complete()
-command! LspReferences call lsp_bridge#references()
-command! LspOpenLog    call lsp_bridge#open_log()
+command! LspStart          call lsp_bridge#start()
+command! LspStop           call lsp_bridge#stop()
+command! LspDefinition     call lsp_bridge#goto_definition()
+command! LspTypeDefinition call lsp_bridge#goto_type_definition()
+command! LspHover          call lsp_bridge#hover()
+command! LspComplete       call lsp_bridge#complete()
+command! LspReferences     call lsp_bridge#references()
+command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
+nnoremap <silent> gy :LspTypeDefinition<CR>
 nnoremap <silent> gr :LspReferences<CR>
 nnoremap <silent> K  :LspHover<CR>
 

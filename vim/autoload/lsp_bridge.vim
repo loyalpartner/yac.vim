@@ -61,6 +61,15 @@ function! lsp_bridge#goto_definition() abort
     \ })
 endfunction
 
+function! lsp_bridge#goto_type_definition() abort
+  call s:send_command({
+    \ 'command': 'goto_type_definition',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
 function! lsp_bridge#hover() abort
   call s:send_command({
     \ 'command': 'hover',
@@ -164,8 +173,8 @@ function! s:handle_response(channel, msg) abort
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
-    " 静默处理 "No definition found"
-    if response.message != 'No definition found'
+    " 静默处理 "No definition found" 和 "No type definition found"
+    if response.message != 'No definition found' && response.message != 'No type definition found'
       echoerr response.message
     endif
   endif
