@@ -148,7 +148,12 @@ nnoremap <silent> K  :LspHover<CR>
 - `file_open` command - Initialize file in LSP server
 - `goto_definition` command - Jump to symbol definitions with popup window display
 - `hover` command - Show documentation/type information in floating popup  
-- `completion` command - Code completion with popup selection interface
+- `completion` command - Advanced code completion with:
+  - Keyboard navigation (Ctrl+P/Ctrl+N, arrow keys)
+  - Visual selection indicator (▶ marker)
+  - Enter/Tab confirmation
+  - Type-based color coding (Function=blue, Variable=green, etc.)
+  - Matching character highlighting with [brackets]
 - Auto-initialization on file open (`BufReadPost`/`BufNewFile` for `*.rs` files)
 - Silent "no definition found" handling
 - Workspace root detection for `rust-analyzer` (searches for `Cargo.toml`)
@@ -185,8 +190,9 @@ vim -u vimrc
 # 2. Navigate to User::new usage
 # 3. Press 'gd' to jump to definition
 
-# Run automated Vim integration test:
+# Run automated Vim integration tests:
 vim -u vimrc -c 'source tests/vim/goto_definition.vim'
+vim -u vimrc -c 'source tests/vim/completion_test.vim'
 ```
 
 ### Debug Information
