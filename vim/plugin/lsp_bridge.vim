@@ -14,6 +14,7 @@ command! LspStart      call lsp_bridge#start()
 command! LspStop       call lsp_bridge#stop()
 command! LspDefinition call lsp_bridge#goto_definition()
 command! LspHover      call lsp_bridge#hover()
+command! LspComplete   call lsp_bridge#complete()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
