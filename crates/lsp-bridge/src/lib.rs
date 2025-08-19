@@ -192,10 +192,15 @@ impl LspBridge {
     }
 
     /// 处理跳转到类型定义
-    async fn handle_goto_type_definition(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+    async fn handle_goto_type_definition(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
         use lsp_types::{
-            TypeDefinitionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
+        use lsp_types::request::GotoTypeDefinitionParams;
 
         // 确保文件已打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -213,7 +218,7 @@ impl LspBridge {
             }
         };
 
-        let params = TypeDefinitionParams {
+        let params = GotoTypeDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri },
                 position: Position {
