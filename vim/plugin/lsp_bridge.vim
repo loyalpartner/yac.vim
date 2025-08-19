@@ -15,10 +15,12 @@ command! LspStop       call lsp_bridge#stop()
 command! LspDefinition call lsp_bridge#goto_definition()
 command! LspHover      call lsp_bridge#hover()
 command! LspComplete   call lsp_bridge#complete()
+command! LspReferences call lsp_bridge#references()
 command! LspOpenLog    call lsp_bridge#open_log()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
+nnoremap <silent> gr :LspReferences<CR>
 nnoremap <silent> K  :LspHover<CR>
 
 " 简单的文件初始化

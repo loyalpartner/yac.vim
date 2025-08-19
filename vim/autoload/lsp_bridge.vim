@@ -96,6 +96,15 @@ function! lsp_bridge#complete() abort
     \ })
 endfunction
 
+function! lsp_bridge#references() abort
+  call s:send_command({
+    \ 'command': 'references',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -149,6 +158,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_hover_popup(response.content)
   elseif response.action == 'completions'
     call s:show_completions(response.items)
+  elseif response.action == 'references'
+    call s:show_references(response.locations)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -425,6 +436,28 @@ endfunction
 
 
 " === 日志查看功能 ===
+
+" 显示引用结果
+function! s:show_references(locations) abort
+  if empty(a:locations)
+    echo "No references found"
+    return
+  endif
+  
+  let qf_list = []
+  for loc in a:locations
+    call add(qf_list, {
+      \ 'filename': loc.file,
+      \ 'lnum': loc.line + 1,
+      \ 'col': loc.column + 1,
+      \ 'text': 'Reference'
+      \ })
+  endfor
+  
+  call setqflist(qf_list)
+  copen
+  echo 'Found ' . len(a:locations) . ' references'
+endfunction
 
 " 简单打开日志文件
 function! lsp_bridge#open_log() abort
