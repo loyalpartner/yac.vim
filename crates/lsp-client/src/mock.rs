@@ -16,21 +16,21 @@ impl MockLspServer {
     pub fn new() -> (Self, MockLspClient) {
         let (server_tx, server_rx) = mpsc::channel(100);
         let (client_tx, client_rx) = mpsc::channel(100);
-        
+
         let server = MockLspServer {
             handlers: HashMap::new(),
             message_tx: client_tx,
             message_rx: server_rx,
         };
-        
+
         let client = MockLspClient {
             message_tx: server_tx,
             message_rx: client_rx,
         };
-        
+
         (server, client)
     }
-    
+
     /// Register a handler for a specific LSP method
     pub fn on_request<F>(&mut self, method: &str, handler: F)
     where
@@ -38,13 +38,13 @@ impl MockLspServer {
     {
         self.handlers.insert(method.to_string(), Box::new(handler));
     }
-    
+
     /// Register a simple handler that returns a fixed response
     pub fn on_request_simple(&mut self, method: &str, response: Value) {
         let response = response.clone();
         self.on_request(method, move |_| Ok(response.clone()));
     }
-    
+
     /// Run the mock server, processing incoming requests
     pub async fn run(&mut self) -> Result<()> {
         while let Some(message) = self.message_rx.recv().await {
@@ -82,11 +82,11 @@ impl MockLspServer {
                                 }),
                             }
                         };
-                        
+
                         let response_msg = JsonRpcMessage::Response(response);
-                        let response_str = serde_json::to_string(&response_msg)
-                            .map_err(|e| LspError::Json(e))?;
-                        
+                        let response_str =
+                            serde_json::to_string(&response_msg).map_err(|e| LspError::Json(e))?;
+
                         let _ = self.message_tx.send(response_str).await;
                     }
                     _ => {
@@ -108,11 +108,13 @@ pub struct MockLspClient {
 impl MockLspClient {
     /// Send a message to the mock server
     pub async fn send_message(&self, message: &str) -> Result<()> {
-        self.message_tx.send(message.to_string()).await
+        self.message_tx
+            .send(message.to_string())
+            .await
             .map_err(|_| LspError::ChannelClosed)?;
         Ok(())
     }
-    
+
     /// Receive a message from the mock server
     pub async fn receive_message(&mut self) -> Result<Option<String>> {
         Ok(self.message_rx.recv().await)
@@ -128,21 +130,22 @@ mod tests {
     #[tokio::test]
     async fn test_mock_server() {
         let (mut server, client) = MockLspServer::new();
-        
+
         // Setup a simple handler
-        server.on_request_simple("initialize", json!({
-            "capabilities": {},
-            "serverInfo": {
-                "name": "mock-server",
-                "version": "1.0.0"
-            }
-        }));
-        
+        server.on_request_simple(
+            "initialize",
+            json!({
+                "capabilities": {},
+                "serverInfo": {
+                    "name": "mock-server",
+                    "version": "1.0.0"
+                }
+            }),
+        );
+
         // Start the server in background
-        let server_handle = tokio::spawn(async move {
-            server.run().await
-        });
-        
+        let server_handle = tokio::spawn(async move { server.run().await });
+
         // Send a request
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -150,10 +153,10 @@ mod tests {
             method: "initialize".to_string(),
             params: json!({}),
         };
-        
+
         let request_str = serde_json::to_string(&JsonRpcMessage::Request(request)).unwrap();
         client.send_message(&request_str).await.unwrap();
-        
+
         // The test would continue but we'll keep it simple for now
         server_handle.abort(); // Stop the background task
     }

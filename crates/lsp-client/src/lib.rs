@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 pub mod mock;
 
@@ -36,10 +36,7 @@ pub enum LspError {
     #[error("Connection reset")]
     ConnectionReset,
     #[error("Invalid response {request_id}: {reason}")]
-    InvalidResponse {
-        request_id: String,
-        reason: String,
-    },
+    InvalidResponse { request_id: String, reason: String },
     #[error("Server error {code}: {message}")]
     ServerError {
         code: i32,
@@ -126,8 +123,10 @@ impl MessageFramer {
     // Frame a message with Content-Length header
     pub fn frame_message(&mut self, content: &str) -> Bytes {
         self.buffer.clear();
-        self.buffer.extend_from_slice(CONTENT_LENGTH_HEADER.as_bytes());
-        self.buffer.extend_from_slice(content.len().to_string().as_bytes());
+        self.buffer
+            .extend_from_slice(CONTENT_LENGTH_HEADER.as_bytes());
+        self.buffer
+            .extend_from_slice(content.len().to_string().as_bytes());
         self.buffer.extend_from_slice(CRLF.as_bytes());
         self.buffer.extend_from_slice(CRLF.as_bytes());
         self.buffer.extend_from_slice(content.as_bytes());
@@ -138,11 +137,12 @@ impl MessageFramer {
     pub fn parse_messages(&mut self, data: &[u8]) -> Result<Vec<String>> {
         // Prevent buffer overflow attacks
         if self.buffer.len() + data.len() > MAX_BUFFER_SIZE {
-            return Err(LspError::Protocol(
-                format!("Buffer overflow: {} bytes exceeds limit", self.buffer.len() + data.len())
-            ));
+            return Err(LspError::Protocol(format!(
+                "Buffer overflow: {} bytes exceeds limit",
+                self.buffer.len() + data.len()
+            )));
         }
-        
+
         self.buffer.extend_from_slice(data);
         let mut messages = Vec::new();
 
@@ -152,21 +152,20 @@ impl MessageFramer {
             if header_end.is_none() {
                 break; // Need more data
             }
-            
+
             let header_end = header_end.unwrap();
             let content_length = self.parse_content_length(header_end)?;
-            
+
             let message_start = header_end + 4; // Skip \r\n\r\n
             let message_end = message_start + content_length;
-            
+
             if self.buffer.len() < message_end {
                 break; // Need more data
             }
-            
+
             // Extract complete message
             let message_bytes = self.buffer.split_to(message_end);
-            let message = String::from_utf8_lossy(&message_bytes[message_start..])
-                .into_owned();
+            let message = String::from_utf8_lossy(&message_bytes[message_start..]).into_owned();
             messages.push(message);
         }
 
@@ -175,7 +174,9 @@ impl MessageFramer {
 
     fn find_header_end(&self) -> Result<Option<usize>> {
         let pattern = b"\r\n\r\n";
-        Ok(self.buffer.windows(pattern.len())
+        Ok(self
+            .buffer
+            .windows(pattern.len())
             .position(|window| window == pattern))
     }
 
@@ -183,16 +184,19 @@ impl MessageFramer {
         let header = &self.buffer[..header_end];
         let header_str = std::str::from_utf8(header)
             .map_err(|_| LspError::Protocol("Invalid UTF-8 in header".to_string()))?;
-        
+
         for line in header_str.lines() {
             if line.starts_with(CONTENT_LENGTH_HEADER) {
                 let length_str = &line[CONTENT_LENGTH_HEADER.len()..];
-                return length_str.parse()
+                return length_str
+                    .parse()
                     .map_err(|_| LspError::Protocol("Invalid Content-Length".to_string()));
             }
         }
-        
-        Err(LspError::Protocol("Missing Content-Length header".to_string()))
+
+        Err(LspError::Protocol(
+            "Missing Content-Length header".to_string(),
+        ))
     }
 }
 
@@ -213,10 +217,8 @@ impl LspTransport {
             .stderr(std::process::Stdio::null())
             .spawn()?;
 
-        let stdin = child.stdin.take()
-            .ok_or(LspError::Process)?;
-        let stdout = child.stdout.take()
-            .ok_or(LspError::Process)?;
+        let stdin = child.stdin.take().ok_or(LspError::Process)?;
+        let stdout = child.stdout.take().ok_or(LspError::Process)?;
 
         Ok(Self {
             child,
@@ -237,7 +239,7 @@ impl LspTransport {
     pub async fn read_messages(&mut self) -> Result<Vec<String>> {
         let mut buffer = [0u8; 4096];
         let n = self.stdout.read(&mut buffer).await?;
-        
+
         if n == 0 {
             return Err(LspError::ConnectionReset);
         }
@@ -247,10 +249,13 @@ impl LspTransport {
 
     pub async fn shutdown(&mut self) -> Result<()> {
         // Try graceful shutdown first
-        if let Err(e) = self.send_message(r#"{"jsonrpc":"2.0","method":"shutdown","id":0}"#).await {
+        if let Err(e) = self
+            .send_message(r#"{"jsonrpc":"2.0","method":"shutdown","id":0}"#)
+            .await
+        {
             warn!("Failed to send shutdown request: {}", e);
         }
-        
+
         // Wait for graceful exit with timeout
         tokio::select! {
             result = self.child.wait() => {
@@ -320,7 +325,7 @@ impl LspClient {
     pub async fn new(command: &str, args: &[&str]) -> Result<Self> {
         let transport = LspTransport::spawn(command, args).await?;
         let (command_tx, command_rx) = mpsc::channel(100);
-        
+
         let mut inner = LspClientInner {
             transport,
             state: LspState::Uninitialized,
@@ -334,7 +339,7 @@ impl LspClient {
                 error!("LSP client background task failed: {}", e);
             }
         });
-        
+
         Ok(Self {
             command_tx,
             _background_task: background_task,
@@ -343,16 +348,18 @@ impl LspClient {
 
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         let command = ClientCommand::SendRequest {
             method: method.to_string(),
             params,
             response_tx,
         };
-        
-        self.command_tx.send(command).await
+
+        self.command_tx
+            .send(command)
+            .await
             .map_err(|_| LspError::ChannelClosed)?;
-        
+
         response_rx.await.map_err(|_| LspError::ChannelClosed)?
     }
 
@@ -361,15 +368,19 @@ impl LspClient {
             method: method.to_string(),
             params,
         };
-        
-        self.command_tx.send(command).await
+
+        self.command_tx
+            .send(command)
+            .await
             .map_err(|_| LspError::ChannelClosed)?;
-        
+
         Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.command_tx.send(ClientCommand::Shutdown).await
+        self.command_tx
+            .send(ClientCommand::Shutdown)
+            .await
             .map_err(|_| LspError::ChannelClosed)?;
         Ok(())
     }
@@ -406,7 +417,7 @@ impl LspClientInner {
                         None => break, // Channel closed
                     }
                 }
-                
+
                 // Read messages from the LSP server
                 messages = self.transport.read_messages() => {
                     match messages {
@@ -428,7 +439,12 @@ impl LspClientInner {
         Ok(())
     }
 
-    async fn handle_send_request(&mut self, method: &str, params: Value, response_tx: oneshot::Sender<Result<Value>>) -> Result<()> {
+    async fn handle_send_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        response_tx: oneshot::Sender<Result<Value>>,
+    ) -> Result<()> {
         let id = self.next_request_id();
         let request = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -438,10 +454,13 @@ impl LspClientInner {
         };
 
         // Store pending request
-        self.pending_requests.insert(id.clone(), PendingRequest {
-            method: method.to_string(),
-            sender: response_tx,
-        });
+        self.pending_requests.insert(
+            id.clone(),
+            PendingRequest {
+                method: method.to_string(),
+                sender: response_tx,
+            },
+        );
 
         // Send message, propagate errors back to caller if it fails
         let message = match serde_json::to_string(&JsonRpcMessage::Request(request)) {
@@ -449,14 +468,16 @@ impl LspClientInner {
             Err(json_err) => {
                 // Remove pending request and send error back
                 if let Some(pending) = self.pending_requests.remove(&id) {
-                    let _ = pending.sender.send(Err(LspError::Protocol("JSON serialization failed".to_string())));
+                    let _ = pending.sender.send(Err(LspError::Protocol(
+                        "JSON serialization failed".to_string(),
+                    )));
                 }
                 return Err(LspError::Json(json_err));
             }
         };
-        
+
         if let Err(e) = self.transport.send_message(&message).await {
-            // Remove pending request and send error back  
+            // Remove pending request and send error back
             if let Some(pending) = self.pending_requests.remove(&id) {
                 let error_for_sender = match &e {
                     LspError::Io(_) => LspError::Protocol("Transport failed".to_string()),
@@ -467,7 +488,7 @@ impl LspClientInner {
             }
             return Err(e);
         }
-        
+
         Ok(())
     }
 
@@ -486,7 +507,7 @@ impl LspClientInner {
     fn handle_message(&mut self, message: &str) -> Result<()> {
         debug!("Received: {}", message);
         let msg: JsonRpcMessage = serde_json::from_str(message)?;
-        
+
         match msg {
             JsonRpcMessage::Response(response) => self.handle_response(response),
             JsonRpcMessage::Notification(notification) => self.handle_notification(notification),
@@ -534,7 +555,7 @@ mod tests {
         let mut framer = MessageFramer::new();
         let content = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
         let framed = framer.frame_message(content);
-        
+
         let expected = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
         assert_eq!(std::str::from_utf8(&framed).unwrap(), expected);
     }
@@ -544,7 +565,7 @@ mod tests {
         let mut framer = MessageFramer::new();
         let content = r#"{"jsonrpc":"2.0","id":1,"method":"test"}"#;
         let raw_message = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
-        
+
         let messages = framer.parse_messages(raw_message.as_bytes()).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0], content);

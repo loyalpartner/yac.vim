@@ -10,18 +10,21 @@ mod lsp_client_integration_tests {
     #[tokio::test]
     async fn test_mock_server_basic_request_response() {
         let (mut server, mut client) = MockLspServer::new();
-        
+
         // Setup handler for initialize request
-        server.on_request_simple("initialize", json!({
-            "capabilities": {
-                "definitionProvider": true,
-                "hoverProvider": true
-            },
-            "serverInfo": {
-                "name": "mock-lsp",
-                "version": "1.0.0"
-            }
-        }));
+        server.on_request_simple(
+            "initialize",
+            json!({
+                "capabilities": {
+                    "definitionProvider": true,
+                    "hoverProvider": true
+                },
+                "serverInfo": {
+                    "name": "mock-lsp",
+                    "version": "1.0.0"
+                }
+            }),
+        );
 
         // Start server in background
         let server_handle = tokio::spawn(async move {
@@ -44,16 +47,16 @@ mod lsp_client_integration_tests {
         // Receive response
         let response = client.receive_message().await.unwrap();
         assert!(response.is_some());
-        
+
         let response_str = response.unwrap();
         let response_msg: JsonRpcMessage = serde_json::from_str(&response_str).unwrap();
-        
+
         match response_msg {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RequestId::Number(1));
                 assert!(response.result.is_some());
                 assert!(response.error.is_none());
-                
+
                 let result = response.result.unwrap();
                 assert_eq!(result["serverInfo"]["name"], "mock-lsp");
             }
@@ -66,7 +69,7 @@ mod lsp_client_integration_tests {
     #[tokio::test]
     async fn test_mock_server_method_not_found() {
         let (mut server, mut client) = MockLspServer::new();
-        
+
         // Start server without any handlers
         let server_handle = tokio::spawn(async move {
             server.run().await.unwrap();
@@ -86,16 +89,16 @@ mod lsp_client_integration_tests {
         // Should receive error response
         let response = client.receive_message().await.unwrap();
         assert!(response.is_some());
-        
+
         let response_str = response.unwrap();
         let response_msg: JsonRpcMessage = serde_json::from_str(&response_str).unwrap();
-        
+
         match response_msg {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RequestId::Number(1));
                 assert!(response.result.is_none());
                 assert!(response.error.is_some());
-                
+
                 let error = response.error.unwrap();
                 assert_eq!(error.code, -32601); // Method not found
                 assert!(error.message.contains("Method not found"));
@@ -106,20 +109,23 @@ mod lsp_client_integration_tests {
         server_handle.abort();
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_mock_server_goto_definition() {
         let (mut server, mut client) = MockLspServer::new();
-        
+
         // Setup handler for textDocument/definition
-        server.on_request_simple("textDocument/definition", json!([
-            {
-                "uri": "file:///test.rs",
-                "range": {
-                    "start": {"line": 10, "character": 5},
-                    "end": {"line": 10, "character": 15}
+        server.on_request_simple(
+            "textDocument/definition",
+            json!([
+                {
+                    "uri": "file:///test.rs",
+                    "range": {
+                        "start": {"line": 10, "character": 5},
+                        "end": {"line": 10, "character": 15}
+                    }
                 }
-            }
-        ]));
+            ]),
+        );
 
         let server_handle = tokio::spawn(async move {
             server.run().await.unwrap();
@@ -147,21 +153,21 @@ mod lsp_client_integration_tests {
         // Receive definition response
         let response = client.receive_message().await.unwrap();
         assert!(response.is_some());
-        
+
         let response_str = response.unwrap();
         let response_msg: JsonRpcMessage = serde_json::from_str(&response_str).unwrap();
-        
+
         match response_msg {
             JsonRpcMessage::Response(response) => {
                 assert_eq!(response.id, RequestId::Number(2));
                 assert!(response.result.is_some());
                 assert!(response.error.is_none());
-                
+
                 let result = response.result.unwrap();
                 assert!(result.is_array());
                 let definitions = result.as_array().unwrap();
                 assert_eq!(definitions.len(), 1);
-                
+
                 let definition = &definitions[0];
                 assert_eq!(definition["uri"], "file:///test.rs");
                 assert_eq!(definition["range"]["start"]["line"], 10);
@@ -175,7 +181,7 @@ mod lsp_client_integration_tests {
     #[tokio::test]
     async fn test_mock_server_notifications() {
         let (mut server, mut client) = MockLspServer::new();
-        
+
         let server_handle = tokio::spawn(async move {
             server.run().await.unwrap();
         });
@@ -194,16 +200,18 @@ mod lsp_client_integration_tests {
             }),
         };
 
-        let notification_str = serde_json::to_string(&JsonRpcMessage::Notification(notification)).unwrap();
+        let notification_str =
+            serde_json::to_string(&JsonRpcMessage::Notification(notification)).unwrap();
         client.send_message(&notification_str).await.unwrap();
 
         // Should not receive any response for notification
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let response = tokio::time::timeout(
             tokio::time::Duration::from_millis(50),
-            client.receive_message()
-        ).await;
-        
+            client.receive_message(),
+        )
+        .await;
+
         // Should timeout (no response expected)
         assert!(response.is_err());
 
