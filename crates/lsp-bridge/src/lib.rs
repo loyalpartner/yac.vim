@@ -45,6 +45,8 @@ pub enum VimAction {
 pub struct CompletionItem {
     pub label: String,
     pub kind: String,
+    pub detail: Option<String>,        // 类型/符号详细信息
+    pub documentation: Option<String>, // 完整文档内容
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -599,9 +601,23 @@ impl From<&lsp_types::CompletionItem> for CompletionItem {
             })
             .unwrap_or_else(|| "Unknown".to_string());
 
+        // 提取详细信息
+        let detail = item.detail.clone();
+
+        // 提取并处理文档信息
+        let documentation = item.documentation.as_ref().map(|doc| {
+            use lsp_types::Documentation;
+            match doc {
+                Documentation::String(s) => s.clone(),
+                Documentation::MarkupContent(markup) => markup.value.clone(),
+            }
+        });
+
         CompletionItem {
             label: item.label.clone(),
             kind,
+            detail,
+            documentation,
         }
     }
 }

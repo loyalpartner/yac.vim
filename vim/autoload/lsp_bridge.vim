@@ -14,6 +14,7 @@ let s:hover_popup_id = -1
 " 补全状态 - 分离数据和显示  
 let s:completion = {}
 let s:completion.popup_id = -1
+let s:completion.doc_popup_id = -1  " 文档popup窗口ID
 let s:completion.items = []
 let s:completion.original_items = []
 let s:completion.selected = 0
@@ -289,6 +290,8 @@ function! s:render_completion_window() abort
   endfor
   
   call s:create_or_update_completion_popup(lines)
+  " 显示选中项的文档
+  call s:show_completion_documentation()
 endfunction
 
 " 简单过滤补全项
@@ -334,6 +337,61 @@ function! s:create_or_update_completion_popup(lines) abort
       \ })
   else
     echo "Completions: " . join(a:lines, " | ")
+  endif
+endfunction
+
+" 显示补全项文档
+function! s:show_completion_documentation() abort
+  " 关闭之前的文档popup
+  call s:close_completion_documentation()
+  
+  " 检查是否有补全项和popup支持
+  if !exists('*popup_create') || empty(s:completion.items) || s:completion.selected >= len(s:completion.items)
+    return
+  endif
+  
+  let item = s:completion.items[s:completion.selected]
+  let doc_lines = []
+  
+  " 添加detail信息（类型/符号信息）
+  if has_key(item, 'detail') && !empty(item.detail)
+    call add(doc_lines, '📋 ' . item.detail)
+  endif
+  
+  " 添加documentation信息
+  if has_key(item, 'documentation') && !empty(item.documentation)
+    if !empty(doc_lines)
+      call add(doc_lines, '')  " 分隔线
+    endif
+    " 将多行文档分割成单独的行
+    let doc_text = substitute(item.documentation, '\r\n\|\r\|\n', '\n', 'g')
+    call extend(doc_lines, split(doc_text, '\n'))
+  endif
+  
+  " 如果没有文档信息就不显示popup
+  if empty(doc_lines)
+    return
+  endif
+  
+  " 创建文档popup，位于补全popup右侧
+  let s:completion.doc_popup_id = popup_create(doc_lines, {
+    \ 'line': 'cursor+1',
+    \ 'col': 'cursor+35',
+    \ 'minwidth': 40,
+    \ 'maxwidth': 80,
+    \ 'maxheight': 15,
+    \ 'border': [],
+    \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+    \ 'title': ' Documentation ',
+    \ 'wrap': 1
+    \ })
+endfunction
+
+" 关闭补全文档popup
+function! s:close_completion_documentation() abort
+  if s:completion.doc_popup_id != -1 && exists('*popup_close')
+    call popup_close(s:completion.doc_popup_id)
+    let s:completion.doc_popup_id = -1
   endif
 endfunction
 
@@ -427,6 +485,8 @@ function! s:close_completion_popup() abort
     let s:completion.selected = 0
     let s:completion.prefix = ''
   endif
+  " 同时关闭文档popup
+  call s:close_completion_documentation()
 endfunction
 
 
