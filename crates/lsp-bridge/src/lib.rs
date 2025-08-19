@@ -121,11 +121,16 @@ impl LspBridge {
             };
         }
         
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => return VimAction::Error {
+                message: format!("Invalid file path: {}", command.file),
+            },
+        };
+        
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: lsp_types::Url::from_file_path(&command.file).unwrap(),
-                },
+                text_document: TextDocumentIdentifier { uri },
                 position: Position {
                     line: command.line,
                     character: command.column,
@@ -189,11 +194,16 @@ impl LspBridge {
         use lsp_types::{HoverParams, TextDocumentIdentifier, Position, TextDocumentPositionParams};
         use serde_json::json;
         
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => return VimAction::Error {
+                message: format!("Invalid file path: {}", command.file),
+            },
+        };
+        
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: lsp_types::Url::from_file_path(&command.file).unwrap(),
-                },
+                text_document: TextDocumentIdentifier { uri },
                 position: Position {
                     line: command.line,
                     character: command.column,
@@ -220,10 +230,56 @@ impl LspBridge {
     }
     
     /// 处理代码补全
-    async fn handle_completion(&self, _client: &LspClient, _command: &VimCommand) -> VimAction {
-        // TODO: 实现代码补全
-        VimAction::Error {
-            message: "Completion not yet implemented".to_string(),
+    async fn handle_completion(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{CompletionParams, TextDocumentIdentifier, Position, TextDocumentPositionParams};
+        use serde_json::json;
+        
+        // 确保文件已经打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+        
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => return VimAction::Error {
+                message: format!("Invalid file path: {}", command.file),
+            },
+        };
+        
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+        
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.request("textDocument/completion", json!(params))
+        ).await;
+        
+        match result {
+            Ok(Ok(completions)) => {
+                use tracing::debug;
+                debug!("Got LSP completion result: {:?}", completions);
+                
+                let items = self.extract_completion_items(&completions);
+                VimAction::Completions { items }
+            },
+            Ok(Err(e)) => VimAction::Error {
+                message: format!("Completion failed: {}", e),
+            },
+            Err(_) => VimAction::Error {
+                message: "Completion request timed out".to_string(),
+            },
         }
     }
     
@@ -278,6 +334,64 @@ impl LspBridge {
         }
     }
     
+    /// 从补全结果中提取补全项
+    fn extract_completion_items(&self, completions: &Value) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        
+        // 处理 CompletionList 或 CompletionItem[]
+        let completion_items = if let Some(list) = completions.get("items") {
+            // CompletionList 格式
+            list.as_array()
+        } else {
+            // 直接是 CompletionItem[] 格式
+            completions.as_array()
+        };
+        
+        if let Some(items_array) = completion_items {
+            for item in items_array {
+                if let Some(label) = item.get("label").and_then(|l| l.as_str()) {
+                    let kind = item
+                        .get("kind")
+                        .and_then(|k| k.as_u64())
+                        .map(|k| self.completion_kind_to_string(k))
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    items.push(CompletionItem {
+                        label: label.to_string(),
+                        kind,
+                    });
+                }
+            }
+        }
+        
+        items
+    }
+    
+    /// 将LSP CompletionItemKind转换为字符串
+    fn completion_kind_to_string(&self, kind: u64) -> String {
+        match kind {
+            1 => "Text".to_string(),
+            2 => "Method".to_string(),
+            3 => "Function".to_string(),
+            4 => "Constructor".to_string(),
+            5 => "Field".to_string(),
+            6 => "Variable".to_string(),
+            7 => "Class".to_string(),
+            8 => "Interface".to_string(),
+            9 => "Module".to_string(),
+            10 => "Property".to_string(),
+            11 => "Unit".to_string(),
+            12 => "Value".to_string(),
+            13 => "Enum".to_string(),
+            14 => "Keyword".to_string(),
+            15 => "Snippet".to_string(),
+            16 => "Color".to_string(),
+            17 => "File".to_string(),
+            18 => "Reference".to_string(),
+            _ => "Unknown".to_string(),
+        }
+    }
+    
     /// 根据文件扩展名检测语言
     fn detect_language(file_path: &str) -> String {
         if file_path.ends_with(".rs") {
@@ -317,14 +431,16 @@ impl LspBridge {
                     initialization_options: None,
                     capabilities: ClientCapabilities::default(),
                     trace: None,
-                    workspace_folders: workspace_root.map(|path| {
-                        vec![WorkspaceFolder {
-                            uri: lsp_types::Url::from_file_path(&path).unwrap(),
-                            name: path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                        }]
+                    workspace_folders: workspace_root.and_then(|path| {
+                        lsp_types::Url::from_file_path(&path).ok().map(|uri| {
+                            vec![WorkspaceFolder {
+                                uri,
+                                name: path.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            }]
+                        })
                     }),
                     client_info: None,
                     locale: None,
