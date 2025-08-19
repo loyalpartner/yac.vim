@@ -3,6 +3,11 @@ use std::io::{self, BufRead};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
+/// 解析Vim输入为命令
+fn parse_vim_input(input: &str) -> Option<VimCommand> {
+    serde_json::from_str::<VimCommand>(input).ok()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志到文件
@@ -35,36 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 记录收到的输入，用于调试
                 info!("Received input: {}", input);
                 
-                // 检查是否是Vim channel格式 [id, data]
-                if let Ok(vim_array) = serde_json::from_str::<serde_json::Value>(&input) {
-                    if let Some(array) = vim_array.as_array() {
-                        if array.len() == 2 {
-                            if let Some(_id) = array[0].as_u64() {
-                                let data = &array[1];
-                                // 尝试解析数据部分为VimCommand
-                                if let Ok(vim_cmd) = serde_json::from_value::<VimCommand>(data.clone()) {
-                                    info!("Processing Vim channel command: {} for {}", vim_cmd.command, vim_cmd.file);
-                                    
-                                    // 处理Vim命令
-                                    let action = bridge.handle_command(vim_cmd).await;
-                                    
-                                    // 返回动作（Vim期望的格式）
-                                    let response_json = serde_json::to_string(&action)?;
-                                    info!("Sending response to Vim: {}", response_json);
-                                    stdout.write_all(response_json.as_bytes()).await?;
-                                    stdout.write_all(b"\n").await?;
-                                    stdout.flush().await?;
-                                    
-                                    info!("Vim channel command processed");
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // 尝试解析为高层命令（直接格式）
-                if let Ok(vim_cmd) = serde_json::from_str::<VimCommand>(&input) {
+                // 尝试解析为命令
+                if let Some(vim_cmd) = parse_vim_input(&input) {
                     info!("Processing command: {} for {}", vim_cmd.command, vim_cmd.file);
                     
                     // 处理Vim命令
@@ -72,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     // 返回动作
                     let response_json = serde_json::to_string(&action)?;
+                    info!("Sending response: {}", response_json);
                     stdout.write_all(response_json.as_bytes()).await?;
                     stdout.write_all(b"\n").await?;
                     stdout.flush().await?;
