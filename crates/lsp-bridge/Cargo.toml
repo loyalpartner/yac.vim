@@ -1,17 +1,21 @@
 [package]
 name = "lsp-bridge"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "lsp-bridge"
+path = "src/main.rs"
+
 
 [dependencies]
-lsp-types = "0.97.0"
-log.workspace = true
-env_logger.workspace = true
-serde_json.workspace = true
-serde.workspace = true
-serde_derive.workspace = true
-regex = "1.11.1"
-derive_builder = "0.20.2"
-uuid = { version = "1.12.1", features = ["v4"] }
-anyhow = "1.0.95"
-thiserror = "2.0.11"
+lsp-client = { path = "../lsp-client" }
+lsp-types = "0.94"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
