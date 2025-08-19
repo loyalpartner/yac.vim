@@ -168,30 +168,7 @@ function! s:show_hover_popup(content) abort
   let line_num = cursor_pos[1]
   let col_num = cursor_pos[2]
   
-  if has('nvim')
-    " Neovim实现
-    let buf = nvim_create_buf(v:false, v:true)
-    call nvim_buf_set_lines(buf, 0, -1, v:true, lines)
-    
-    let opts = {
-      \ 'relative': 'cursor',
-      \ 'width': width,
-      \ 'height': height,
-      \ 'row': 1,
-      \ 'col': 0,
-      \ 'style': 'minimal',
-      \ 'border': 'single'
-      \ }
-    
-    let s:hover_popup_id = nvim_open_win(buf, v:false, opts)
-    
-    " 设置自动关闭
-    augroup lsp_bridge_hover
-      autocmd!
-      autocmd CursorMoved,CursorMovedI,InsertEnter * call s:close_hover_popup()
-    augroup END
-    
-  elseif exists('*popup_create')
+  if exists('*popup_create')
     " Vim 8.1+ popup实现
     let opts = {
       \ 'line': 'cursor+1',
@@ -213,26 +190,12 @@ endfunction
 
 " 关闭hover窗口
 function! s:close_hover_popup() abort
-  if s:hover_popup_id != -1
-    if has('nvim')
-      try
-        call nvim_win_close(s:hover_popup_id, v:true)
-      catch
-        " 窗口可能已经关闭
-      endtry
-      
-      " 清理autocmd
-      augroup lsp_bridge_hover
-        autocmd!
-      augroup END
-    elseif exists('*popup_close')
-      try
-        call popup_close(s:hover_popup_id)
-      catch
-        " 窗口可能已经关闭
-      endtry
-    endif
-    
+  if s:hover_popup_id != -1 && exists('*popup_close')
+    try
+      call popup_close(s:hover_popup_id)
+    catch
+      " 窗口可能已经关闭
+    endtry
     let s:hover_popup_id = -1
   endif
 endfunction
@@ -272,30 +235,7 @@ function! s:show_completion_popup(items) abort
   let line_num = cursor_pos[1]
   let col_num = cursor_pos[2]
   
-  if has('nvim')
-    " Neovim实现
-    let buf = nvim_create_buf(v:false, v:true)
-    call nvim_buf_set_lines(buf, 0, -1, v:true, lines)
-    
-    let opts = {
-      \ 'relative': 'cursor',
-      \ 'width': width,
-      \ 'height': height,
-      \ 'row': 1,
-      \ 'col': 0,
-      \ 'style': 'minimal',
-      \ 'border': 'single'
-      \ }
-    
-    let s:completion_popup_id = nvim_open_win(buf, v:false, opts)
-    
-    " 设置自动关闭
-    augroup lsp_bridge_completion
-      autocmd!
-      autocmd CursorMoved,CursorMovedI * call s:close_completion_popup()
-    augroup END
-    
-  elseif exists('*popup_create')
+  if exists('*popup_create')
     " Vim 8.1+ popup实现
     let opts = {
       \ 'line': 'cursor+1',
@@ -351,26 +291,12 @@ endfunction
 
 " 关闭补全窗口
 function! s:close_completion_popup() abort
-  if s:completion_popup_id != -1
-    if has('nvim')
-      try
-        call nvim_win_close(s:completion_popup_id, v:true)
-      catch
-        " 窗口可能已经关闭
-      endtry
-      
-      " 清理autocmd
-      augroup lsp_bridge_completion
-        autocmd!
-      augroup END
-    elseif exists('*popup_close')
-      try
-        call popup_close(s:completion_popup_id)
-      catch
-        " 窗口可能已经关闭
-      endtry
-    endif
-    
+  if s:completion_popup_id != -1 && exists('*popup_close')
+    try
+      call popup_close(s:completion_popup_id)
+    catch
+      " 窗口可能已经关闭
+    endtry
     let s:completion_popup_id = -1
     let s:completion_items = []
   endif

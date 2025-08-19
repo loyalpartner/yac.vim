@@ -16,7 +16,7 @@ A blazing fast Rust-based LSP bridge for Vim with inverted control architecture.
 ### Prerequisites
 
 - Rust 1.70+
-- Vim 8.1+ or Neovim 0.5+
+- Vim 8.1+ (Neovim not supported)
 - LSP servers (rust-analyzer, pyright, etc.)
 
 ### Building from Source

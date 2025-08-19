@@ -1,8 +1,8 @@
 " lsp-bridge Vim plugin entry point
 " Minimal LSP integration for Vim
 
-" 兼容性检查
-if !has('job') && !has('nvim')
+" 兼容性检查 - 只支持 Vim 8.0+
+if !has('job')
   finish
 endif
 

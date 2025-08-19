@@ -151,7 +151,7 @@ nnoremap <silent> K  :LspHover<CR>
 - Auto-initialization on file open (`BufReadPost`/`BufNewFile` for `*.rs` files)
 - Silent "no definition found" handling
 - Workspace root detection for `rust-analyzer` (searches for `Cargo.toml`)
-- Popup window support for both Vim 8.1+ and Neovim
+- Popup window support for Vim 8.1+
 
 ### Language Support
 - **Rust**: Full support via `rust-analyzer`
@@ -196,7 +196,7 @@ The test data includes a simple Rust project structure for validating LSP functi
 1. **"lsp-bridge not running"**: The process failed to start, check if binary exists at path
 2. **No response from LSP**: Check `/tmp/lsp-bridge.log` for LSP server errors
 3. **No definition found**: This is silently handled (expected for some symbols)
-4. **Popup not showing**: May need Vim 8.1+ or Neovim for popup support
+4. **Popup not showing**: Requires Vim 8.1+ for popup support, falls back to echo on older versions
 
 ### Troubleshooting Commands
 ```bash
