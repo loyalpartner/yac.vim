@@ -28,6 +28,11 @@ source vim/plugin/lsp_bridge.vim
 let g:lsp_bridge_command = ['./target/release/lsp-bridge']
 let g:lsp_bridge_auto_start = 1
 
+" 自动补全配置 (可以修改这些值进行测试)
+let g:lsp_bridge_auto_complete = 1          " 1=启用, 0=禁用自动补全
+let g:lsp_bridge_auto_complete_delay = 200  " 延迟毫秒数 (200ms)
+let g:lsp_bridge_auto_complete_min_chars = 1 " 最少触发字符数
+
 " 状态行显示
 set laststatus=2
 set statusline=%f\ %h%w%m%r\ %=%(%l,%c%V\ %=\ %P%)

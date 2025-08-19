@@ -136,10 +136,24 @@ let g:lsp_bridge_command = ['./target/release/lsp-bridge']
 let g:lsp_bridge_auto_start = 1
 ```
 
+### Auto-Completion Settings
+```vim
+let g:lsp_bridge_auto_complete = 1          " Enable auto-completion (default: 1)
+let g:lsp_bridge_auto_complete_delay = 200  " Delay in milliseconds (default: 200)
+let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (default: 1)
+```
+
+**Smart Delay Strategy**:
+- First trigger: Uses configured delay (default 200ms)
+- Subsequent filtering: Uses 50ms delay for responsive filtering
+- Existing completion data is filtered locally without LSP requests
+
 ### Default Key Mappings
 ```vim
 nnoremap <silent> gd :LspDefinition<CR>
 nnoremap <silent> K  :LspHover<CR>
+" Manual completion trigger
+inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 ```
 
 ## Current Functionality
@@ -149,11 +163,13 @@ nnoremap <silent> K  :LspHover<CR>
 - `goto_definition` command - Jump to symbol definitions with popup window display
 - `hover` command - Show documentation/type information in floating popup  
 - `completion` command - Advanced code completion with:
-  - Keyboard navigation (Ctrl+P/Ctrl+N, arrow keys)
-  - Visual selection indicator (▶ marker)
-  - Enter/Tab confirmation
-  - Type-based color coding (Function=blue, Variable=green, etc.)
-  - Matching character highlighting with [brackets]
+  - **Auto-trigger**: Automatically shows completions while typing (300ms delay)
+  - **Smart context**: Only triggers in appropriate contexts (not in strings/comments)
+  - **Keyboard navigation**: Ctrl+P/Ctrl+N, arrow keys
+  - **Visual selection**: ▶ marker for current selection  
+  - **Confirmation**: Enter/Tab to accept, Esc to cancel
+  - **Type-based colors**: Function=blue, Variable=green, etc.
+  - **Match highlighting**: [brackets] around matching characters
 - Auto-initialization on file open (`BufReadPost`/`BufNewFile` for `*.rs` files)
 - Silent "no definition found" handling
 - Workspace root detection for `rust-analyzer` (searches for `Cargo.toml`)
@@ -193,7 +209,22 @@ vim -u vimrc
 # Run automated Vim integration tests:
 vim -u vimrc -c 'source tests/vim/goto_definition.vim'
 vim -u vimrc -c 'source tests/vim/completion_test.vim'
+
+# Auto-completion testing (manual only):
+vim -u vimrc -c 'source tests/vim/auto_complete_demo.vim'
+# Then manually type in INSERT mode to test auto-completion
 ```
+
+### Auto-Completion Testing
+Auto-completion must be tested manually due to the nature of interactive events:
+
+1. **Setup**: `vim -u vimrc -c 'source tests/vim/auto_complete_demo.vim'`
+2. **Test typing**: Enter insert mode and type `HashMap::`, `Vec::`, etc.
+3. **Verify features**: 
+   - 300ms delay before popup appears
+   - ▶ selection indicator and [match] highlighting  
+   - Ctrl+P/N navigation, Enter/Tab confirmation
+   - Smart context detection (no completion in strings/comments)
 
 ### Debug Information
 - LSP bridge logs: `/tmp/lsp-bridge.log`

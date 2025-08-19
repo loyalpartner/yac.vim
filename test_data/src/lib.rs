@@ -56,3 +56,4 @@ mod tests {
         assert_eq!(users.len(), 2);
     }
 }
+
