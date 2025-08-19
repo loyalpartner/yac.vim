@@ -156,6 +156,16 @@ nnoremap <silent> K  :LspHover<CR>
 inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 ```
 
+### Log Viewing Commands
+```vim
+:LspOpenLog    " Open log viewer in a new buffer
+:LspClearLog   " Clear current log file
+```
+
+**Log Features**:
+- Each lsp-bridge process has isolated log file: `/tmp/lsp-bridge-<pid>.log`
+- Press 'r' in log buffer to refresh content
+
 ## Current Functionality
 
 ### Implemented Features ✅
