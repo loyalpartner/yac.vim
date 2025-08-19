@@ -81,6 +81,7 @@ tail -f /tmp/lsp-bridge.log
 - `crates/lsp-client/` - LSP client library with JSON-RPC handling
 - `vim/` - Vim plugin files (~380 lines VimScript total)
 - `test_data/` - Test Rust project for development
+- `tests/vim/` - Vim integration tests
 - `docs/` - Requirements and design documentation
 
 **Communication Flow:**
@@ -179,10 +180,13 @@ Legacy protocol handling was removed in v0.2 to maintain simplicity. The current
 # Start development environment
 vim -u vimrc
 
-# Test goto definition
+# Test goto definition manually:
 # 1. Open test_data/src/lib.rs  
 # 2. Navigate to User::new usage
 # 3. Press 'gd' to jump to definition
+
+# Run automated Vim integration test:
+vim -u vimrc -c 'source tests/vim/goto_definition.vim'
 ```
 
 ### Debug Information
