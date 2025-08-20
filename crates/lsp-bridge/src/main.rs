@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // 尝试解析为命令
                 if let Some(vim_cmd) = parse_vim_input(&input) {
-                    let file_path = vim_cmd.get_file_path();
+                    let file_path = vim_cmd.file_path();
                     info!("Processing command: {:?} for {}", vim_cmd, file_path);
 
                     // 处理Vim命令
