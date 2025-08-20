@@ -2,6 +2,16 @@ use lsp_client::{LspClient, Result as LspResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// 宏：简化 file_path_to_uri 的错误处理
+macro_rules! try_uri {
+    ($lsp_bridge:expr, $file_path:expr) => {
+        match $lsp_bridge.file_path_to_uri($file_path) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        }
+    };
+}
+
 // Legacy structs removed - now using VimCommand only
 
 // 新的简化命令格式
@@ -13,6 +23,10 @@ pub struct VimCommand {
     pub column: u32,     // 0-based 列号
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_name: Option<String>, // 用于 rename 命令的新名称
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>, // 用于 textDocument lifecycle 的文档内容
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_reason: Option<u32>, // 用于 willSave 的保存原因 (1=Manual, 2=AfterDelay, 3=FocusOut)
 }
 
 // Using VimCommand directly - no legacy support
@@ -176,6 +190,11 @@ impl LspBridge {
                     self.handle_call_hierarchy_outgoing(client, &command).await
                 }
                 "document_symbols" => self.handle_document_symbols(client, &command).await,
+                "did_save" => self.handle_did_save(client, &command).await,
+                "did_change" => self.handle_did_change(client, &command).await,
+                "will_save" => self.handle_will_save(client, &command).await,
+                "will_save_wait_until" => self.handle_will_save_wait_until(client, &command).await,
+                "did_close" => self.handle_did_close(client, &command).await,
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -200,14 +219,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -274,14 +286,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -351,14 +356,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoTypeDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -428,14 +426,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoImplementationParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -502,14 +493,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -547,14 +531,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
@@ -610,14 +587,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = ReferenceParams {
             text_document_position: TextDocumentPositionParams {
@@ -673,14 +643,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         // Read file to get the total number of lines for the range
         let line_count = match std::fs::read_to_string(&command.file) {
@@ -745,14 +708,7 @@ impl LspBridge {
             }
         };
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = RenameParams {
             text_document_position: TextDocumentPositionParams {
@@ -967,14 +923,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier { uri },
@@ -1013,19 +962,22 @@ impl LspBridge {
 
     /// 确保文件在LSP服务器中已打开
     async fn ensure_file_open(&self, client: &LspClient, file_path: &str) -> Result<(), String> {
-        use serde_json::json;
+        use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem};
 
         let text = std::fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
-        let params = json!({
-            "textDocument": {
-                "uri": format!("file://{}", file_path),
-                "languageId": Self::detect_language(file_path),
-                "version": 1,
-                "text": text
-            }
-        });
+        let uri = lsp_types::Url::from_file_path(file_path)
+            .map_err(|_| format!("Invalid file path: {}", file_path))?;
+
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri,
+                language_id: Self::detect_language(file_path),
+                version: 1,
+                text,
+            },
+        };
 
         client
             .notify("textDocument/didOpen", params)
@@ -1195,6 +1147,13 @@ impl LspBridge {
         }
     }
 
+    /// URI 转换助手函数 - 减少重复代码
+    fn file_path_to_uri(&self, file_path: &str) -> Result<lsp_types::Url, VimAction> {
+        lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
+            message: format!("Invalid file path: {}", file_path),
+        })
+    }
+
     /// 查找工作区根目录（向上查找 Cargo.toml）
     fn find_workspace_root(file_path: &str) -> Option<PathBuf> {
         let mut path = PathBuf::from(file_path);
@@ -1207,6 +1166,147 @@ impl LspBridge {
         }
 
         None
+    }
+
+    /// 处理文档保存通知
+    async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
+
+        let uri = try_uri!(self, &command.file);
+
+        let params = DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            text: command.text.clone(),
+        };
+
+        match client.notify("textDocument/didSave", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didSave notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档更改通知
+    async fn handle_did_change(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{
+            DidChangeTextDocumentParams, TextDocumentContentChangeEvent,
+            VersionedTextDocumentIdentifier,
+        };
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        // Simple version tracking - in a real implementation this would be per-document
+        static DOCUMENT_VERSION: AtomicI32 = AtomicI32::new(1);
+        let version = DOCUMENT_VERSION.fetch_add(1, Ordering::SeqCst);
+
+        let uri = try_uri!(self, &command.file);
+
+        let text = command.text.as_ref().cloned().unwrap_or_default();
+        let params = DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri, version },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text,
+            }],
+        };
+
+        match client.notify("textDocument/didChange", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didChange notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档将要保存通知
+    async fn handle_will_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{
+            TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
+        };
+
+        let uri = try_uri!(self, &command.file);
+        let reason = match command.save_reason.unwrap_or(1) {
+            1 => TextDocumentSaveReason::MANUAL,
+            2 => TextDocumentSaveReason::AFTER_DELAY,
+            3 => TextDocumentSaveReason::FOCUS_OUT,
+            _ => TextDocumentSaveReason::MANUAL,
+        };
+
+        let params = WillSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            reason,
+        };
+
+        match client.notify("textDocument/willSave", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send willSave notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档将要保存等待直到完成请求
+    async fn handle_will_save_wait_until(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
+        use lsp_types::{
+            TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
+        };
+
+        let uri = try_uri!(self, &command.file);
+
+        let reason = match command.save_reason.unwrap_or(1) {
+            1 => TextDocumentSaveReason::MANUAL,
+            2 => TextDocumentSaveReason::AFTER_DELAY,
+            3 => TextDocumentSaveReason::FOCUS_OUT,
+            _ => TextDocumentSaveReason::MANUAL,
+        };
+
+        let params = WillSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            reason,
+        };
+
+        use lsp_types::request::WillSaveWaitUntil;
+        match client.request::<WillSaveWaitUntil>(params).await {
+            Ok(Some(edits)) => {
+                if edits.is_empty() {
+                    VimAction::None
+                } else {
+                    // Convert the TextEdits to our format
+                    let file_edits = vec![FileEdit {
+                        file: command.file.clone(),
+                        edits: edits.iter().map(TextEdit::from).collect(),
+                    }];
+                    VimAction::WorkspaceEdit { edits: file_edits }
+                }
+            }
+            Ok(None) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send willSaveWaitUntil request: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档关闭通知
+    async fn handle_did_close(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{DidCloseTextDocumentParams, TextDocumentIdentifier};
+
+        let uri = try_uri!(self, &command.file);
+
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+        };
+
+        match client.notify("textDocument/didClose", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didClose notification: {}", e),
+            },
+        }
     }
 }
 
