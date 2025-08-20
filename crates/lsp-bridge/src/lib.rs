@@ -103,6 +103,7 @@ impl LspBridge {
                 "file_open" => self.handle_file_open(client, &command).await,
                 "goto_definition" => self.handle_goto_definition(client, &command).await,
                 "goto_type_definition" => self.handle_goto_type_definition(client, &command).await,
+                "goto_implementation" => self.handle_goto_implementation(client, &command).await,
                 "hover" => self.handle_hover(client, &command).await,
                 "completion" => self.handle_completion(client, &command).await,
                 "references" => self.handle_references(client, &command).await,
@@ -263,6 +264,85 @@ impl LspBridge {
             }
             Ok(None) => VimAction::Error {
                 message: "No type definition found".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    /// 处理跳转到实现
+    async fn handle_goto_implementation(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
+        use lsp_types::{
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
+        use lsp_types::request::GotoImplementationParams;
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = GotoImplementationParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        use lsp_types::request::GotoImplementation;
+        match client.request::<GotoImplementation>(params).await {
+            Ok(Some(response)) => {
+                use tracing::debug;
+                debug!("Got LSP implementation response: {:?}", response);
+
+                // 处理 GotoDefinitionResponse (可能是 Location 或 LocationLink)
+                match response {
+                    lsp_types::GotoDefinitionResponse::Scalar(location) => {
+                        VimAction::from(location)
+                    }
+                    lsp_types::GotoDefinitionResponse::Array(locations) => {
+                        if let Some(first) = locations.first() {
+                            VimAction::from(first)
+                        } else {
+                            VimAction::Error {
+                                message: "No implementation found".to_string(),
+                            }
+                        }
+                    }
+                    lsp_types::GotoDefinitionResponse::Link(links) => {
+                        if let Some(first_link) = links.first() {
+                            VimAction::from(first_link)
+                        } else {
+                            VimAction::Error {
+                                message: "No implementation found".to_string(),
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None) => VimAction::Error {
+                message: "No implementation found".to_string(),
             },
             Err(e) => VimAction::Error {
                 message: e.to_string(),
