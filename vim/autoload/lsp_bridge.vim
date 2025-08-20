@@ -194,6 +194,15 @@ function! lsp_bridge#document_symbols() abort
     \ })
 endfunction
 
+function! lsp_bridge#folding_range() abort
+  call s:send_command({
+    \ 'command': 'folding_range',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0
+    \ })
+endfunction
+
 function! lsp_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:send_command({
@@ -310,6 +319,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_call_hierarchy(response.items)
   elseif response.action == 'document_symbols'
     call s:show_document_symbols(response.symbols)
+  elseif response.action == 'folding_ranges'
+    call s:apply_folding_ranges(response.ranges)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -964,5 +975,30 @@ function! s:apply_text_edit(edit) abort
   endif
 endfunction
 
+" === 折叠范围功能 ===
 
-
+" 应用折叠范围
+function! s:apply_folding_ranges(ranges) abort
+  if empty(a:ranges)
+    echo "No folding ranges available"
+    return
+  endif
+  
+  " 设置折叠方法为手动并清除现有折叠
+  setlocal foldmethod=manual
+  normal! zE
+  
+  " 应用每个折叠范围
+  for range in a:ranges
+    " 转换为1-based行号
+    let start_line = range.start_line + 1
+    let end_line = range.end_line + 1
+    
+    " 确保行号有效
+    if start_line >= 1 && end_line <= line('$') && start_line < end_line
+      execute start_line . ',' . end_line . 'fold'
+    endif
+  endfor
+  
+  echo 'Applied ' . len(a:ranges) . ' folding ranges'
+endfunction

@@ -64,6 +64,9 @@ pub enum VimCommand {
     #[serde(rename = "document_symbols")]
     DocumentSymbols(String),
 
+    #[serde(rename = "folding_range")]
+    FoldingRange(String),
+
     // 高级功能 - 使用专门的结构
     #[serde(rename = "rename")]
     Rename {
@@ -116,6 +119,7 @@ impl VimCommand {
             VimCommand::References(pos) => &pos.file,
             VimCommand::InlayHints(file) => file,
             VimCommand::DocumentSymbols(file) => file,
+            VimCommand::FoldingRange(file) => file,
             VimCommand::Rename { file, .. } => file,
             VimCommand::CallHierarchyIncoming(pos) => &pos.file,
             VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
@@ -225,6 +229,8 @@ pub enum VimAction {
     CallHierarchy { items: Vec<CallHierarchyItem> },
     #[serde(rename = "document_symbols")]
     DocumentSymbols { symbols: Vec<DocumentSymbol> },
+    #[serde(rename = "folding_ranges")]
+    FoldingRanges { ranges: Vec<FoldingRange> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -293,6 +299,16 @@ pub struct DocumentSymbol {
     pub selection_line: u32,
     pub selection_column: u32,
     pub children: Vec<DocumentSymbol>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FoldingRange {
+    pub start_line: u32,
+    pub start_character: Option<u32>,
+    pub end_line: u32,
+    pub end_character: Option<u32>,
+    pub kind: Option<String>,
+    pub collapsed_text: Option<String>,
 }
 
 pub struct LspBridge {
@@ -440,6 +456,7 @@ impl LspBridge {
                 VimCommand::DocumentSymbols(ref file) => {
                     self.handle_document_symbols(client, file).await
                 }
+                VimCommand::FoldingRange(ref file) => self.handle_folding_range(client, file).await,
                 VimCommand::Rename {
                     ref file,
                     line,
@@ -1168,6 +1185,36 @@ impl LspBridge {
             },
         }
     }
+
+    async fn handle_folding_range(&self, client: &LspClient, file: &str) -> VimAction {
+        if let Err(e) = self.ensure_file_open(client, file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = try_uri!(self, file);
+        let params = lsp_types::FoldingRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        use lsp_types::request::FoldingRangeRequest;
+        match client.request::<FoldingRangeRequest>(params).await {
+            Ok(Some(ranges)) => {
+                let converted_ranges: Vec<FoldingRange> =
+                    ranges.iter().map(FoldingRange::from).collect();
+                VimAction::FoldingRanges {
+                    ranges: converted_ranges,
+                }
+            }
+            Ok(None) => VimAction::FoldingRanges { ranges: vec![] },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
 }
 
 impl From<lsp_types::Location> for VimAction {
@@ -1426,6 +1473,32 @@ impl From<&lsp_types::OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>> 
         match edit {
             lsp_types::OneOf::Left(text_edit) => TextEdit::from(text_edit),
             lsp_types::OneOf::Right(annotated_edit) => TextEdit::from(&annotated_edit.text_edit),
+        }
+    }
+}
+
+impl From<&lsp_types::FoldingRange> for FoldingRange {
+    fn from(range: &lsp_types::FoldingRange) -> Self {
+        let kind = range
+            .kind
+            .as_ref()
+            .map(|k| {
+                use lsp_types::FoldingRangeKind;
+                match *k {
+                    FoldingRangeKind::Comment => "comment",
+                    FoldingRangeKind::Imports => "imports",
+                    FoldingRangeKind::Region => "region",
+                }
+            })
+            .map(|s| s.to_string());
+
+        FoldingRange {
+            start_line: range.start_line,
+            start_character: range.start_character,
+            end_line: range.end_line,
+            end_character: range.end_character,
+            kind,
+            collapsed_text: range.collapsed_text.clone(),
         }
     }
 }
