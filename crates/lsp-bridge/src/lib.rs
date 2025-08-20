@@ -60,10 +60,10 @@ pub struct ReferenceLocation {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InlayHint {
-    pub line: u32,        // 0-based line number
-    pub column: u32,      // 0-based column position
-    pub label: String,    // The hint text to display
-    pub kind: String,     // "type" or "parameter" 
+    pub line: u32,               // 0-based line number
+    pub column: u32,             // 0-based column position
+    pub label: String,           // The hint text to display
+    pub kind: String,            // "type" or "parameter"
     pub tooltip: Option<String>, // Optional tooltip text
 }
 
@@ -285,10 +285,8 @@ impl LspBridge {
         client: &LspClient,
         command: &VimCommand,
     ) -> VimAction {
-        use lsp_types::{
-            Position, TextDocumentIdentifier, TextDocumentPositionParams,
-        };
         use lsp_types::request::GotoTypeDefinitionParams;
+        use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
         // 确保文件已打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -364,10 +362,8 @@ impl LspBridge {
         client: &LspClient,
         command: &VimCommand,
     ) -> VimAction {
-        use lsp_types::{
-            Position, TextDocumentIdentifier, TextDocumentPositionParams,
-        };
         use lsp_types::request::GotoImplementationParams;
+        use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
         // 确保文件已打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -612,9 +608,7 @@ impl LspBridge {
 
     /// 处理inlay hints
     async fn handle_inlay_hints(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use lsp_types::{
-            InlayHintParams, Range, Position, TextDocumentIdentifier,
-        };
+        use lsp_types::{InlayHintParams, Position, Range, TextDocumentIdentifier};
 
         // 确保文件已打开
         if let Err(e) = self.ensure_file_open(client, &command.file).await {
@@ -641,8 +635,14 @@ impl LspBridge {
         let params = InlayHintParams {
             text_document: TextDocumentIdentifier { uri },
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: line_count, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: line_count,
+                    character: 0,
+                },
             },
             work_done_progress_params: Default::default(),
         };
@@ -652,13 +652,12 @@ impl LspBridge {
             Ok(Some(hints)) => {
                 use tracing::debug;
                 debug!("Got LSP inlay hints result: {:?}", hints);
-                
-                let converted_hints: Vec<InlayHint> = hints
-                    .iter()
-                    .map(InlayHint::from)
-                    .collect();
-                    
-                VimAction::InlayHints { hints: converted_hints }
+
+                let converted_hints: Vec<InlayHint> = hints.iter().map(InlayHint::from).collect();
+
+                VimAction::InlayHints {
+                    hints: converted_hints,
+                }
             }
             Ok(None) => VimAction::InlayHints { hints: vec![] },
             Err(e) => VimAction::Error {
@@ -967,23 +966,30 @@ impl From<lsp_types::Hover> for VimAction {
 impl From<&lsp_types::InlayHint> for InlayHint {
     fn from(hint: &lsp_types::InlayHint) -> Self {
         use lsp_types::InlayHintLabel;
-        
+
         let label = match &hint.label {
             InlayHintLabel::String(s) => s.clone(),
-            InlayHintLabel::LabelParts(parts) => {
-                parts.iter().map(|part| part.value.as_str()).collect::<Vec<_>>().join("")
-            }
+            InlayHintLabel::LabelParts(parts) => parts
+                .iter()
+                .map(|part| part.value.as_str())
+                .collect::<Vec<_>>()
+                .join(""),
         };
-        
-        let kind = hint.kind.as_ref().map(|k| {
-            use lsp_types::InlayHintKind;
-            match k {
-                &InlayHintKind::TYPE => "type",
-                &InlayHintKind::PARAMETER => "parameter",
-                _ => "other",
-            }
-        }).unwrap_or("other").to_string();
-        
+
+        let kind = hint
+            .kind
+            .as_ref()
+            .map(|k| {
+                use lsp_types::InlayHintKind;
+                match *k {
+                    InlayHintKind::TYPE => "type",
+                    InlayHintKind::PARAMETER => "parameter",
+                    _ => "other",
+                }
+            })
+            .unwrap_or("other")
+            .to_string();
+
         let tooltip = hint.tooltip.as_ref().map(|tooltip| {
             use lsp_types::InlayHintTooltip;
             match tooltip {
@@ -991,7 +997,7 @@ impl From<&lsp_types::InlayHint> for InlayHint {
                 InlayHintTooltip::MarkupContent(markup) => markup.value.clone(),
             }
         });
-        
+
         InlayHint {
             line: hint.position.line,
             column: hint.position.character,
