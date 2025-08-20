@@ -67,6 +67,16 @@ pub enum VimCommand {
     #[serde(rename = "folding_range")]
     FoldingRange { file: String },
 
+    // Code actions - quick fixes and refactoring
+    #[serde(rename = "code_action")]
+    CodeAction(FilePos),
+
+    #[serde(rename = "execute_command")]
+    ExecuteCommand {
+        command_name: String,
+        arguments: Option<Vec<serde_json::Value>>,
+    },
+
     // 高级功能 - 使用专门的结构
     #[serde(rename = "rename")]
     Rename {
@@ -120,6 +130,8 @@ impl VimCommand {
             VimCommand::InlayHints { file } => file,
             VimCommand::DocumentSymbols { file } => file,
             VimCommand::FoldingRange { file } => file,
+            VimCommand::CodeAction(pos) => &pos.file,
+            VimCommand::ExecuteCommand { .. } => "",
             VimCommand::Rename { file, .. } => file,
             VimCommand::CallHierarchyIncoming(pos) => &pos.file,
             VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
@@ -141,6 +153,7 @@ impl VimCommand {
             | VimCommand::Hover(pos)
             | VimCommand::Completion(pos)
             | VimCommand::References(pos)
+            | VimCommand::CodeAction(pos)
             | VimCommand::CallHierarchyIncoming(pos)
             | VimCommand::CallHierarchyOutgoing(pos) => Some(pos),
             _ => None,
@@ -231,6 +244,8 @@ pub enum VimAction {
     DocumentSymbols { symbols: Vec<DocumentSymbol> },
     #[serde(rename = "folding_ranges")]
     FoldingRanges { ranges: Vec<FoldingRange> },
+    #[serde(rename = "code_actions")]
+    CodeActions { actions: Vec<CodeActionItem> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -309,6 +324,16 @@ pub struct FoldingRange {
     pub end_character: Option<u32>,
     pub kind: Option<String>,
     pub collapsed_text: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CodeActionItem {
+    pub title: String,
+    pub kind: Option<String>,
+    pub is_preferred: Option<bool>,
+    pub command: Option<String>,
+    pub arguments: Option<Vec<serde_json::Value>>,
+    pub has_edit: bool,
 }
 
 pub struct LspBridge {
@@ -458,6 +483,14 @@ impl LspBridge {
                 }
                 VimCommand::FoldingRange { ref file } => {
                     self.handle_folding_range(client, file).await
+                }
+                VimCommand::CodeAction(ref pos) => self.handle_code_action(client, pos).await,
+                VimCommand::ExecuteCommand {
+                    ref command_name,
+                    ref arguments,
+                } => {
+                    self.handle_execute_command(client, command_name, arguments.as_ref())
+                        .await
                 }
                 VimCommand::Rename {
                     ref file,
@@ -850,6 +883,50 @@ impl LspBridge {
         file_edits
     }
 
+    fn convert_code_action_or_command(
+        &self,
+        action: &lsp_types::CodeActionOrCommand,
+    ) -> CodeActionItem {
+        use lsp_types::CodeActionOrCommand;
+
+        match action {
+            CodeActionOrCommand::CodeAction(code_action) => {
+                let kind = code_action.kind.as_ref().map(|k| k.as_str().to_string());
+
+                // Check if action has a direct edit or requires command execution
+                let (command, arguments, has_edit) = if code_action.edit.is_some() {
+                    // Has direct workspace edit - no command needed
+                    (None, None, true)
+                } else if let Some(cmd) = &code_action.command {
+                    // Has command to execute
+                    (Some(cmd.command.clone()), cmd.arguments.clone(), false)
+                } else {
+                    // Neither edit nor command - shouldn't happen but handle gracefully
+                    (None, None, false)
+                };
+
+                CodeActionItem {
+                    title: code_action.title.clone(),
+                    kind,
+                    is_preferred: code_action.is_preferred,
+                    command,
+                    arguments,
+                    has_edit,
+                }
+            }
+            CodeActionOrCommand::Command(command) => {
+                CodeActionItem {
+                    title: command.title.clone(),
+                    kind: None, // Commands don't have kinds
+                    is_preferred: None,
+                    command: Some(command.command.clone()),
+                    arguments: command.arguments.clone(),
+                    has_edit: false,
+                }
+            }
+        }
+    }
+
     fn convert_document_symbols_response(
         &self,
         response: lsp_types::DocumentSymbolResponse,
@@ -1184,6 +1261,80 @@ impl LspBridge {
             Ok(_) => VimAction::None,
             Err(e) => VimAction::Error {
                 message: format!("Failed to send didClose notification: {}", e),
+            },
+        }
+    }
+
+    async fn handle_code_action(&self, client: &LspClient, pos: &FilePos) -> VimAction {
+        if let Err(e) = self.ensure_file_open(client, &pos.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = try_uri!(self, &pos.file);
+
+        // Create range - for cursor position, use zero-width range
+        let range = lsp_types::Range {
+            start: lsp_types::Position {
+                line: pos.line,
+                character: pos.column,
+            },
+            end: lsp_types::Position {
+                line: pos.line,
+                character: pos.column,
+            },
+        };
+
+        let params = lsp_types::CodeActionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            range,
+            context: lsp_types::CodeActionContext {
+                diagnostics: vec![], // Could be enhanced to include current diagnostics
+                only: None,          // Accept all code action kinds
+                trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        use lsp_types::request::CodeActionRequest;
+        match client.request::<CodeActionRequest>(params).await {
+            Ok(Some(actions)) if !actions.is_empty() => {
+                let action_items: Vec<CodeActionItem> = actions
+                    .iter()
+                    .map(|action| self.convert_code_action_or_command(action))
+                    .collect();
+                VimAction::CodeActions {
+                    actions: action_items,
+                }
+            }
+            Ok(_) => VimAction::Error {
+                message: "No code actions available".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    async fn handle_execute_command(
+        &self,
+        client: &LspClient,
+        command: &str,
+        arguments: Option<&Vec<serde_json::Value>>,
+    ) -> VimAction {
+        let params = lsp_types::ExecuteCommandParams {
+            command: command.to_string(),
+            arguments: arguments.cloned().unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        };
+
+        use lsp_types::request::ExecuteCommand;
+        match client.request::<ExecuteCommand>(params).await {
+            Ok(_) => VimAction::None, // Command executed successfully
+            Err(e) => VimAction::Error {
+                message: format!("Failed to execute command: {}", e),
             },
         }
     }

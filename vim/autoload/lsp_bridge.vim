@@ -201,6 +201,31 @@ function! lsp_bridge#folding_range() abort
     \ })
 endfunction
 
+function! lsp_bridge#code_action() abort
+  call s:send_command({
+    \ 'command': 'code_action',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
+function! lsp_bridge#execute_command(...) abort
+  if a:0 == 0
+    echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
+    return
+  endif
+  
+  let command_name = a:1
+  let arguments = a:000[1:]  " Rest of the arguments
+  
+  call s:send_command({
+    \ 'command': 'execute_command',
+    \ 'command_name': command_name,
+    \ 'arguments': arguments
+    \ })
+endfunction
+
 function! lsp_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:send_command({
@@ -319,6 +344,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_document_symbols(response.symbols)
   elseif response.action == 'folding_ranges'
     call s:apply_folding_ranges(response.ranges)
+  elseif response.action == 'code_actions'
+    call s:show_code_actions(response.actions)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -999,4 +1026,67 @@ function! s:apply_folding_ranges(ranges) abort
   endfor
   
   echo 'Applied ' . len(a:ranges) . ' folding ranges'
+endfunction
+
+" === Code Actions 功能 ===
+
+" 显示代码操作
+function! s:show_code_actions(actions) abort
+  if empty(a:actions)
+    echo "No code actions available"
+    return
+  endif
+  
+  echo "Available code actions:"
+  let index = 1
+  for action in a:actions
+    let display = printf("[%d] %s", index, action.title)
+    if has_key(action, 'kind') && !empty(action.kind)
+      let display .= " (" . action.kind . ")"
+    endif
+    if has_key(action, 'is_preferred') && action.is_preferred
+      let display .= " ⭐"
+    endif
+    echo display
+    let index += 1
+  endfor
+  
+  " 获取用户选择
+  let choice = input("Select action (1-" . len(a:actions) . ", or <Enter> to cancel): ")
+  if empty(choice)
+    echo "\nAction cancelled"
+    return
+  endif
+  
+  let choice_num = str2nr(choice)
+  if choice_num < 1 || choice_num > len(a:actions)
+    echo "\nInvalid selection"
+    return
+  endif
+  
+  let selected_action = a:actions[choice_num - 1]
+  call s:execute_code_action(selected_action)
+endfunction
+
+" 执行选定的代码操作
+function! s:execute_code_action(action) abort
+  if has_key(a:action, 'has_edit') && a:action.has_edit
+    " This action has a direct workspace edit - we need to request it again
+    " For now, show a message that this isn't fully implemented
+    echo "Direct edit actions not yet supported. Use command-based actions."
+    return
+  endif
+  
+  if has_key(a:action, 'command') && !empty(a:action.command)
+    " Execute the command
+    let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
+    call s:send_command({
+      \ 'command': 'execute_command',
+      \ 'command_name': a:action.command,
+      \ 'arguments': arguments
+      \ })
+    echo "Executing: " . a:action.title
+  else
+    echo "Action has no executable command"
+  endif
 endfunction
