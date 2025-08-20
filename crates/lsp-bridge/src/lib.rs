@@ -65,7 +65,7 @@ pub enum VimCommand {
     DocumentSymbols(String),
 
     #[serde(rename = "folding_range")]
-    FoldingRange(String),
+    FoldingRange { file: String },
 
     // 高级功能 - 使用专门的结构
     #[serde(rename = "rename")]
@@ -119,7 +119,7 @@ impl VimCommand {
             VimCommand::References(pos) => &pos.file,
             VimCommand::InlayHints(file) => file,
             VimCommand::DocumentSymbols(file) => file,
-            VimCommand::FoldingRange(file) => file,
+            VimCommand::FoldingRange { file } => file,
             VimCommand::Rename { file, .. } => file,
             VimCommand::CallHierarchyIncoming(pos) => &pos.file,
             VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
@@ -456,7 +456,9 @@ impl LspBridge {
                 VimCommand::DocumentSymbols(ref file) => {
                     self.handle_document_symbols(client, file).await
                 }
-                VimCommand::FoldingRange(ref file) => self.handle_folding_range(client, file).await,
+                VimCommand::FoldingRange { ref file } => {
+                    self.handle_folding_range(client, file).await
+                }
                 VimCommand::Rename {
                     ref file,
                     line,
