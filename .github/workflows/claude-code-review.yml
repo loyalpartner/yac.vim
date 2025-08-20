@@ -4,7 +4,6 @@ on:
   workflow_run:
     workflows: ["Rust CI"]
     types: [completed]
-    branches: [main]
   # Also allow manual triggering for testing
   workflow_dispatch:
 
