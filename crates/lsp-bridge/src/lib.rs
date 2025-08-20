@@ -73,17 +73,17 @@ pub struct InlayHint {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEdit {
-    pub file: String,           // File path
-    pub edits: Vec<TextEdit>,   // Text edits for this file
+    pub file: String,         // File path
+    pub edits: Vec<TextEdit>, // Text edits for this file
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TextEdit {
-    pub start_line: u32,    // 0-based start line
-    pub start_column: u32,  // 0-based start column  
-    pub end_line: u32,      // 0-based end line
-    pub end_column: u32,    // 0-based end column
-    pub new_text: String,   // New text to insert
+    pub start_line: u32,   // 0-based start line
+    pub start_column: u32, // 0-based start column
+    pub end_line: u32,     // 0-based end line
+    pub end_column: u32,   // 0-based end column
+    pub new_text: String,  // New text to insert
 }
 
 // Using VimAction directly - no legacy support
@@ -738,7 +738,7 @@ impl LspBridge {
 
                 // 转换 WorkspaceEdit 为我们的格式
                 let edits = self.convert_workspace_edit(workspace_edit);
-                
+
                 if edits.is_empty() {
                     VimAction::Error {
                         message: "No changes to apply".to_string(),
@@ -817,8 +817,9 @@ impl LspBridge {
             for (uri, text_edits) in changes {
                 if let Ok(file_path) = uri.to_file_path() {
                     let file_path_str = file_path.to_string_lossy().to_string();
-                    let converted_edits: Vec<TextEdit> = text_edits.iter().map(TextEdit::from).collect();
-                    
+                    let converted_edits: Vec<TextEdit> =
+                        text_edits.iter().map(TextEdit::from).collect();
+
                     if !converted_edits.is_empty() {
                         file_edits.push(FileEdit {
                             file: file_path_str,
@@ -837,8 +838,9 @@ impl LspBridge {
                     for edit in edits {
                         if let Ok(file_path) = edit.text_document.uri.to_file_path() {
                             let file_path_str = file_path.to_string_lossy().to_string();
-                            let converted_edits: Vec<TextEdit> = edit.edits.iter().map(TextEdit::from).collect();
-                            
+                            let converted_edits: Vec<TextEdit> =
+                                edit.edits.iter().map(TextEdit::from).collect();
+
                             if !converted_edits.is_empty() {
                                 file_edits.push(FileEdit {
                                     file: file_path_str,
