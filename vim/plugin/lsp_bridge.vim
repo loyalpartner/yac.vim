@@ -25,6 +25,9 @@ command! -nargs=? LspRename call lsp_bridge#rename(<args>)
 command! LspCallHierarchyIncoming call lsp_bridge#call_hierarchy_incoming()
 command! LspCallHierarchyOutgoing call lsp_bridge#call_hierarchy_outgoing()
 command! LspDocumentSymbols call lsp_bridge#document_symbols()
+" Manual lifecycle commands removed - handled automatically via autocmds
+" Keep LspWillSaveWaitUntil for advanced use cases
+command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<args>)
 command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键

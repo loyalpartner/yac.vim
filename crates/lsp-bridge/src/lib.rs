@@ -209,13 +209,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = GotoDefinitionParams {
@@ -283,13 +279,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = GotoDefinitionParams {
@@ -360,13 +352,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = GotoTypeDefinitionParams {
@@ -437,13 +425,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = GotoImplementationParams {
@@ -511,13 +495,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = HoverParams {
@@ -556,13 +536,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = CompletionParams {
@@ -619,13 +595,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = ReferenceParams {
@@ -682,13 +654,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         // Read file to get the total number of lines for the range
@@ -754,13 +722,9 @@ impl LspBridge {
             }
         };
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = RenameParams {
@@ -976,13 +940,9 @@ impl LspBridge {
             };
         }
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(error) => return error,
         };
 
         let params = DocumentSymbolParams {
@@ -1207,6 +1167,13 @@ impl LspBridge {
         }
     }
 
+    /// URI 转换助手函数 - 减少重复代码
+    fn file_path_to_uri(file_path: &str) -> Result<lsp_types::Url, VimAction> {
+        lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
+            message: format!("Invalid file path: {}", file_path),
+        })
+    }
+
     /// 查找工作区根目录（向上查找 Cargo.toml）
     fn find_workspace_root(file_path: &str) -> Option<PathBuf> {
         let mut path = PathBuf::from(file_path);
@@ -1234,7 +1201,7 @@ impl LspBridge {
 
         let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(action) => return action,
+            Err(error) => return error,
         };
 
         let params = DidSaveTextDocumentParams {
@@ -1256,17 +1223,25 @@ impl LspBridge {
             DidChangeTextDocumentParams, TextDocumentContentChangeEvent,
             VersionedTextDocumentIdentifier,
         };
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        // Simple version tracking - in a real implementation this would be per-document
+        static DOCUMENT_VERSION: AtomicI32 = AtomicI32::new(1);
+        let version = DOCUMENT_VERSION.fetch_add(1, Ordering::SeqCst);
 
         let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(action) => return action,
+            Err(error) => return error,
         };
 
         let text = command.text.as_ref().cloned().unwrap_or_default();
         let params = DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri, version: 1 },
+            text_document: VersionedTextDocumentIdentifier {
+                uri,
+                version,
+            },
             content_changes: vec![TextDocumentContentChangeEvent {
-                range: None, // Full document update
+                range: None,
                 range_length: None,
                 text,
             }],
@@ -1288,13 +1263,13 @@ impl LspBridge {
 
         let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(action) => return action,
+            Err(error) => return error,
         };
         let reason = match command.save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
             2 => TextDocumentSaveReason::AFTER_DELAY,
             3 => TextDocumentSaveReason::FOCUS_OUT,
-            _ => TextDocumentSaveReason::MANUAL, // Default to Manual save
+            _ => TextDocumentSaveReason::MANUAL,
         };
 
         let params = WillSaveTextDocumentParams {
@@ -1322,7 +1297,7 @@ impl LspBridge {
 
         let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(action) => return action,
+            Err(error) => return error,
         };
 
         let reason = match command.save_reason.unwrap_or(1) {
@@ -1364,7 +1339,7 @@ impl LspBridge {
 
         let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(action) => return action,
+            Err(error) => return error,
         };
 
         let params = DidCloseTextDocumentParams {
