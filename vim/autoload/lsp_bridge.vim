@@ -215,12 +215,6 @@ function! lsp_bridge#code_action() abort
     \ })
 endfunction
 
-function! lsp_bridge#diagnostics() abort
-  call s:send_command({
-    \ 'command': 'diagnostics',
-    \ 'file': expand('%:p')
-    \ })
-endfunction
 
 function! lsp_bridge#execute_command(...) abort
   if a:0 == 0

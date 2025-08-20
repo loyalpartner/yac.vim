@@ -1,7 +1,7 @@
 use lsp_client::{JsonRpcNotification, LspClient, NotificationHandler, Result as LspResult};
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 // 宏：简化 file_path_to_uri 的错误处理
 macro_rules! try_uri {
@@ -358,13 +358,10 @@ pub struct CodeActionItem {
 
 pub struct LspBridge {
     client: Option<LspClient>,
-    diagnostics: Arc<Mutex<std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>>>,
 }
 
-// Diagnostic notification handler implementation
-struct DiagnosticsHandler {
-    diagnostics: Arc<Mutex<std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>>>,
-}
+// Diagnostic notification handler - forwards diagnostics directly to Vim
+struct DiagnosticsHandler;
 
 impl NotificationHandler for DiagnosticsHandler {
     fn handle_notification(&self, notification: JsonRpcNotification) {
@@ -372,15 +369,42 @@ impl NotificationHandler for DiagnosticsHandler {
             if let Ok(params) =
                 serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(notification.params)
             {
-                let mut diagnostics = self.diagnostics.lock().unwrap();
-                diagnostics.insert(params.uri.to_string(), params.diagnostics);
-                tracing::debug!(
-                    "Updated diagnostics for {}: {} items",
-                    params.uri,
-                    diagnostics
-                        .get(&params.uri.to_string())
-                        .map_or(0, |d| d.len())
-                );
+                // Convert diagnostics and send directly to Vim
+                let file_path = params
+                    .uri
+                    .to_file_path()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                let diagnostic_items: Vec<DiagnosticItem> = params
+                    .diagnostics
+                    .iter()
+                    .map(|d| {
+                        let mut item = DiagnosticItem::from(d);
+                        item.file = file_path.clone();
+                        item
+                    })
+                    .collect();
+
+                let vim_action = VimAction::Diagnostics {
+                    diagnostics: diagnostic_items,
+                };
+
+                // Send diagnostic action directly to Vim via stdout
+                if let Ok(json) = serde_json::to_string(&vim_action) {
+                    if let Err(e) = writeln!(io::stdout(), "{}", json) {
+                        tracing::warn!("Failed to send diagnostics to Vim: {}", e);
+                    } else {
+                        tracing::debug!(
+                            "Sent {} diagnostics for {} to Vim",
+                            params.diagnostics.len(),
+                            file_path
+                        );
+                    }
+                } else {
+                    tracing::warn!("Failed to serialize diagnostics action");
+                }
             } else {
                 tracing::warn!("Failed to parse publishDiagnostics notification");
             }
@@ -396,10 +420,7 @@ impl Default for LspBridge {
 
 impl LspBridge {
     pub fn new() -> Self {
-        Self {
-            client: None,
-            diagnostics: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        }
+        Self { client: None }
     }
 
     pub async fn handle_command(&mut self, command: VimCommand) -> VimAction {
@@ -410,9 +431,7 @@ impl LspBridge {
             match self.create_client(&language, file_path).await {
                 Ok(client) => {
                     // Register diagnostic notification handler
-                    let handler = DiagnosticsHandler {
-                        diagnostics: Arc::clone(&self.diagnostics),
-                    };
+                    let handler = DiagnosticsHandler;
                     if let Err(e) = client
                         .register_notification_handler("textDocument/publishDiagnostics", handler)
                         .await
@@ -547,7 +566,13 @@ impl LspBridge {
                 VimCommand::FoldingRange { ref file } => {
                     self.handle_folding_range(client, file).await
                 }
-                VimCommand::Diagnostics { ref file } => self.handle_diagnostics(file),
+                VimCommand::Diagnostics { .. } => {
+                    // Diagnostics are now push-based, no longer need pull command
+                    VimAction::Error {
+                        message: "Diagnostics are now automatically pushed from LSP server"
+                            .to_string(),
+                    }
+                }
                 VimCommand::CodeAction(ref pos) => self.handle_code_action(client, pos).await,
                 VimCommand::ExecuteCommand {
                     ref command_name,
@@ -1430,34 +1455,6 @@ impl LspBridge {
             Err(e) => VimAction::Error {
                 message: e.to_string(),
             },
-        }
-    }
-
-    fn handle_diagnostics(&self, file: &str) -> VimAction {
-        // Convert file path to URI format for lookup
-        let file_uri = if file.starts_with("file://") {
-            file.to_string()
-        } else {
-            format!("file://{}", file)
-        };
-
-        let diagnostics_map = self.diagnostics.lock().unwrap();
-        if let Some(diagnostics) = diagnostics_map.get(&file_uri) {
-            let diagnostic_items: Vec<DiagnosticItem> = diagnostics
-                .iter()
-                .map(|d| {
-                    let mut item = DiagnosticItem::from(d);
-                    item.file = file.to_string();
-                    item
-                })
-                .collect();
-            VimAction::Diagnostics {
-                diagnostics: diagnostic_items,
-            }
-        } else {
-            VimAction::Diagnostics {
-                diagnostics: vec![],
-            }
         }
     }
 }
