@@ -32,7 +32,7 @@ impl FilePos {
 pub enum VimCommand {
     // 简单文件操作
     #[serde(rename = "file_open")]
-    FileOpen(String),
+    FileOpen { file: String },
 
     // 所有导航命令使用相同的位置结构
     #[serde(rename = "goto_definition")]
@@ -59,13 +59,13 @@ pub enum VimCommand {
 
     // 文档级别命令
     #[serde(rename = "inlay_hints")]
-    InlayHints(String),
+    InlayHints { file: String },
 
     #[serde(rename = "document_symbols")]
-    DocumentSymbols(String),
+    DocumentSymbols { file: String },
 
     #[serde(rename = "folding_range")]
-    FoldingRange(String),
+    FoldingRange { file: String },
 
     // 高级功能 - 使用专门的结构
     #[serde(rename = "rename")]
@@ -102,14 +102,14 @@ pub enum VimCommand {
     },
 
     #[serde(rename = "did_close")]
-    DidClose(String),
+    DidClose { file: String },
 }
 
 impl VimCommand {
     /// Linus 风格：一个简单的函数获取文件路径，消除所有重复
     pub fn file_path(&self) -> &str {
         match self {
-            VimCommand::FileOpen(file) => file,
+            VimCommand::FileOpen { file } => file,
             VimCommand::GotoDefinition(pos) => &pos.file,
             VimCommand::GotoDeclaration(pos) => &pos.file,
             VimCommand::GotoTypeDefinition(pos) => &pos.file,
@@ -117,9 +117,9 @@ impl VimCommand {
             VimCommand::Hover(pos) => &pos.file,
             VimCommand::Completion(pos) => &pos.file,
             VimCommand::References(pos) => &pos.file,
-            VimCommand::InlayHints(file) => file,
-            VimCommand::DocumentSymbols(file) => file,
-            VimCommand::FoldingRange(file) => file,
+            VimCommand::InlayHints { file } => file,
+            VimCommand::DocumentSymbols { file } => file,
+            VimCommand::FoldingRange { file } => file,
             VimCommand::Rename { file, .. } => file,
             VimCommand::CallHierarchyIncoming(pos) => &pos.file,
             VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
@@ -127,7 +127,7 @@ impl VimCommand {
             VimCommand::DidChange { file, .. } => file,
             VimCommand::WillSave { file, .. } => file,
             VimCommand::WillSaveWaitUntil { file, .. } => file,
-            VimCommand::DidClose(file) => file,
+            VimCommand::DidClose { file } => file,
         }
     }
 
@@ -431,7 +431,7 @@ impl LspBridge {
     async fn handle_vim_command(&self, command: VimCommand) -> VimAction {
         if let Some(client) = &self.client {
             match command {
-                VimCommand::FileOpen(ref file) => self.handle_file_open(client, file).await,
+                VimCommand::FileOpen { ref file } => self.handle_file_open(client, file).await,
 
                 // 使用通用函数处理所有 goto 请求
                 VimCommand::GotoDefinition(ref pos) => {
@@ -452,11 +452,13 @@ impl LspBridge {
                 VimCommand::Hover(ref pos) => self.handle_hover(client, pos).await,
                 VimCommand::Completion(ref pos) => self.handle_completion(client, pos).await,
                 VimCommand::References(ref pos) => self.handle_references(client, pos).await,
-                VimCommand::InlayHints(ref file) => self.handle_inlay_hints(client, file).await,
-                VimCommand::DocumentSymbols(ref file) => {
+                VimCommand::InlayHints { ref file } => self.handle_inlay_hints(client, file).await,
+                VimCommand::DocumentSymbols { ref file } => {
                     self.handle_document_symbols(client, file).await
                 }
-                VimCommand::FoldingRange(ref file) => self.handle_folding_range(client, file).await,
+                VimCommand::FoldingRange { ref file } => {
+                    self.handle_folding_range(client, file).await
+                }
                 VimCommand::Rename {
                     ref file,
                     line,
@@ -489,7 +491,7 @@ impl LspBridge {
                     self.handle_will_save_wait_until(client, file, save_reason)
                         .await
                 }
-                VimCommand::DidClose(ref file) => self.handle_did_close(client, file).await,
+                VimCommand::DidClose { ref file } => self.handle_did_close(client, file).await,
             }
         } else {
             VimAction::Error {
