@@ -903,8 +903,8 @@ impl From<&lsp_types::InlayHint> for InlayHint {
         let kind = hint.kind.as_ref().map(|k| {
             use lsp_types::InlayHintKind;
             match k {
-                InlayHintKind::TYPE => "type",
-                InlayHintKind::PARAMETER => "parameter",
+                &InlayHintKind::TYPE => "type",
+                &InlayHintKind::PARAMETER => "parameter",
                 _ => "other",
             }
         }).unwrap_or("other").to_string();
