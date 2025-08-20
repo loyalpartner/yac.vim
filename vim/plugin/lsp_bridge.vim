@@ -18,6 +18,8 @@ command! LspImplementation call lsp_bridge#goto_implementation()
 command! LspHover          call lsp_bridge#hover()
 command! LspComplete       call lsp_bridge#complete()
 command! LspReferences     call lsp_bridge#references()
+command! LspInlayHints     call lsp_bridge#inlay_hints()
+command! LspClearInlayHints call lsp_bridge#clear_inlay_hints()
 command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
