@@ -13,6 +13,10 @@ pub struct VimCommand {
     pub column: u32,     // 0-based 列号
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_name: Option<String>, // 用于 rename 命令的新名称
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>, // 用于 textDocument lifecycle 的文档内容
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_reason: Option<u32>, // 用于 willSave 的保存原因 (1=Manual, 2=AfterDelay, 3=FocusOut)
 }
 
 // Using VimCommand directly - no legacy support
@@ -176,6 +180,11 @@ impl LspBridge {
                     self.handle_call_hierarchy_outgoing(client, &command).await
                 }
                 "document_symbols" => self.handle_document_symbols(client, &command).await,
+                "did_save" => self.handle_did_save(client, &command).await,
+                "did_change" => self.handle_did_change(client, &command).await,
+                "will_save" => self.handle_will_save(client, &command).await,
+                "will_save_wait_until" => self.handle_will_save_wait_until(client, &command).await,
+                "did_close" => self.handle_did_close(client, &command).await,
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -1207,6 +1216,176 @@ impl LspBridge {
         }
 
         None
+    }
+
+    /// 处理文档保存通知
+    async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use serde_json::json;
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let text = command.text.as_deref();
+        let params = json!({
+            "textDocument": {
+                "uri": uri.to_string(),
+                "version": 1
+            },
+            "text": text
+        });
+
+        match client.notify("textDocument/didSave", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didSave notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档更改通知
+    async fn handle_did_change(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use serde_json::json;
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let text = command.text.as_ref().cloned().unwrap_or_default();
+        let params = json!({
+            "textDocument": {
+                "uri": uri.to_string(),
+                "version": 1
+            },
+            "contentChanges": [{
+                "text": text
+            }]
+        });
+
+        match client.notify("textDocument/didChange", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didChange notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档将要保存通知
+    async fn handle_will_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use serde_json::json;
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let reason = command.save_reason.unwrap_or(1); // Default to Manual save
+        let params = json!({
+            "textDocument": {
+                "uri": uri.to_string()
+            },
+            "reason": reason
+        });
+
+        match client.notify("textDocument/willSave", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send willSave notification: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档将要保存等待直到完成请求
+    async fn handle_will_save_wait_until(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
+        use lsp_types::{
+            TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
+        };
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let reason = match command.save_reason.unwrap_or(1) {
+            1 => TextDocumentSaveReason::MANUAL,
+            2 => TextDocumentSaveReason::AFTER_DELAY,
+            3 => TextDocumentSaveReason::FOCUS_OUT,
+            _ => TextDocumentSaveReason::MANUAL,
+        };
+
+        let params = WillSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            reason,
+        };
+
+        use lsp_types::request::WillSaveWaitUntil;
+        match client.request::<WillSaveWaitUntil>(params).await {
+            Ok(Some(edits)) => {
+                if edits.is_empty() {
+                    VimAction::None
+                } else {
+                    // Convert the TextEdits to our format
+                    let file_edits = vec![FileEdit {
+                        file: command.file.clone(),
+                        edits: edits.iter().map(TextEdit::from).collect(),
+                    }];
+                    VimAction::WorkspaceEdit { edits: file_edits }
+                }
+            }
+            Ok(None) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send willSaveWaitUntil request: {}", e),
+            },
+        }
+    }
+
+    /// 处理文档关闭通知
+    async fn handle_did_close(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use serde_json::json;
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = json!({
+            "textDocument": {
+                "uri": uri.to_string()
+            }
+        });
+
+        match client.notify("textDocument/didClose", params).await {
+            Ok(_) => VimAction::None,
+            Err(e) => VimAction::Error {
+                message: format!("Failed to send didClose notification: {}", e),
+            },
+        }
     }
 }
 

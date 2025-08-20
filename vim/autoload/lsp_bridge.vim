@@ -194,6 +194,59 @@ function! lsp_bridge#document_symbols() abort
     \ })
 endfunction
 
+function! lsp_bridge#did_save(...) abort
+  let text_content = a:0 > 0 ? a:1 : v:null
+  call s:send_command({
+    \ 'command': 'did_save',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0,
+    \ 'text': text_content
+    \ })
+endfunction
+
+function! lsp_bridge#did_change(...) abort
+  let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
+  call s:send_command({
+    \ 'command': 'did_change',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0,
+    \ 'text': text_content
+    \ })
+endfunction
+
+function! lsp_bridge#will_save(...) abort
+  let save_reason = a:0 > 0 ? a:1 : 1
+  call s:send_command({
+    \ 'command': 'will_save',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0,
+    \ 'save_reason': save_reason
+    \ })
+endfunction
+
+function! lsp_bridge#will_save_wait_until(...) abort
+  let save_reason = a:0 > 0 ? a:1 : 1
+  call s:send_command({
+    \ 'command': 'will_save_wait_until',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0,
+    \ 'save_reason': save_reason
+    \ })
+endfunction
+
+function! lsp_bridge#did_close() abort
+  call s:send_command({
+    \ 'command': 'did_close',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')

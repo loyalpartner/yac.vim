@@ -25,6 +25,11 @@ command! -nargs=? LspRename call lsp_bridge#rename(<args>)
 command! LspCallHierarchyIncoming call lsp_bridge#call_hierarchy_incoming()
 command! LspCallHierarchyOutgoing call lsp_bridge#call_hierarchy_outgoing()
 command! LspDocumentSymbols call lsp_bridge#document_symbols()
+command! -nargs=? LspDidSave call lsp_bridge#did_save(<args>)
+command! -nargs=? LspDidChange call lsp_bridge#did_change(<args>)
+command! -nargs=? LspWillSave call lsp_bridge#will_save(<args>)
+command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<args>)
+command! LspDidClose call lsp_bridge#did_close()
 command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
@@ -39,10 +44,16 @@ nnoremap <silent> <leader>ci :LspCallHierarchyIncoming<CR>
 nnoremap <silent> <leader>co :LspCallHierarchyOutgoing<CR>
 nnoremap <silent> <leader>s :LspDocumentSymbols<CR>
 
-" 简单的文件初始化
+" 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)
   augroup lsp_bridge_auto
     autocmd!
+    " 文件打开时启动LSP并打开文档
     autocmd BufReadPost,BufNewFile *.rs call lsp_bridge#start() | call lsp_bridge#open_file()
+    " 文档生命周期管理
+    autocmd BufWritePre *.rs call lsp_bridge#will_save(1)
+    autocmd BufWritePost *.rs call lsp_bridge#did_save()
+    autocmd TextChanged,TextChangedI *.rs call lsp_bridge#did_change()
+    autocmd BufUnload *.rs call lsp_bridge#did_close()
   augroup END
 endif
