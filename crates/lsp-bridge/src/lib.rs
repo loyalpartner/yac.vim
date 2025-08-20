@@ -134,7 +134,7 @@ impl LspBridge {
     /// 处理跳转到声明
     async fn handle_goto_declaration(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{
-            DeclarationParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
         // 确保文件已打开
@@ -153,16 +153,12 @@ impl LspBridge {
             }
         };
 
-        let params = DeclarationParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position {
-                    line: command.line,
-                    character: command.column,
-                },
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: command.line,
+                character: command.column,
             },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
         };
 
         use lsp_types::request::GotoDeclaration;
