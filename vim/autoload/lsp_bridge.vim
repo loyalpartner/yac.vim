@@ -142,6 +142,31 @@ function! lsp_bridge#inlay_hints() abort
     \ })
 endfunction
 
+function! lsp_bridge#rename(...) abort
+  " 获取新名称，可以是参数传入或用户输入
+  let new_name = ''
+  
+  if a:0 > 0 && !empty(a:1)
+    let new_name = a:1
+  else
+    " 获取光标下的当前符号作为默认值
+    let current_symbol = expand('<cword>')
+    let new_name = input('Rename symbol to: ', current_symbol)
+    if empty(new_name)
+      echo 'Rename cancelled'
+      return
+    endif
+  endif
+  
+  call s:send_command({
+    \ 'command': 'rename',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1,
+    \ 'new_name': new_name
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -199,6 +224,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_references(response.locations)
   elseif response.action == 'inlay_hints'
     call s:show_inlay_hints(response.hints)
+  elseif response.action == 'workspace_edit'
+    call s:apply_workspace_edit(response.edits)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -667,6 +694,126 @@ endfunction
 
 " 清除所有inlay hints命令
 command! LspClearInlayHints call s:clear_inlay_hints()
+
+" === 重命名功能 ===
+
+" 应用工作区编辑
+function! s:apply_workspace_edit(edits) abort
+  if empty(a:edits)
+    echo 'No changes to apply'
+    return
+  endif
+  
+  let total_changes = 0
+  let files_changed = 0
+  
+  " 保存当前光标位置和缓冲区
+  let current_buf = bufnr('%')
+  let current_pos = getpos('.')
+  
+  try
+    " 处理每个文件的编辑
+    for file_edit in a:edits
+      let file_path = file_edit.file
+      let edits = file_edit.edits
+      
+      if empty(edits)
+        continue
+      endif
+      
+      " 打开文件（如果尚未打开）
+      let file_buf = bufnr(file_path)
+      if file_buf == -1
+        execute 'edit ' . fnameescape(file_path)
+        let file_buf = bufnr('%')
+      else
+        execute 'buffer ' . file_buf
+      endif
+      
+      " 按行号逆序排序编辑，避免行号偏移问题
+      let sorted_edits = sort(copy(edits), {a, b -> 
+        \ a.start_line == b.start_line ? 
+        \   (b.start_column - a.start_column) : 
+        \   (b.start_line - a.start_line)})
+      
+      " 应用编辑
+      for edit in sorted_edits
+        call s:apply_text_edit(edit)
+        let total_changes += 1
+      endfor
+      
+      let files_changed += 1
+    endfor
+    
+    " 返回到原始缓冲区和位置
+    if bufexists(current_buf)
+      execute 'buffer ' . current_buf
+      call setpos('.', current_pos)
+    endif
+    
+    echo printf('Applied %d changes across %d files', total_changes, files_changed)
+    
+  catch
+    echoerr 'Error applying workspace edit: ' . v:exception
+  endtry
+endfunction
+
+" 应用单个文本编辑
+function! s:apply_text_edit(edit) abort
+  " 转换为1-based行号和列号
+  let start_line = a:edit.start_line + 1
+  let start_col = a:edit.start_column + 1
+  let end_line = a:edit.end_line + 1
+  let end_col = a:edit.end_column + 1
+  
+  " 定位到编辑位置
+  call cursor(start_line, start_col)
+  
+  " 如果是插入操作（开始和结束位置相同）
+  if start_line == end_line && start_col == end_col
+    " 纯插入
+    let current_line = getline(start_line)
+    let before = current_line[0 : start_col - 2]
+    let after = current_line[start_col - 1 :]
+    call setline(start_line, before . a:edit.new_text . after)
+  else
+    " 替换操作
+    if start_line == end_line
+      " 同一行替换
+      let current_line = getline(start_line)
+      let before = current_line[0 : start_col - 2]
+      let after = current_line[end_col - 1 :]
+      call setline(start_line, before . a:edit.new_text . after)
+    else
+      " 跨行替换
+      let lines = []
+      
+      " 第一行：保留开头，替换剩余部分
+      let first_line = getline(start_line)
+      let first_part = first_line[0 : start_col - 2]
+      
+      " 最后一行：替换开头，保留剩余部分
+      let last_line = getline(end_line)
+      let last_part = last_line[end_col - 1 :]
+      
+      " 合并新文本
+      let new_text_lines = split(a:edit.new_text, '\n', 1)
+      if empty(new_text_lines)
+        let new_text_lines = ['']
+      endif
+      
+      " 构建最终行
+      let new_text_lines[0] = first_part . new_text_lines[0]
+      let new_text_lines[-1] = new_text_lines[-1] . last_part
+      
+      " 删除原有行
+      execute start_line . ',' . end_line . 'delete'
+      
+      " 插入新行
+      call append(start_line - 1, new_text_lines)
+    endif
+  endif
+endfunction
 
 
 

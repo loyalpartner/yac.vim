@@ -7,10 +7,12 @@ use std::path::PathBuf;
 // 新的简化命令格式
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VimCommand {
-    pub command: String, // goto_definition, hover, completion
+    pub command: String, // goto_definition, hover, completion, rename
     pub file: String,    // 绝对文件路径
     pub line: u32,       // 0-based 行号
     pub column: u32,     // 0-based 列号
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_name: Option<String>, // 用于 rename 命令的新名称
 }
 
 // Using VimCommand directly - no legacy support
@@ -37,6 +39,8 @@ pub enum VimAction {
     References { locations: Vec<ReferenceLocation> },
     #[serde(rename = "inlay_hints")]
     InlayHints { hints: Vec<InlayHint> },
+    #[serde(rename = "workspace_edit")]
+    WorkspaceEdit { edits: Vec<FileEdit> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -65,6 +69,21 @@ pub struct InlayHint {
     pub label: String,           // The hint text to display
     pub kind: String,            // "type" or "parameter"
     pub tooltip: Option<String>, // Optional tooltip text
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileEdit {
+    pub file: String,           // File path
+    pub edits: Vec<TextEdit>,   // Text edits for this file
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextEdit {
+    pub start_line: u32,    // 0-based start line
+    pub start_column: u32,  // 0-based start column  
+    pub end_line: u32,      // 0-based end line
+    pub end_column: u32,    // 0-based end column
+    pub new_text: String,   // New text to insert
 }
 
 // Using VimAction directly - no legacy support
@@ -120,6 +139,7 @@ impl LspBridge {
                 "completion" => self.handle_completion(client, &command).await,
                 "references" => self.handle_references(client, &command).await,
                 "inlay_hints" => self.handle_inlay_hints(client, &command).await,
+                "rename" => self.handle_rename(client, &command).await,
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -666,6 +686,76 @@ impl LspBridge {
         }
     }
 
+    /// 处理符号重命名
+    async fn handle_rename(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{
+            Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        // 检查是否提供了新名称
+        let new_name = match &command.new_name {
+            Some(name) => name,
+            None => {
+                return VimAction::Error {
+                    message: "No new name provided for rename".to_string(),
+                };
+            }
+        };
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            new_name: new_name.clone(),
+            work_done_progress_params: Default::default(),
+        };
+
+        use lsp_types::request::Rename;
+        match client.request::<Rename>(params).await {
+            Ok(Some(workspace_edit)) => {
+                use tracing::debug;
+                debug!("Got LSP rename result: {:?}", workspace_edit);
+
+                // 转换 WorkspaceEdit 为我们的格式
+                let edits = self.convert_workspace_edit(workspace_edit);
+                
+                if edits.is_empty() {
+                    VimAction::Error {
+                        message: "No changes to apply".to_string(),
+                    }
+                } else {
+                    VimAction::WorkspaceEdit { edits }
+                }
+            }
+            Ok(None) => VimAction::Error {
+                message: "Cannot rename symbol at this position".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: format!("Rename failed: {}", e),
+            },
+        }
+    }
+
     /// 处理文件打开通知
     async fn handle_file_open(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         // 确保文件已经打开（发送textDocument/didOpen）
@@ -716,6 +806,59 @@ impl LspBridge {
         };
 
         lsp_items.iter().map(CompletionItem::from).collect()
+    }
+
+    /// 转换 LSP WorkspaceEdit 为我们的格式
+    fn convert_workspace_edit(&self, workspace_edit: lsp_types::WorkspaceEdit) -> Vec<FileEdit> {
+        let mut file_edits = Vec::new();
+
+        // 处理 changes (传统格式)
+        if let Some(changes) = workspace_edit.changes {
+            for (uri, text_edits) in changes {
+                if let Ok(file_path) = uri.to_file_path() {
+                    let file_path_str = file_path.to_string_lossy().to_string();
+                    let converted_edits: Vec<TextEdit> = text_edits.iter().map(TextEdit::from).collect();
+                    
+                    if !converted_edits.is_empty() {
+                        file_edits.push(FileEdit {
+                            file: file_path_str,
+                            edits: converted_edits,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 处理 document_changes (新格式，更复杂，包含创建/重命名/删除文件)
+        if let Some(document_changes) = workspace_edit.document_changes {
+            use lsp_types::DocumentChanges;
+            match document_changes {
+                DocumentChanges::Edits(edits) => {
+                    for edit in edits {
+                        if let Ok(file_path) = edit.text_document.uri.to_file_path() {
+                            let file_path_str = file_path.to_string_lossy().to_string();
+                            let converted_edits: Vec<TextEdit> = edit.edits.iter().map(|e| match e {
+                                lsp_types::OneOf::Left(text_edit) => TextEdit::from(text_edit),
+                                lsp_types::OneOf::Right(annotated_edit) => TextEdit::from(&annotated_edit.text_edit),
+                            }).collect();
+                            
+                            if !converted_edits.is_empty() {
+                                file_edits.push(FileEdit {
+                                    file: file_path_str,
+                                    edits: converted_edits,
+                                });
+                            }
+                        }
+                    }
+                }
+                DocumentChanges::Operations(_operations) => {
+                    // 暂时不支持文件操作（创建/重命名/删除文件）
+                    // 只处理文本编辑
+                }
+            }
+        }
+
+        file_edits
     }
 
     /// 根据文件扩展名检测语言
@@ -1005,5 +1148,24 @@ impl From<&lsp_types::InlayHint> for InlayHint {
             kind,
             tooltip,
         }
+    }
+}
+
+// Convert LSP TextEdit to our TextEdit
+impl From<&lsp_types::TextEdit> for TextEdit {
+    fn from(edit: &lsp_types::TextEdit) -> Self {
+        TextEdit {
+            start_line: edit.range.start.line,
+            start_column: edit.range.start.character,
+            end_line: edit.range.end.line,
+            end_column: edit.range.end.character,
+            new_text: edit.new_text.clone(),
+        }
+    }
+}
+
+impl From<lsp_types::TextEdit> for TextEdit {
+    fn from(edit: lsp_types::TextEdit) -> Self {
+        TextEdit::from(&edit)
     }
 }
