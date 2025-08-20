@@ -1022,19 +1022,22 @@ impl LspBridge {
 
     /// 确保文件在LSP服务器中已打开
     async fn ensure_file_open(&self, client: &LspClient, file_path: &str) -> Result<(), String> {
-        use serde_json::json;
+        use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem};
 
         let text = std::fs::read_to_string(file_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
-        let params = json!({
-            "textDocument": {
-                "uri": format!("file://{}", file_path),
-                "languageId": Self::detect_language(file_path),
-                "version": 1,
-                "text": text
-            }
-        });
+        let uri = lsp_types::Url::from_file_path(file_path)
+            .map_err(|_| format!("Invalid file path: {}", file_path))?;
+
+        let params = DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri,
+                language_id: Self::detect_language(file_path),
+                version: 1,
+                text,
+            },
+        };
 
         client
             .notify("textDocument/didOpen", params)
@@ -1220,7 +1223,7 @@ impl LspBridge {
 
     /// 处理文档保存通知
     async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use serde_json::json;
+        use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
         let uri = match lsp_types::Url::from_file_path(&command.file) {
             Ok(uri) => uri,
@@ -1231,14 +1234,10 @@ impl LspBridge {
             }
         };
 
-        let text = command.text.as_deref();
-        let params = json!({
-            "textDocument": {
-                "uri": uri.to_string(),
-                "version": 1
-            },
-            "text": text
-        });
+        let params = DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            text: command.text.clone(),
+        };
 
         match client.notify("textDocument/didSave", params).await {
             Ok(_) => VimAction::None,
@@ -1250,7 +1249,10 @@ impl LspBridge {
 
     /// 处理文档更改通知
     async fn handle_did_change(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use serde_json::json;
+        use lsp_types::{
+            DidChangeTextDocumentParams, TextDocumentContentChangeEvent,
+            VersionedTextDocumentIdentifier,
+        };
 
         let uri = match lsp_types::Url::from_file_path(&command.file) {
             Ok(uri) => uri,
@@ -1262,15 +1264,14 @@ impl LspBridge {
         };
 
         let text = command.text.as_ref().cloned().unwrap_or_default();
-        let params = json!({
-            "textDocument": {
-                "uri": uri.to_string(),
-                "version": 1
-            },
-            "contentChanges": [{
-                "text": text
-            }]
-        });
+        let params = DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier { uri, version: 1 },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None, // Full document update
+                range_length: None,
+                text,
+            }],
+        };
 
         match client.notify("textDocument/didChange", params).await {
             Ok(_) => VimAction::None,
@@ -1282,7 +1283,9 @@ impl LspBridge {
 
     /// 处理文档将要保存通知
     async fn handle_will_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use serde_json::json;
+        use lsp_types::{
+            TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
+        };
 
         let uri = match lsp_types::Url::from_file_path(&command.file) {
             Ok(uri) => uri,
@@ -1293,13 +1296,17 @@ impl LspBridge {
             }
         };
 
-        let reason = command.save_reason.unwrap_or(1); // Default to Manual save
-        let params = json!({
-            "textDocument": {
-                "uri": uri.to_string()
-            },
-            "reason": reason
-        });
+        let reason = match command.save_reason.unwrap_or(1) {
+            1 => TextDocumentSaveReason::MANUAL,
+            2 => TextDocumentSaveReason::AFTER_DELAY,
+            3 => TextDocumentSaveReason::FOCUS_OUT,
+            _ => TextDocumentSaveReason::MANUAL, // Default to Manual save
+        };
+
+        let params = WillSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+            reason,
+        };
 
         match client.notify("textDocument/willSave", params).await {
             Ok(_) => VimAction::None,
@@ -1363,7 +1370,7 @@ impl LspBridge {
 
     /// 处理文档关闭通知
     async fn handle_did_close(&self, client: &LspClient, command: &VimCommand) -> VimAction {
-        use serde_json::json;
+        use lsp_types::{DidCloseTextDocumentParams, TextDocumentIdentifier};
 
         let uri = match lsp_types::Url::from_file_path(&command.file) {
             Ok(uri) => uri,
@@ -1374,11 +1381,9 @@ impl LspBridge {
             }
         };
 
-        let params = json!({
-            "textDocument": {
-                "uri": uri.to_string()
-            }
-        });
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+        };
 
         match client.notify("textDocument/didClose", params).await {
             Ok(_) => VimAction::None,
