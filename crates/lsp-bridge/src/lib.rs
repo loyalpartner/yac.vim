@@ -200,7 +200,6 @@ impl FilePos {
     }
 }
 
-// 响应格式
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum VimAction {
@@ -746,7 +745,6 @@ impl LspBridge {
         VimAction::None
     }
 
-    // 工具函数
     async fn ensure_file_open(&self, client: &LspClient, file_path: &str) -> Result<(), String> {
         use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem};
 
@@ -826,9 +824,7 @@ impl LspBridge {
                         }
                     }
                 }
-                DocumentChanges::Operations(_) => {
-                    // 不支持文件操作
-                }
+                DocumentChanges::Operations(_) => {}
             }
         }
 
@@ -933,7 +929,6 @@ impl LspBridge {
         None
     }
 
-    // Call hierarchy 助手函数
     async fn prepare_call_hierarchy(
         &self,
         client: &LspClient,
@@ -1034,7 +1029,6 @@ impl LspBridge {
         }
     }
 
-    // 文档生命周期处理函数
     async fn handle_did_save(
         &self,
         client: &LspClient,
@@ -1176,7 +1170,6 @@ impl LspBridge {
     }
 }
 
-// From trait 实现 - 直接转换，无中间层
 impl From<lsp_types::Location> for VimAction {
     fn from(location: lsp_types::Location) -> Self {
         match location.uri.to_file_path() {
