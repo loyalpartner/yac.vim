@@ -837,10 +837,7 @@ impl LspBridge {
                     for edit in edits {
                         if let Ok(file_path) = edit.text_document.uri.to_file_path() {
                             let file_path_str = file_path.to_string_lossy().to_string();
-                            let converted_edits: Vec<TextEdit> = edit.edits.iter().map(|e| match e {
-                                lsp_types::OneOf::Left(text_edit) => TextEdit::from(text_edit),
-                                lsp_types::OneOf::Right(annotated_edit) => TextEdit::from(&annotated_edit.text_edit),
-                            }).collect();
+                            let converted_edits: Vec<TextEdit> = edit.edits.iter().map(TextEdit::from).collect();
                             
                             if !converted_edits.is_empty() {
                                 file_edits.push(FileEdit {
@@ -1167,5 +1164,15 @@ impl From<&lsp_types::TextEdit> for TextEdit {
 impl From<lsp_types::TextEdit> for TextEdit {
     fn from(edit: lsp_types::TextEdit) -> Self {
         TextEdit::from(&edit)
+    }
+}
+
+// Convert LSP OneOf<TextEdit, AnnotatedTextEdit> to our TextEdit
+impl From<&lsp_types::OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>> for TextEdit {
+    fn from(edit: &lsp_types::OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>) -> Self {
+        match edit {
+            lsp_types::OneOf::Left(text_edit) => TextEdit::from(text_edit),
+            lsp_types::OneOf::Right(annotated_edit) => TextEdit::from(&annotated_edit.text_edit),
+        }
     }
 }
