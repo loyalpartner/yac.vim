@@ -35,6 +35,8 @@ pub enum VimAction {
     Completions { items: Vec<CompletionItem> },
     #[serde(rename = "references")]
     References { locations: Vec<ReferenceLocation> },
+    #[serde(rename = "inlay_hints")]
+    InlayHints { hints: Vec<InlayHint> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -54,6 +56,15 @@ pub struct ReferenceLocation {
     pub file: String,
     pub line: u32,   // 0-based
     pub column: u32, // 0-based
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InlayHint {
+    pub line: u32,        // 0-based line number
+    pub column: u32,      // 0-based column position
+    pub label: String,    // The hint text to display
+    pub kind: String,     // "type" or "parameter" 
+    pub tooltip: Option<String>, // Optional tooltip text
 }
 
 // Using VimAction directly - no legacy support
@@ -107,6 +118,7 @@ impl LspBridge {
                 "hover" => self.handle_hover(client, &command).await,
                 "completion" => self.handle_completion(client, &command).await,
                 "references" => self.handle_references(client, &command).await,
+                "inlay_hints" => self.handle_inlay_hints(client, &command).await,
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -523,6 +535,63 @@ impl LspBridge {
         }
     }
 
+    /// 处理inlay hints
+    async fn handle_inlay_hints(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{
+            InlayHintParams, Range, Position, TextDocumentIdentifier,
+        };
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        // Read file to get the total number of lines for the range
+        let line_count = match std::fs::read_to_string(&command.file) {
+            Ok(content) => content.lines().count() as u32,
+            Err(_) => 1000, // fallback to a reasonable default
+        };
+
+        let params = InlayHintParams {
+            text_document: TextDocumentIdentifier { uri },
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: line_count, character: 0 },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        use lsp_types::request::InlayHintRequest;
+        match client.request::<InlayHintRequest>(params).await {
+            Ok(Some(hints)) => {
+                use tracing::debug;
+                debug!("Got LSP inlay hints result: {:?}", hints);
+                
+                let converted_hints: Vec<InlayHint> = hints
+                    .iter()
+                    .map(InlayHint::from)
+                    .collect();
+                    
+                VimAction::InlayHints { hints: converted_hints }
+            }
+            Ok(None) => VimAction::InlayHints { hints: vec![] },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
     /// 处理文件打开通知
     async fn handle_file_open(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         // 确保文件已经打开（发送textDocument/didOpen）
@@ -816,5 +885,44 @@ impl From<lsp_types::Hover> for VimAction {
         };
 
         VimAction::ShowHover { content }
+    }
+}
+
+// Convert LSP InlayHint to our InlayHint
+impl From<&lsp_types::InlayHint> for InlayHint {
+    fn from(hint: &lsp_types::InlayHint) -> Self {
+        use lsp_types::InlayHintLabel;
+        
+        let label = match &hint.label {
+            InlayHintLabel::String(s) => s.clone(),
+            InlayHintLabel::LabelParts(parts) => {
+                parts.iter().map(|part| part.value.as_str()).collect::<Vec<_>>().join("")
+            }
+        };
+        
+        let kind = hint.kind.as_ref().map(|k| {
+            use lsp_types::InlayHintKind;
+            match k {
+                &InlayHintKind::TYPE => "type",
+                &InlayHintKind::PARAMETER => "parameter",
+                _ => "other",
+            }
+        }).unwrap_or("other").to_string();
+        
+        let tooltip = hint.tooltip.as_ref().map(|tooltip| {
+            use lsp_types::InlayHintTooltip;
+            match tooltip {
+                InlayHintTooltip::String(s) => s.clone(),
+                InlayHintTooltip::MarkupContent(markup) => markup.value.clone(),
+            }
+        });
+        
+        InlayHint {
+            line: hint.position.line,
+            column: hint.position.character,
+            label,
+            kind,
+            tooltip,
+        }
     }
 }

@@ -151,9 +151,27 @@ let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (de
 ### Default Key Mappings
 ```vim
 nnoremap <silent> gd :LspDefinition<CR>
+nnoremap <silent> gy :LspTypeDefinition<CR>
+nnoremap <silent> gi :LspImplementation<CR>
+nnoremap <silent> gr :LspReferences<CR>
 nnoremap <silent> K  :LspHover<CR>
 " Manual completion trigger
 inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
+```
+
+### Available Commands
+```vim
+:LspStart              " Start LSP bridge process
+:LspStop               " Stop LSP bridge process
+:LspDefinition         " Jump to symbol definition
+:LspTypeDefinition     " Jump to type definition
+:LspImplementation     " Jump to implementation
+:LspHover              " Show hover information
+:LspComplete           " Trigger completion manually
+:LspReferences         " Find all references
+:LspInlayHints         " Show inlay hints for current file
+:LspClearInlayHints    " Clear displayed inlay hints
+:LspOpenLog            " Open LSP bridge log file
 ```
 
 ### Log Viewing Commands
@@ -180,6 +198,12 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
   - **Confirmation**: Enter/Tab to accept, Esc to cancel
   - **Type-based colors**: Function=blue, Variable=green, etc.
   - **Match highlighting**: [brackets] around matching characters
+- `inlay_hints` command - Display inline type annotations and parameter names:
+  - **Type hints**: Show variable types (`: i32`) after declarations
+  - **Parameter hints**: Show parameter names (`count: 5`) in function calls  
+  - **Text properties**: Uses Vim 8.1+ text properties for optimal display
+  - **Fallback support**: Falls back to match highlighting for older Vim versions
+  - **Customizable styling**: Separate highlight groups for types and parameters
 - Auto-initialization on file open (`BufReadPost`/`BufNewFile` for `*.rs` files)
 - Silent "no definition found" handling
 - Workspace root detection for `rust-analyzer` (searches for `Cargo.toml`)

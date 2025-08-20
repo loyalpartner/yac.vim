@@ -124,6 +124,15 @@ function! lsp_bridge#references() abort
     \ })
 endfunction
 
+function! lsp_bridge#inlay_hints() abort
+  call s:send_command({
+    \ 'command': 'inlay_hints',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -179,6 +188,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_completions(response.items)
   elseif response.action == 'references'
     call s:show_references(response.locations)
+  elseif response.action == 'inlay_hints'
+    call s:show_inlay_hints(response.hints)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -546,6 +557,107 @@ function! lsp_bridge#open_log() abort
   
   execute 'split ' . fnameescape(s:log_file)
 endfunction
+
+" === Inlay Hints 功能 ===
+
+" 存储当前buffer的inlay hints
+let s:inlay_hints = {}
+
+" 显示inlay hints
+function! s:show_inlay_hints(hints) abort
+  " 清除当前buffer的旧hints
+  call s:clear_inlay_hints()
+  
+  if empty(a:hints)
+    echo "No inlay hints available"
+    return
+  endif
+  
+  " 存储hints并显示
+  let s:inlay_hints[bufnr('%')] = a:hints
+  call s:render_inlay_hints()
+  
+  echo 'Showing ' . len(a:hints) . ' inlay hints'
+endfunction
+
+" 清除inlay hints
+function! s:clear_inlay_hints() abort
+  let bufnr = bufnr('%')
+  if has_key(s:inlay_hints, bufnr)
+    " 清除文本属性（Vim 8.1+）
+    if exists('*prop_remove')
+      " 清除所有inlay hint相关的文本属性
+      try
+        call prop_remove({'type': 'inlay_hint_type', 'bufnr': bufnr, 'all': 1})
+        call prop_remove({'type': 'inlay_hint_parameter', 'bufnr': bufnr, 'all': 1})
+      catch
+        " 如果属性类型不存在，忽略错误
+      endtry
+    endif
+    
+    " 清除所有匹配项（降级模式）
+    call clearmatches()
+    unlet s:inlay_hints[bufnr]
+  endif
+endfunction
+
+" 公开接口：清除inlay hints
+function! lsp_bridge#clear_inlay_hints() abort
+  call s:clear_inlay_hints()
+  echo 'Inlay hints cleared'
+endfunction
+
+" 渲染inlay hints到buffer
+function! s:render_inlay_hints() abort
+  let bufnr = bufnr('%')
+  if !has_key(s:inlay_hints, bufnr)
+    return
+  endif
+  
+  " 定义highlight组
+  if !hlexists('InlayHintType')
+    highlight InlayHintType ctermfg=8 ctermbg=NONE gui=italic guifg=#888888 guibg=NONE
+  endif
+  if !hlexists('InlayHintParameter')
+    highlight InlayHintParameter ctermfg=6 ctermbg=NONE gui=italic guifg=#008080 guibg=NONE
+  endif
+  
+  " 为每个hint添加virtual text（如果支持的话）
+  for hint in s:inlay_hints[bufnr]
+    let line_num = hint.line + 1  " Convert to 1-based
+    let col_num = hint.column + 1
+    let text = hint.label
+    let hl_group = hint.kind == 'type' ? 'InlayHintType' : 'InlayHintParameter'
+    
+    " 使用文本属性（Vim 8.1+）显示inlay hints
+    if exists('*prop_type_add')
+      " 确保属性类型存在
+      try
+        call prop_type_add('inlay_hint_' . hint.kind, {'highlight': hl_group})
+      catch /E969/
+        " 属性类型已存在，忽略错误
+      endtry
+      
+      " 添加文本属性
+      try
+        call prop_add(line_num, col_num, {
+          \ 'type': 'inlay_hint_' . hint.kind,
+          \ 'text': text,
+          \ 'bufnr': bufnr
+          \ })
+      catch
+        " 添加失败，可能是位置无效
+      endtry
+    else
+      " 降级到使用matchaddpos（不如text properties好，但总比没有强）
+      let pattern = '\%' . line_num . 'l\%' . col_num . 'c'
+      call matchadd(hl_group, pattern)
+    endif
+  endfor
+endfunction
+
+" 清除所有inlay hints命令
+command! LspClearInlayHints call s:clear_inlay_hints()
 
 
 
