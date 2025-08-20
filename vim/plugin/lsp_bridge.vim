@@ -32,6 +32,7 @@ command! -nargs=+ LspExecuteCommand call lsp_bridge#execute_command(<f-args>)
 " Keep LspWillSaveWaitUntil for advanced use cases
 command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<args>)
 command! LspOpenLog        call lsp_bridge#open_log()
+command! LspDiagnostics    call lsp_bridge#diagnostics()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
@@ -46,6 +47,7 @@ nnoremap <silent> <leader>co :LspCallHierarchyOutgoing<CR>
 nnoremap <silent> <leader>s :LspDocumentSymbols<CR>
 nnoremap <silent> <leader>f :LspFoldingRange<CR>
 nnoremap <silent> <leader>ca :LspCodeAction<CR>
+nnoremap <silent> <leader>d :LspDiagnostics<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)

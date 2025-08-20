@@ -67,6 +67,9 @@ pub enum VimCommand {
     #[serde(rename = "folding_range")]
     FoldingRange { file: String },
 
+    #[serde(rename = "diagnostics")]
+    Diagnostics { file: String },
+
     // Code actions - quick fixes and refactoring
     #[serde(rename = "code_action")]
     CodeAction(FilePos),
@@ -130,6 +133,7 @@ impl VimCommand {
             VimCommand::InlayHints { file } => file,
             VimCommand::DocumentSymbols { file } => file,
             VimCommand::FoldingRange { file } => file,
+            VimCommand::Diagnostics { file } => file,
             VimCommand::CodeAction(pos) => &pos.file,
             VimCommand::ExecuteCommand { .. } => "",
             VimCommand::Rename { file, .. } => file,
@@ -246,6 +250,8 @@ pub enum VimAction {
     FoldingRanges { ranges: Vec<FoldingRange> },
     #[serde(rename = "code_actions")]
     CodeActions { actions: Vec<CodeActionItem> },
+    #[serde(rename = "diagnostics")]
+    Diagnostics { diagnostics: Vec<DiagnosticItem> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -327,6 +333,19 @@ pub struct FoldingRange {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct DiagnosticItem {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub severity: String,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CodeActionItem {
     pub title: String,
     pub kind: Option<String>,
@@ -338,6 +357,7 @@ pub struct CodeActionItem {
 
 pub struct LspBridge {
     client: Option<LspClient>,
+    diagnostics: std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>,
 }
 
 impl Default for LspBridge {
@@ -348,7 +368,10 @@ impl Default for LspBridge {
 
 impl LspBridge {
     pub fn new() -> Self {
-        Self { client: None }
+        Self {
+            client: None,
+            diagnostics: std::collections::HashMap::new(),
+        }
     }
 
     pub async fn handle_command(&mut self, command: VimCommand) -> VimAction {
@@ -484,6 +507,7 @@ impl LspBridge {
                 VimCommand::FoldingRange { ref file } => {
                     self.handle_folding_range(client, file).await
                 }
+                VimCommand::Diagnostics { ref file } => self.handle_diagnostics(file),
                 VimCommand::CodeAction(ref pos) => self.handle_code_action(client, pos).await,
                 VimCommand::ExecuteCommand {
                     ref command_name,
@@ -1368,6 +1392,26 @@ impl LspBridge {
             },
         }
     }
+
+    fn handle_diagnostics(&self, file: &str) -> VimAction {
+        if let Some(diagnostics) = self.diagnostics.get(file) {
+            let diagnostic_items: Vec<DiagnosticItem> = diagnostics
+                .iter()
+                .map(|d| {
+                    let mut item = DiagnosticItem::from(d);
+                    item.file = file.to_string();
+                    item
+                })
+                .collect();
+            VimAction::Diagnostics {
+                diagnostics: diagnostic_items,
+            }
+        } else {
+            VimAction::Diagnostics {
+                diagnostics: vec![],
+            }
+        }
+    }
 }
 
 impl From<lsp_types::Location> for VimAction {
@@ -1759,6 +1803,42 @@ impl DocumentSymbol {
             selection_line: info.location.range.start.line,
             selection_column: info.location.range.start.character,
             children: vec![],
+        }
+    }
+}
+
+impl From<&lsp_types::Diagnostic> for DiagnosticItem {
+    fn from(diagnostic: &lsp_types::Diagnostic) -> Self {
+        use lsp_types::DiagnosticSeverity;
+
+        let severity = diagnostic
+            .severity
+            .map(|s| match s {
+                DiagnosticSeverity::ERROR => "Error",
+                DiagnosticSeverity::WARNING => "Warning",
+                DiagnosticSeverity::INFORMATION => "Info",
+                DiagnosticSeverity::HINT => "Hint",
+                _ => "Unknown",
+            })
+            .unwrap_or("Unknown")
+            .to_string();
+
+        let source = diagnostic.source.clone();
+        let code = diagnostic.code.as_ref().map(|code| match code {
+            lsp_types::NumberOrString::Number(n) => n.to_string(),
+            lsp_types::NumberOrString::String(s) => s.clone(),
+        });
+
+        DiagnosticItem {
+            file: String::new(), // Will be filled by caller
+            line: diagnostic.range.start.line,
+            column: diagnostic.range.start.character,
+            end_line: diagnostic.range.end.line,
+            end_column: diagnostic.range.end.character,
+            severity,
+            message: diagnostic.message.clone(),
+            source,
+            code,
         }
     }
 }

@@ -210,6 +210,13 @@ function! lsp_bridge#code_action() abort
     \ })
 endfunction
 
+function! lsp_bridge#diagnostics() abort
+  call s:send_command({
+    \ 'command': 'diagnostics',
+    \ 'file': expand('%:p')
+    \ })
+endfunction
+
 function! lsp_bridge#execute_command(...) abort
   if a:0 == 0
     echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
@@ -346,6 +353,8 @@ function! s:handle_response(channel, msg) abort
     call s:apply_folding_ranges(response.ranges)
   elseif response.action == 'code_actions'
     call s:show_code_actions(response.actions)
+  elseif response.action == 'diagnostics'
+    call s:show_diagnostics(response.diagnostics)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -1089,4 +1098,45 @@ function! s:execute_code_action(action) abort
   else
     echo "Action has no executable command"
   endif
+endfunction
+
+function! s:show_diagnostics(diagnostics) abort
+  if empty(a:diagnostics)
+    echo "No diagnostics found"
+    return
+  endif
+  
+  let qf_list = []
+  for diag in a:diagnostics
+    let type = diag.severity
+    if type == 'Error'
+      let type = 'E'
+    elseif type == 'Warning'
+      let type = 'W'
+    elseif type == 'Info'
+      let type = 'I'
+    elseif type == 'Hint'
+      let type = 'H'
+    endif
+    
+    let text = diag.severity . ': ' . diag.message
+    if has_key(diag, 'source') && !empty(diag.source)
+      let text = '[' . diag.source . '] ' . text
+    endif
+    if has_key(diag, 'code') && !empty(diag.code)
+      let text = text . ' (' . diag.code . ')'
+    endif
+    
+    call add(qf_list, {
+      \ 'filename': diag.file,
+      \ 'lnum': diag.line + 1,
+      \ 'col': diag.column + 1,
+      \ 'type': type,
+      \ 'text': text
+      \ })
+  endfor
+  
+  call setqflist(qf_list)
+  copen
+  echo 'Found ' . len(a:diagnostics) . ' diagnostics'
 endfunction
