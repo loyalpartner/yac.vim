@@ -1,39 +1,33 @@
-# YAC.vim - Yet Another Code completion for Vim
+# yac.vim - Yet Another Code completion for Vim
 
-A blazing fast Rust-based LSP bridge for Vim with inverted control architecture.
+A minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Another Code completion), this is specifically a lightweight LSP bridge, not a completion system.
 
 ## 🚀 Features
 
-- **High Performance**: Rust zero-cost abstractions, 2-5x faster than Python-based LSP clients
-- **Inverted Architecture**: Rust main process manages all state, Vim acts as lightweight client
-- **Multi-Editor Support**: Single process can serve multiple Vim instances
-- **State Persistence**: LSP state survives editor restarts
-- **Memory Safety**: Rust compile-time guarantees prevent crashes and memory leaks
-- **Smart Resource Management**: Automatic LSP server lifecycle management
+- **Minimal & Fast**: ~760 lines total (380 Rust + 380 VimScript)
+- **Simple Architecture**: Direct stdin/stdout communication between Vim and LSP servers
+- **Memory Safe**: Rust compile-time guarantees prevent crashes and memory leaks  
+- **Auto-initialization**: LSP servers start automatically when files are opened
+- **Silent Error Handling**: Gracefully handles "No definition found" scenarios
+- **Popup Support**: Modern floating popups for Vim 8.1+
 
 ## 📦 Installation
 
 ### Prerequisites
 
 - Rust 1.70+
-- Vim 8.1+ (Neovim not supported)
-- LSP servers (rust-analyzer, pyright, etc.)
+- Vim 8.1+ (Neovim not supported)  
+- LSP servers (currently supports rust-analyzer)
 
 ### Building from Source
 
 ```bash
-git clone https://github.com/your-username/yac.vim.git
+git clone https://github.com/loyalpartner/yac.vim.git
 cd yac.vim
 cargo build --release
 ```
 
 ### Vim Plugin Installation
-
-#### Using vim-plug
-
-```vim
-Plug 'your-username/yac.vim'
-```
 
 #### Manual Installation
 
@@ -50,172 +44,188 @@ cp vim/autoload/* ~/.vim/autoload/
 Add to your `.vimrc`:
 
 ```vim
-" Auto-start YAC server
-let g:yac_auto_start = 1
+" Specify path to lsp-bridge binary
+let g:lsp_bridge_command = ['./target/release/lsp-bridge']
 
-" Server configuration
-let g:yac_server_host = '127.0.0.1'
-let g:yac_server_port = 9527
+" Auto-start LSP bridge (default: 1)
+let g:lsp_bridge_auto_start = 1
 
-" Key mappings
-let g:yac_completion_trigger = ['<C-Space>', '<Tab>']
-let g:yac_hover_key = 'K'
-let g:yac_goto_definition_key = '<C-]>'
-
-" Enable debug logging (optional)
-let g:yac_debug = 1
+" Auto-completion settings
+let g:lsp_bridge_auto_complete = 1          " Enable auto-completion (default: 1)
+let g:lsp_bridge_auto_complete_delay = 200  " Delay in milliseconds (default: 200)  
+let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (default: 1)
 ```
 
-### LSP Server Configuration
+### Default Key Mappings
 
-Create a configuration file at `~/.config/yac-vim/config.toml`:
+The plugin automatically sets up these key mappings:
 
-```toml
-[server]
-host = "127.0.0.1"
-port = 9527
-
-[lsp_servers.rust-analyzer]
-command = ["rust-analyzer"]
-filetypes = ["rust"]
-root_patterns = ["Cargo.toml", "Cargo.lock"]
+```vim
+nnoremap <silent> gd :LspDefinition<CR>     " Jump to definition
+nnoremap <silent> gD :LspDeclaration<CR>    " Jump to declaration  
+nnoremap <silent> gy :LspTypeDefinition<CR> " Jump to type definition
+nnoremap <silent> gi :LspImplementation<CR> " Jump to implementation
+nnoremap <silent> gr :LspReferences<CR>     " Find references
+nnoremap <silent> K  :LspHover<CR>          " Show hover information
+inoremap <silent> <C-Space> <C-o>:LspComplete<CR> " Manual completion
 ```
-
-See `config/examples/` for more detailed configurations.
 
 ## 🚀 Usage
 
-### Starting YAC
+### Available Commands
 
 ```vim
-:YACStart
+:LspStart              " Start LSP bridge process
+:LspStop               " Stop LSP bridge process  
+:LspDefinition         " Jump to symbol definition
+:LspDeclaration        " Jump to symbol declaration
+:LspTypeDefinition     " Jump to type definition
+:LspImplementation     " Jump to implementation
+:LspHover              " Show hover information
+:LspComplete           " Trigger completion manually
+:LspReferences         " Find all references
+:LspInlayHints         " Show inlay hints for current file
+:LspClearInlayHints    " Clear displayed inlay hints
+:LspOpenLog            " Open LSP bridge log file
 ```
-
-### Basic Commands
-
-- `:YACStatus` - Check connection status
-- `:YACRestart` - Restart the bridge
-- `:YACStop` - Stop the bridge
 
 ### Features
 
-- **Code Completion**: Triggered automatically or manually with `<C-Space>`
-- **Hover Information**: Press `K` over symbols
-- **Go to Definition**: Press `<C-]>` or use `:YACGotoDefinition`
-- **Find References**: `:YACFindReferences`
+- **Auto-initialization**: LSP starts automatically when opening `.rs` files
+- **Code Completion**: Advanced auto-completion with smart context detection
+- **Hover Information**: Press `K` to show documentation/type information
+- **Navigation**: Jump to definitions, declarations, implementations, and references
+- **Inlay Hints**: Display inline type annotations and parameter names
+- **Popup Windows**: Modern floating popups for Vim 8.1+
 
 ## 🏗️ Architecture
 
-YAC.vim uses an innovative "inverted control" architecture:
+yac.vim uses a simple stdin/stdout communication architecture:
 
 ```
-Traditional:  [Vim] ──requests──> [Python Backend] ──proxy──> [LSP Servers]
-
-YAC.vim:     [Rust Main Process] ──controls──> [Vim Client]
-                       │
-                       └──manages──> [LSP Servers]
+Vim Plugin (job_start) → JSON stdin/stdout → lsp-bridge → LSP Server (rust-analyzer)
 ```
 
-### Benefits
+### Process Model
 
-1. **Centralized State**: All LSP state managed in one place
-2. **Multi-Client**: One process serves multiple editors
-3. **Persistence**: State survives editor restarts
-4. **Performance**: Rust's zero-cost abstractions and memory safety
+- Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'raw'`
+- Each Vim instance has its own `lsp-bridge` process (no shared server)
+- Communication is purely stdin/stdout with line-delimited JSON
+- Process terminates when Vim closes or `:LspStop` is called
 
-## 📊 Performance Comparison
+### Protocol Design
 
-| Metric | Python LSP | YAC.vim | Improvement |
-|---------|------------|---------|-------------|
-| Startup Time | 800ms | 200ms | 4x faster |
-| Memory Usage | 45MB | 15MB | 3x less |
-| Completion Response | 8ms | 3ms | 2.7x faster |
-| CPU Usage | 12% | 4% | 3x less |
+The system uses a simplified Command-Action protocol:
+
+**Vim → lsp-bridge (Commands):**
+```json
+{
+  "command": "goto_definition",
+  "file": "/absolute/path/to/file.rs",
+  "line": 31,    // 0-based
+  "column": 26   // 0-based
+}
+```
+
+**lsp-bridge → Vim (Actions):**
+```json
+{
+  "action": "jump",
+  "file": "/path/to/definition.rs", 
+  "line": 13,    // 0-based
+  "column": 11   // 0-based
+}
+```
+
+## 🎯 Design Principles
+
+The codebase follows strict simplicity constraints:
+
+- **Code limit**: Target ~800 lines total (currently ~760: 380 Rust + 380 VimScript)
+- **No over-engineering**: "Make it work, make it right, make it fast"
+- **Unix philosophy**: Do one thing (LSP bridging) and do it well
+- **Linus-style**: Eliminate special cases, prefer direct solutions
 
 ## 🧪 Development
 
 ### Building
 
 ```bash
+# Build release version
+cargo build --release
+
+# Build debug version  
 cargo build
 ```
 
 ### Testing
 
-#### 简化测试（推荐）
 ```bash
-# 运行简化测试脚本
-./test_simple.sh
-
-# 测试Vim连接（需要先启动服务器）
-vim -u test.vimrc
-# 在Vim中运行: :YACTest
-```
-
-#### 完整测试
-```bash
-# 单元测试
+# Run Rust unit/integration tests
 cargo test
 
-# 集成测试
-./run_simple_tests.sh
+# Manual testing with development vimrc
+vim -u vimrc test_data/src/lib.rs
+
+# Test goto definition manually:
+# 1. Open test_data/src/lib.rs in Vim
+# 2. Navigate to a symbol (e.g., User::new usage on line ~31)
+# 3. Press 'gd' to jump to definition  
+# 4. Press 'gD' to jump to declaration
+# 5. Should jump to the struct definition
 ```
 
 ### Running in Development
 
 ```bash
-# Start the server
-RUST_LOG=debug cargo run
+# Build and run with debug logging
+cargo build --release
+RUST_LOG=debug ./target/release/lsp-bridge
 
-# In another terminal, start Vim and connect
-vim -c "call yac#start()"
+# Check logs
+tail -f /tmp/lsp-bridge.log
+
+# NOTE: The binary runs as a stdin/stdout filter, not a standalone server
+# It's designed to be launched by Vim via job_start()
 ```
 
 ## 📋 Supported LSP Servers
 
-- **rust-analyzer** (Rust)
-- **pyright** (Python)  
-- **typescript-language-server** (TypeScript/JavaScript)
-- **gopls** (Go)
-- **clangd** (C/C++)
-- **java-language-server** (Java)
+- **rust-analyzer** (Rust) - Fully supported
+- **Other languages**: Framework exists but not implemented
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **Connection Failed**
+1. **"lsp-bridge not running"**
    ```bash
-   # Check if server is running
-   ps aux | grep yac-vim
+   # Check if binary exists and is executable
+   ls -la ./target/release/lsp-bridge
    
-   # Check port availability
-   netstat -an | grep 9527
+   # Test binary manually (it waits for JSON input)
+   echo '{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0}' | ./target/release/lsp-bridge
    ```
 
-2. **LSP Server Not Starting**
+2. **No response from LSP**
    ```bash
-   # Verify LSP server is installed
+   # Check LSP bridge logs for errors
+   tail -f /tmp/lsp-bridge.log
+   
+   # Verify rust-analyzer is installed
    which rust-analyzer
-   
-   # Check YAC logs
-   tail -f ~/.local/share/yac-vim/logs/yac.log
    ```
 
-3. **No Completions**
-   - Ensure file is saved
-   - Check LSP server supports file type
-   - Verify project root patterns match
+3. **No definition found**
+   - This is silently handled (expected for some symbols)
+   - Check if you're navigating to valid symbols
+   - Ensure the project compiles correctly
 
-### Debug Mode
+### Debug Information
 
-Enable verbose logging:
-
-```vim
-let g:yac_debug = 1
-```
-
-Check logs at `~/.local/share/yac-vim/logs/`
+- LSP bridge logs: `/tmp/lsp-bridge.log`
+- Enable debug with `RUST_LOG=debug`
+- Use `:LspOpenLog` to view logs in Vim
 
 ## 🤝 Contributing
 
@@ -228,8 +238,9 @@ Check logs at `~/.local/share/yac-vim/logs/`
 ### Development Guidelines
 
 - Follow Rust idioms and best practices
+- Maintain the ~800 line code limit
 - Add tests for new functionality
-- Update documentation
+- Update CLAUDE.md documentation
 - Run `cargo clippy` and `cargo fmt`
 
 ## 📄 License
@@ -243,10 +254,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔗 Links
 
-- [Documentation](docs/)
-- [Issue Tracker](https://github.com/your-username/yac.vim/issues)
+- [Development Documentation](CLAUDE.md)
+- [Issue Tracker](https://github.com/loyalpartner/yac.vim/issues)
 - [LSP Specification](https://microsoft.github.io/language-server-protocol/)
 
 ---
 
-**YAC.vim** - Fast, reliable, and modern LSP integration for Vim! 🚀
+**yac.vim** - Minimal, fast, and reliable LSP bridge for Vim! 🚀
