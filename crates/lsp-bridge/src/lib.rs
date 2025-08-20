@@ -2,6 +2,16 @@ use lsp_client::{LspClient, Result as LspResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// 宏：简化 file_path_to_uri 的错误处理
+macro_rules! try_uri {
+    ($lsp_bridge:expr, $file_path:expr) => {
+        match $lsp_bridge.file_path_to_uri($file_path) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        }
+    };
+}
+
 // Legacy structs removed - now using VimCommand only
 
 // 新的简化命令格式
@@ -209,10 +219,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -279,10 +286,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -352,10 +356,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoTypeDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -425,10 +426,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = GotoImplementationParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -495,10 +493,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -536,10 +531,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
@@ -595,10 +587,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = ReferenceParams {
             text_document_position: TextDocumentPositionParams {
@@ -654,10 +643,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         // Read file to get the total number of lines for the range
         let line_count = match std::fs::read_to_string(&command.file) {
@@ -722,10 +708,7 @@ impl LspBridge {
             }
         };
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = RenameParams {
             text_document_position: TextDocumentPositionParams {
@@ -940,10 +923,7 @@ impl LspBridge {
             };
         }
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier { uri },
@@ -1168,7 +1148,7 @@ impl LspBridge {
     }
 
     /// URI 转换助手函数 - 减少重复代码
-    fn file_path_to_uri(file_path: &str) -> Result<lsp_types::Url, VimAction> {
+    fn file_path_to_uri(&self, file_path: &str) -> Result<lsp_types::Url, VimAction> {
         lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
             message: format!("Invalid file path: {}", file_path),
         })
@@ -1192,10 +1172,7 @@ impl LspBridge {
     async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = DidSaveTextDocumentParams {
             text_document: TextDocumentIdentifier { uri },
@@ -1222,10 +1199,7 @@ impl LspBridge {
         static DOCUMENT_VERSION: AtomicI32 = AtomicI32::new(1);
         let version = DOCUMENT_VERSION.fetch_add(1, Ordering::SeqCst);
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let text = command.text.as_ref().cloned().unwrap_or_default();
         let params = DidChangeTextDocumentParams {
@@ -1251,10 +1225,7 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
         let reason = match command.save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
             2 => TextDocumentSaveReason::AFTER_DELAY,
@@ -1285,10 +1256,7 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let reason = match command.save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
@@ -1327,10 +1295,7 @@ impl LspBridge {
     async fn handle_did_close(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{DidCloseTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = match Self::file_path_to_uri(&command.file) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        };
+        let uri = try_uri!(self, &command.file);
 
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri },
