@@ -61,6 +61,15 @@ function! lsp_bridge#goto_definition() abort
     \ })
 endfunction
 
+function! lsp_bridge#goto_declaration() abort
+  call s:send_command({
+    \ 'command': 'goto_declaration',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
 function! lsp_bridge#goto_type_definition() abort
   call s:send_command({
     \ 'command': 'goto_type_definition',
@@ -193,8 +202,8 @@ function! s:handle_response(channel, msg) abort
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
-    " 静默处理 "No definition found", "No type definition found", 和 "No implementation found"
-    if response.message != 'No definition found' && response.message != 'No type definition found' && response.message != 'No implementation found'
+    " 静默处理 "No definition found", "No declaration found", "No type definition found", 和 "No implementation found"
+    if response.message != 'No definition found' && response.message != 'No declaration found' && response.message != 'No type definition found' && response.message != 'No implementation found'
       echoerr response.message
     endif
   endif

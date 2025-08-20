@@ -13,6 +13,7 @@ let g:lsp_bridge_command = get(g:, 'lsp_bridge_command', ['lsp-bridge'])
 command! LspStart          call lsp_bridge#start()
 command! LspStop           call lsp_bridge#stop()
 command! LspDefinition     call lsp_bridge#goto_definition()
+command! LspDeclaration    call lsp_bridge#goto_declaration()
 command! LspTypeDefinition call lsp_bridge#goto_type_definition()
 command! LspImplementation call lsp_bridge#goto_implementation()
 command! LspHover          call lsp_bridge#hover()
@@ -24,6 +25,7 @@ command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
+nnoremap <silent> gD :LspDeclaration<CR>
 nnoremap <silent> gy :LspTypeDefinition<CR>
 nnoremap <silent> gi :LspImplementation<CR>
 nnoremap <silent> gr :LspReferences<CR>
