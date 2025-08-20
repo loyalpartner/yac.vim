@@ -197,9 +197,7 @@ endfunction
 function! lsp_bridge#folding_range() abort
   call s:send_command({
     \ 'command': 'folding_range',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0
+    \ 'file': expand('%:p')
     \ })
 endfunction
 
