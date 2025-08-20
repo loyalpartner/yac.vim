@@ -1,6 +1,7 @@
-use lsp_client::{LspClient, Result as LspResult};
+use lsp_client::{JsonRpcNotification, LspClient, NotificationHandler, Result as LspResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 // 宏：简化 file_path_to_uri 的错误处理
 macro_rules! try_uri {
@@ -357,7 +358,34 @@ pub struct CodeActionItem {
 
 pub struct LspBridge {
     client: Option<LspClient>,
-    diagnostics: std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>,
+    diagnostics: Arc<Mutex<std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+}
+
+// Diagnostic notification handler implementation
+struct DiagnosticsHandler {
+    diagnostics: Arc<Mutex<std::collections::HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+}
+
+impl NotificationHandler for DiagnosticsHandler {
+    fn handle_notification(&self, notification: JsonRpcNotification) {
+        if notification.method == "textDocument/publishDiagnostics" {
+            if let Ok(params) =
+                serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(notification.params)
+            {
+                let mut diagnostics = self.diagnostics.lock().unwrap();
+                diagnostics.insert(params.uri.to_string(), params.diagnostics);
+                tracing::debug!(
+                    "Updated diagnostics for {}: {} items",
+                    params.uri,
+                    diagnostics
+                        .get(&params.uri.to_string())
+                        .map_or(0, |d| d.len())
+                );
+            } else {
+                tracing::warn!("Failed to parse publishDiagnostics notification");
+            }
+        }
+    }
 }
 
 impl Default for LspBridge {
@@ -370,7 +398,7 @@ impl LspBridge {
     pub fn new() -> Self {
         Self {
             client: None,
-            diagnostics: std::collections::HashMap::new(),
+            diagnostics: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -380,7 +408,19 @@ impl LspBridge {
 
         if self.client.is_none() {
             match self.create_client(&language, file_path).await {
-                Ok(client) => self.client = Some(client),
+                Ok(client) => {
+                    // Register diagnostic notification handler
+                    let handler = DiagnosticsHandler {
+                        diagnostics: Arc::clone(&self.diagnostics),
+                    };
+                    if let Err(e) = client
+                        .register_notification_handler("textDocument/publishDiagnostics", handler)
+                        .await
+                    {
+                        tracing::warn!("Failed to register diagnostics handler: {}", e);
+                    }
+                    self.client = Some(client);
+                }
                 Err(e) => {
                     return VimAction::Error {
                         message: format!("Failed to create LSP client: {}", e),
@@ -1394,7 +1434,15 @@ impl LspBridge {
     }
 
     fn handle_diagnostics(&self, file: &str) -> VimAction {
-        if let Some(diagnostics) = self.diagnostics.get(file) {
+        // Convert file path to URI format for lookup
+        let file_uri = if file.starts_with("file://") {
+            file.to_string()
+        } else {
+            format!("file://{}", file)
+        };
+
+        let diagnostics_map = self.diagnostics.lock().unwrap();
+        if let Some(diagnostics) = diagnostics_map.get(&file_uri) {
             let diagnostic_items: Vec<DiagnosticItem> = diagnostics
                 .iter()
                 .map(|d| {
