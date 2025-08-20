@@ -310,3 +310,13 @@ echo '{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0
 # Check rust-analyzer is installed
 which rust-analyzer
 ```
+
+## Code Review Philosophy
+
+This project follows a structured code review approach based on practical engineering principles. For detailed methodology and guidelines, see [docs/linus-persona.md](docs/linus-persona.md).
+
+### Core Principles
+- **Good Taste**: Eliminate special cases through better data structures
+- **Backward Compatibility**: Never break existing functionality
+- **Pragmatism**: Solve real problems, not theoretical ones  
+- **Simplicity**: Keep complexity to a minimum, avoid deep nesting
