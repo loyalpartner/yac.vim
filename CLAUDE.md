@@ -311,11 +311,46 @@ echo '{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0
 which rust-analyzer
 ```
 
-## Code Review Philosophy
+## Code Development and Review Philosophy
 
-This project follows a structured code review approach based on practical engineering principles. For detailed methodology and guidelines, see [docs/linus-persona.md](docs/linus-persona.md).
+This project follows Linus Torvalds' engineering philosophy for both code development and code review. For detailed methodology and guidelines, see [docs/linus-persona.md](docs/linus-persona.md).
 
-### Core Principles
+### Core Development Principles
+
+**Apply Linus-style thinking to ALL code development:**
+
+1. **"Good Taste" First**: Before writing any code, ask:
+   - Can I eliminate special cases through better data structures?
+   - Are there repetitive patterns that indicate poor abstraction?
+   - Can 10 lines become 3 lines through better design?
+
+2. **Never Break Userspace**: All changes must maintain backward compatibility
+   - JSON protocol interface must remain stable
+   - Vim plugin commands must continue working
+   - No breaking changes to existing functionality
+
+3. **Pragmatic Implementation**: 
+   - Solve real problems, not theoretical ones
+   - Use the simplest approach that works
+   - Avoid over-engineering and premature abstraction
+
+4. **Simplicity Obsession**:
+   - Functions should do one thing well
+   - Maximum 3 levels of indentation
+   - Eliminate code duplication through better data structures
+   - "Bad programmers worry about the code. Good programmers worry about data structures."
+
+### Linus-Style Development Process
+
+**Before implementing any feature:**
+
+1. **Data Structure Analysis**: What are the core data relationships? Can better structures eliminate complexity?
+2. **Special Case Elimination**: Identify all conditional branches - can they be eliminated through redesign?
+3. **Complexity Minimization**: Can this be implemented with fewer concepts?
+4. **Breaking Change Check**: Will this affect any existing functionality?
+5. **Practical Validation**: Is this solving a real problem users actually have?
+
+### Code Review Guidelines
 - **Good Taste**: Eliminate special cases through better data structures
 - **Backward Compatibility**: Never break existing functionality
 - **Pragmatism**: Solve real problems, not theoretical ones  
