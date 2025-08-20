@@ -56,6 +56,7 @@ vim -u vimrc test_data/src/lib.rs
 
 # Test other features:
 # - Press 'K' for hover information
+# - Press 'gD' for goto declaration
 # - Use :LspComplete for completion
 ```
 
@@ -102,7 +103,7 @@ The system uses a simplified Command-Action protocol (v0.2):
 **Vim → lsp-bridge (Commands):**
 ```json
 {
-  "command": "goto_definition",
+  "command": "goto_definition", // or "goto_declaration"
   "file": "/absolute/path/to/file.rs",
   "line": 31,    // 0-based
   "column": 26   // 0-based
@@ -151,6 +152,7 @@ let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (de
 ### Default Key Mappings
 ```vim
 nnoremap <silent> gd :LspDefinition<CR>
+nnoremap <silent> gD :LspDeclaration<CR>
 nnoremap <silent> gy :LspTypeDefinition<CR>
 nnoremap <silent> gi :LspImplementation<CR>
 nnoremap <silent> gr :LspReferences<CR>
@@ -164,6 +166,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 :LspStart              " Start LSP bridge process
 :LspStop               " Stop LSP bridge process
 :LspDefinition         " Jump to symbol definition
+:LspDeclaration        " Jump to symbol declaration
 :LspTypeDefinition     " Jump to type definition
 :LspImplementation     " Jump to implementation
 :LspHover              " Show hover information
@@ -189,6 +192,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 ### Implemented Features ✅
 - `file_open` command - Initialize file in LSP server
 - `goto_definition` command - Jump to symbol definitions with popup window display
+- `goto_declaration` command - Jump to symbol declarations with popup window display
 - `hover` command - Show documentation/type information in floating popup  
 - `completion` command - Advanced code completion with:
   - **Auto-trigger**: Automatically shows completions while typing (300ms delay)
@@ -205,7 +209,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
   - **Fallback support**: Falls back to match highlighting for older Vim versions
   - **Customizable styling**: Separate highlight groups for types and parameters
 - Auto-initialization on file open (`BufReadPost`/`BufNewFile` for `*.rs` files)
-- Silent "no definition found" handling
+- Silent "no definition found" and "no declaration found" handling
 - Workspace root detection for `rust-analyzer` (searches for `Cargo.toml`)
 - Popup window support for Vim 8.1+
 
@@ -239,9 +243,11 @@ vim -u vimrc
 # 1. Open test_data/src/lib.rs  
 # 2. Navigate to User::new usage
 # 3. Press 'gd' to jump to definition
+# 4. Press 'gD' to jump to declaration
 
 # Run automated Vim integration tests:
 vim -u vimrc -c 'source tests/vim/goto_definition.vim'
+vim -u vimrc -c 'source tests/vim/declaration_test.vim'
 vim -u vimrc -c 'source tests/vim/completion_test.vim'
 
 # Auto-completion testing (manual only):
