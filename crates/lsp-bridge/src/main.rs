@@ -3,14 +3,13 @@ use std::io::{self, BufRead};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
-/// 解析Vim输入为命令
+/// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum
 fn parse_vim_input(input: &str) -> Option<VimCommand> {
     serde_json::from_str::<VimCommand>(input).ok()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化日志到文件 - 每个进程独立日志
     use std::fs::OpenOptions;
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -20,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_file = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true) // 重新启动时清空日志
+        .truncate(true)
         .open(&log_path)?;
 
     tracing_subscriber::registry()
@@ -29,7 +28,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("lsp-bridge starting with log: {}", log_path);
 
-    // 向Vim发送初始化信息，包含日志路径
     let init_action = VimAction::Init {
         log_file: log_path.clone(),
     };
@@ -42,7 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bridge = LspBridge::new();
     let stdin = io::stdin();
 
-    // 读取 stdin 的每一行作为请求
     for line in stdin.lock().lines() {
         match line {
             Ok(input) => {
@@ -50,20 +47,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                // 记录收到的输入，用于调试
                 info!("Received input: {}", input);
 
-                // 尝试解析为命令
                 if let Some(vim_cmd) = parse_vim_input(&input) {
-                    info!(
-                        "Processing command: {} for {}",
-                        vim_cmd.command, vim_cmd.file
-                    );
+                    let file_path = vim_cmd.file_path();
+                    info!("Processing command: {:?} for {}", vim_cmd, file_path);
 
-                    // 处理Vim命令
                     let action = bridge.handle_command(vim_cmd).await;
 
-                    // 返回动作
                     let response_json = serde_json::to_string(&action)?;
                     info!("Sending response: {}", response_json);
                     stdout.write_all(response_json.as_bytes()).await?;
@@ -74,7 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                // 无法解析的输入
                 error!("Failed to parse input as VimCommand: {}", input);
                 let error_response = VimAction::Error {
                     message: format!("Invalid command format: {}", input),
