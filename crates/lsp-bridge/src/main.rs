@@ -1,11 +1,23 @@
-use lsp_bridge::{LspBridge, VimAction, VimCommand};
+use lsp_bridge::{LspBridge, VimAction, VimCommand, VimCommandLegacy};
 use std::io::{self, BufRead};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
-/// 解析Vim输入为命令
+/// 解析Vim输入为命令 - 支持向后兼容
 fn parse_vim_input(input: &str) -> Option<VimCommand> {
-    serde_json::from_str::<VimCommand>(input).ok()
+    // 首先尝试解析为新格式
+    if let Ok(cmd) = serde_json::from_str::<VimCommand>(input) {
+        return Some(cmd);
+    }
+
+    // 如果失败，尝试解析为旧格式并转换
+    if let Ok(legacy_cmd) = serde_json::from_str::<VimCommandLegacy>(input) {
+        if let Ok(cmd) = VimCommand::from_legacy(legacy_cmd) {
+            return Some(cmd);
+        }
+    }
+
+    None
 }
 
 #[tokio::main]
@@ -55,10 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // 尝试解析为命令
                 if let Some(vim_cmd) = parse_vim_input(&input) {
-                    info!(
-                        "Processing command: {} for {}",
-                        vim_cmd.command, vim_cmd.file
-                    );
+                    let file_path = vim_cmd.get_file_path();
+                    info!("Processing command: {:?} for {}", vim_cmd, file_path);
 
                     // 处理Vim命令
                     let action = bridge.handle_command(vim_cmd).await;
