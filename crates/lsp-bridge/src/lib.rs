@@ -43,6 +43,8 @@ pub enum VimAction {
     WorkspaceEdit { edits: Vec<FileEdit> },
     #[serde(rename = "call_hierarchy")]
     CallHierarchy { items: Vec<CallHierarchyItem> },
+    #[serde(rename = "document_symbols")]
+    DocumentSymbols { symbols: Vec<DocumentSymbol> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -98,6 +100,19 @@ pub struct CallHierarchyItem {
     pub column: u32,            // 0-based column number
     pub selection_line: u32,    // 0-based selection start line
     pub selection_column: u32,  // 0-based selection start column
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocumentSymbol {
+    pub name: String,                  // Symbol name
+    pub kind: String,                  // Symbol kind (function, struct, etc.)
+    pub detail: Option<String>,        // Additional details
+    pub file: String,                  // File path
+    pub line: u32,                     // 0-based line number
+    pub column: u32,                   // 0-based column number
+    pub selection_line: u32,           // 0-based selection start line
+    pub selection_column: u32,         // 0-based selection start column
+    pub children: Vec<DocumentSymbol>, // Nested symbols
 }
 
 // Using VimAction directly - no legacy support
@@ -160,6 +175,7 @@ impl LspBridge {
                 "call_hierarchy_outgoing" => {
                     self.handle_call_hierarchy_outgoing(client, &command).await
                 }
+                "document_symbols" => self.handle_document_symbols(client, &command).await,
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -940,6 +956,48 @@ impl LspBridge {
         }
     }
 
+    /// 处理文档符号请求
+    async fn handle_document_symbols(&self, client: &LspClient, command: &VimCommand) -> VimAction {
+        use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return VimAction::Error {
+                    message: format!("Invalid file path: {}", command.file),
+                }
+            }
+        };
+
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        use lsp_types::request::DocumentSymbolRequest;
+        match client.request::<DocumentSymbolRequest>(params).await {
+            Ok(Some(response)) => {
+                use tracing::debug;
+                debug!("Got LSP document symbols result: {:?}", response);
+
+                let symbols = self.convert_document_symbols_response(response, &command.file);
+                VimAction::DocumentSymbols { symbols }
+            }
+            Ok(None) => VimAction::DocumentSymbols { symbols: vec![] },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
     /// 处理文件打开通知
     async fn handle_file_open(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         // 确保文件已经打开（发送textDocument/didOpen）
@@ -1042,6 +1100,32 @@ impl LspBridge {
         }
 
         file_edits
+    }
+
+    /// 转换 LSP DocumentSymbolResponse 为我们的格式
+    fn convert_document_symbols_response(
+        &self,
+        response: lsp_types::DocumentSymbolResponse,
+        file_path: &str,
+    ) -> Vec<DocumentSymbol> {
+        use lsp_types::DocumentSymbolResponse;
+
+        match response {
+            DocumentSymbolResponse::Flat(symbol_infos) => {
+                // Convert SymbolInformation to DocumentSymbol
+                symbol_infos
+                    .iter()
+                    .map(|info| DocumentSymbol::from_symbol_info(info, file_path))
+                    .collect()
+            }
+            DocumentSymbolResponse::Nested(document_symbols) => {
+                // Convert nested DocumentSymbol
+                document_symbols
+                    .iter()
+                    .map(|symbol| DocumentSymbol::from_lsp_document_symbol(symbol, file_path))
+                    .collect()
+            }
+        }
     }
 
     /// 根据文件扩展名检测语言
@@ -1394,6 +1478,114 @@ impl From<&lsp_types::OneOf<lsp_types::TextEdit, lsp_types::AnnotatedTextEdit>> 
         match edit {
             lsp_types::OneOf::Left(text_edit) => TextEdit::from(text_edit),
             lsp_types::OneOf::Right(annotated_edit) => TextEdit::from(&annotated_edit.text_edit),
+        }
+    }
+}
+
+// Convert LSP DocumentSymbol and SymbolInformation to our DocumentSymbol
+impl DocumentSymbol {
+    fn from_lsp_document_symbol(symbol: &lsp_types::DocumentSymbol, file_path: &str) -> Self {
+        use lsp_types::SymbolKind;
+
+        let kind = match symbol.kind {
+            SymbolKind::FILE => "File",
+            SymbolKind::MODULE => "Module",
+            SymbolKind::NAMESPACE => "Namespace",
+            SymbolKind::PACKAGE => "Package",
+            SymbolKind::CLASS => "Class",
+            SymbolKind::METHOD => "Method",
+            SymbolKind::PROPERTY => "Property",
+            SymbolKind::FIELD => "Field",
+            SymbolKind::CONSTRUCTOR => "Constructor",
+            SymbolKind::ENUM => "Enum",
+            SymbolKind::INTERFACE => "Interface",
+            SymbolKind::FUNCTION => "Function",
+            SymbolKind::VARIABLE => "Variable",
+            SymbolKind::CONSTANT => "Constant",
+            SymbolKind::STRING => "String",
+            SymbolKind::NUMBER => "Number",
+            SymbolKind::BOOLEAN => "Boolean",
+            SymbolKind::ARRAY => "Array",
+            SymbolKind::OBJECT => "Object",
+            SymbolKind::KEY => "Key",
+            SymbolKind::NULL => "Null",
+            SymbolKind::ENUM_MEMBER => "EnumMember",
+            SymbolKind::STRUCT => "Struct",
+            SymbolKind::EVENT => "Event",
+            SymbolKind::OPERATOR => "Operator",
+            SymbolKind::TYPE_PARAMETER => "TypeParameter",
+            _ => "Unknown",
+        }
+        .to_string();
+
+        let children = symbol
+            .children
+            .as_ref()
+            .map(|children| {
+                children
+                    .iter()
+                    .map(|child| DocumentSymbol::from_lsp_document_symbol(child, file_path))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        DocumentSymbol {
+            name: symbol.name.clone(),
+            kind,
+            detail: symbol.detail.clone(),
+            file: file_path.to_string(),
+            line: symbol.range.start.line,
+            column: symbol.range.start.character,
+            selection_line: symbol.selection_range.start.line,
+            selection_column: symbol.selection_range.start.character,
+            children,
+        }
+    }
+
+    fn from_symbol_info(info: &lsp_types::SymbolInformation, file_path: &str) -> Self {
+        use lsp_types::SymbolKind;
+
+        let kind = match info.kind {
+            SymbolKind::FILE => "File",
+            SymbolKind::MODULE => "Module",
+            SymbolKind::NAMESPACE => "Namespace",
+            SymbolKind::PACKAGE => "Package",
+            SymbolKind::CLASS => "Class",
+            SymbolKind::METHOD => "Method",
+            SymbolKind::PROPERTY => "Property",
+            SymbolKind::FIELD => "Field",
+            SymbolKind::CONSTRUCTOR => "Constructor",
+            SymbolKind::ENUM => "Enum",
+            SymbolKind::INTERFACE => "Interface",
+            SymbolKind::FUNCTION => "Function",
+            SymbolKind::VARIABLE => "Variable",
+            SymbolKind::CONSTANT => "Constant",
+            SymbolKind::STRING => "String",
+            SymbolKind::NUMBER => "Number",
+            SymbolKind::BOOLEAN => "Boolean",
+            SymbolKind::ARRAY => "Array",
+            SymbolKind::OBJECT => "Object",
+            SymbolKind::KEY => "Key",
+            SymbolKind::NULL => "Null",
+            SymbolKind::ENUM_MEMBER => "EnumMember",
+            SymbolKind::STRUCT => "Struct",
+            SymbolKind::EVENT => "Event",
+            SymbolKind::OPERATOR => "Operator",
+            SymbolKind::TYPE_PARAMETER => "TypeParameter",
+            _ => "Unknown",
+        }
+        .to_string();
+
+        DocumentSymbol {
+            name: info.name.clone(),
+            kind,
+            detail: None,
+            file: file_path.to_string(),
+            line: info.location.range.start.line,
+            column: info.location.range.start.character,
+            selection_line: info.location.range.start.line,
+            selection_column: info.location.range.start.character,
+            children: vec![], // SymbolInformation is flat
         }
     }
 }

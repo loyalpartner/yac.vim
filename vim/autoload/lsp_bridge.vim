@@ -185,6 +185,15 @@ function! lsp_bridge#call_hierarchy_outgoing() abort
     \ })
 endfunction
 
+function! lsp_bridge#document_symbols() abort
+  call s:send_command({
+    \ 'command': 'document_symbols',
+    \ 'file': expand('%:p'),
+    \ 'line': 0,
+    \ 'column': 0
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -246,6 +255,8 @@ function! s:handle_response(channel, msg) abort
     call s:apply_workspace_edit(response.edits)
   elseif response.action == 'call_hierarchy'
     call s:show_call_hierarchy(response.items)
+  elseif response.action == 'document_symbols'
+    call s:show_document_symbols(response.symbols)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -629,6 +640,44 @@ function! s:show_call_hierarchy(items) abort
   call setqflist(qf_list)
   copen
   echo 'Found ' . len(a:items) . ' call hierarchy items'
+endfunction
+
+" 显示文档符号结果
+function! s:show_document_symbols(symbols) abort
+  if empty(a:symbols)
+    echo "No document symbols found"
+    return
+  endif
+  
+  let qf_list = []
+  call s:collect_symbols_recursive(a:symbols, qf_list, 0)
+  
+  call setqflist(qf_list)
+  copen
+  echo 'Found ' . len(qf_list) . ' document symbols'
+endfunction
+
+" 递归收集符号到quickfix列表（支持嵌套符号）
+function! s:collect_symbols_recursive(symbols, qf_list, depth) abort
+  for symbol in a:symbols
+    let indent = repeat('  ', a:depth)
+    let text = indent . symbol.name . ' (' . symbol.kind . ')'
+    if has_key(symbol, 'detail') && !empty(symbol.detail)
+      let text .= ' - ' . symbol.detail
+    endif
+    
+    call add(a:qf_list, {
+      \ 'filename': symbol.file,
+      \ 'lnum': symbol.selection_line + 1,
+      \ 'col': symbol.selection_column + 1,
+      \ 'text': text
+      \ })
+    
+    " 递归处理子符号
+    if has_key(symbol, 'children') && !empty(symbol.children)
+      call s:collect_symbols_recursive(symbol.children, a:qf_list, a:depth + 1)
+    endif
+  endfor
 endfunction
 
 " 简单打开日志文件
