@@ -26,6 +26,8 @@ command! LspCallHierarchyIncoming call lsp_bridge#call_hierarchy_incoming()
 command! LspCallHierarchyOutgoing call lsp_bridge#call_hierarchy_outgoing()
 command! LspDocumentSymbols call lsp_bridge#document_symbols()
 command! LspFoldingRange   call lsp_bridge#folding_range()
+command! LspCodeAction    call lsp_bridge#code_action()
+command! -nargs=+ LspExecuteCommand call lsp_bridge#execute_command(<f-args>)
 " Manual lifecycle commands removed - handled automatically via autocmds
 " Keep LspWillSaveWaitUntil for advanced use cases
 command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<args>)
@@ -43,6 +45,7 @@ nnoremap <silent> <leader>ci :LspCallHierarchyIncoming<CR>
 nnoremap <silent> <leader>co :LspCallHierarchyOutgoing<CR>
 nnoremap <silent> <leader>s :LspDocumentSymbols<CR>
 nnoremap <silent> <leader>f :LspFoldingRange<CR>
+nnoremap <silent> <leader>ca :LspCodeAction<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)
