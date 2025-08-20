@@ -21,6 +21,7 @@ command! LspComplete       call lsp_bridge#complete()
 command! LspReferences     call lsp_bridge#references()
 command! LspInlayHints     call lsp_bridge#inlay_hints()
 command! LspClearInlayHints call lsp_bridge#clear_inlay_hints()
+command! -nargs=? LspRename call lsp_bridge#rename(<args>)
 command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
@@ -30,6 +31,7 @@ nnoremap <silent> gy :LspTypeDefinition<CR>
 nnoremap <silent> gi :LspImplementation<CR>
 nnoremap <silent> gr :LspReferences<CR>
 nnoremap <silent> K  :LspHover<CR>
+nnoremap <silent> <leader>rn :LspRename<CR>
 
 " 简单的文件初始化
 if get(g:, 'lsp_bridge_auto_start', 1)

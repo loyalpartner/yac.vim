@@ -29,6 +29,26 @@ The README.md file describes a completely different architecture than what's act
 
 **For accurate information about the current implementation, trust this CLAUDE.md file and the actual source code, not the README.**
 
+## Development Environment Setup
+
+### Pre-commit Hooks (Required for Quality Assurance)
+
+This project uses pre-commit hooks to ensure code quality. Claude Code should install them before making any changes:
+
+```bash
+# Install pre-commit hooks using the setup script
+./scripts/setup-hooks.sh
+
+# Or configure Git to use the scripts directory directly (preferred)
+git config core.hooksPath scripts
+```
+
+**What the hooks check:**
+- `cargo fmt --check` - Ensures code is properly formatted
+- `cargo clippy -- -D warnings` - Catches common mistakes and enforces best practices
+
+**For Claude Code users**: Run the setup command immediately after checkout to ensure all commits meet quality standards.
+
 ## Build and Development Commands
 
 ### Building

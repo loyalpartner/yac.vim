@@ -1,0 +1,25 @@
+#!/bin/sh
+# Pre-commit hook for yac.vim
+# Ensures code quality by running cargo fmt and cargo clippy
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Check formatting
+echo "  Checking code formatting..."
+if ! cargo fmt -- --check; then
+    echo "❌ Format check failed!"
+    echo "   Run 'cargo fmt' to fix formatting issues."
+    exit 1
+fi
+
+# Run clippy
+echo "  Running clippy lints..."
+if ! cargo clippy -- -D warnings; then
+    echo "❌ Clippy warnings found!"
+    echo "   Please fix the warnings before committing."
+    exit 1
+fi
+
+echo "✅ All pre-commit checks passed!"

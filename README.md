@@ -148,6 +148,26 @@ The codebase follows strict simplicity constraints:
 
 ## 🧪 Development
 
+### Setup
+
+#### Pre-commit Hooks (Recommended)
+
+This project uses pre-commit hooks to ensure code quality. Install them with:
+
+```bash
+# Option 1: Use the setup script (copies hooks to .git/hooks/)
+./scripts/setup-hooks.sh
+
+# Option 2: Use Git's hooks path (no copying needed)
+git config core.hooksPath scripts
+```
+
+The hooks will automatically run before each commit:
+- `cargo fmt --check` - Check code formatting
+- `cargo clippy` - Check for common mistakes and style issues
+
+To temporarily skip hooks, use: `git commit --no-verify`
+
 ### Building
 
 ```bash
@@ -174,6 +194,15 @@ vim -u vimrc test_data/src/lib.rs
 # 4. Press 'gD' to jump to declaration
 # 5. Should jump to the struct definition
 ```
+
+### CI Checks
+
+![Rust CI](https://github.com/loyalpartner/yac.vim/workflows/Rust%20CI/badge.svg)
+
+All commits and PRs are automatically checked by GitHub Actions for:
+- Code formatting (`cargo fmt`)
+- Linting (`cargo clippy`) 
+- Build and tests
 
 ### Running in Development
 
@@ -241,7 +270,8 @@ tail -f /tmp/lsp-bridge.log
 - Maintain the ~800 line code limit
 - Add tests for new functionality
 - Update CLAUDE.md documentation
-- Run `cargo clippy` and `cargo fmt`
+- Install pre-commit hooks to automatically check code quality
+- All code must pass `cargo clippy` and `cargo fmt` checks
 
 ## 📄 License
 
