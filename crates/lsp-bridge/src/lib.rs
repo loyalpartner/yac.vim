@@ -1188,13 +1188,6 @@ impl LspBridge {
         None
     }
 
-    /// 辅助函数：将文件路径转换为LSP URI，减少重复代码
-    fn file_path_to_uri(file_path: &str) -> Result<lsp_types::Url, VimAction> {
-        lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
-            message: format!("Invalid file path: {}", file_path),
-        })
-    }
-
     /// 处理文档保存通知
     async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
@@ -1236,10 +1229,7 @@ impl LspBridge {
 
         let text = command.text.as_ref().cloned().unwrap_or_default();
         let params = DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier {
-                uri,
-                version,
-            },
+            text_document: VersionedTextDocumentIdentifier { uri, version },
             content_changes: vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
