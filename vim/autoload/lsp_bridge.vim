@@ -584,7 +584,18 @@ endfunction
 function! s:clear_inlay_hints() abort
   let bufnr = bufnr('%')
   if has_key(s:inlay_hints, bufnr)
-    " 清除所有匹配项
+    " 清除文本属性（Vim 8.1+）
+    if exists('*prop_remove')
+      " 清除所有inlay hint相关的文本属性
+      try
+        call prop_remove({'type': 'inlay_hint_type', 'bufnr': bufnr, 'all': 1})
+        call prop_remove({'type': 'inlay_hint_parameter', 'bufnr': bufnr, 'all': 1})
+      catch
+        " 如果属性类型不存在，忽略错误
+      endtry
+    endif
+    
+    " 清除所有匹配项（降级模式）
     call clearmatches()
     unlet s:inlay_hints[bufnr]
   endif
