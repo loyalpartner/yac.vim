@@ -14,20 +14,7 @@ macro_rules! try_uri {
 
 // Legacy structs removed - now using VimCommand only
 
-// 旧版本命令格式 (仅用于向后兼容)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VimCommandLegacy {
-    pub command: String, // goto_definition, hover, completion, rename
-    pub file: String,    // 绝对文件路径
-    pub line: u32,       // 0-based 行号
-    pub column: u32,     // 0-based 列号
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub new_name: Option<String>, // 用于 rename 命令的新名称
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>, // 用于 textDocument lifecycle 的文档内容
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub save_reason: Option<u32>, // 用于 willSave 的保存原因 (1=Manual, 2=AfterDelay, 3=FocusOut)
-}
+// Legacy structs removed - VimCommand enum handles all command types directly
 
 /// 类型安全的命令格式 - 使用 enum + 关联数据
 ///
@@ -166,90 +153,116 @@ impl VimCommand {
             VimCommand::DidClose { file, .. } => file.clone(),
         }
     }
+}
 
-    /// 从旧版本命令格式转换为新的类型安全格式
-    ///
-    /// 用于向后兼容支持，将基于字符串的旧命令转换为类型安全的新格式。
-    pub fn from_legacy(legacy: VimCommandLegacy) -> Result<Self, String> {
-        match legacy.command.as_str() {
-            "file_open" => Ok(VimCommand::FileOpen { file: legacy.file }),
-            "goto_definition" => Ok(VimCommand::GotoDefinition {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
+// Common parameter structures for From trait implementations
+#[derive(Debug, Clone)]
+pub struct FileParams {
+    pub file: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PositionParams {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenameParams {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub new_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextParams {
+    pub file: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveParams {
+    pub file: String,
+    pub save_reason: Option<u32>,
+}
+
+// From trait implementations for VimCommand parameter extraction
+impl From<&VimCommand> for Option<FileParams> {
+    fn from(cmd: &VimCommand) -> Self {
+        match cmd {
+            VimCommand::FileOpen { file }
+            | VimCommand::InlayHints { file }
+            | VimCommand::DocumentSymbols { file }
+            | VimCommand::DidClose { file } => Some(FileParams { file: file.clone() }),
+            VimCommand::DidSave { file, .. } => Some(FileParams { file: file.clone() }),
+            _ => None,
+        }
+    }
+}
+
+impl From<&VimCommand> for Option<PositionParams> {
+    fn from(cmd: &VimCommand) -> Self {
+        match cmd {
+            VimCommand::GotoDefinition { file, line, column }
+            | VimCommand::GotoDeclaration { file, line, column }
+            | VimCommand::GotoTypeDefinition { file, line, column }
+            | VimCommand::GotoImplementation { file, line, column }
+            | VimCommand::Hover { file, line, column }
+            | VimCommand::Completion { file, line, column }
+            | VimCommand::References { file, line, column }
+            | VimCommand::CallHierarchyIncoming { file, line, column }
+            | VimCommand::CallHierarchyOutgoing { file, line, column } => Some(PositionParams {
+                file: file.clone(),
+                line: *line,
+                column: *column,
             }),
-            "goto_declaration" => Ok(VimCommand::GotoDeclaration {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
+            _ => None,
+        }
+    }
+}
+
+impl From<&VimCommand> for Option<RenameParams> {
+    fn from(cmd: &VimCommand) -> Self {
+        match cmd {
+            VimCommand::Rename {
+                file,
+                line,
+                column,
+                new_name,
+            } => Some(RenameParams {
+                file: file.clone(),
+                line: *line,
+                column: *column,
+                new_name: new_name.clone(),
             }),
-            "goto_type_definition" => Ok(VimCommand::GotoTypeDefinition {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
+            _ => None,
+        }
+    }
+}
+
+impl From<&VimCommand> for Option<TextParams> {
+    fn from(cmd: &VimCommand) -> Self {
+        match cmd {
+            VimCommand::DidChange { file, text } => Some(TextParams {
+                file: file.clone(),
+                text: text.clone(),
             }),
-            "goto_implementation" => Ok(VimCommand::GotoImplementation {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
+            _ => None,
+        }
+    }
+}
+
+impl From<&VimCommand> for Option<SaveParams> {
+    fn from(cmd: &VimCommand) -> Self {
+        match cmd {
+            VimCommand::WillSave { file, save_reason }
+            | VimCommand::WillSaveWaitUntil { file, save_reason } => Some(SaveParams {
+                file: file.clone(),
+                save_reason: *save_reason,
             }),
-            "hover" => Ok(VimCommand::Hover {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
-            }),
-            "completion" => Ok(VimCommand::Completion {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
-            }),
-            "references" => Ok(VimCommand::References {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
-            }),
-            "inlay_hints" => Ok(VimCommand::InlayHints { file: legacy.file }),
-            "rename" => {
-                let new_name = legacy.new_name.ok_or("rename command requires new_name")?;
-                Ok(VimCommand::Rename {
-                    file: legacy.file,
-                    line: legacy.line,
-                    column: legacy.column,
-                    new_name,
-                })
-            }
-            "call_hierarchy_incoming" => Ok(VimCommand::CallHierarchyIncoming {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
-            }),
-            "call_hierarchy_outgoing" => Ok(VimCommand::CallHierarchyOutgoing {
-                file: legacy.file,
-                line: legacy.line,
-                column: legacy.column,
-            }),
-            "document_symbols" => Ok(VimCommand::DocumentSymbols { file: legacy.file }),
-            "did_save" => Ok(VimCommand::DidSave {
-                file: legacy.file,
-                text: legacy.text,
-            }),
-            "did_change" => {
-                let text = legacy.text.ok_or("did_change command requires text")?;
-                Ok(VimCommand::DidChange {
-                    file: legacy.file,
-                    text,
-                })
-            }
-            "will_save" => Ok(VimCommand::WillSave {
-                file: legacy.file,
-                save_reason: legacy.save_reason,
-            }),
-            "will_save_wait_until" => Ok(VimCommand::WillSaveWaitUntil {
-                file: legacy.file,
-                save_reason: legacy.save_reason,
-            }),
-            "did_close" => Ok(VimCommand::DidClose { file: legacy.file }),
-            _ => Err(format!("Unknown command: {}", legacy.command)),
+            _ => None,
         }
     }
 }

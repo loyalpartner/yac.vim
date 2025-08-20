@@ -1,23 +1,11 @@
-use lsp_bridge::{LspBridge, VimAction, VimCommand, VimCommandLegacy};
+use lsp_bridge::{LspBridge, VimAction, VimCommand};
 use std::io::{self, BufRead};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
-/// 解析Vim输入为命令 - 支持向后兼容
+/// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum
 fn parse_vim_input(input: &str) -> Option<VimCommand> {
-    // 首先尝试解析为新格式
-    if let Ok(cmd) = serde_json::from_str::<VimCommand>(input) {
-        return Some(cmd);
-    }
-
-    // 如果失败，尝试解析为旧格式并转换
-    if let Ok(legacy_cmd) = serde_json::from_str::<VimCommandLegacy>(input) {
-        if let Ok(cmd) = VimCommand::from_legacy(legacy_cmd) {
-            return Some(cmd);
-        }
-    }
-
-    None
+    serde_json::from_str::<VimCommand>(input).ok()
 }
 
 #[tokio::main]
