@@ -41,6 +41,8 @@ pub enum VimAction {
     InlayHints { hints: Vec<InlayHint> },
     #[serde(rename = "workspace_edit")]
     WorkspaceEdit { edits: Vec<FileEdit> },
+    #[serde(rename = "call_hierarchy")]
+    CallHierarchy { items: Vec<CallHierarchyItem> },
     #[serde(rename = "none")]
     None,
     #[serde(rename = "error")]
@@ -84,6 +86,18 @@ pub struct TextEdit {
     pub end_line: u32,     // 0-based end line
     pub end_column: u32,   // 0-based end column
     pub new_text: String,  // New text to insert
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CallHierarchyItem {
+    pub name: String,           // Function/method name
+    pub kind: String,           // Symbol kind (function, method, etc.)
+    pub detail: Option<String>, // Additional details
+    pub file: String,           // File path
+    pub line: u32,              // 0-based line number
+    pub column: u32,            // 0-based column number
+    pub selection_line: u32,    // 0-based selection start line
+    pub selection_column: u32,  // 0-based selection start column
 }
 
 // Using VimAction directly - no legacy support
@@ -140,6 +154,12 @@ impl LspBridge {
                 "references" => self.handle_references(client, &command).await,
                 "inlay_hints" => self.handle_inlay_hints(client, &command).await,
                 "rename" => self.handle_rename(client, &command).await,
+                "call_hierarchy_incoming" => {
+                    self.handle_call_hierarchy_incoming(client, &command).await
+                }
+                "call_hierarchy_outgoing" => {
+                    self.handle_call_hierarchy_outgoing(client, &command).await
+                }
                 _ => VimAction::Error {
                     message: format!("Unknown command: {}", command.command),
                 },
@@ -756,6 +776,170 @@ impl LspBridge {
         }
     }
 
+    /// 处理 call hierarchy incoming calls
+    async fn handle_call_hierarchy_incoming(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
+        // First prepare call hierarchy items
+        match self.prepare_call_hierarchy(client, command).await {
+            Ok(Some(items)) => {
+                if let Some(first_item) = items.first() {
+                    // Get incoming calls for the first item
+                    self.get_incoming_calls(client, first_item).await
+                } else {
+                    VimAction::Error {
+                        message: "No call hierarchy item found".to_string(),
+                    }
+                }
+            }
+            Ok(None) => VimAction::Error {
+                message: "No call hierarchy available".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    /// 处理 call hierarchy outgoing calls
+    async fn handle_call_hierarchy_outgoing(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> VimAction {
+        // First prepare call hierarchy items
+        match self.prepare_call_hierarchy(client, command).await {
+            Ok(Some(items)) => {
+                if let Some(first_item) = items.first() {
+                    // Get outgoing calls for the first item
+                    self.get_outgoing_calls(client, first_item).await
+                } else {
+                    VimAction::Error {
+                        message: "No call hierarchy item found".to_string(),
+                    }
+                }
+            }
+            Ok(None) => VimAction::Error {
+                message: "No call hierarchy available".to_string(),
+            },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    /// 准备 call hierarchy 请求
+    async fn prepare_call_hierarchy(
+        &self,
+        client: &LspClient,
+        command: &VimCommand,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyItem>>, lsp_client::LspError> {
+        use lsp_types::{
+            CallHierarchyPrepareParams, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
+
+        // 确保文件已打开
+        if let Err(e) = self.ensure_file_open(client, &command.file).await {
+            return Err(lsp_client::LspError::Protocol(format!(
+                "Failed to open file: {}",
+                e
+            )));
+        }
+
+        let uri = match lsp_types::Url::from_file_path(&command.file) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return Err(lsp_client::LspError::Protocol(format!(
+                    "Invalid file path: {}",
+                    command.file
+                )));
+            }
+        };
+
+        let params = CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: command.line,
+                    character: command.column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        use lsp_types::request::CallHierarchyPrepare;
+        client.request::<CallHierarchyPrepare>(params).await
+    }
+
+    /// 获取 incoming calls
+    async fn get_incoming_calls(
+        &self,
+        client: &LspClient,
+        item: &lsp_types::CallHierarchyItem,
+    ) -> VimAction {
+        use lsp_types::{request::CallHierarchyIncomingCalls, CallHierarchyIncomingCallsParams};
+
+        let params = CallHierarchyIncomingCallsParams {
+            item: item.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        match client.request::<CallHierarchyIncomingCalls>(params).await {
+            Ok(Some(calls)) => {
+                use tracing::debug;
+                debug!("Got LSP incoming calls result: {:?}", calls);
+
+                let call_items: Vec<CallHierarchyItem> = calls
+                    .iter()
+                    .map(|call| CallHierarchyItem::from(&call.from))
+                    .collect();
+
+                VimAction::CallHierarchy { items: call_items }
+            }
+            Ok(None) => VimAction::CallHierarchy { items: vec![] },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    /// 获取 outgoing calls
+    async fn get_outgoing_calls(
+        &self,
+        client: &LspClient,
+        item: &lsp_types::CallHierarchyItem,
+    ) -> VimAction {
+        use lsp_types::{request::CallHierarchyOutgoingCalls, CallHierarchyOutgoingCallsParams};
+
+        let params = CallHierarchyOutgoingCallsParams {
+            item: item.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        match client.request::<CallHierarchyOutgoingCalls>(params).await {
+            Ok(Some(calls)) => {
+                use tracing::debug;
+                debug!("Got LSP outgoing calls result: {:?}", calls);
+
+                let call_items: Vec<CallHierarchyItem> = calls
+                    .iter()
+                    .map(|call| CallHierarchyItem::from(&call.to))
+                    .collect();
+
+                VimAction::CallHierarchy { items: call_items }
+            }
+            Ok(None) => VimAction::CallHierarchy { items: vec![] },
+            Err(e) => VimAction::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
     /// 处理文件打开通知
     async fn handle_file_open(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         // 确保文件已经打开（发送textDocument/didOpen）
@@ -1166,6 +1350,41 @@ impl From<&lsp_types::TextEdit> for TextEdit {
 impl From<lsp_types::TextEdit> for TextEdit {
     fn from(edit: lsp_types::TextEdit) -> Self {
         TextEdit::from(&edit)
+    }
+}
+
+// Convert LSP CallHierarchyItem to our CallHierarchyItem
+impl From<&lsp_types::CallHierarchyItem> for CallHierarchyItem {
+    fn from(item: &lsp_types::CallHierarchyItem) -> Self {
+        use lsp_types::SymbolKind;
+
+        let kind = match item.kind {
+            SymbolKind::FUNCTION => "Function",
+            SymbolKind::METHOD => "Method",
+            SymbolKind::CONSTRUCTOR => "Constructor",
+            SymbolKind::CLASS => "Class",
+            SymbolKind::MODULE => "Module",
+            SymbolKind::INTERFACE => "Interface",
+            _ => "Unknown",
+        }
+        .to_string();
+
+        let file_path = item
+            .uri
+            .to_file_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| item.uri.to_string());
+
+        CallHierarchyItem {
+            name: item.name.clone(),
+            kind,
+            detail: item.detail.clone(),
+            file: file_path,
+            line: item.range.start.line,
+            column: item.range.start.character,
+            selection_line: item.selection_range.start.line,
+            selection_column: item.selection_range.start.character,
+        }
     }
 }
 

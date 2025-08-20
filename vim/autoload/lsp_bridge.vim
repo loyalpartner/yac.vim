@@ -167,6 +167,24 @@ function! lsp_bridge#rename(...) abort
     \ })
 endfunction
 
+function! lsp_bridge#call_hierarchy_incoming() abort
+  call s:send_command({
+    \ 'command': 'call_hierarchy_incoming',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
+function! lsp_bridge#call_hierarchy_outgoing() abort
+  call s:send_command({
+    \ 'command': 'call_hierarchy_outgoing',
+    \ 'file': expand('%:p'),
+    \ 'line': line('.') - 1,
+    \ 'column': col('.') - 1
+    \ })
+endfunction
+
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -226,6 +244,8 @@ function! s:handle_response(channel, msg) abort
     call s:show_inlay_hints(response.hints)
   elseif response.action == 'workspace_edit'
     call s:apply_workspace_edit(response.edits)
+  elseif response.action == 'call_hierarchy'
+    call s:show_call_hierarchy(response.items)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
   elseif response.action == 'error'
@@ -582,6 +602,33 @@ function! s:show_references(locations) abort
   call setqflist(qf_list)
   copen
   echo 'Found ' . len(a:locations) . ' references'
+endfunction
+
+" 显示 call hierarchy 结果
+function! s:show_call_hierarchy(items) abort
+  if empty(a:items)
+    echo "No call hierarchy found"
+    return
+  endif
+  
+  let qf_list = []
+  for item in a:items
+    let text = item.name . ' (' . item.kind . ')'
+    if has_key(item, 'detail') && !empty(item.detail)
+      let text .= ' - ' . item.detail
+    endif
+    
+    call add(qf_list, {
+      \ 'filename': item.file,
+      \ 'lnum': item.selection_line + 1,
+      \ 'col': item.selection_column + 1,
+      \ 'text': text
+      \ })
+  endfor
+  
+  call setqflist(qf_list)
+  copen
+  echo 'Found ' . len(a:items) . ' call hierarchy items'
 endfunction
 
 " 简单打开日志文件
