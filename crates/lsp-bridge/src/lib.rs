@@ -1221,17 +1221,20 @@ impl LspBridge {
         None
     }
 
+    /// 辅助函数：将文件路径转换为LSP URI，减少重复代码
+    fn file_path_to_uri(file_path: &str) -> Result<lsp_types::Url, VimAction> {
+        lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
+            message: format!("Invalid file path: {}", file_path),
+        })
+    }
+
     /// 处理文档保存通知
     async fn handle_did_save(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(action) => return action,
         };
 
         let params = DidSaveTextDocumentParams {
@@ -1254,13 +1257,9 @@ impl LspBridge {
             VersionedTextDocumentIdentifier,
         };
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(action) => return action,
         };
 
         let text = command.text.as_ref().cloned().unwrap_or_default();
@@ -1287,15 +1286,10 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(action) => return action,
         };
-
         let reason = match command.save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
             2 => TextDocumentSaveReason::AFTER_DELAY,
@@ -1326,13 +1320,9 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(action) => return action,
         };
 
         let reason = match command.save_reason.unwrap_or(1) {
@@ -1372,13 +1362,9 @@ impl LspBridge {
     async fn handle_did_close(&self, client: &LspClient, command: &VimCommand) -> VimAction {
         use lsp_types::{DidCloseTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = match lsp_types::Url::from_file_path(&command.file) {
+        let uri = match Self::file_path_to_uri(&command.file) {
             Ok(uri) => uri,
-            Err(_) => {
-                return VimAction::Error {
-                    message: format!("Invalid file path: {}", command.file),
-                }
-            }
+            Err(action) => return action,
         };
 
         let params = DidCloseTextDocumentParams {

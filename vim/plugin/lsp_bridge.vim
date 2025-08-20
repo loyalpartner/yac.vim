@@ -25,11 +25,6 @@ command! -nargs=? LspRename call lsp_bridge#rename(<args>)
 command! LspCallHierarchyIncoming call lsp_bridge#call_hierarchy_incoming()
 command! LspCallHierarchyOutgoing call lsp_bridge#call_hierarchy_outgoing()
 command! LspDocumentSymbols call lsp_bridge#document_symbols()
-command! -nargs=? LspDidSave call lsp_bridge#did_save(<args>)
-command! -nargs=? LspDidChange call lsp_bridge#did_change(<args>)
-command! -nargs=? LspWillSave call lsp_bridge#will_save(<args>)
-command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<args>)
-command! LspDidClose call lsp_bridge#did_close()
 command! LspOpenLog        call lsp_bridge#open_log()
 
 " 默认快捷键
