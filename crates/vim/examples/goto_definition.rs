@@ -1,13 +1,50 @@
-//! GotoDefinition handler example
+//! Comprehensive Handler trait example
 //!
-//! Demonstrates implementing a method handler that returns a value.
+//! This example demonstrates all three Handler patterns in the vim crate:
+//! 1. **Method with return value** (main example): `Output = T`, returns `Ok(Some(value))`
+//! 2. **Notification without return**: `Output = ()`, returns `Ok(None)`  
+//! 3. **Optional return value**: `Output = T`, returns `Ok(Some(value))` or `Ok(None)`
+//!
+//! The unified Handler trait uses `Option<Output>` to eliminate method/notification
+//! special cases through better data structures (following Linus philosophy).
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use vim::{Handler, Location, Vim};
 
-/// Goto definition handler - method with return value
+/// Goto definition handler - demonstrates method with return value pattern
+///
+/// This is the most common LSP handler pattern. For other patterns:
+///
+/// **Notification pattern** (no return):
+/// ```ignore
+/// impl Handler for NotificationHandler {
+///     type Input = NotificationParams;
+///     type Output = (); // Key: use unit type for notifications
+///     
+///     async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
+///         // Do side effect (e.g., open file, send notification to LSP)
+///         perform_action(params).await?;
+///         Ok(None) // Always return None for notifications
+///     }
+/// }
+/// ```
+///
+/// **Optional return pattern** (may or may not have value):
+/// ```ignore  
+/// impl Handler for OptionalHandler {
+///     type Input = QueryParams;
+///     type Output = QueryResult;
+///     
+///     async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
+///         match query_data(params).await {
+///             Some(result) => Ok(Some(result)), // Found data
+///             None => Ok(None), // No data available (not an error)
+///         }
+///     }
+/// }
+/// ```
 pub struct GotoDefinitionHandler;
 
 #[derive(Deserialize)]
