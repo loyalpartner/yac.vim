@@ -47,6 +47,11 @@ test_simple_connection.vim
 run_vim_tests.vim
 test_result.tmp
 *_result.tmp
+test_diag.rs
+test_diagnostic_manual.sh
+verify_fix.sh
+test_virtual_text_fix.vim
+debug_diagnostics.sh
 
 # E2E test artifacts
 /tests/debug/*.py
