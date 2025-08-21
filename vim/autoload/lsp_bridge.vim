@@ -1172,19 +1172,37 @@ endif
 
 " 更新诊断虚拟文本
 function! s:update_diagnostic_virtual_text(diagnostics) abort
-  let bufnr = bufnr('%')
+  " 诊断按文件分组
+  let diagnostics_by_file = {}
   
-  " 调试信息：查看是否被调用
-  echom "DEBUG: update_diagnostic_virtual_text called with " . len(a:diagnostics) . " diagnostics for buffer " . bufnr
+  for diag in a:diagnostics
+    let file_path = diag.file
+    if !has_key(diagnostics_by_file, file_path)
+      let diagnostics_by_file[file_path] = []
+    endif
+    call add(diagnostics_by_file[file_path], diag)
+  endfor
   
-  " 清除当前buffer的虚拟文本
-  call s:clear_diagnostic_virtual_text(bufnr)
-  
-  " 存储诊断数据
-  let s:diagnostic_virtual_text.storage[bufnr] = a:diagnostics
-  
-  " 渲染虚拟文本
-  call s:render_diagnostic_virtual_text(bufnr)
+  " 为每个文件更新虚拟文本
+  for [file_path, file_diagnostics] in items(diagnostics_by_file)
+    let bufnr = bufnr(file_path)
+    
+    " 只有当文件在缓冲区中时才处理
+    if bufnr != -1
+      echom "DEBUG: update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics"
+      
+      " 清除该buffer的虚拟文本
+      call s:clear_diagnostic_virtual_text(bufnr)
+      
+      " 存储诊断数据
+      let s:diagnostic_virtual_text.storage[bufnr] = file_diagnostics
+      
+      " 渲染虚拟文本
+      call s:render_diagnostic_virtual_text(bufnr)
+    else
+      echom "DEBUG: file " . file_path . " not loaded in buffer, skipping virtual text"
+    endif
+  endfor
 endfunction
 
 " 渲染诊断虚拟文本到buffer
