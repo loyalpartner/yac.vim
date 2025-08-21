@@ -8,6 +8,50 @@ fn parse_vim_input(input: &str) -> Option<VimCommand> {
     serde_json::from_str::<VimCommand>(input).ok()
 }
 
+/// Linus 风格：消除特殊情况，统一输出处理
+async fn send_response(
+    stdout: &mut tokio::io::Stdout,
+    action: &VimAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response_json = serde_json::to_string(action)?;
+    stdout.write_all(response_json.as_bytes()).await?;
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await?;
+    Ok(())
+}
+
+/// Linus 风格：简化输入处理，消除深层嵌套
+async fn handle_stdin_input(
+    input: &str,
+    bridge: &mut LspBridge,
+    stdout: &mut tokio::io::Stdout,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if input.is_empty() {
+        return Ok(());
+    }
+
+    info!("Received input: {}", input);
+
+    let action = match parse_vim_input(input) {
+        Some(vim_cmd) => {
+            let file_path = vim_cmd.file_path();
+            info!("Processing command: {:?} for {}", vim_cmd, file_path);
+            bridge.handle_command(vim_cmd).await
+        }
+        None => {
+            error!("Failed to parse input as VimCommand: {}", input);
+            VimAction::Error {
+                message: format!("Invalid command format: {}", input),
+            }
+        }
+    };
+
+    info!("Sending response: {:?}", action);
+    send_response(stdout, &action).await?;
+    info!("Command processed");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs::OpenOptions;
@@ -45,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = BufReader::new(stdin);
     let mut line_buffer = String::new();
 
+    // Linus 风格：简单的事件循环，最多2层嵌套
     loop {
         tokio::select! {
             // Handle Vim commands from stdin
@@ -56,38 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Ok(_) => {
                         let input = line_buffer.trim();
-                        if input.is_empty() {
-                            line_buffer.clear();
-                            continue;
+                        if let Err(e) = handle_stdin_input(input, &mut bridge, &mut stdout).await {
+                            error!("Failed to handle input: {}", e);
                         }
-
-                        info!("Received input: {}", input);
-
-                        if let Some(vim_cmd) = parse_vim_input(input) {
-                            let file_path = vim_cmd.file_path();
-                            info!("Processing command: {:?} for {}", vim_cmd, file_path);
-
-                            let action = bridge.handle_command(vim_cmd).await;
-
-                            let response_json = serde_json::to_string(&action)?;
-                            info!("Sending response: {}", response_json);
-                            stdout.write_all(response_json.as_bytes()).await?;
-                            stdout.write_all(b"\n").await?;
-                            stdout.flush().await?;
-
-                            info!("Command processed");
-                        } else {
-                            error!("Failed to parse input as VimCommand: {}", input);
-                            let error_response = VimAction::Error {
-                                message: format!("Invalid command format: {}", input),
-                            };
-
-                            let response_json = serde_json::to_string(&error_response)?;
-                            stdout.write_all(response_json.as_bytes()).await?;
-                            stdout.write_all(b"\n").await?;
-                            stdout.flush().await?;
-                        }
-
                         line_buffer.clear();
                     }
                     Err(e) => {
@@ -97,17 +113,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Handle diagnostic notifications (now truly asynchronous!)
+            // Handle diagnostic notifications
             diagnostic_action = diagnostic_rx.recv() => {
-                if let Some(action) = diagnostic_action {
-                    let diagnostic_json = serde_json::to_string(&action)?;
-                    info!("Sending real-time diagnostic notification: {}", diagnostic_json);
-                    stdout.write_all(diagnostic_json.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
-                } else {
-                    info!("Diagnostic channel closed");
-                    break;
+                match diagnostic_action {
+                    Some(action) => {
+                        info!("Sending real-time diagnostic notification");
+                        if let Err(e) = send_response(&mut stdout, &action).await {
+                            error!("Failed to send diagnostic: {}", e);
+                        }
+                    }
+                    None => {
+                        info!("Diagnostic channel closed");
+                        break;
+                    }
                 }
             }
         }

@@ -183,11 +183,36 @@ impl FilePos {
         }
     }
 
+    /// Linus 风格：统一的参数构造，消除重复模式
     pub fn to_goto_definition_params(
         &self,
         uri: lsp_types::Url,
     ) -> lsp_types::GotoDefinitionParams {
         lsp_types::GotoDefinitionParams {
+            text_document_position_params: self.to_text_document_position_params(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    /// Linus 风格：复用 goto_definition_params 的结构
+    pub fn to_goto_type_definition_params(
+        &self,
+        uri: lsp_types::Url,
+    ) -> lsp_types::request::GotoTypeDefinitionParams {
+        lsp_types::request::GotoTypeDefinitionParams {
+            text_document_position_params: self.to_text_document_position_params(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        }
+    }
+
+    /// Linus 风格：复用 goto_definition_params 的结构
+    pub fn to_goto_implementation_params(
+        &self,
+        uri: lsp_types::Url,
+    ) -> lsp_types::request::GotoImplementationParams {
+        lsp_types::request::GotoImplementationParams {
             text_document_position_params: self.to_text_document_position_params(uri),
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -495,23 +520,13 @@ impl LspBridge {
             }
             "type_definition" => {
                 use lsp_types::request::GotoTypeDefinition;
-                let type_params = lsp_types::request::GotoTypeDefinitionParams {
-                    text_document_position_params: pos
-                        .to_text_document_position_params(uri.clone()),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                client.request::<GotoTypeDefinition>(type_params).await
+                let params = pos.to_goto_type_definition_params(uri.clone());
+                client.request::<GotoTypeDefinition>(params).await
             }
             "implementation" => {
                 use lsp_types::request::GotoImplementation;
-                let impl_params = lsp_types::request::GotoImplementationParams {
-                    text_document_position_params: pos
-                        .to_text_document_position_params(uri.clone()),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                client.request::<GotoImplementation>(impl_params).await
+                let params = pos.to_goto_implementation_params(uri.clone());
+                client.request::<GotoImplementation>(params).await
             }
             _ => {
                 return VimAction::Error {

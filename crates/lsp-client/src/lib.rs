@@ -453,6 +453,13 @@ impl LspClientInner {
         RequestId::Number(id)
     }
 
+    /// Linus 风格：消除重复的错误处理模式
+    fn cleanup_failed_request(&mut self, id: &RequestId, error: LspError) {
+        if let Some(pending) = self.pending_requests.remove(id) {
+            let _ = pending.sender.send(Err(error));
+        }
+    }
+
     async fn run(&mut self) -> Result<()> {
         loop {
             tokio::select! {
@@ -531,30 +538,17 @@ impl LspClientInner {
             },
         );
 
-        // Send message, propagate errors back to caller if it fails
-        let message = match serde_json::to_string(&JsonRpcMessage::Request(request)) {
-            Ok(msg) => msg,
-            Err(json_err) => {
-                // Remove pending request and send error back
-                if let Some(pending) = self.pending_requests.remove(&id) {
-                    let _ = pending.sender.send(Err(LspError::Protocol(
-                        "JSON serialization failed".to_string(),
-                    )));
-                }
-                return Err(LspError::Json(json_err));
-            }
-        };
+        // Linus 风格：简化的错误处理，消除重复
+        let message = serde_json::to_string(&JsonRpcMessage::Request(request)).map_err(|e| {
+            self.cleanup_failed_request(
+                &id,
+                LspError::Protocol("JSON serialization failed".to_string()),
+            );
+            LspError::Json(e)
+        })?;
 
         if let Err(e) = self.transport.send_message(&message).await {
-            // Remove pending request and send error back
-            if let Some(pending) = self.pending_requests.remove(&id) {
-                let error_for_sender = match &e {
-                    LspError::Io(_) => LspError::Protocol("Transport failed".to_string()),
-                    LspError::Protocol(msg) => LspError::Protocol(msg.clone()),
-                    _ => LspError::Protocol("Request failed".to_string()),
-                };
-                let _ = pending.sender.send(Err(error_for_sender));
-            }
+            self.cleanup_failed_request(&id, LspError::Protocol("Transport failed".to_string()));
             return Err(e);
         }
 
