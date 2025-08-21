@@ -353,6 +353,7 @@ function! s:handle_response(channel, msg) abort
   elseif response.action == 'code_actions'
     call s:show_code_actions(response.actions)
   elseif response.action == 'diagnostics'
+    echom "DEBUG: Received diagnostics action with " . len(response.diagnostics) . " items"
     call s:show_diagnostics(response.diagnostics)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
@@ -1100,9 +1101,17 @@ function! s:execute_code_action(action) abort
 endfunction
 
 function! s:show_diagnostics(diagnostics) abort
+  echom "DEBUG: s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics"
+  echom "DEBUG: virtual text enabled = " . s:diagnostic_virtual_text.enabled
+  
   if empty(a:diagnostics)
     echo "No diagnostics found"
     return
+  endif
+  
+  " Debug: show first diagnostic structure
+  if len(a:diagnostics) > 0
+    echom "DEBUG: First diagnostic: " . string(a:diagnostics[0])
   endif
   
   let qf_list = []
@@ -1165,6 +1174,9 @@ endif
 function! s:update_diagnostic_virtual_text(diagnostics) abort
   let bufnr = bufnr('%')
   
+  " 调试信息：查看是否被调用
+  echom "DEBUG: update_diagnostic_virtual_text called with " . len(a:diagnostics) . " diagnostics for buffer " . bufnr
+  
   " 清除当前buffer的虚拟文本
   call s:clear_diagnostic_virtual_text(bufnr)
   
@@ -1177,17 +1189,22 @@ endfunction
 
 " 渲染诊断虚拟文本到buffer
 function! s:render_diagnostic_virtual_text(bufnr) abort
+  echom "DEBUG: render_diagnostic_virtual_text called for buffer " . a:bufnr
+  
   if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
+    echom "DEBUG: No diagnostics stored for buffer " . a:bufnr
     return
   endif
   
   let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
+  echom "DEBUG: Found " . len(diagnostics) . " diagnostics to render"
   
   " 为每个诊断添加virtual text
   for diag in diagnostics
     let line_num = diag.line + 1  " Convert to 1-based
     let col_num = diag.column + 1
     let text = ' ' . diag.severity . ': ' . diag.message  " 前缀空格用于视觉分离
+    echom "DEBUG: Processing diagnostic at line " . line_num . ": " . text
     
     " 根据严重程度选择高亮组
     let hl_group = 'DiagnosticHint'
@@ -1201,12 +1218,15 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
     
     " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
     if exists('*prop_type_add')
+      echom "DEBUG: Using text properties for virtual text"
       " 确保属性类型存在
       let prop_type = 'diagnostic_' . tolower(diag.severity)
       try
         call prop_type_add(prop_type, {'highlight': hl_group})
+        echom "DEBUG: Added prop type " . prop_type
       catch /E969/
         " 属性类型已存在，忽略错误
+        echom "DEBUG: Prop type " . prop_type . " already exists"
       endtry
       
       " 在行尾添加虚拟文本
@@ -1217,7 +1237,9 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
           \ 'text_align': 'after',
           \ 'bufnr': a:bufnr
           \ })
+        echom "DEBUG: Successfully added virtual text at line " . line_num
       catch
+        echom "DEBUG: text_align failed, trying fallback: " . v:exception
         " 添加失败，可能是位置无效或Vim版本不支持text_align
         " 尝试简化版本
         try
@@ -1226,13 +1248,16 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
             \ 'text': text,
             \ 'bufnr': a:bufnr
             \ })
+          echom "DEBUG: Successfully added virtual text with fallback at line " . line_num
         catch
+          echom "DEBUG: Virtual text completely failed: " . v:exception
           " 完全失败，跳过这个诊断
         endtry
       endtry
     else
-      " 降级：使用signs或matchaddpos（不理想，但总比没有强）
-      " 这里我们选择不做任何事，因为matchaddpos无法显示虚拟文本
+      echom "DEBUG: Text properties not available, using echo fallback"
+      " 降级：至少在状态行显示诊断信息
+      echo "Diagnostic at line " . line_num . ": " . text
     endif
   endfor
 endfunction
