@@ -2,8 +2,9 @@ use lsp_bridge::{LspBridge, VimAction, VimCommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{error, info};
+use vim::Vim;
 
-/// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum
+/// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum  
 fn parse_vim_input(input: &str) -> Option<VimCommand> {
     serde_json::from_str::<VimCommand>(input).ok()
 }
@@ -41,13 +42,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (diagnostic_tx, mut diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
     let mut bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
 
+    // Keep existing stdin/stdout handling for backward compatibility
+    // But potentially use vim crate for future enhancements
+    let _vim_client = Vim::new_stdio(); // Available for future use
+
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line_buffer = String::new();
 
     loop {
         tokio::select! {
-            // Handle Vim commands from stdin
+            // Handle Vim commands from stdin - unchanged for compatibility
             result = reader.read_line(&mut line_buffer) => {
                 match result {
                     Ok(0) => {
