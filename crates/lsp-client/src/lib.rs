@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -296,8 +297,15 @@ pub struct PendingRequest {
     pub sender: oneshot::Sender<Result<Value>>,
 }
 
+// Callback trait for handling notifications
+pub trait NotificationHandler: Send + Sync {
+    fn handle_notification(&self, notification: JsonRpcNotification);
+}
+
+// Type alias for notification callback
+type NotificationCallback = Arc<dyn NotificationHandler>;
+
 // Commands sent to the background task
-#[derive(Debug)]
 enum ClientCommand {
     SendRequest {
         method: String,
@@ -307,6 +315,10 @@ enum ClientCommand {
     SendNotification {
         method: String,
         params_json: String, // Pre-serialized JSON
+    },
+    RegisterNotificationHandler {
+        method: String,
+        handler: NotificationCallback,
     },
     Shutdown,
 }
@@ -324,6 +336,7 @@ struct LspClientInner {
     request_id_counter: AtomicU32,
     pending_requests: HashMap<RequestId, PendingRequest>,
     command_rx: mpsc::Receiver<ClientCommand>,
+    notification_handlers: HashMap<String, NotificationCallback>,
 }
 
 impl LspClient {
@@ -337,6 +350,7 @@ impl LspClient {
             request_id_counter: AtomicU32::new(0),
             pending_requests: HashMap::new(),
             command_rx,
+            notification_handlers: HashMap::new(),
         };
 
         let background_task = tokio::spawn(async move {
@@ -407,6 +421,24 @@ impl LspClient {
         Ok(())
     }
 
+    /// Register a notification handler for a specific method
+    pub async fn register_notification_handler<H>(&self, method: &str, handler: H) -> Result<()>
+    where
+        H: NotificationHandler + 'static,
+    {
+        let command = ClientCommand::RegisterNotificationHandler {
+            method: method.to_string(),
+            handler: Arc::new(handler),
+        };
+
+        self.command_tx
+            .send(command)
+            .await
+            .map_err(|_| LspError::ChannelClosed)?;
+
+        Ok(())
+    }
+
     // No wrapper methods needed - use request::<RequestType>(params) directly
     // Examples:
     // client.request::<lsp_types::request::GotoDefinition>(params).await?
@@ -436,6 +468,10 @@ impl LspClientInner {
                             if let Err(e) = self.handle_send_notification(&method, params_json).await {
                                 error!("Failed to handle notification {}: {}", method, e);
                             }
+                        }
+                        Some(ClientCommand::RegisterNotificationHandler { method, handler }) => {
+                            self.notification_handlers.insert(method, handler);
+                            debug!("Registered notification handler");
                         }
                         Some(ClientCommand::Shutdown) => {
                             self.state = LspState::ShuttingDown;
@@ -578,6 +614,17 @@ impl LspClientInner {
 
     fn handle_notification(&mut self, notification: JsonRpcNotification) -> Result<()> {
         debug!("Notification: {}", notification.method);
+
+        // Check if we have a handler for this notification method
+        if let Some(handler) = self.notification_handlers.get(&notification.method) {
+            handler.handle_notification(notification);
+        } else {
+            debug!(
+                "No handler registered for notification: {}",
+                notification.method
+            );
+        }
+
         Ok(())
     }
 }

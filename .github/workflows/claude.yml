@@ -40,6 +40,8 @@ jobs:
           additional_permissions: |
             actions: read
 
+          claude_args: "--permission-mode bypassPermissions --dangerously-skip-permissions"
+
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4.1)
           # model: "claude-opus-4-1-20250805"
 
@@ -50,7 +52,7 @@ jobs:
           # assignee_trigger: "claude-bot"
 
           # Optional: Allow Claude to run specific commands
-          allowed_tools: "Bash(cargo:*),Bash(./scripts/*),Bash(git:*),Bash(chmod:*),Bash(mkdir:*),Bash(ls:*),Bash(cat:*),Bash(grep:*),Bash(find:*)"
+          allowed_tools: "Bash(cargo:*),Bash(./scripts/*),Bash(git:*),Bash(chmod:*),Bash(mkdir:*),Bash(ls:*),Bash(cat:*),Bash(grep:*),Bash(find:*),Bash(vim:*),Bash(rustup:*),Bash(which:*),Bash(tail:*),Bash(ps:*),Bash(kill:*),Bash(echo:*)"
 
           # Optional: Add custom instructions for Claude to customize its behavior for your project
           custom_instructions: |
