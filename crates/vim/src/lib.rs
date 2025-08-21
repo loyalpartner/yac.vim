@@ -5,7 +5,7 @@
 
 use anyhow::{Error, Result};
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -318,19 +318,10 @@ impl Vim {
 }
 
 // ================================================================
-// Example Handler implementations
+// Common types for handlers
 // ================================================================
 
-/// Goto definition handler - method with return value
-pub struct GotoDefinitionHandler;
-
-#[derive(Deserialize)]
-pub struct GotoDefinitionParams {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
-}
-
+/// LSP location result type
 #[derive(Serialize)]
 pub struct Location {
     pub file: String,
@@ -338,132 +329,9 @@ pub struct Location {
     pub column: u32,
 }
 
-#[async_trait]
-impl Handler for GotoDefinitionHandler {
-    type Input = GotoDefinitionParams;
-    type Output = Location;
-
-    async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
-        // Simulate LSP call
-        match find_definition(&params.file, params.line, params.column).await {
-            Some(location) => Ok(Some(location)),
-            None => Ok(None), // Not finding definition is not an error
-        }
-    }
-}
-
-/// File open handler - notification type
-pub struct FileOpenHandler;
-
-#[derive(Deserialize)]
-pub struct FileOpenParams {
-    pub file: String,
-}
-
-#[async_trait]
-impl Handler for FileOpenHandler {
-    type Input = FileOpenParams;
-    type Output = (); // notification doesn't use Output
-
-    async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
-        // Open file in LSP server
-        open_file_in_lsp(&params.file).await?;
-        Ok(None) // notification returns no value
-    }
-}
-
-/// Hover handler - method that may have return value
-pub struct HoverHandler;
-
-#[derive(Deserialize)]
-pub struct HoverParams {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Serialize)]
-pub struct HoverResult {
-    pub content: String,
-}
-
-#[async_trait]
-impl Handler for HoverHandler {
-    type Input = HoverParams;
-    type Output = HoverResult;
-
-    async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
-        match get_hover_info(&params.file, params.line, params.column).await {
-            Some(content) => Ok(Some(HoverResult { content })),
-            None => Ok(None), // No hover info available
-        }
-    }
-}
-
-// ================================================================
-// Mock LSP operations - actual implementation would call rust-analyzer etc
-// ================================================================
-
-async fn find_definition(file: &str, line: u32, column: u32) -> Option<Location> {
-    // Simulate LSP call to rust-analyzer
-    // Actual implementation would use LSP protocol
-    if file.ends_with(".rs") && line > 0 {
-        Some(Location {
-            file: file.replace("src/", "src/lib/"),
-            line: line + 10,
-            column,
-        })
-    } else {
-        None
-    }
-}
-
-async fn open_file_in_lsp(file: &str) -> Result<()> {
-    // Simulate sending textDocument/didOpen notification to LSP server
-    println!("Opening file in LSP: {}", file);
-    Ok(())
-}
-
-async fn get_hover_info(file: &str, line: u32, column: u32) -> Option<String> {
-    // Simulate LSP hover request
-    if file.ends_with(".rs") {
-        Some(format!("Type information for {}:{}:{}", file, line, column))
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_goto_definition_handler() {
-        let handler = GotoDefinitionHandler;
-        let params = GotoDefinitionParams {
-            file: "src/main.rs".to_string(),
-            line: 10,
-            column: 5,
-        };
-
-        let result = handler.handle(params).await.unwrap();
-        assert!(result.is_some());
-
-        let location = result.unwrap();
-        assert_eq!(location.file, "src/lib/main.rs");
-        assert_eq!(location.line, 20);
-    }
-
-    #[tokio::test]
-    async fn test_file_open_handler() {
-        let handler = FileOpenHandler;
-        let params = FileOpenParams {
-            file: "src/lib.rs".to_string(),
-        };
-
-        let result = handler.handle(params).await.unwrap();
-        assert!(result.is_none()); // notification returns None
-    }
 
     #[test]
     fn test_vim_message_parsing() {

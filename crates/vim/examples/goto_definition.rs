@@ -1,0 +1,75 @@
+//! GotoDefinition handler example
+//!
+//! Demonstrates implementing a method handler that returns a value.
+
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use vim::{Handler, Location, Vim};
+
+/// Goto definition handler - method with return value
+pub struct GotoDefinitionHandler;
+
+#[derive(Deserialize)]
+pub struct GotoDefinitionParams {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[async_trait]
+impl Handler for GotoDefinitionHandler {
+    type Input = GotoDefinitionParams;
+    type Output = Location;
+
+    async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
+        // Simulate LSP call
+        match find_definition(&params.file, params.line, params.column).await {
+            Some(location) => Ok(Some(location)),
+            None => Ok(None), // Not finding definition is not an error
+        }
+    }
+}
+
+async fn find_definition(file: &str, line: u32, column: u32) -> Option<Location> {
+    // Simulate LSP call to rust-analyzer
+    // Actual implementation would use LSP protocol
+    if file.ends_with(".rs") && line > 0 {
+        Some(Location {
+            file: file.replace("src/", "src/lib/"),
+            line: line + 10,
+            column,
+        })
+    } else {
+        None
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut vim = Vim::new_stdio();
+    vim.add_handler("goto_definition", GotoDefinitionHandler);
+    vim.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_goto_definition_handler() {
+        let handler = GotoDefinitionHandler;
+        let params = GotoDefinitionParams {
+            file: "src/main.rs".to_string(),
+            line: 10,
+            column: 5,
+        };
+
+        let result = handler.handle(params).await.unwrap();
+        assert!(result.is_some());
+
+        let location = result.unwrap();
+        assert_eq!(location.file, "src/lib/main.rs");
+        assert_eq!(location.line, 20);
+    }
+}
