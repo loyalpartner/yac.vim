@@ -15,7 +15,8 @@ use tokio::sync::oneshot;
 // Core data structures - Vim protocol messages
 // ================================================================
 
-/// Vim protocol message types - isolates [1,-1] magic numbers to boundary
+/// Vim protocol message types - for vim-to-client JSON-RPC communication
+/// Isolates [1,-1] magic numbers to boundary
 #[derive(Debug, Clone)]
 pub enum VimMessage {
     Request {
@@ -33,8 +34,33 @@ pub enum VimMessage {
     },
 }
 
+/// Vim channel command types - for client-to-vim communication
+/// Uses Vim's native channel command protocol
+#[derive(Debug, Clone)]
+pub enum VimCommand {
+    /// Call vim function with response: ["call", func, args, id]
+    Call {
+        func: String,
+        args: Vec<Value>,
+        id: u64,
+    },
+    /// Call vim function without response: ["call", func, args]
+    CallAsync { func: String, args: Vec<Value> },
+    /// Execute vim expression with response: ["expr", expr, id]
+    Expr { expr: String, id: u64 },
+    /// Execute vim expression without response: ["expr", expr]
+    ExprAsync { expr: String },
+    /// Execute ex command: ["ex", command]
+    Ex { command: String },
+    /// Execute normal mode command: ["normal", keys]
+    Normal { keys: String },
+    /// Redraw screen: ["redraw", force?]
+    Redraw { force: bool },
+}
+
 impl VimMessage {
     /// Parse Vim protocol - only place that handles [1,-1] magic numbers
+    /// For vim-to-client JSON-RPC messages only
     pub fn parse(json: &Value) -> Result<Self> {
         match json.as_array() {
             Some(arr) if arr.len() >= 2 => {
@@ -52,7 +78,7 @@ impl VimMessage {
                         })
                     }
                     Some(id) if id < 0 => {
-                        // [negative_id, result] - vim response
+                        // [negative_id, result] - vim response to our commands
                         Ok(VimMessage::Response {
                             id,
                             result: arr[1].clone(),
@@ -75,38 +101,49 @@ impl VimMessage {
         }
     }
 
-    /// Encode to Vim protocol
+    /// Encode vim-to-client JSON-RPC message
     pub fn encode(&self) -> Value {
         match self {
-            VimMessage::Request { method, params, .. } => {
-                // For vim channel commands, encode directly as array format
-                if method == "call" {
-                    // params contains [func, args, id] format, prepend "call"
-                    let mut cmd = vec![json!("call")];
-                    if let Some(arr) = params.as_array() {
-                        cmd.extend_from_slice(arr);
-                    }
-                    json!(cmd)
-                } else {
-                    // Other requests use JSON-RPC format
-                    json!([1, {"method": method, "params": params}])
-                }
+            VimMessage::Request { id, method, params } => {
+                json!([*id, {"method": method, "params": params}])
             }
             VimMessage::Response { id, result } => {
                 json!([*id, result])
             }
             VimMessage::Notification { method, params } => {
-                // For vim channel commands, encode directly as array format
-                if method == "call" {
-                    // params contains [func, args] format, prepend "call"
-                    let mut cmd = vec![json!("call")];
-                    if let Some(arr) = params.as_array() {
-                        cmd.extend_from_slice(arr);
-                    }
-                    json!(cmd)
+                json!({"method": method, "params": params})
+            }
+        }
+    }
+}
+
+impl VimCommand {
+    /// Encode client-to-vim channel command - follows Vim documentation exactly
+    pub fn encode(&self) -> Value {
+        match self {
+            VimCommand::Call { func, args, id } => {
+                json!(["call", func, args, id])
+            }
+            VimCommand::CallAsync { func, args } => {
+                json!(["call", func, args])
+            }
+            VimCommand::Expr { expr, id } => {
+                json!(["expr", expr, id])
+            }
+            VimCommand::ExprAsync { expr } => {
+                json!(["expr", expr])
+            }
+            VimCommand::Ex { command } => {
+                json!(["ex", command])
+            }
+            VimCommand::Normal { keys } => {
+                json!(["normal", keys])
+            }
+            VimCommand::Redraw { force } => {
+                if *force {
+                    json!(["redraw", "force"])
                 } else {
-                    // Other notifications use JSON object format
-                    json!({"method": method, "params": params})
+                    json!(["redraw", ""])
                 }
             }
         }
@@ -154,6 +191,7 @@ impl<H: Handler> HandlerDispatch for H {
 #[async_trait]
 pub trait MessageTransport: Send + Sync {
     async fn send_message(&self, msg: &VimMessage) -> Result<()>;
+    async fn send_command(&self, cmd: &VimCommand) -> Result<()>;
     async fn recv_message(&self) -> Result<VimMessage>;
 }
 
@@ -176,6 +214,15 @@ impl StdioTransport {
 impl MessageTransport for StdioTransport {
     async fn send_message(&self, msg: &VimMessage) -> Result<()> {
         let json = msg.encode();
+        let line = format!("{}\n", json);
+        let mut stdout = tokio::io::stdout();
+        stdout.write_all(line.as_bytes()).await?;
+        stdout.flush().await?;
+        Ok(())
+    }
+
+    async fn send_command(&self, cmd: &VimCommand) -> Result<()> {
+        let json = cmd.encode();
         let line = format!("{}\n", json);
         let mut stdout = tokio::io::stdout();
         stdout.write_all(line.as_bytes()).await?;
@@ -233,23 +280,77 @@ impl Vim {
         let (tx, rx) = oneshot::channel();
         self.pending_calls.insert(call_id, tx);
 
-        // Send vim channel command format: ["call", func, args, id]
-        let msg = VimMessage::Request {
+        // Send vim channel command: ["call", func, args, id]
+        let cmd = VimCommand::Call {
+            func: func.to_string(),
+            args,
             id: call_id,
-            method: "call".to_string(),
-            params: json!([func, args, call_id]),
         };
 
-        self.transport.send_message(&msg).await?;
+        self.transport.send_command(&cmd).await?;
         rx.await.map_err(|_| Error::msg("Call timeout"))
     }
 
-    /// Execute vim expression
+    /// Execute vim expression with response
+    pub async fn expr(&mut self, expr: &str) -> Result<Value> {
+        self.next_id += 1;
+        let expr_id = self.next_id;
+        let (tx, rx) = oneshot::channel();
+        self.pending_calls.insert(expr_id, tx);
+
+        let cmd = VimCommand::Expr {
+            expr: expr.to_string(),
+            id: expr_id,
+        };
+
+        self.transport.send_command(&cmd).await?;
+        rx.await.map_err(|_| Error::msg("Expr timeout"))
+    }
+
+    /// Execute vim expression without response (fire-and-forget)
+    pub async fn expr_async(&mut self, expr: &str) -> Result<()> {
+        let cmd = VimCommand::ExprAsync {
+            expr: expr.to_string(),
+        };
+
+        self.transport.send_command(&cmd).await?;
+        Ok(())
+    }
+
+    /// Execute ex command (no response)
+    pub async fn ex(&mut self, command: &str) -> Result<()> {
+        let cmd = VimCommand::Ex {
+            command: command.to_string(),
+        };
+
+        self.transport.send_command(&cmd).await?;
+        Ok(())
+    }
+
+    /// Execute normal mode command (no response)
+    pub async fn normal(&mut self, keys: &str) -> Result<()> {
+        let cmd = VimCommand::Normal {
+            keys: keys.to_string(),
+        };
+
+        self.transport.send_command(&cmd).await?;
+        Ok(())
+    }
+
+    /// Redraw vim screen
+    pub async fn redraw(&mut self, force: bool) -> Result<()> {
+        let cmd = VimCommand::Redraw { force };
+
+        self.transport.send_command(&cmd).await?;
+        Ok(())
+    }
+
+    /// Legacy compatibility: Execute vim expression via call
     pub async fn eval(&mut self, expr: &str) -> Result<Value> {
         self.call("eval", vec![json!(expr)]).await
     }
 
-    /// Execute vim command
+    /// Legacy compatibility: Execute vim command via call
     pub async fn execute(&mut self, cmd: &str) -> Result<Value> {
         self.call("execute", vec![json!(cmd)]).await
     }
@@ -257,13 +358,13 @@ impl Vim {
     /// Call vim function without handling return value (fire-and-forget)
     /// Useful for notifications and commands where response is not needed
     pub async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()> {
-        // Send vim channel command format: ["call", func, args] (no id = no response)
-        let msg = VimMessage::Notification {
-            method: "call".to_string(),
-            params: json!([func, args]),
+        // Send vim channel command: ["call", func, args]
+        let cmd = VimCommand::CallAsync {
+            func: func.to_string(),
+            args,
         };
 
-        self.transport.send_message(&msg).await?;
+        self.transport.send_command(&cmd).await?;
         Ok(())
     }
 
@@ -412,48 +513,103 @@ mod tests {
     }
 
     #[test]
-    fn test_vim_channel_command_encoding() {
-        // Test vim channel command encoding matches Vim documentation format
-
-        // Test call with response: ["call", func, args, id]
-        let call_msg = VimMessage::Request {
+    fn test_vim_message_encoding() {
+        // Test VimMessage (vim-to-client) encoding uses JSON-RPC format
+        let msg = VimMessage::Request {
             id: 123,
-            method: "call".to_string(),
-            params: json!(["test_func", [json!("arg1"), json!(42)], 123]),
+            method: "goto_definition".to_string(),
+            params: json!({"file": "test.rs"}),
         };
 
-        let encoded = call_msg.encode();
+        let encoded = msg.encode();
+        let expected = json!([123, {"method": "goto_definition", "params": {"file": "test.rs"}}]);
+        assert_eq!(encoded, expected, "VimMessage should use JSON-RPC format");
+
+        // Test response encoding
+        let response = VimMessage::Response {
+            id: -42,
+            result: json!({"location": "test.rs:10:5"}),
+        };
+
+        let encoded = response.encode();
+        let expected = json!([-42, {"location": "test.rs:10:5"}]);
+        assert_eq!(
+            encoded, expected,
+            "VimMessage response should be [id, result]"
+        );
+    }
+
+    #[test]
+    fn test_vim_command_encoding() {
+        // Test VimCommand (client-to-vim) encoding follows Vim channel command format
+
+        // Test call with response: ["call", func, args, id]
+        let call_cmd = VimCommand::Call {
+            func: "test_func".to_string(),
+            args: vec![json!("arg1"), json!(42)],
+            id: 123,
+        };
+
+        let encoded = call_cmd.encode();
         let expected = json!(["call", "test_func", [json!("arg1"), json!(42)], 123]);
         assert_eq!(
             encoded, expected,
-            "Call with response should encode as [\"call\", func, args, id]"
+            "VimCommand::Call should encode as [\"call\", func, args, id]"
         );
 
         // Test call without response: ["call", func, args]
-        let notify_msg = VimMessage::Notification {
-            method: "call".to_string(),
-            params: json!(["test_func", [json!("arg1"), json!(42)]]),
+        let call_async = VimCommand::CallAsync {
+            func: "test_func".to_string(),
+            args: vec![json!("arg1"), json!(42)],
         };
 
-        let encoded = notify_msg.encode();
+        let encoded = call_async.encode();
         let expected = json!(["call", "test_func", [json!("arg1"), json!(42)]]);
         assert_eq!(
             encoded, expected,
-            "Call without response should encode as [\"call\", func, args]"
+            "VimCommand::CallAsync should encode as [\"call\", func, args]"
         );
 
-        // Test other commands still use JSON-RPC format
-        let other_msg = VimMessage::Request {
-            id: 1,
-            method: "other_method".to_string(),
-            params: json!({"test": "data"}),
+        // Test expr command: ["expr", expr, id]
+        let expr_cmd = VimCommand::Expr {
+            expr: "line('$')".to_string(),
+            id: 456,
         };
 
-        let encoded = other_msg.encode();
-        let expected = json!([1, {"method": "other_method", "params": {"test": "data"}}]);
+        let encoded = expr_cmd.encode();
+        let expected = json!(["expr", "line('$')", 456]);
         assert_eq!(
             encoded, expected,
-            "Non-call commands should use JSON-RPC format"
+            "VimCommand::Expr should encode as [\"expr\", expr, id]"
+        );
+
+        // Test ex command: ["ex", command]
+        let ex_cmd = VimCommand::Ex {
+            command: "echo 'hello'".to_string(),
+        };
+
+        let encoded = ex_cmd.encode();
+        let expected = json!(["ex", "echo 'hello'"]);
+        assert_eq!(
+            encoded, expected,
+            "VimCommand::Ex should encode as [\"ex\", command]"
+        );
+
+        // Test redraw: ["redraw", "force"] or ["redraw", ""]
+        let redraw_force = VimCommand::Redraw { force: true };
+        let encoded = redraw_force.encode();
+        let expected = json!(["redraw", "force"]);
+        assert_eq!(
+            encoded, expected,
+            "VimCommand::Redraw with force should encode as [\"redraw\", \"force\"]"
+        );
+
+        let redraw_normal = VimCommand::Redraw { force: false };
+        let encoded = redraw_normal.encode();
+        let expected = json!(["redraw", ""]);
+        assert_eq!(
+            encoded, expected,
+            "VimCommand::Redraw without force should encode as [\"redraw\", \"\"]"
         );
     }
 }
