@@ -1,6 +1,7 @@
 use lsp_bridge::{LspBridge, VimAction, VimCommand};
 use std::io::{self, BufRead};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 /// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum
@@ -37,7 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     stdout.write_all((init_json + "\n").as_bytes()).await?;
     stdout.flush().await?;
 
-    let mut bridge = LspBridge::new();
+    // Create channel for diagnostic notifications
+    let (diagnostic_tx, mut diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
+    let mut bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
     let stdin = io::stdin();
 
     for line in stdin.lock().lines() {
@@ -60,6 +63,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stdout.write_all(response_json.as_bytes()).await?;
                     stdout.write_all(b"\n").await?;
                     stdout.flush().await?;
+
+                    // Check for any pending diagnostic notifications
+                    while let Ok(diagnostic_action) = diagnostic_rx.try_recv() {
+                        let diagnostic_json = serde_json::to_string(&diagnostic_action)?;
+                        info!("Sending diagnostic notification: {}", diagnostic_json);
+                        stdout.write_all(diagnostic_json.as_bytes()).await?;
+                        stdout.write_all(b"\n").await?;
+                        stdout.flush().await?;
+                    }
 
                     info!("Command processed");
                     continue;

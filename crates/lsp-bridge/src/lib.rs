@@ -1,7 +1,7 @@
 use lsp_client::{JsonRpcNotification, LspClient, NotificationHandler, Result as LspResult};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 // 宏：简化 file_path_to_uri 的错误处理
 macro_rules! try_uri {
@@ -358,10 +358,13 @@ pub struct CodeActionItem {
 
 pub struct LspBridge {
     client: Option<LspClient>,
+    diagnostic_sender: Option<mpsc::UnboundedSender<VimAction>>,
 }
 
-// Diagnostic notification handler - forwards diagnostics directly to Vim
-struct DiagnosticsHandler;
+// Diagnostic notification handler - forwards diagnostics via channel to main loop
+struct DiagnosticsHandler {
+    sender: mpsc::UnboundedSender<VimAction>,
+}
 
 impl NotificationHandler for DiagnosticsHandler {
     fn handle_notification(&self, notification: JsonRpcNotification) {
@@ -391,19 +394,15 @@ impl NotificationHandler for DiagnosticsHandler {
                     diagnostics: diagnostic_items,
                 };
 
-                // Send diagnostic action directly to Vim via stdout
-                if let Ok(json) = serde_json::to_string(&vim_action) {
-                    if let Err(e) = writeln!(io::stdout(), "{}", json) {
-                        tracing::warn!("Failed to send diagnostics to Vim: {}", e);
-                    } else {
-                        tracing::debug!(
-                            "Sent {} diagnostics for {} to Vim",
-                            params.diagnostics.len(),
-                            file_path
-                        );
-                    }
+                // Send diagnostic action via channel to main loop
+                if let Err(e) = self.sender.send(vim_action) {
+                    tracing::warn!("Failed to send diagnostics to channel: {}", e);
                 } else {
-                    tracing::warn!("Failed to serialize diagnostics action");
+                    tracing::debug!(
+                        "Sent {} diagnostics for {} to channel",
+                        params.diagnostics.len(),
+                        file_path
+                    );
                 }
             } else {
                 tracing::warn!("Failed to parse publishDiagnostics notification");
@@ -420,7 +419,17 @@ impl Default for LspBridge {
 
 impl LspBridge {
     pub fn new() -> Self {
-        Self { client: None }
+        Self {
+            client: None,
+            diagnostic_sender: None,
+        }
+    }
+
+    pub fn with_diagnostic_sender(sender: mpsc::UnboundedSender<VimAction>) -> Self {
+        Self {
+            client: None,
+            diagnostic_sender: Some(sender),
+        }
     }
 
     pub async fn handle_command(&mut self, command: VimCommand) -> VimAction {
@@ -431,12 +440,19 @@ impl LspBridge {
             match self.create_client(&language, file_path).await {
                 Ok(client) => {
                     // Register diagnostic notification handler
-                    let handler = DiagnosticsHandler;
-                    if let Err(e) = client
-                        .register_notification_handler("textDocument/publishDiagnostics", handler)
-                        .await
-                    {
-                        tracing::warn!("Failed to register diagnostics handler: {}", e);
+                    if let Some(sender) = &self.diagnostic_sender {
+                        let handler = DiagnosticsHandler {
+                            sender: sender.clone(),
+                        };
+                        if let Err(e) = client
+                            .register_notification_handler(
+                                "textDocument/publishDiagnostics",
+                                handler,
+                            )
+                            .await
+                        {
+                            tracing::warn!("Failed to register diagnostics handler: {}", e);
+                        }
                     }
                     self.client = Some(client);
                 }
