@@ -353,7 +353,9 @@ function! s:handle_response(channel, msg) abort
   elseif response.action == 'code_actions'
     call s:show_code_actions(response.actions)
   elseif response.action == 'diagnostics'
-    echom "DEBUG: Received diagnostics action with " . len(response.diagnostics) . " items"
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom "DEBUG: Received diagnostics action with " . len(response.diagnostics) . " items"
+    endif
     call s:show_diagnostics(response.diagnostics)
   elseif response.action == 'none'
     " 静默处理，不显示任何内容
@@ -1101,16 +1103,23 @@ function! s:execute_code_action(action) abort
 endfunction
 
 function! s:show_diagnostics(diagnostics) abort
-  echom "DEBUG: s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics"
-  echom "DEBUG: virtual text enabled = " . s:diagnostic_virtual_text.enabled
+  " Only show debug info if explicitly enabled
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom "DEBUG: s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics"
+    echom "DEBUG: virtual text enabled = " . s:diagnostic_virtual_text.enabled
+  endif
   
   if empty(a:diagnostics)
+    " Clear virtual text when no diagnostics
+    if s:diagnostic_virtual_text.enabled
+      call s:update_diagnostic_virtual_text([])
+    endif
     echo "No diagnostics found"
     return
   endif
   
-  " Debug: show first diagnostic structure
-  if len(a:diagnostics) > 0
+  " Debug: show first diagnostic structure (only if debug enabled)
+  if get(g:, 'lsp_bridge_debug', 0) && len(a:diagnostics) > 0
     echom "DEBUG: First diagnostic: " . string(a:diagnostics[0])
   endif
   
@@ -1144,13 +1153,17 @@ function! s:show_diagnostics(diagnostics) abort
       \ })
   endfor
   
+  " Update quickfix list but don't auto-open it
   call setqflist(qf_list)
-  copen
-  echo 'Found ' . len(a:diagnostics) . ' diagnostics'
   
   " Update virtual text if enabled
   if s:diagnostic_virtual_text.enabled
     call s:update_diagnostic_virtual_text(a:diagnostics)
+    echo 'Found ' . len(a:diagnostics) . ' diagnostics (virtual text enabled)'
+  else
+    " Only show quickfix if virtual text is disabled
+    copen
+    echo 'Found ' . len(a:diagnostics) . ' diagnostics'
   endif
 endfunction
 
@@ -1172,6 +1185,17 @@ endif
 
 " 更新诊断虚拟文本
 function! s:update_diagnostic_virtual_text(diagnostics) abort
+  " 如果诊断列表为空，清除当前缓冲区的虚拟文本
+  if empty(a:diagnostics)
+    " 清除当前缓冲区的虚拟文本（而不是所有缓冲区）
+    let current_bufnr = bufnr('%')
+    call s:clear_diagnostic_virtual_text(current_bufnr)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom "DEBUG: Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics"
+    endif
+    return
+  endif
+  
   " 诊断按文件分组
   let diagnostics_by_file = {}
   
@@ -1183,16 +1207,46 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     call add(diagnostics_by_file[file_path], diag)
   endfor
   
+  " 清除不再有诊断的buffer的虚拟文本
+  let files_with_diagnostics = {}
+  for [file_path, file_diagnostics] in items(diagnostics_by_file)
+    let files_with_diagnostics[file_path] = 1
+  endfor
+  
+  " 清除不再有诊断的buffer（复制keys避免在循环中修改字典）
+  let buffers_to_clear = []
+  for bufnr in keys(s:diagnostic_virtual_text.storage)
+    let file_path = bufname(bufnr)
+    if !has_key(files_with_diagnostics, file_path)
+      call add(buffers_to_clear, bufnr)
+    endif
+  endfor
+  
+  " 安全地清除buffer
+  for bufnr in buffers_to_clear
+    call s:clear_diagnostic_virtual_text(bufnr)
+  endfor
+  
   " 为每个文件更新虚拟文本
   for [file_path, file_diagnostics] in items(diagnostics_by_file)
     let bufnr = bufnr(file_path)
     
     " 只有当文件在缓冲区中时才处理
     if bufnr != -1
-      echom "DEBUG: update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics"
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom "DEBUG: update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics"
+      endif
       
-      " 清除该buffer的虚拟文本
-      call s:clear_diagnostic_virtual_text(bufnr)
+      " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
+      if exists('*prop_remove')
+        for severity in ['error', 'warning', 'info', 'hint']
+          try
+            call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': bufnr, 'all': 1})
+          catch
+            " 忽略错误
+          endtry
+        endfor
+      endif
       
       " 存储诊断数据
       let s:diagnostic_virtual_text.storage[bufnr] = file_diagnostics
@@ -1200,29 +1254,39 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
       " 渲染虚拟文本
       call s:render_diagnostic_virtual_text(bufnr)
     else
-      echom "DEBUG: file " . file_path . " not loaded in buffer, skipping virtual text"
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom "DEBUG: file " . file_path . " not loaded in buffer, skipping virtual text"
+      endif
     endif
   endfor
 endfunction
 
 " 渲染诊断虚拟文本到buffer
 function! s:render_diagnostic_virtual_text(bufnr) abort
-  echom "DEBUG: render_diagnostic_virtual_text called for buffer " . a:bufnr
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom "DEBUG: render_diagnostic_virtual_text called for buffer " . a:bufnr
+  endif
   
   if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    echom "DEBUG: No diagnostics stored for buffer " . a:bufnr
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom "DEBUG: No diagnostics stored for buffer " . a:bufnr
+    endif
     return
   endif
   
   let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
-  echom "DEBUG: Found " . len(diagnostics) . " diagnostics to render"
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom "DEBUG: Found " . len(diagnostics) . " diagnostics to render"
+  endif
   
   " 为每个诊断添加virtual text
   for diag in diagnostics
     let line_num = diag.line + 1  " Convert to 1-based
     let col_num = diag.column + 1
     let text = ' ' . diag.severity . ': ' . diag.message  " 前缀空格用于视觉分离
-    echom "DEBUG: Processing diagnostic at line " . line_num . ": " . text
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom "DEBUG: Processing diagnostic at line " . line_num . ": " . text
+    endif
     
     " 根据严重程度选择高亮组
     let hl_group = 'DiagnosticHint'
@@ -1236,15 +1300,21 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
     
     " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
     if exists('*prop_type_add')
-      echom "DEBUG: Using text properties for virtual text"
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom "DEBUG: Using text properties for virtual text"
+      endif
       " 确保属性类型存在
       let prop_type = 'diagnostic_' . tolower(diag.severity)
       try
         call prop_type_add(prop_type, {'highlight': hl_group})
-        echom "DEBUG: Added prop type " . prop_type
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: Added prop type " . prop_type
+        endif
       catch /E969/
         " 属性类型已存在，忽略错误
-        echom "DEBUG: Prop type " . prop_type . " already exists"
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: Prop type " . prop_type . " already exists"
+        endif
       endtry
       
       " 在行尾添加虚拟文本
@@ -1255,25 +1325,37 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
           \ 'text_align': 'after',
           \ 'bufnr': a:bufnr
           \ })
-        echom "DEBUG: Successfully added virtual text at line " . line_num
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: Successfully added virtual text at line " . line_num
+        endif
       catch
-        echom "DEBUG: text_align failed, trying fallback: " . v:exception
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: text_align failed, trying fallback: " . v:exception
+        endif
         " 添加失败，可能是位置无效或Vim版本不支持text_align
         " 尝试简化版本
         try
-          call prop_add(line_num, col_num, {
+          " Fallback: add virtual text at end of line (use 0 for end of line)
+          let line_end_col = len(getbufline(a:bufnr, line_num)[0]) + 1
+          call prop_add(line_num, line_end_col, {
             \ 'type': prop_type,
             \ 'text': text,
             \ 'bufnr': a:bufnr
             \ })
-          echom "DEBUG: Successfully added virtual text with fallback at line " . line_num
+          if get(g:, 'lsp_bridge_debug', 0)
+            echom "DEBUG: Successfully added virtual text with fallback at line " . line_num
+          endif
         catch
-          echom "DEBUG: Virtual text completely failed: " . v:exception
+          if get(g:, 'lsp_bridge_debug', 0)
+            echom "DEBUG: Virtual text completely failed: " . v:exception
+          endif
           " 完全失败，跳过这个诊断
         endtry
       endtry
     else
-      echom "DEBUG: Text properties not available, using echo fallback"
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom "DEBUG: Text properties not available, using echo fallback"
+      endif
       " 降级：至少在状态行显示诊断信息
       echo "Diagnostic at line " . line_num . ": " . text
     endif
@@ -1282,18 +1364,27 @@ endfunction
 
 " 清除指定buffer的诊断虚拟文本
 function! s:clear_diagnostic_virtual_text(bufnr) abort
+  " 无条件清除文本属性（避免叠加）
+  if exists('*prop_remove')
+    " 清除所有diagnostic相关的文本属性
+    for severity in ['error', 'warning', 'info', 'hint']
+      try
+        call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': a:bufnr, 'all': 1})
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: Cleared diagnostic_" . severity . " from buffer " . a:bufnr
+        endif
+      catch
+        " 如果属性类型不存在，忽略错误
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: No diagnostic_" . severity . " properties found in buffer " . a:bufnr
+        endif
+      endtry
+    endfor
+  endif
+  
+  " 清除storage记录
   if has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    " 清除文本属性（Vim 8.1+）
-    if exists('*prop_remove')
-      " 清除所有diagnostic相关的文本属性
-      for severity in ['error', 'warning', 'info', 'hint']
-        try
-          call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': a:bufnr, 'all': 1})
-        catch
-          " 如果属性类型不存在，忽略错误
-        endtry
-      endfor
-    endif
+    unlet s:diagnostic_virtual_text.storage[a:bufnr]
   endif
 endfunction
 
