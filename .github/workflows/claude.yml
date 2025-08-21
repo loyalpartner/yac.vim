@@ -40,6 +40,8 @@ jobs:
           additional_permissions: |
             actions: read
 
+          claude_args: "--dangerously-skip-permissions"
+
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4.1)
           # model: "claude-opus-4-1-20250805"
 
