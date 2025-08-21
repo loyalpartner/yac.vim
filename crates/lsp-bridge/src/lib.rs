@@ -3,14 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-// 宏：简化 file_path_to_uri 的错误处理
-macro_rules! try_uri {
-    ($lsp_bridge:expr, $file_path:expr) => {
-        match $lsp_bridge.file_path_to_uri($file_path) {
-            Ok(uri) => uri,
-            Err(error) => return error,
-        }
-    };
+// Linus 风格：直接的错误处理，不隐藏在宏中
+fn file_path_to_uri(file_path: &str) -> Result<lsp_types::Url, VimAction> {
+    lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
+        message: format!("Invalid file path: {}", file_path),
+    })
 }
 
 // Linus 风格：简化的位置数据结构
@@ -27,61 +24,52 @@ impl FilePos {
     }
 }
 
-// Linus 风格：类型安全的命令格式 - 消除重复，好品味的数据结构
+// Linus 风格：简化的命令结构 - 消除特殊情况
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command")]
 pub enum VimCommand {
-    // 简单文件操作
+    // 文件操作
     #[serde(rename = "file_open")]
     FileOpen { file: String },
 
-    // 所有导航命令使用相同的位置结构
+    // 位置相关的命令 - 统一数据结构
     #[serde(rename = "goto_definition")]
     GotoDefinition(FilePos),
-
     #[serde(rename = "goto_declaration")]
     GotoDeclaration(FilePos),
-
     #[serde(rename = "goto_type_definition")]
     GotoTypeDefinition(FilePos),
-
     #[serde(rename = "goto_implementation")]
     GotoImplementation(FilePos),
-
-    // 信息查询命令
     #[serde(rename = "hover")]
     Hover(FilePos),
-
     #[serde(rename = "completion")]
     Completion(FilePos),
-
     #[serde(rename = "references")]
     References(FilePos),
+    #[serde(rename = "code_action")]
+    CodeAction(FilePos),
+    #[serde(rename = "call_hierarchy_incoming")]
+    CallHierarchyIncoming(FilePos),
+    #[serde(rename = "call_hierarchy_outgoing")]
+    CallHierarchyOutgoing(FilePos),
 
     // 文档级别命令
     #[serde(rename = "inlay_hints")]
     InlayHints { file: String },
-
     #[serde(rename = "document_symbols")]
     DocumentSymbols { file: String },
-
     #[serde(rename = "folding_range")]
     FoldingRange { file: String },
-
     #[serde(rename = "diagnostics")]
     Diagnostics { file: String },
 
-    // Code actions - quick fixes and refactoring
-    #[serde(rename = "code_action")]
-    CodeAction(FilePos),
-
+    // 特殊命令
     #[serde(rename = "execute_command")]
     ExecuteCommand {
         command_name: String,
         arguments: Option<Vec<serde_json::Value>>,
     },
-
-    // 高级功能 - 使用专门的结构
     #[serde(rename = "rename")]
     Rename {
         file: String,
@@ -90,65 +78,59 @@ pub enum VimCommand {
         new_name: String,
     },
 
-    #[serde(rename = "call_hierarchy_incoming")]
-    CallHierarchyIncoming(FilePos),
-
-    #[serde(rename = "call_hierarchy_outgoing")]
-    CallHierarchyOutgoing(FilePos),
-
     // 文档生命周期
     #[serde(rename = "did_save")]
     DidSave { file: String, text: Option<String> },
-
     #[serde(rename = "did_change")]
     DidChange { file: String, text: String },
-
     #[serde(rename = "will_save")]
     WillSave {
         file: String,
         save_reason: Option<u32>,
     },
-
     #[serde(rename = "will_save_wait_until")]
     WillSaveWaitUntil {
         file: String,
         save_reason: Option<u32>,
     },
-
     #[serde(rename = "did_close")]
     DidClose { file: String },
 }
 
 impl VimCommand {
-    /// Linus 风格：一个简单的函数获取文件路径，消除所有重复
+    /// Linus 风格：简单直接，消除特殊情况
     pub fn file_path(&self) -> &str {
         match self {
             VimCommand::FileOpen { file } => file,
-            VimCommand::GotoDefinition(pos) => &pos.file,
-            VimCommand::GotoDeclaration(pos) => &pos.file,
-            VimCommand::GotoTypeDefinition(pos) => &pos.file,
-            VimCommand::GotoImplementation(pos) => &pos.file,
-            VimCommand::Hover(pos) => &pos.file,
-            VimCommand::Completion(pos) => &pos.file,
-            VimCommand::References(pos) => &pos.file,
-            VimCommand::InlayHints { file } => file,
-            VimCommand::DocumentSymbols { file } => file,
-            VimCommand::FoldingRange { file } => file,
-            VimCommand::Diagnostics { file } => file,
-            VimCommand::CodeAction(pos) => &pos.file,
-            VimCommand::ExecuteCommand { .. } => "",
+            // 位置相关命令都使用 FilePos
+            VimCommand::GotoDefinition(pos)
+            | VimCommand::GotoDeclaration(pos)
+            | VimCommand::GotoTypeDefinition(pos)
+            | VimCommand::GotoImplementation(pos)
+            | VimCommand::Hover(pos)
+            | VimCommand::Completion(pos)
+            | VimCommand::References(pos)
+            | VimCommand::CodeAction(pos)
+            | VimCommand::CallHierarchyIncoming(pos)
+            | VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
+            // 文档级别命令
+            VimCommand::InlayHints { file }
+            | VimCommand::DocumentSymbols { file }
+            | VimCommand::FoldingRange { file }
+            | VimCommand::Diagnostics { file } => file,
+            // 生命周期命令
+            VimCommand::DidSave { file, .. }
+            | VimCommand::DidChange { file, .. }
+            | VimCommand::WillSave { file, .. }
+            | VimCommand::WillSaveWaitUntil { file, .. }
+            | VimCommand::DidClose { file } => file,
+            // 特殊命令
             VimCommand::Rename { file, .. } => file,
-            VimCommand::CallHierarchyIncoming(pos) => &pos.file,
-            VimCommand::CallHierarchyOutgoing(pos) => &pos.file,
-            VimCommand::DidSave { file, .. } => file,
-            VimCommand::DidChange { file, .. } => file,
-            VimCommand::WillSave { file, .. } => file,
-            VimCommand::WillSaveWaitUntil { file, .. } => file,
-            VimCommand::DidClose { file } => file,
+            VimCommand::ExecuteCommand { .. } => "",
         }
     }
 
-    /// 获取位置信息（如果有）
+    /// 获取位置信息 - 简化的实现
     pub fn position(&self) -> Option<&FilePos> {
         match self {
             VimCommand::GotoDefinition(pos)
@@ -166,17 +148,13 @@ impl VimCommand {
     }
 }
 
-// 直接转换到 LSP 类型 - 消除中间层
-
+// Linus 风格：直接简单，不过度抽象
 impl FilePos {
-    pub fn to_text_document_position_params(
-        &self,
-        uri: lsp_types::Url,
-    ) -> lsp_types::TextDocumentPositionParams {
-        use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
-        TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
-            position: Position {
+    // 一个简单的函数转换位置
+    fn to_lsp_position(&self, uri: lsp_types::Url) -> lsp_types::TextDocumentPositionParams {
+        lsp_types::TextDocumentPositionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri },
+            position: lsp_types::Position {
                 line: self.line,
                 character: self.column,
             },
@@ -188,36 +166,9 @@ impl FilePos {
         uri: lsp_types::Url,
     ) -> lsp_types::GotoDefinitionParams {
         lsp_types::GotoDefinitionParams {
-            text_document_position_params: self.to_text_document_position_params(uri),
+            text_document_position_params: self.to_lsp_position(uri),
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
-        }
-    }
-
-    pub fn to_hover_params(&self, uri: lsp_types::Url) -> lsp_types::HoverParams {
-        lsp_types::HoverParams {
-            text_document_position_params: self.to_text_document_position_params(uri),
-            work_done_progress_params: Default::default(),
-        }
-    }
-
-    pub fn to_completion_params(&self, uri: lsp_types::Url) -> lsp_types::CompletionParams {
-        lsp_types::CompletionParams {
-            text_document_position: self.to_text_document_position_params(uri),
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-            context: None,
-        }
-    }
-
-    pub fn to_reference_params(&self, uri: lsp_types::Url) -> lsp_types::ReferenceParams {
-        lsp_types::ReferenceParams {
-            text_document_position: self.to_text_document_position_params(uri),
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-            context: lsp_types::ReferenceContext {
-                include_declaration: true,
-            },
         }
     }
 }
@@ -467,80 +418,99 @@ impl LspBridge {
         self.handle_vim_command(command).await
     }
 
-    // Linus 风格：直接的实现，没有过度的泛型抽象
-    async fn handle_goto_request(
-        &self,
-        client: &LspClient,
-        pos: &FilePos,
-        request_type: &str,
-    ) -> VimAction {
+    // Linus 风格：分开不同的功能，每个做一件事
+    async fn handle_goto_definition(&self, client: &LspClient, pos: &FilePos) -> VimAction {
         if let Err(e) = self.ensure_file_open(client, &pos.file).await {
             return VimAction::Error {
                 message: format!("Failed to open file: {}", e),
             };
         }
-
-        let uri = try_uri!(self, &pos.file);
-
-        let response = match request_type {
-            "definition" => {
-                use lsp_types::request::GotoDefinition;
-                let params = pos.to_goto_definition_params(uri.clone());
-                client.request::<GotoDefinition>(params).await
-            }
-            "declaration" => {
-                use lsp_types::request::GotoDeclaration;
-                let params = pos.to_goto_definition_params(uri.clone());
-                client.request::<GotoDeclaration>(params).await
-            }
-            "type_definition" => {
-                use lsp_types::request::GotoTypeDefinition;
-                let type_params = lsp_types::request::GotoTypeDefinitionParams {
-                    text_document_position_params: pos
-                        .to_text_document_position_params(uri.clone()),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                client.request::<GotoTypeDefinition>(type_params).await
-            }
-            "implementation" => {
-                use lsp_types::request::GotoImplementation;
-                let impl_params = lsp_types::request::GotoImplementationParams {
-                    text_document_position_params: pos
-                        .to_text_document_position_params(uri.clone()),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                client.request::<GotoImplementation>(impl_params).await
-            }
-            _ => {
-                return VimAction::Error {
-                    message: format!("Unknown request type: {}", request_type),
-                }
-            }
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
         };
 
+        use lsp_types::request::GotoDefinition;
+        let params = pos.to_goto_definition_params(uri);
+        self.process_goto_response(client.request::<GotoDefinition>(params).await)
+    }
+
+    async fn handle_goto_declaration(&self, client: &LspClient, pos: &FilePos) -> VimAction {
+        if let Err(e) = self.ensure_file_open(client, &pos.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+
+        use lsp_types::request::GotoDeclaration;
+        let params = pos.to_goto_definition_params(uri);
+        self.process_goto_response(client.request::<GotoDeclaration>(params).await)
+    }
+
+    async fn handle_goto_type_definition(&self, client: &LspClient, pos: &FilePos) -> VimAction {
+        if let Err(e) = self.ensure_file_open(client, &pos.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+
+        use lsp_types::request::GotoTypeDefinition;
+        let params = lsp_types::request::GotoTypeDefinitionParams {
+            text_document_position_params: pos.to_lsp_position(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        self.process_goto_response(client.request::<GotoTypeDefinition>(params).await)
+    }
+
+    async fn handle_goto_implementation(&self, client: &LspClient, pos: &FilePos) -> VimAction {
+        if let Err(e) = self.ensure_file_open(client, &pos.file).await {
+            return VimAction::Error {
+                message: format!("Failed to open file: {}", e),
+            };
+        }
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+
+        use lsp_types::request::GotoImplementation;
+        let params = lsp_types::request::GotoImplementationParams {
+            text_document_position_params: pos.to_lsp_position(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        self.process_goto_response(client.request::<GotoImplementation>(params).await)
+    }
+
+    // 消除重复的响应处理逻辑
+    fn process_goto_response(
+        &self,
+        response: Result<Option<lsp_types::GotoDefinitionResponse>, lsp_client::LspError>,
+    ) -> VimAction {
         match response {
             Ok(Some(goto_response)) => match goto_response {
                 lsp_types::GotoDefinitionResponse::Scalar(location) => VimAction::from(location),
-                lsp_types::GotoDefinitionResponse::Array(locations) => {
-                    if let Some(first) = locations.first() {
-                        VimAction::from(first)
-                    } else {
-                        VimAction::Error {
-                            message: "No result found".to_string(),
-                        }
-                    }
-                }
-                lsp_types::GotoDefinitionResponse::Link(links) => {
-                    if let Some(first) = links.first() {
-                        VimAction::from(first)
-                    } else {
-                        VimAction::Error {
-                            message: "No result found".to_string(),
-                        }
-                    }
-                }
+                lsp_types::GotoDefinitionResponse::Array(locations) => locations.first().map_or(
+                    VimAction::Error {
+                        message: "No result found".to_string(),
+                    },
+                    VimAction::from,
+                ),
+                lsp_types::GotoDefinitionResponse::Link(links) => links.first().map_or(
+                    VimAction::Error {
+                        message: "No result found".to_string(),
+                    },
+                    VimAction::from,
+                ),
             },
             Ok(None) => VimAction::Error {
                 message: "No result found".to_string(),
@@ -551,90 +521,84 @@ impl LspBridge {
         }
     }
 
+    // Linus 风格：直接清晰，无特殊情况
     async fn handle_vim_command(&self, command: VimCommand) -> VimAction {
-        if let Some(client) = &self.client {
-            match command {
-                VimCommand::FileOpen { ref file } => self.handle_file_open(client, file).await,
-
-                // 使用通用函数处理所有 goto 请求
-                VimCommand::GotoDefinition(ref pos) => {
-                    self.handle_goto_request(client, pos, "definition").await
+        let client = match &self.client {
+            Some(client) => client,
+            None => {
+                return VimAction::Error {
+                    message: "No LSP client available".to_string(),
                 }
-                VimCommand::GotoDeclaration(ref pos) => {
-                    self.handle_goto_request(client, pos, "declaration").await
-                }
-                VimCommand::GotoTypeDefinition(ref pos) => {
-                    self.handle_goto_request(client, pos, "type_definition")
-                        .await
-                }
-                VimCommand::GotoImplementation(ref pos) => {
-                    self.handle_goto_request(client, pos, "implementation")
-                        .await
-                }
-
-                VimCommand::Hover(ref pos) => self.handle_hover(client, pos).await,
-                VimCommand::Completion(ref pos) => self.handle_completion(client, pos).await,
-                VimCommand::References(ref pos) => self.handle_references(client, pos).await,
-                VimCommand::InlayHints { ref file } => self.handle_inlay_hints(client, file).await,
-                VimCommand::DocumentSymbols { ref file } => {
-                    self.handle_document_symbols(client, file).await
-                }
-                VimCommand::FoldingRange { ref file } => {
-                    self.handle_folding_range(client, file).await
-                }
-                VimCommand::Diagnostics { .. } => {
-                    // Diagnostics are now push-based, no longer need pull command
-                    VimAction::Error {
-                        message: "Diagnostics are now automatically pushed from LSP server"
-                            .to_string(),
-                    }
-                }
-                VimCommand::CodeAction(ref pos) => self.handle_code_action(client, pos).await,
-                VimCommand::ExecuteCommand {
-                    ref command_name,
-                    ref arguments,
-                } => {
-                    self.handle_execute_command(client, command_name, arguments.as_ref())
-                        .await
-                }
-                VimCommand::Rename {
-                    ref file,
-                    line,
-                    column,
-                    ref new_name,
-                } => {
-                    self.handle_rename(client, file, line, column, new_name)
-                        .await
-                }
-                VimCommand::CallHierarchyIncoming(ref pos) => {
-                    self.handle_call_hierarchy_incoming(client, pos).await
-                }
-                VimCommand::CallHierarchyOutgoing(ref pos) => {
-                    self.handle_call_hierarchy_outgoing(client, pos).await
-                }
-                VimCommand::DidSave { ref file, ref text } => {
-                    self.handle_did_save(client, file, text.as_deref()).await
-                }
-                VimCommand::DidChange { ref file, ref text } => {
-                    self.handle_did_change(client, file, text).await
-                }
-                VimCommand::WillSave {
-                    ref file,
-                    save_reason,
-                } => self.handle_will_save(client, file, save_reason).await,
-                VimCommand::WillSaveWaitUntil {
-                    ref file,
-                    save_reason,
-                } => {
-                    self.handle_will_save_wait_until(client, file, save_reason)
-                        .await
-                }
-                VimCommand::DidClose { ref file } => self.handle_did_close(client, file).await,
             }
-        } else {
-            VimAction::Error {
-                message: "No LSP client available".to_string(),
+        };
+
+        match command {
+            VimCommand::FileOpen { file } => self.handle_file_open(client, &file).await,
+
+            // 位置相关命令 - 每个都是独立的功能
+            VimCommand::GotoDefinition(pos) => self.handle_goto_definition(client, &pos).await,
+            VimCommand::GotoDeclaration(pos) => self.handle_goto_declaration(client, &pos).await,
+            VimCommand::GotoTypeDefinition(pos) => {
+                self.handle_goto_type_definition(client, &pos).await
             }
+            VimCommand::GotoImplementation(pos) => {
+                self.handle_goto_implementation(client, &pos).await
+            }
+
+            VimCommand::Hover(pos) => self.handle_hover(client, &pos).await,
+            VimCommand::Completion(pos) => self.handle_completion(client, &pos).await,
+            VimCommand::References(pos) => self.handle_references(client, &pos).await,
+            VimCommand::CodeAction(pos) => self.handle_code_action(client, &pos).await,
+            VimCommand::CallHierarchyIncoming(pos) => {
+                self.handle_call_hierarchy_incoming(client, &pos).await
+            }
+            VimCommand::CallHierarchyOutgoing(pos) => {
+                self.handle_call_hierarchy_outgoing(client, &pos).await
+            }
+
+            // 文档级别命令
+            VimCommand::InlayHints { file } => self.handle_inlay_hints(client, &file).await,
+            VimCommand::DocumentSymbols { file } => {
+                self.handle_document_symbols(client, &file).await
+            }
+            VimCommand::FoldingRange { file } => self.handle_folding_range(client, &file).await,
+            VimCommand::Diagnostics { .. } => VimAction::Error {
+                message: "Diagnostics are now automatically pushed from LSP server".to_string(),
+            },
+
+            // 特殊命令
+            VimCommand::ExecuteCommand {
+                command_name,
+                arguments,
+            } => {
+                self.handle_execute_command(client, &command_name, arguments.as_ref())
+                    .await
+            }
+            VimCommand::Rename {
+                file,
+                line,
+                column,
+                new_name,
+            } => {
+                self.handle_rename(client, &file, line, column, &new_name)
+                    .await
+            }
+
+            // 生命周期命令
+            VimCommand::DidSave { file, text } => {
+                self.handle_did_save(client, &file, text.as_deref()).await
+            }
+            VimCommand::DidChange { file, text } => {
+                self.handle_did_change(client, &file, &text).await
+            }
+            VimCommand::WillSave { file, save_reason } => {
+                self.handle_will_save(client, &file, save_reason).await
+            }
+            VimCommand::WillSaveWaitUntil { file, save_reason } => {
+                self.handle_will_save_wait_until(client, &file, save_reason)
+                    .await
+            }
+            VimCommand::DidClose { file } => self.handle_did_close(client, &file).await,
         }
     }
 
@@ -645,8 +609,14 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, &pos.file);
-        let params = pos.to_hover_params(uri);
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+        let params = lsp_types::HoverParams {
+            text_document_position_params: pos.to_lsp_position(uri),
+            work_done_progress_params: Default::default(),
+        };
 
         use lsp_types::request::HoverRequest;
         match client.request::<HoverRequest>(params).await {
@@ -667,8 +637,16 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, &pos.file);
-        let params = pos.to_completion_params(uri);
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+        let params = lsp_types::CompletionParams {
+            text_document_position: pos.to_lsp_position(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
 
         use lsp_types::request::Completion;
         let result = tokio::time::timeout(
@@ -701,8 +679,18 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, &pos.file);
-        let params = pos.to_reference_params(uri);
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
+        let params = lsp_types::ReferenceParams {
+            text_document_position: pos.to_lsp_position(uri),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: lsp_types::ReferenceContext {
+                include_declaration: true,
+            },
+        };
 
         use lsp_types::request::References;
         match client.request::<References>(params).await {
@@ -735,7 +723,10 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
 
         let line_count = match std::fs::read_to_string(file) {
             Ok(content) => content.lines().count() as u32,
@@ -786,7 +777,10 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = lsp_types::RenameParams {
             text_document_position: lsp_types::TextDocumentPositionParams {
                 text_document: lsp_types::TextDocumentIdentifier { uri },
@@ -873,7 +867,10 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = lsp_types::DocumentSymbolParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             work_done_progress_params: Default::default(),
@@ -1111,12 +1108,6 @@ impl LspBridge {
         }
     }
 
-    fn file_path_to_uri(&self, file_path: &str) -> Result<lsp_types::Url, VimAction> {
-        lsp_types::Url::from_file_path(file_path).map_err(|_| VimAction::Error {
-            message: format!("Invalid file path: {}", file_path),
-        })
-    }
-
     fn find_workspace_root(file_path: &str) -> Option<PathBuf> {
         let mut path = PathBuf::from(file_path);
 
@@ -1238,7 +1229,10 @@ impl LspBridge {
     ) -> VimAction {
         use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = DidSaveTextDocumentParams {
             text_document: TextDocumentIdentifier { uri },
             text: text.map(|t| t.to_string()),
@@ -1262,7 +1256,10 @@ impl LspBridge {
         static DOCUMENT_VERSION: AtomicI32 = AtomicI32::new(1);
         let version = DOCUMENT_VERSION.fetch_add(1, Ordering::SeqCst);
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier { uri, version },
             content_changes: vec![TextDocumentContentChangeEvent {
@@ -1290,7 +1287,10 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let reason = match save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
             2 => TextDocumentSaveReason::AFTER_DELAY,
@@ -1321,7 +1321,10 @@ impl LspBridge {
             TextDocumentIdentifier, TextDocumentSaveReason, WillSaveTextDocumentParams,
         };
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let reason = match save_reason.unwrap_or(1) {
             1 => TextDocumentSaveReason::MANUAL,
             2 => TextDocumentSaveReason::AFTER_DELAY,
@@ -1357,7 +1360,10 @@ impl LspBridge {
     async fn handle_did_close(&self, client: &LspClient, file: &str) -> VimAction {
         use lsp_types::{DidCloseTextDocumentParams, TextDocumentIdentifier};
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri },
         };
@@ -1377,7 +1383,10 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, &pos.file);
+        let uri = match file_path_to_uri(&pos.file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
 
         // Create range - for cursor position, use zero-width range
         let range = lsp_types::Range {
@@ -1451,7 +1460,10 @@ impl LspBridge {
             };
         }
 
-        let uri = try_uri!(self, file);
+        let uri = match file_path_to_uri(file) {
+            Ok(uri) => uri,
+            Err(error) => return error,
+        };
         let params = lsp_types::FoldingRangeParams {
             text_document: lsp_types::TextDocumentIdentifier { uri },
             work_done_progress_params: Default::default(),
