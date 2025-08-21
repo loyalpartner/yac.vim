@@ -51,10 +51,10 @@ impl VimMessage {
                             params: obj["params"].clone(),
                         })
                     }
-                    Some(-1) => {
-                        // [-1, result] - vim response
+                    Some(id) if id < 0 => {
+                        // [negative_id, result] - vim response
                         Ok(VimMessage::Response {
-                            id: -1,
+                            id,
                             result: arr[1].clone(),
                         })
                     }
@@ -291,7 +291,7 @@ impl Vim {
             VimMessage::Request { id, method, params } => {
                 self.handle_request(id, method, params).await
             }
-            VimMessage::Response { result, .. } => self.handle_response(result).await,
+            VimMessage::Response { id, result } => self.handle_response(id, result).await,
             VimMessage::Notification { method, params } => {
                 self.handle_notification(method, params).await
             }
@@ -333,10 +333,10 @@ impl Vim {
         Ok(())
     }
 
-    /// Handle vim responses
-    async fn handle_response(&mut self, result: Value) -> Result<()> {
-        // vim response always corresponds to most recent call
-        if let Some(sender) = self.pending_calls.remove(&self.next_id) {
+    /// Handle vim responses - format: [id, result]
+    async fn handle_response(&mut self, id: i64, result: Value) -> Result<()> {
+        // Find and remove the pending call with matching ID
+        if let Some(sender) = self.pending_calls.remove(&(id as u64)) {
             let _ = sender.send(result);
         }
         Ok(())
@@ -383,12 +383,12 @@ mod tests {
         }
 
         // Test vim response parsing
-        let json = json!([-1, {"result": "success"}]);
+        let json = json!([-42, {"result": "success"}]);
         let msg = VimMessage::parse(&json).unwrap();
 
         match msg {
             VimMessage::Response { id, .. } => {
-                assert_eq!(id, -1);
+                assert_eq!(id, -42);
             }
             _ => panic!("Expected Response"),
         }
