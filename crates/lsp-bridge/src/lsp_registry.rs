@@ -66,8 +66,7 @@ impl LspServerConfig {
 
         self.file_patterns.iter().any(|pattern| {
             // Simple glob matching - could be enhanced with proper glob library
-            if pattern.starts_with("*.") {
-                let extension = &pattern[2..];
+            if let Some(extension) = pattern.strip_prefix("*.") {
                 file_name.ends_with(extension)
             } else {
                 file_name == pattern
@@ -196,8 +195,8 @@ impl LspRegistry {
             initialization_options: None,
             capabilities: ClientCapabilities::default(),
             trace: None,
-            workspace_folders: workspace_root.and_then(|uri| {
-                Some(vec![WorkspaceFolder {
+            workspace_folders: workspace_root.map(|uri| {
+                vec![WorkspaceFolder {
                     uri: uri.clone(),
                     name: Path::new(file_path)
                         .parent()
@@ -205,7 +204,7 @@ impl LspRegistry {
                         .and_then(|name| name.to_str())
                         .unwrap_or("workspace")
                         .to_string(),
-                }])
+                }]
             }),
             client_info: None,
             locale: None,

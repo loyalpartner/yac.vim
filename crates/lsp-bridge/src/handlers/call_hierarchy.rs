@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -122,12 +121,14 @@ impl CallHierarchyInfo {
 
 #[derive(Clone)]
 pub struct CallHierarchyHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl CallHierarchyHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 }
 
@@ -141,8 +142,16 @@ impl Handler for CallHierarchyHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(Some(None)), // Unsupported file type
+        };
+
+        // Ensure client exists
+        if let Err(_) = self.lsp_registry.get_client(&language, &input.file).await {
+            return Ok(Some(None));
+        }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
@@ -164,8 +173,9 @@ impl Handler for CallHierarchyHandler {
             work_done_progress_params: Default::default(),
         };
 
-        let prepare_response = match client
-            .request::<lsp_types::request::CallHierarchyPrepare>(prepare_params)
+        let prepare_response = match self
+            .lsp_registry
+            .request::<lsp_types::request::CallHierarchyPrepare>(&language, prepare_params)
             .await
         {
             Ok(response) => response,
@@ -192,8 +202,9 @@ impl Handler for CallHierarchyHandler {
                     partial_result_params: Default::default(),
                 };
 
-                match client
-                    .request::<lsp_types::request::CallHierarchyIncomingCalls>(params)
+                match self
+                    .lsp_registry
+                    .request::<lsp_types::request::CallHierarchyIncomingCalls>(&language, params)
                     .await
                 {
                     Ok(Some(calls)) => calls
@@ -218,8 +229,9 @@ impl Handler for CallHierarchyHandler {
                     partial_result_params: Default::default(),
                 };
 
-                match client
-                    .request::<lsp_types::request::CallHierarchyOutgoingCalls>(params)
+                match self
+                    .lsp_registry
+                    .request::<lsp_types::request::CallHierarchyOutgoingCalls>(&language, params)
                     .await
                 {
                     Ok(Some(calls)) => calls

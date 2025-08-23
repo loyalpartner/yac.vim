@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -28,12 +27,14 @@ impl DidCloseResult {
 }
 
 pub struct DidCloseHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl DidCloseHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 }
 
@@ -47,8 +48,16 @@ impl Handler for DidCloseHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(Some(Some(DidCloseResult::new(false)))), // Unsupported file type
+        };
+
+        // Ensure client exists
+        if let Err(_) = self.lsp_registry.get_client(&language, &input.file).await {
+            return Ok(Some(Some(DidCloseResult::new(false))));
+        }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
@@ -64,7 +73,11 @@ impl Handler for DidCloseHandler {
         };
 
         // didClose is a notification, not a request (no response expected)
-        match client.notify("textDocument/didClose", params).await {
+        match self
+            .lsp_registry
+            .notify(&language, "textDocument/didClose", params)
+            .await
+        {
             Ok(_) => {
                 debug!("DidClose notification sent for: {}", input.file);
                 Ok(Some(Some(DidCloseResult::new(true))))
