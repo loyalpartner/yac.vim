@@ -16,6 +16,7 @@ use handlers::{
     ExecuteCommandHandler,
     FileOpenHandler,
     FoldingRangeHandler,
+    GotoDefinitionNotificationHandler,
     GotoHandler,
     HoverHandler,
     InlayHintsHandler,
@@ -86,6 +87,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execute_command_handler = ExecuteCommandHandler::new(shared_lsp_client.clone());
     let call_hierarchy_handler = CallHierarchyHandler::new(shared_lsp_client.clone());
 
+    // Notification handlers
+    let goto_definition_notification_handler = GotoDefinitionNotificationHandler::new();
+
     // Document lifecycle handlers
     let did_save_handler = DidSaveHandler::new(shared_lsp_client.clone());
     let did_change_handler = DidChangeHandler::new(shared_lsp_client.clone());
@@ -111,6 +115,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("execute_command", execute_command_handler);
     vim.add_handler("call_hierarchy_incoming", call_hierarchy_handler.clone());
     vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
+
+    // Notification handlers
+    vim.add_handler(
+        "goto_definition_notification",
+        goto_definition_notification_handler,
+    );
 
     // Document lifecycle handlers
     vim.add_handler("did_save", did_save_handler);
