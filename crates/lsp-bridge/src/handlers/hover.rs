@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -32,12 +31,14 @@ impl HoverInfo {
 }
 
 pub struct HoverHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl HoverHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 }
 
@@ -51,16 +52,29 @@ impl Handler for HoverHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
-
-        // Convert file path to URI - 使用通用函数
-        let uri = match common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(None), // Unsupported file type
         };
 
-        // Make LSP hover request - simple and direct
+        // Ensure client exists
+        if self
+            .lsp_registry
+            .get_client(&language, &input.file)
+            .await
+            .is_err()
+        {
+            return Ok(None);
+        }
+
+        // Convert file path to URI
+        let uri = match common::file_path_to_uri(&input.file) {
+            Ok(uri) => uri,
+            Err(_) => return Ok(None),
+        };
+
+        // Make LSP hover request
         let params = lsp_types::HoverParams {
             text_document_position_params: lsp_types::TextDocumentPositionParams {
                 text_document: lsp_types::TextDocumentIdentifier {
@@ -74,19 +88,20 @@ impl Handler for HoverHandler {
             work_done_progress_params: Default::default(),
         };
 
-        let response = match client
-            .request::<lsp_types::request::HoverRequest>(params)
+        let response = match self
+            .lsp_registry
+            .request::<lsp_types::request::HoverRequest>(&language, params)
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(None),
         };
 
         debug!("hover response: {:?}", response);
 
         let hover = match response {
             Some(hover) => hover,
-            None => return Ok(Some(None)), // 处理了请求，但没有 hover 信息
+            None => return Ok(None), // No hover information
         };
 
         // Extract content from hover response

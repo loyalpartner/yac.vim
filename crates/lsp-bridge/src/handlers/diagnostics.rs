@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -161,12 +160,14 @@ impl DiagnosticsInfo {
 
 pub struct DiagnosticsHandler {
     #[allow(dead_code)]
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl DiagnosticsHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 }
 

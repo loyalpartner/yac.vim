@@ -1,3 +1,4 @@
+use lsp_bridge::LspRegistry;
 use tracing::info;
 use vim::Vim;
 
@@ -50,41 +51,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("lsp-bridge starting with log: {}", log_path);
 
-    // Create shared LSP client
-    let shared_lsp_client = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    // Create shared LSP registry for multi-language support
+    let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
     // Create vim client with handler
     let mut vim = Vim::new_stdio();
 
-    // Create dedicated handlers with shared client
+    // Create dedicated handlers with multi-language registry
     // Core LSP functionality handlers - Linus style: one handler per function
-    let file_open_handler = FileOpenHandler::new(shared_lsp_client.clone());
+    let file_open_handler = FileOpenHandler::new(lsp_registry.clone());
     // Linus-style: 一个构造函数，数据驱动
-    let definition_handler =
-        GotoHandler::new(shared_lsp_client.clone(), "goto_definition").unwrap();
-    let declaration_handler =
-        GotoHandler::new(shared_lsp_client.clone(), "goto_declaration").unwrap();
+    let definition_handler = GotoHandler::new(lsp_registry.clone(), "goto_definition").unwrap();
+    let declaration_handler = GotoHandler::new(lsp_registry.clone(), "goto_declaration").unwrap();
     let type_definition_handler =
-        GotoHandler::new(shared_lsp_client.clone(), "goto_type_definition").unwrap();
+        GotoHandler::new(lsp_registry.clone(), "goto_type_definition").unwrap();
     let implementation_handler =
-        GotoHandler::new(shared_lsp_client.clone(), "goto_implementation").unwrap();
-    let hover_handler = HoverHandler::new(shared_lsp_client.clone());
-    let completion_handler = CompletionHandler::new(shared_lsp_client.clone());
-    let references_handler = ReferencesHandler::new(shared_lsp_client.clone());
-    let inlay_hints_handler = InlayHintsHandler::new(shared_lsp_client.clone());
-    let rename_handler = RenameHandler::new(shared_lsp_client.clone());
-    let document_symbols_handler = DocumentSymbolsHandler::new(shared_lsp_client.clone());
-    let folding_range_handler = FoldingRangeHandler::new(shared_lsp_client.clone());
-    let diagnostics_handler = DiagnosticsHandler::new(shared_lsp_client.clone());
-    let code_action_handler = CodeActionHandler::new(shared_lsp_client.clone());
-    let execute_command_handler = ExecuteCommandHandler::new(shared_lsp_client.clone());
-    let call_hierarchy_handler = CallHierarchyHandler::new(shared_lsp_client.clone());
+        GotoHandler::new(lsp_registry.clone(), "goto_implementation").unwrap();
+    let hover_handler = HoverHandler::new(lsp_registry.clone());
+    let completion_handler = CompletionHandler::new(lsp_registry.clone());
+    // Updated handlers using LspRegistry
+    let references_handler = ReferencesHandler::new(lsp_registry.clone());
+    let inlay_hints_handler = InlayHintsHandler::new(lsp_registry.clone());
+    let rename_handler = RenameHandler::new(lsp_registry.clone());
+    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
+    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
+    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
+    let code_action_handler = CodeActionHandler::new(lsp_registry.clone());
+    let execute_command_handler = ExecuteCommandHandler::new(lsp_registry.clone());
+    let call_hierarchy_handler = CallHierarchyHandler::new(lsp_registry.clone());
 
-    // Document lifecycle handlers
-    let did_save_handler = DidSaveHandler::new(shared_lsp_client.clone());
-    let did_change_handler = DidChangeHandler::new(shared_lsp_client.clone());
-    let will_save_handler = WillSaveHandler::new(shared_lsp_client.clone());
-    let did_close_handler = DidCloseHandler::new(shared_lsp_client.clone());
+    // Document lifecycle handlers - Updated
+    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
+    let did_change_handler = DidChangeHandler::new(lsp_registry.clone());
+    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
+    let did_close_handler = DidCloseHandler::new(lsp_registry.clone());
 
     // Register handlers for all supported commands
     // Core LSP functionality - Linus style: type-safe dispatch
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("goto_type_definition", type_definition_handler);
     vim.add_handler("goto_implementation", implementation_handler);
 
-    // Document lifecycle handlers
+    // Document lifecycle handlers - Updated
     vim.add_handler("did_save", did_save_handler);
     vim.add_handler("did_change", did_change_handler);
     vim.add_handler("will_save", will_save_handler);

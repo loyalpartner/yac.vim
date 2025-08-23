@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -128,12 +127,14 @@ impl CodeActionInfo {
 }
 
 pub struct CodeActionHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl CodeActionHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 
     fn code_action_kind_to_string(kind: Option<lsp_types::CodeActionKind>) -> Option<String> {
@@ -218,8 +219,21 @@ impl Handler for CodeActionHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(Some(None)), // Unsupported file type
+        };
+
+        // Ensure client exists
+        if self
+            .lsp_registry
+            .get_client(&language, &input.file)
+            .await
+            .is_err()
+        {
+            return Ok(Some(None));
+        }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
@@ -258,8 +272,9 @@ impl Handler for CodeActionHandler {
             partial_result_params: Default::default(),
         };
 
-        let response = match client
-            .request::<lsp_types::request::CodeActionRequest>(params)
+        let response = match self
+            .lsp_registry
+            .request::<lsp_types::request::CodeActionRequest>(&language, params)
             .await
         {
             Ok(response) => response,
