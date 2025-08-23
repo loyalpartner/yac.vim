@@ -76,11 +76,12 @@ impl VimMessage {
             Some(arr) if arr.len() >= 2 => {
                 match &arr[0] {
                     // JSON-RPC protocol
-                    Value::Number(n) if n.as_i64() == Some(1) => {
-                        // [1, {"method": "xxx", "params": ...}] - vim request
+                    Value::Number(n) if n.as_i64().map(|x| x > 0).unwrap_or(false) => {
+                        // [positive_id, {"method": "xxx", "params": ...}] - vim request
                         let obj = &arr[1];
+                        let id = n.as_u64().ok_or_else(|| Error::msg("Invalid request id"))?;
                         Ok(VimMessage::Request {
-                            id: 1,
+                            id,
                             method: obj["method"]
                                 .as_str()
                                 .ok_or_else(|| Error::msg("Missing method"))?
@@ -259,7 +260,9 @@ pub trait MessageTransport: Send + Sync {
 }
 
 /// Stdio Transport - handles stdin/stdout communication
-pub struct StdioTransport;
+pub struct StdioTransport {
+    stdin: std::sync::Arc<tokio::sync::Mutex<BufReader<tokio::io::Stdin>>>,
+}
 
 impl Default for StdioTransport {
     fn default() -> Self {
@@ -269,7 +272,9 @@ impl Default for StdioTransport {
 
 impl StdioTransport {
     pub fn new() -> Self {
-        Self
+        Self {
+            stdin: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(tokio::io::stdin()))),
+        }
     }
 }
 
@@ -286,10 +291,26 @@ impl MessageTransport for StdioTransport {
 
     async fn recv(&self) -> Result<VimMessage> {
         let mut line = String::new();
-        let mut stdin = BufReader::new(tokio::io::stdin());
-        stdin.read_line(&mut line).await?;
-        let json: Value = serde_json::from_str(line.trim())?;
-        VimMessage::parse(&json)
+        let mut stdin = self.stdin.lock().await;
+
+        // Keep reading until we get a non-empty line
+        loop {
+            line.clear();
+            let n = stdin.read_line(&mut line).await?;
+
+            if n == 0 {
+                // EOF reached
+                return Err(anyhow::anyhow!("EOF reached"));
+            }
+
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                // Got a non-empty line, try to parse it
+                let json: Value = serde_json::from_str(trimmed)?;
+                return VimMessage::parse(&json);
+            }
+            // Empty line, continue reading
+        }
     }
 }
 
@@ -470,6 +491,7 @@ impl Vim {
 
     /// Handle requests from vim
     async fn handle_request(&mut self, id: u64, method: String, params: Value) -> Result<()> {
+        tracing::debug!("Handling request: method={}, params={}", method, params);
         if let Some(handler) = self.handlers.get(&method) {
             match handler.dispatch(params).await {
                 Ok(Some(result)) => {

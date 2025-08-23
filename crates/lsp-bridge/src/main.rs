@@ -1,12 +1,28 @@
-use lsp_bridge::{LspBridge, VimAction, VimCommand};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::info;
+use vim::Vim;
 
-/// 解析Vim输入为命令 - 使用类型安全的 VimCommand enum
-fn parse_vim_input(input: &str) -> Option<VimCommand> {
-    serde_json::from_str::<VimCommand>(input).ok()
-}
+mod handlers;
+use handlers::{
+    // Core LSP functionality handlers - Linus style: simple and clear
+    CallHierarchyHandler,
+    CodeActionHandler,
+    CompletionHandler,
+    DiagnosticsHandler,
+    // Document lifecycle handlers
+    DidChangeHandler,
+    DidCloseHandler,
+    DidSaveHandler,
+    DocumentSymbolsHandler,
+    ExecuteCommandHandler,
+    FileOpenHandler,
+    FoldingRangeHandler,
+    GotoHandler,
+    HoverHandler,
+    InlayHintsHandler,
+    ReferencesHandler,
+    RenameHandler,
+    WillSaveHandler,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,95 +39,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(&log_path)?;
 
     tracing_subscriber::registry()
-        .with(fmt::layer().with_writer(log_file).with_ansi(false))
+        .with(
+            fmt::layer()
+                .with_writer(log_file)
+                .with_ansi(false)
+                .with_file(true)
+                .with_line_number(true),
+        )
         .init();
 
     info!("lsp-bridge starting with log: {}", log_path);
 
-    let init_action = VimAction::Init {
-        log_file: log_path.clone(),
-    };
-
-    let mut stdout = tokio::io::stdout();
-    let init_json = serde_json::to_string(&init_action)?;
-    stdout.write_all((init_json + "\n").as_bytes()).await?;
-    stdout.flush().await?;
-
     // Create channel for diagnostic notifications
-    let (diagnostic_tx, mut diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
-    let mut bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
+    // let (diagnostic_tx, _diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
+    // let bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
+    // let bridge_arc = std::sync::Arc::new(tokio::sync::Mutex::new(bridge));
 
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
-    let mut line_buffer = String::new();
+    // Create shared LSP client
+    let shared_lsp_client = std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
-    loop {
-        tokio::select! {
-            // Handle Vim commands from stdin
-            result = reader.read_line(&mut line_buffer) => {
-                match result {
-                    Ok(0) => {
-                        info!("EOF reached, shutting down");
-                        break;
-                    }
-                    Ok(_) => {
-                        let input = line_buffer.trim();
-                        if input.is_empty() {
-                            line_buffer.clear();
-                            continue;
-                        }
+    // Create vim client with handler
+    let mut vim = Vim::new_stdio();
+    // let handler = LspBridgeHandler { bridge: bridge_arc };
 
-                        info!("Received input: {}", input);
+    // Create dedicated handlers with shared client
+    // Core LSP functionality handlers - Linus style: one handler per function
+    let file_open_handler = FileOpenHandler::new(shared_lsp_client.clone());
+    // Linus-style: 一个构造函数，数据驱动
+    let definition_handler =
+        GotoHandler::new(shared_lsp_client.clone(), "goto_definition").unwrap();
+    let declaration_handler =
+        GotoHandler::new(shared_lsp_client.clone(), "goto_declaration").unwrap();
+    let type_definition_handler =
+        GotoHandler::new(shared_lsp_client.clone(), "goto_type_definition").unwrap();
+    let implementation_handler =
+        GotoHandler::new(shared_lsp_client.clone(), "goto_implementation").unwrap();
+    let hover_handler = HoverHandler::new(shared_lsp_client.clone());
+    let completion_handler = CompletionHandler::new(shared_lsp_client.clone());
+    let references_handler = ReferencesHandler::new(shared_lsp_client.clone());
+    let inlay_hints_handler = InlayHintsHandler::new(shared_lsp_client.clone());
+    let rename_handler = RenameHandler::new(shared_lsp_client.clone());
+    let document_symbols_handler = DocumentSymbolsHandler::new(shared_lsp_client.clone());
+    let folding_range_handler = FoldingRangeHandler::new(shared_lsp_client.clone());
+    let diagnostics_handler = DiagnosticsHandler::new(shared_lsp_client.clone());
+    let code_action_handler = CodeActionHandler::new(shared_lsp_client.clone());
+    let execute_command_handler = ExecuteCommandHandler::new(shared_lsp_client.clone());
+    let call_hierarchy_handler = CallHierarchyHandler::new(shared_lsp_client.clone());
 
-                        if let Some(vim_cmd) = parse_vim_input(input) {
-                            let file_path = vim_cmd.file_path();
-                            info!("Processing command: {:?} for {}", vim_cmd, file_path);
+    // Document lifecycle handlers
+    let did_save_handler = DidSaveHandler::new(shared_lsp_client.clone());
+    let did_change_handler = DidChangeHandler::new(shared_lsp_client.clone());
+    let will_save_handler = WillSaveHandler::new(shared_lsp_client.clone());
+    let did_close_handler = DidCloseHandler::new(shared_lsp_client.clone());
 
-                            let action = bridge.handle_command(vim_cmd).await;
+    // Register handlers for all supported commands
+    // Core LSP functionality - Linus style: type-safe dispatch
+    vim.add_handler("file_open", file_open_handler);
+    vim.add_handler("goto_definition", definition_handler);
+    vim.add_handler("goto_declaration", declaration_handler);
+    vim.add_handler("goto_type_definition", type_definition_handler);
+    vim.add_handler("goto_implementation", implementation_handler);
+    vim.add_handler("hover", hover_handler);
+    vim.add_handler("completion", completion_handler);
+    vim.add_handler("references", references_handler);
+    vim.add_handler("inlay_hints", inlay_hints_handler);
+    vim.add_handler("rename", rename_handler);
+    vim.add_handler("document_symbols", document_symbols_handler);
+    vim.add_handler("folding_range", folding_range_handler);
+    vim.add_handler("diagnostics", diagnostics_handler);
+    vim.add_handler("code_action", code_action_handler);
+    vim.add_handler("execute_command", execute_command_handler);
+    vim.add_handler("call_hierarchy_incoming", call_hierarchy_handler.clone());
+    vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
 
-                            let response_json = serde_json::to_string(&action)?;
-                            info!("Sending response: {}", response_json);
-                            stdout.write_all(response_json.as_bytes()).await?;
-                            stdout.write_all(b"\n").await?;
-                            stdout.flush().await?;
+    // Document lifecycle handlers
+    vim.add_handler("did_save", did_save_handler);
+    vim.add_handler("did_change", did_change_handler);
+    vim.add_handler("will_save", will_save_handler);
+    vim.add_handler("did_close", did_close_handler);
 
-                            info!("Command processed");
-                        } else {
-                            error!("Failed to parse input as VimCommand: {}", input);
-                            let error_response = VimAction::Error {
-                                message: format!("Invalid command format: {}", input),
-                            };
+    info!("vim client configured, starting message loop...");
 
-                            let response_json = serde_json::to_string(&error_response)?;
-                            stdout.write_all(response_json.as_bytes()).await?;
-                            stdout.write_all(b"\n").await?;
-                            stdout.flush().await?;
-                        }
-
-                        line_buffer.clear();
-                    }
-                    Err(e) => {
-                        error!("Failed to read from stdin: {}", e);
-                        break;
-                    }
-                }
-            }
-
-            // Handle diagnostic notifications (now truly asynchronous!)
-            diagnostic_action = diagnostic_rx.recv() => {
-                if let Some(action) = diagnostic_action {
-                    let diagnostic_json = serde_json::to_string(&action)?;
-                    info!("Sending real-time diagnostic notification: {}", diagnostic_json);
-                    stdout.write_all(diagnostic_json.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
-                } else {
-                    info!("Diagnostic channel closed");
-                    break;
-                }
-            }
-        }
-    }
+    // Run the vim client - this replaces the manual stdin/stdout loop
+    vim.run().await?;
 
     info!("lsp-bridge shutting down...");
     Ok(())

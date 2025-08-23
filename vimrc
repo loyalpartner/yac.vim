@@ -50,3 +50,5 @@ function! LspBridgeStatus()
 endfunction
 
 command! LspStatus call LspBridgeStatus()
+
+let g:lsp_bridge_debug = !get(g:, 'lsp_bridge_debug', 0)
