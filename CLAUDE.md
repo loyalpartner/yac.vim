@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is yac.vim - a minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Another Code completion), this is specifically a lightweight LSP bridge, not a completion system.
 
 The project consists of three main components:
-1. **vim crate**: A comprehensive vim client library (~900 lines) with v4 specification support
-2. **lsp-bridge**: A Rust binary with modular LSP handlers (~3000 lines total) that bridges Vim and LSP servers
-3. **Vim Plugin**: VimScript files (~1660 lines) that provide comprehensive Vim integration
+1. **vim crate**: A comprehensive vim client library with v4 specification support
+2. **lsp-bridge**: A Rust binary with modular LSP handlers (~3.4k lines total) that bridges Vim and LSP servers
+3. **Vim Plugin**: VimScript files (~1.7k lines) that provide comprehensive Vim integration
 
 **IMPORTANT**: The current implementation uses vim crate v4 with unified message processing, featuring dual request/notification semantics, clean `Option<Location>` response handling, and elimination of redundant protocol metadata.
 
@@ -71,7 +71,7 @@ vim -u vimrc test_data/src/lib.rs
 
 # Test goto definition manually:
 # 1. Open test_data/src/lib.rs in Vim
-# 2. Navigate to a symbol (e.g., User::new usage on line ~31) 
+# 2. Navigate to a symbol (e.g., User::new usage on line ~31)
 # 3. Press 'gd' to jump to definition
 # 4. Should jump to the struct definition
 
@@ -99,13 +99,13 @@ tail -f /tmp/lsp-bridge.log
 ### Core Components
 
 **Workspace Structure:**
-- `crates/lsp-bridge/` - Main bridge binary (~380 lines Rust)
-  - `src/handlers/` - Organized LSP request handlers (definition, file_open, etc.)
-  - `src/main.rs` - Entry point and vim crate integration
-  - `src/lib.rs` - Core LSP bridge logic and data structures
-- `crates/lsp-client/` - LSP client library with JSON-RPC handling  
+- `crates/lsp-bridge/` - Main bridge binary (~3.4k lines total)
+  - `src/handlers/` - 19 modular LSP request handlers (~2.7k lines)
+  - `src/main.rs` - Entry point and vim crate integration (~124 lines)
+  - `src/lsp_registry.rs` - Core LSP bridge logic and data structures (~388 lines)
+- `crates/lsp-client/` - LSP client library with JSON-RPC handling
 - `crates/vim/` - vim crate v4 implementation with unified VimMessage protocol and VimContext trait
-- `vim/` - Vim plugin files (~380 lines VimScript total)
+- `vim/` - Vim plugin files (~1.7k lines VimScript total)
 - `test_data/` - Test Rust project for development
 - `tests/vim/` - Vim integration tests
 - `docs/` - Requirements and design documentation
@@ -136,7 +136,7 @@ function! s:request(method, params, callback_func)
   call ch_sendexpr(s:job, jsonrpc_msg, {'callback': a:callback_func})
 endfunction
 
-" 2. Notification pattern - fire-and-forget 
+" 2. Notification pattern - fire-and-forget
 function! s:notify(method, params)
   call ch_sendraw(s:job, json_encode([jsonrpc_msg]) . "\n")
 endfunction
@@ -155,7 +155,7 @@ pub enum VimMessage {
     Request { id: u64, method: String, params: Value },
     Response { id: i64, result: Value },
     Notification { method: String, params: Value },
-    
+
     // Vim channel commands (client-to-vim)
     Call { func: String, args: Vec<Value>, id: u64 },
     CallAsync { func: String, args: Vec<Value> },
@@ -163,7 +163,7 @@ pub enum VimMessage {
     // ... more command types
 }
 
-// Clean Option<Location> response - no redundant metadata  
+// Clean Option<Location> response - no redundant metadata
 pub struct Location {
     pub file: String,     // Complete location data
     pub line: u32,        // or nothing at all
@@ -175,14 +175,14 @@ pub type GotoResponse = Option<Location>;
 **Protocol Semantics:**
 ```json
 // Request message (JSON-RPC)
-{"id": 1, "method": "goto_definition", "params": {"file": "/path/file.rs", "line": 31, "column": 26}}
+[1, "method": "goto_definition", "params": {"file": "/path/file.rs", "line": 31, "column": 26}]
 
 // Notification message (JSON array)
 [{"method": "goto_definition", "params": {"file": "/path/file.rs", "line": 31, "column": 26}}]
 
 // Response data (Option<Location> semantics)
-{"file": "/path/file.rs", "line": 31, "column": 26}  // Success
-{}  // No definition found
+[1, {"file": "/path/file.rs", "line": 31, "column": 26}]  // Success
+[1, {"error": "No definition found"}]  // No definition found
 ```
 
 ### Key Implementation Details
@@ -234,7 +234,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 ### Available Commands
 ```vim
 :LspStart              " Start LSP bridge process
-:LspStop               " Stop LSP bridge process  
+:LspStop               " Stop LSP bridge process
 :LspDefinition         " Jump to symbol definition
 :LspDeclaration        " Jump to symbol declaration
 :LspTypeDefinition     " Jump to type definition
@@ -291,7 +291,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 " Fire-and-forget notification for goto definition
 call s:notify('goto_definition', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1})
 
-" Request with response callback for hover information  
+" Request with response callback for hover information
 call s:request('hover', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1}, 's:handle_hover_response')
 ```
 
@@ -304,18 +304,18 @@ call s:request('hover', {'file': expand('%:p'), 'line': line('.')-1, 'column': c
 - `file_open` command - Initialize file in LSP server
 - `goto_definition` command - Jump to symbol definitions using notification-based immediate action
 - `goto_declaration` command - Jump to symbol declarations using notification-based immediate action
-- `hover` command - Show documentation/type information in floating popup  
+- `hover` command - Show documentation/type information in floating popup
 - `completion` command - Advanced code completion with:
   - **Auto-trigger**: Automatically shows completions while typing (300ms delay)
   - **Smart context**: Only triggers in appropriate contexts (not in strings/comments)
   - **Keyboard navigation**: Ctrl+P/Ctrl+N, arrow keys
-  - **Visual selection**: ▶ marker for current selection  
+  - **Visual selection**: ▶ marker for current selection
   - **Confirmation**: Enter/Tab to accept, Esc to cancel
   - **Type-based colors**: Function=blue, Variable=green, etc.
   - **Match highlighting**: [brackets] around matching characters
 - `inlay_hints` command - Display inline type annotations and parameter names:
   - **Type hints**: Show variable types (`: i32`) after declarations
-  - **Parameter hints**: Show parameter names (`count: 5`) in function calls  
+  - **Parameter hints**: Show parameter names (`count: 5`) in function calls
   - **Text properties**: Uses Vim 8.1+ text properties for optimal display
   - **Fallback support**: Falls back to match highlighting for older Vim versions
   - **Customizable styling**: Separate highlight groups for types and parameters
@@ -343,9 +343,9 @@ The codebase follows strict simplicity constraints and Linus Torvalds' engineeri
 - **Option<Location> Pattern**: Data either exists completely (Location) or not at all (None)
 - **No Partial States**: Avoid invalid combinations like `file` existing but `line` missing
 
-### Implementation Constraints  
+### Implementation Constraints
 - **Code organization**: Structured into focused modules (vim crate: ~900 lines, handlers: ~2800 lines, vim plugin: ~1660 lines)
-- **No over-engineering**: "Make it work, make it right, make it fast"  
+- **No over-engineering**: "Make it work, make it right, make it fast"
 - **Unix philosophy**: Do one thing (LSP bridging) and do it well
 - **Data-driven design**: Let type system enforce correctness rather than runtime checks
 
@@ -370,7 +370,7 @@ crates/lsp-bridge/src/handlers/
 
 **Benefits of Handler Organization:**
 - **Clear separation of concerns**: Each handler file focuses on specific LSP functionality
-- **Easy extensibility**: Adding new LSP features requires creating new handler files  
+- **Easy extensibility**: Adding new LSP features requires creating new handler files
 - **Better maintainability**: Related code is grouped together logically
 - **Import clarity**: `use handlers::{DefinitionHandler, FileOpenHandler}` vs scattered individual imports
 
@@ -418,7 +418,7 @@ impl Handler for GotoHandler {
 vim -u vimrc
 
 # Test goto definition manually:
-# 1. Open test_data/src/lib.rs  
+# 1. Open test_data/src/lib.rs
 # 2. Navigate to User::new usage
 # 3. Press 'gd' to jump to definition
 # 4. Press 'gD' to jump to declaration
@@ -438,9 +438,9 @@ Auto-completion must be tested manually due to the nature of interactive events:
 
 1. **Setup**: `vim -u vimrc -c 'source tests/vim/auto_complete_demo.vim'`
 2. **Test typing**: Enter insert mode and type `HashMap::`, `Vec::`, etc.
-3. **Verify features**: 
+3. **Verify features**:
    - 300ms delay before popup appears
-   - ▶ selection indicator and [match] highlighting  
+   - ▶ selection indicator and [match] highlighting
    - Ctrl+P/N navigation, Enter/Tab confirmation
    - Smart context detection (no completion in strings/comments)
 
@@ -497,7 +497,7 @@ This project follows Linus Torvalds' engineering philosophy for both code develo
    - Vim plugin commands must continue working
    - No breaking changes to existing functionality
 
-3. **Pragmatic Implementation**: 
+3. **Pragmatic Implementation**:
    - Solve real problems, not theoretical ones
    - Use the simplest approach that works
    - Avoid over-engineering and premature abstraction
@@ -521,5 +521,5 @@ This project follows Linus Torvalds' engineering philosophy for both code develo
 ### Code Review Guidelines
 - **Good Taste**: Eliminate special cases through better data structures
 - **Backward Compatibility**: Never break existing functionality
-- **Pragmatism**: Solve real problems, not theoretical ones  
+- **Pragmatism**: Solve real problems, not theoretical ones
 - **Simplicity**: Keep complexity to a minimum, avoid deep nesting
