@@ -35,6 +35,8 @@ command! -nargs=? LspWillSaveWaitUntil call lsp_bridge#will_save_wait_until(<arg
 command! LspOpenLog        call lsp_bridge#open_log()
 command! LspToggleDiagnosticVirtualText call lsp_bridge#toggle_diagnostic_virtual_text()
 command! LspClearDiagnosticVirtualText call lsp_bridge#clear_diagnostic_virtual_text()
+command! LspDebugToggle    call lsp_bridge#debug_toggle()
+command! LspDebugStatus    call lsp_bridge#debug_status()
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>

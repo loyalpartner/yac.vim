@@ -11,7 +11,7 @@ let s:job = v:null
 let s:log_file = ''
 let s:hover_popup_id = -1
 
-" 补全状态 - 分离数据和显示  
+" 补全状态 - 分离数据和显示
 let s:completion = {}
 let s:completion.popup_id = -1
 let s:completion.doc_popup_id = -1  " 文档popup窗口ID
@@ -33,24 +33,45 @@ function! lsp_bridge#start() abort
     return
   endif
 
+  " 开启 channel 日志来调试（仅第一次）
+  if !exists('s:log_started')
+    " 启用调试模式时开启详细日志
+    if get(g:, 'lsp_bridge_debug', 0)
+      call ch_logfile('/tmp/vim_channel.log', 'w')
+      echom 'LspDebug: Channel logging enabled to /tmp/vim_channel.log'
+    endif
+    let s:log_started = 1
+  endif
+
   let s:job = job_start(g:lsp_bridge_command, {
-    \ 'mode': 'raw',
-    \ 'out_cb': function('s:handle_response'),
-    \ 'err_cb': function('s:handle_error')
+    \ 'mode': 'json',
+    \ 'callback': function('s:handle_response'),
+    \ 'err_cb': function('s:handle_error'),
+    \ 'exit_cb': function('s:handle_exit')
     \ })
-  
+
   if job_status(s:job) != 'run'
     echoerr 'Failed to start lsp-bridge'
   endif
 endfunction
 
-" 发送命令（超简单）
-function! s:send_command(cmd) abort
+" 发送命令（使用 ch_sendexpr 和指定的回调handler）
+function! s:send_command(jsonrpc_msg, callback_func) abort
   call lsp_bridge#start()  " 自动启动
-  
+
   if s:job != v:null && job_status(s:job) == 'run'
-    let json_data = json_encode(a:cmd)
-    call ch_sendraw(s:job, json_data . "\n")
+    " 调试模式：记录发送的命令
+    if get(g:, 'lsp_bridge_debug', 0)
+      let params = get(a:jsonrpc_msg, 'params', {})
+      echom printf('LspDebug[SEND]: %s -> %s:%d:%d',
+        \ a:jsonrpc_msg.method,
+        \ fnamemodify(get(params, 'file', ''), ':t'),
+        \ get(params, 'line', -1), get(params, 'column', -1))
+      echom printf('LspDebug[JSON]: %s', string(a:jsonrpc_msg))
+    endif
+
+    " 使用指定的回调函数
+    call ch_sendexpr(s:job, a:jsonrpc_msg, {'callback': a:callback_func})
   else
     echoerr 'lsp-bridge not running'
   endif
@@ -59,56 +80,74 @@ endfunction
 " LSP 方法
 function! lsp_bridge#goto_definition() abort
   call s:send_command({
-    \ 'command': 'goto_definition',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'goto_definition',
+    \ 'params': {
+    \   'command': 'goto_definition',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_goto_definition_response')
 endfunction
 
 function! lsp_bridge#goto_declaration() abort
   call s:send_command({
-    \ 'command': 'goto_declaration',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'goto_declaration',
+    \ 'params': {
+    \   'command': 'goto_declaration',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_goto_declaration_response')
 endfunction
 
 function! lsp_bridge#goto_type_definition() abort
   call s:send_command({
-    \ 'command': 'goto_type_definition',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'goto_type_definition',
+    \ 'params': {
+    \   'command': 'goto_type_definition',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_goto_type_definition_response')
 endfunction
 
 function! lsp_bridge#goto_implementation() abort
   call s:send_command({
-    \ 'command': 'goto_implementation',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'goto_implementation',
+    \ 'params': {
+    \   'command': 'goto_implementation',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_goto_implementation_response')
 endfunction
 
 function! lsp_bridge#hover() abort
   call s:send_command({
-    \ 'command': 'hover',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'hover',
+    \ 'params': {
+    \   'command': 'hover',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_hover_response')
 endfunction
 
 function! lsp_bridge#open_file() abort
   call s:send_command({
-    \ 'command': 'file_open',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0
-    \ })
+    \ 'method': 'file_open',
+    \ 'params': {
+    \   'command': 'file_open',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0
+    \ }
+    \ }, 's:handle_file_open_response')
 endfunction
 
 function! lsp_bridge#complete() abort
@@ -117,40 +156,49 @@ function! lsp_bridge#complete() abort
     call s:filter_completions()
     return
   endif
-  
+
   " 获取当前输入的前缀用于高亮
   let s:completion.prefix = s:get_current_word_prefix()
-  
+
   call s:send_command({
-    \ 'command': 'completion',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'completion',
+    \ 'params': {
+    \   'command': 'completion',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_completion_response')
 endfunction
 
 function! lsp_bridge#references() abort
   call s:send_command({
-    \ 'command': 'references',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'references',
+    \ 'params': {
+    \   'command': 'references',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_references_response')
 endfunction
 
 function! lsp_bridge#inlay_hints() abort
   call s:send_command({
-    \ 'command': 'inlay_hints',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0
-    \ })
+    \ 'method': 'inlay_hints',
+    \ 'params': {
+    \   'command': 'inlay_hints',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0
+    \ }
+    \ }, 's:handle_inlay_hints_response')
 endfunction
 
 function! lsp_bridge#rename(...) abort
   " 获取新名称，可以是参数传入或用户输入
   let new_name = ''
-  
+
   if a:0 > 0 && !empty(a:1)
     let new_name = a:1
   else
@@ -162,57 +210,75 @@ function! lsp_bridge#rename(...) abort
       return
     endif
   endif
-  
+
   call s:send_command({
-    \ 'command': 'rename',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1,
-    \ 'new_name': new_name
-    \ })
+    \ 'method': 'rename',
+    \ 'params': {
+    \   'command': 'rename',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1,
+    \   'new_name': new_name
+    \ }
+    \ }, 's:handle_rename_response')
 endfunction
 
 function! lsp_bridge#call_hierarchy_incoming() abort
   call s:send_command({
-    \ 'command': 'call_hierarchy_incoming',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'call_hierarchy_incoming',
+    \ 'params': {
+    \   'command': 'call_hierarchy_incoming',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_call_hierarchy_response')
 endfunction
 
 function! lsp_bridge#call_hierarchy_outgoing() abort
   call s:send_command({
-    \ 'command': 'call_hierarchy_outgoing',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'call_hierarchy_outgoing',
+    \ 'params': {
+    \   'command': 'call_hierarchy_outgoing',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_call_hierarchy_response')
 endfunction
 
 function! lsp_bridge#document_symbols() abort
   call s:send_command({
-    \ 'command': 'document_symbols',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0
-    \ })
+    \ 'method': 'document_symbols',
+    \ 'params': {
+    \   'command': 'document_symbols',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0
+    \ }
+    \ }, 's:handle_document_symbols_response')
 endfunction
 
 function! lsp_bridge#folding_range() abort
   call s:send_command({
-    \ 'command': 'folding_range',
-    \ 'file': expand('%:p')
-    \ })
+    \ 'method': 'folding_range',
+    \ 'params': {
+    \   'command': 'folding_range',
+    \   'file': expand('%:p')
+    \ }
+    \ }, 's:handle_folding_range_response')
 endfunction
 
 function! lsp_bridge#code_action() abort
   call s:send_command({
-    \ 'command': 'code_action',
-    \ 'file': expand('%:p'),
-    \ 'line': line('.') - 1,
-    \ 'column': col('.') - 1
-    \ })
+    \ 'method': 'code_action',
+    \ 'params': {
+    \   'command': 'code_action',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ }, 's:handle_code_action_response')
 endfunction
 
 
@@ -221,68 +287,86 @@ function! lsp_bridge#execute_command(...) abort
     echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
     return
   endif
-  
+
   let command_name = a:1
   let arguments = a:000[1:]  " Rest of the arguments
-  
+
   call s:send_command({
-    \ 'command': 'execute_command',
-    \ 'command_name': command_name,
-    \ 'arguments': arguments
-    \ })
+    \ 'method': 'execute_command',
+    \ 'params': {
+    \   'command': 'execute_command',
+    \   'command_name': command_name,
+    \   'arguments': arguments
+    \ }
+    \ }, 's:handle_execute_command_response')
 endfunction
 
 function! lsp_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:send_command({
-    \ 'command': 'did_save',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0,
-    \ 'text': text_content
-    \ })
+    \ 'method': 'did_save',
+    \ 'params': {
+    \   'command': 'did_save',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0,
+    \   'text': text_content
+    \ }
+    \ }, 's:handle_did_save_response')
 endfunction
 
 function! lsp_bridge#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
   call s:send_command({
-    \ 'command': 'did_change',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0,
-    \ 'text': text_content
-    \ })
+    \ 'method': 'did_change',
+    \ 'params': {
+    \   'command': 'did_change',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0,
+    \   'text': text_content
+    \ }
+    \ }, 's:handle_did_change_response')
 endfunction
 
 function! lsp_bridge#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:send_command({
-    \ 'command': 'will_save',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0,
-    \ 'save_reason': save_reason
-    \ })
+    \ 'method': 'will_save',
+    \ 'params': {
+    \   'command': 'will_save',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0,
+    \   'save_reason': save_reason
+    \ }
+    \ }, 's:handle_will_save_response')
 endfunction
 
 function! lsp_bridge#will_save_wait_until(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:send_command({
-    \ 'command': 'will_save_wait_until',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0,
-    \ 'save_reason': save_reason
-    \ })
+    \ 'method': 'will_save_wait_until',
+    \ 'params': {
+    \   'command': 'will_save_wait_until',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0,
+    \   'save_reason': save_reason
+    \ }
+    \ }, 's:handle_will_save_wait_until_response')
 endfunction
 
 function! lsp_bridge#did_close() abort
   call s:send_command({
-    \ 'command': 'did_close',
-    \ 'file': expand('%:p'),
-    \ 'line': 0,
-    \ 'column': 0
-    \ })
+    \ 'method': 'did_close',
+    \ 'params': {
+    \   'command': 'did_close',
+    \   'file': expand('%:p'),
+    \   'line': 0,
+    \   'column': 0
+    \ }
+    \ }, 's:handle_did_close_response')
 endfunction
 
 " 获取当前光标位置的词前缀
@@ -290,13 +374,214 @@ function! s:get_current_word_prefix() abort
   let line = getline('.')
   let col = col('.') - 1
   let start = col
-  
+
   " 向左找词的开始
   while start > 0 && line[start - 1] =~ '\w'
     let start -= 1
   endwhile
-  
+
   return line[start : col - 1]
+endfunction
+
+" === 独立的响应处理器 ===
+
+" 通用跳转处理器 - Linus-style: 数据驱动，消除 action 字段
+function! s:handle_jump_response(method_name, channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: %s response: %s', a:method_name, string(a:response))
+  endif
+
+  " Linus-style: Option<Location> 语义 - 数据要么完整存在，要么不存在
+  if !empty(a:response)
+    execute 'edit ' . fnameescape(a:response.file)
+    call cursor(a:response.line + 1, a:response.column + 1)
+    normal! zz
+    echo printf('Jumped to %s at line %d', substitute(a:method_name, 'goto_', '', ''), a:response.line + 1)
+  endif
+  " None = 静默处理，相信数据结构的完整性
+endfunction
+
+" 数据驱动的跳转回调处理器 - Linus-style: 消除重复代码
+function! s:handle_goto_definition_response(channel, response) abort
+  call s:handle_jump_response('goto_definition', a:channel, a:response)
+endfunction
+
+function! s:handle_goto_declaration_response(channel, response) abort
+  call s:handle_jump_response('goto_declaration', a:channel, a:response)
+endfunction
+
+function! s:handle_goto_type_definition_response(channel, response) abort
+  call s:handle_jump_response('goto_type_definition', a:channel, a:response)
+endfunction
+
+function! s:handle_goto_implementation_response(channel, response) abort
+  call s:handle_jump_response('goto_implementation', a:channel, a:response)
+endfunction
+
+" hover 响应处理器 - 简化：有 content 就显示
+function! s:handle_hover_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: hover response: %s', string(a:response))
+  endif
+
+  if has_key(a:response, 'content') && !empty(a:response.content)
+    call s:show_hover_popup(a:response.content)
+  endif
+endfunction
+
+" completion 响应处理器 - 简化：有 items 就显示
+function! s:handle_completion_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: completion response: %s', string(a:response))
+  endif
+
+  if has_key(a:response, 'items') && !empty(a:response.items)
+    call s:show_completions(a:response.items)
+  endif
+endfunction
+
+" references 响应处理器
+function! s:handle_references_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: references response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'locations')
+    call s:show_references(a:response.locations)
+  endif
+endfunction
+
+" inlay_hints 响应处理器
+function! s:handle_inlay_hints_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: inlay_hints response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'hints')
+    call s:show_inlay_hints(a:response.hints)
+  endif
+endfunction
+
+" rename 响应处理器
+function! s:handle_rename_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: rename response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'edits')
+    call s:apply_workspace_edit(a:response.edits)
+  endif
+endfunction
+
+" call_hierarchy 响应处理器（同时处理incoming和outgoing）
+function! s:handle_call_hierarchy_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: call_hierarchy response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'items')
+    call s:show_call_hierarchy(a:response.items)
+  endif
+endfunction
+
+" document_symbols 响应处理器
+function! s:handle_document_symbols_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: document_symbols response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'symbols')
+    call s:show_document_symbols(a:response.symbols)
+  endif
+endfunction
+
+" folding_range 响应处理器
+function! s:handle_folding_range_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: folding_range response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'ranges')
+    call s:apply_folding_ranges(a:response.ranges)
+  endif
+endfunction
+
+" code_action 响应处理器
+function! s:handle_code_action_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: code_action response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'actions')
+    call s:show_code_actions(a:response.actions)
+  endif
+endfunction
+
+" execute_command 响应处理器
+function! s:handle_execute_command_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: execute_command response: %s', string(a:response))
+  endif
+
+  if !empty(a:response) && has_key(a:response, 'edits')
+    call s:apply_workspace_edit(a:response.edits)
+  endif
+endfunction
+
+" file_open 响应处理器
+function! s:handle_file_open_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: file_open response: %s', string(a:response))
+  endif
+
+  if has_key(a:response, 'log_file')
+    let s:log_file = a:response.log_file
+    echo 'lsp-bridge initialized with log: ' . s:log_file
+  endif
+endfunction
+
+" did_save 响应处理器
+function! s:handle_did_save_response(channel, response) abort
+  " 通常没有响应，除非出错
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: did_save response: %s', string(a:response))
+  endif
+endfunction
+
+" did_change 响应处理器
+function! s:handle_did_change_response(channel, response) abort
+  " 通常没有响应，除非出错
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: did_change response: %s', string(a:response))
+  endif
+endfunction
+
+" will_save 响应处理器
+function! s:handle_will_save_response(channel, response) abort
+  " 通常没有响应，除非出错
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: will_save response: %s', string(a:response))
+  endif
+endfunction
+
+" will_save_wait_until 响应处理器
+function! s:handle_will_save_wait_until_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: will_save_wait_until response: %s', string(a:response))
+  endif
+
+  " 可能返回文本编辑
+  if has_key(a:response, 'edits')
+    " 应用编辑
+  endif
+endfunction
+
+" did_close 响应处理器
+function! s:handle_did_close_response(channel, response) abort
+  " 通常没有响应，除非出错
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[RECV]: did_close response: %s', string(a:response))
+  endif
 endfunction
 
 
@@ -305,64 +590,26 @@ function! s:handle_error(channel, msg) abort
   echoerr 'lsp-bridge: ' . a:msg
 endfunction
 
-" 处理响应（异步回调）
+" 处理进程退出（异步回调）
+function! s:handle_exit(job, status) abort
+  echom 'lsp-bridge exited with status: ' . a:status
+  let s:job = v:null
+endfunction
+
+" Channel回调，只处理服务器主动推送的通知
 function! s:handle_response(channel, msg) abort
-  " 解析JSON响应
-  try
-    " 去除前后空白字符
-    let clean_msg = substitute(a:msg, '^\s*\|\s*$', '', 'g')
-    " 如果消息为空，跳过
-    if empty(clean_msg)
-      return
-    endif
-    " 尝试解析为JSON
-    let response = json_decode(clean_msg)
-  catch
-    return
-  endtry
-  
-  if type(response) != v:t_dict || !has_key(response, 'action')
-    return
-  endif
-  
-  if response.action == 'init'
-    " 存储日志文件路径
-    let s:log_file = response.log_file
-    echo 'lsp-bridge initialized with log: ' . s:log_file
-  elseif response.action == 'jump'
-    execute 'edit ' . fnameescape(response.file)
-    call cursor(response.line + 1, response.column + 1)
-    normal! zz
-    echo 'Jumped to definition at line ' . (response.line + 1)
-  elseif response.action == 'show_hover'
-    call s:show_hover_popup(response.content)
-  elseif response.action == 'completions'
-    call s:show_completions(response.items)
-  elseif response.action == 'references'
-    call s:show_references(response.locations)
-  elseif response.action == 'inlay_hints'
-    call s:show_inlay_hints(response.hints)
-  elseif response.action == 'workspace_edit'
-    call s:apply_workspace_edit(response.edits)
-  elseif response.action == 'call_hierarchy'
-    call s:show_call_hierarchy(response.items)
-  elseif response.action == 'document_symbols'
-    call s:show_document_symbols(response.symbols)
-  elseif response.action == 'folding_ranges'
-    call s:apply_folding_ranges(response.ranges)
-  elseif response.action == 'code_actions'
-    call s:show_code_actions(response.actions)
-  elseif response.action == 'diagnostics'
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom "DEBUG: Received diagnostics action with " . len(response.diagnostics) . " items"
-    endif
-    call s:show_diagnostics(response.diagnostics)
-  elseif response.action == 'none'
-    " 静默处理，不显示任何内容
-  elseif response.action == 'error'
-    " 静默处理 "No definition found", "No declaration found", "No type definition found", 和 "No implementation found"
-    if response.message != 'No definition found' && response.message != 'No declaration found' && response.message != 'No type definition found' && response.message != 'No implementation found'
-      echoerr response.message
+  " msg 格式是 [seq, content]
+  if type(a:msg) == v:t_list && len(a:msg) >= 2
+    let content = a:msg[1]
+
+    " 只处理服务器主动发送的通知（如诊断）
+    if has_key(content, 'action')
+      if content.action == 'diagnostics'
+        if get(g:, 'lsp_bridge_debug', 0)
+          echom "DEBUG: Received diagnostics action with " . len(content.diagnostics) . " items"
+        endif
+        call s:show_diagnostics(content.diagnostics)
+      endif
     endif
   endif
 endfunction
@@ -370,10 +617,56 @@ endfunction
 " 停止进程
 function! lsp_bridge#stop() abort
   if s:job != v:null
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom 'LspDebug: Stopping lsp-bridge process'
+    endif
     call job_stop(s:job)
     let s:job = v:null
   endif
 endfunction
+
+" === Debug 功能 ===
+
+" 切换调试模式
+function! lsp_bridge#debug_toggle() abort
+  let g:lsp_bridge_debug = !get(g:, 'lsp_bridge_debug', 0)
+
+  if g:lsp_bridge_debug
+    echo 'LspDebug: Debug mode ENABLED'
+    echo '  - Command send/receive logging enabled'
+    echo '  - Channel communication will be logged to /tmp/vim_channel.log'
+    echo '  - Use :LspDebugToggle to disable'
+
+    " 如果进程已经运行，重启以启用channel日志
+    if s:job != v:null && job_status(s:job) == 'run'
+      echom 'LspDebug: Restarting process to enable channel logging...'
+      call lsp_bridge#stop()
+      call lsp_bridge#start()
+    endif
+  else
+    echo 'LspDebug: Debug mode DISABLED'
+    echo '  - Command logging disabled'
+    echo '  - Channel logging will stop for new connections'
+  endif
+endfunction
+
+" 显示调试状态
+function! lsp_bridge#debug_status() abort
+  let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
+  let job_running = (s:job != v:null && job_status(s:job) == 'run')
+
+  echo 'LspDebug Status:'
+  echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
+  echo '  LSP Process: ' . (job_running ? 'RUNNING' : 'STOPPED')
+  echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
+  echo '  LSP Log: ' . (empty(s:log_file) ? 'Not available' : s:log_file)
+  echo ''
+  echo 'Commands:'
+  echo '  :LspDebugToggle - Toggle debug mode'
+  echo '  :LspDebugStatus - Show this status'
+  echo '  :LspOpenLog     - Open LSP process log'
+endfunction
+
 
 " 显示补全结果
 function! s:show_completions(items) abort
@@ -381,7 +674,7 @@ function! s:show_completions(items) abort
     echo "No completions available"
     return
   endif
-  
+
   call s:show_completion_popup(a:items)
 endfunction
 
@@ -391,17 +684,17 @@ endfunction
 function! s:show_hover_popup(content) abort
   " 关闭之前的hover窗口
   call s:close_hover_popup()
-  
+
   if empty(a:content)
     return
   endif
-  
+
   " 将内容按行分割
   let lines = split(a:content, '\n')
   if empty(lines)
     return
   endif
-  
+
   " 计算窗口大小
   let max_width = 80
   let content_width = 0
@@ -410,12 +703,12 @@ function! s:show_hover_popup(content) abort
   endfor
   let width = min([content_width + 2, max_width])
   let height = min([len(lines), 15])
-  
+
   " 获取光标位置
   let cursor_pos = getpos('.')
   let line_num = cursor_pos[1]
   let col_num = cursor_pos[2]
-  
+
   if exists('*popup_create')
     " Vim 8.1+ popup实现
     let opts = {
@@ -428,7 +721,7 @@ function! s:show_hover_popup(content) abort
       \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
       \ 'moved': [line_num - 5, line_num + 5]
       \ }
-    
+
     let s:hover_popup_id = popup_create(lines, opts)
   else
     " 降级到echo（老版本Vim）
@@ -452,12 +745,12 @@ endfunction
 function! s:show_completion_popup(items) abort
   " 关闭之前的补全窗口
   call s:close_completion_popup()
-  
+
   " 存储原始补全项目和当前过滤后的项目
   let s:completion.original_items = a:items
   let s:completion.items = a:items
   let s:completion.selected = 0
-  
+
   " 应用当前前缀的过滤
   call s:filter_completions()
 endfunction
@@ -476,7 +769,7 @@ function! s:render_completion_window() abort
   let lines = []
   let start = s:completion.window_offset
   let end = min([start + s:completion.window_size - 1, len(s:completion.items) - 1])
-  
+
   for i in range(start, end)
     if i < len(s:completion.items)
       let marker = (i == s:completion.selected) ? '▶ ' : '  '
@@ -484,7 +777,7 @@ function! s:render_completion_window() abort
       call add(lines, marker . item.label . ' (' . item.kind . ')')
     endif
   endfor
-  
+
   call s:create_or_update_completion_popup(lines)
   " 显示选中项的文档
   call s:show_completion_documentation()
@@ -494,7 +787,7 @@ endfunction
 function! s:filter_completions() abort
   let current_prefix = s:get_current_word_prefix()
   let s:completion.prefix = current_prefix
-  
+
   " 简单前缀匹配
   let s:completion.items = []
   for item in s:completion.original_items
@@ -502,14 +795,14 @@ function! s:filter_completions() abort
       call add(s:completion.items, item)
     endif
   endfor
-  
+
   let s:completion.selected = 0
-  
+
   if empty(s:completion.items)
     call s:close_completion_popup()
     return
   endif
-  
+
   call s:render_completion_window()
 endfunction
 
@@ -520,7 +813,7 @@ function! s:create_or_update_completion_popup(lines) abort
     if s:completion.popup_id != -1
       call popup_close(s:completion.popup_id)
     endif
-    
+
     let s:completion.popup_id = popup_create(a:lines, {
       \ 'line': 'cursor+1',
       \ 'col': 'cursor',
@@ -540,20 +833,20 @@ endfunction
 function! s:show_completion_documentation() abort
   " 关闭之前的文档popup
   call s:close_completion_documentation()
-  
+
   " 检查是否有补全项和popup支持
   if !exists('*popup_create') || empty(s:completion.items) || s:completion.selected >= len(s:completion.items)
     return
   endif
-  
+
   let item = s:completion.items[s:completion.selected]
   let doc_lines = []
-  
+
   " 添加detail信息（类型/符号信息）
   if has_key(item, 'detail') && !empty(item.detail)
     call add(doc_lines, '📋 ' . item.detail)
   endif
-  
+
   " 添加documentation信息
   if has_key(item, 'documentation') && !empty(item.documentation)
     if !empty(doc_lines)
@@ -563,12 +856,12 @@ function! s:show_completion_documentation() abort
     let doc_text = substitute(item.documentation, '\r\n\|\r\|\n', '\n', 'g')
     call extend(doc_lines, split(doc_text, '\n'))
   endif
-  
+
   " 如果没有文档信息就不显示popup
   if empty(doc_lines)
     return
   endif
-  
+
   " 创建文档popup，位于补全popup右侧
   let s:completion.doc_popup_id = popup_create(doc_lines, {
     \ 'line': 'cursor+1',
@@ -597,7 +890,7 @@ function! s:completion_filter(winid, key) abort
   if a:key == "\<C-N>" || a:key == "\<Down>"
     call s:move_completion_selection(1)
     return 1
-  " Ctrl+P (上一个) 或向上箭头  
+  " Ctrl+P (上一个) 或向上箭头
   elseif a:key == "\<C-P>" || a:key == "\<Up>"
     call s:move_completion_selection(-1)
     return 1
@@ -621,7 +914,7 @@ function! s:completion_filter(winid, key) abort
     call s:close_completion_popup()
     return 1
   endif
-  
+
   " 其他键继续传递
   return 0
 endfunction
@@ -630,14 +923,14 @@ endfunction
 function! s:move_completion_selection(direction) abort
   let total_items = len(s:completion.items)
   let new_idx = s:completion.selected + a:direction
-  
+
   " 边界检查，不循环
   if new_idx < 0
     let new_idx = 0
   elseif new_idx >= total_items
     let new_idx = total_items - 1
   endif
-  
+
   let s:completion.selected = new_idx
   call s:render_completion_window()
 endfunction
@@ -645,29 +938,29 @@ endfunction
 " 插入选择的补全项
 function! s:insert_completion(item) abort
   call s:close_completion_popup()
-  
+
   " 确保在插入模式下
   if mode() !=# 'i'
     echo "Error: Completion can only be applied in insert mode"
     return
   endif
-  
+
   " 获取当前前缀，需要替换掉这部分
   let current_prefix = s:get_current_word_prefix()
   let prefix_len = len(current_prefix)
-  
+
   if empty(current_prefix)
     " 没有前缀时，直接插入
     call feedkeys(a:item.label, 'n')
     echo printf("Inserted: %s", a:item.label)
     return
   endif
-  
+
   " 删除已输入的前缀，然后插入完整的补全文本
   " 使用退格键删除前缀，然后插入完整文本
   let backspaces = repeat("\<BS>", prefix_len)
   call feedkeys(backspaces . a:item.label, 'n')
-  
+
   echo printf("Completed: %s → %s", current_prefix, a:item.label)
 endfunction
 
@@ -699,7 +992,7 @@ function! s:show_references(locations) abort
     echo "No references found"
     return
   endif
-  
+
   let qf_list = []
   for loc in a:locations
     call add(qf_list, {
@@ -709,7 +1002,7 @@ function! s:show_references(locations) abort
       \ 'text': 'Reference'
       \ })
   endfor
-  
+
   call setqflist(qf_list)
   copen
   echo 'Found ' . len(a:locations) . ' references'
@@ -721,14 +1014,14 @@ function! s:show_call_hierarchy(items) abort
     echo "No call hierarchy found"
     return
   endif
-  
+
   let qf_list = []
   for item in a:items
     let text = item.name . ' (' . item.kind . ')'
     if has_key(item, 'detail') && !empty(item.detail)
       let text .= ' - ' . item.detail
     endif
-    
+
     call add(qf_list, {
       \ 'filename': item.file,
       \ 'lnum': item.selection_line + 1,
@@ -736,7 +1029,7 @@ function! s:show_call_hierarchy(items) abort
       \ 'text': text
       \ })
   endfor
-  
+
   call setqflist(qf_list)
   copen
   echo 'Found ' . len(a:items) . ' call hierarchy items'
@@ -748,10 +1041,10 @@ function! s:show_document_symbols(symbols) abort
     echo "No document symbols found"
     return
   endif
-  
+
   let qf_list = []
   call s:collect_symbols_recursive(a:symbols, qf_list, 0)
-  
+
   call setqflist(qf_list)
   copen
   echo 'Found ' . len(qf_list) . ' document symbols'
@@ -765,14 +1058,14 @@ function! s:collect_symbols_recursive(symbols, qf_list, depth) abort
     if has_key(symbol, 'detail') && !empty(symbol.detail)
       let text .= ' - ' . symbol.detail
     endif
-    
+
     call add(a:qf_list, {
       \ 'filename': symbol.file,
       \ 'lnum': symbol.selection_line + 1,
       \ 'col': symbol.selection_column + 1,
       \ 'text': text
       \ })
-    
+
     " 递归处理子符号
     if has_key(symbol, 'children') && !empty(symbol.children)
       call s:collect_symbols_recursive(symbol.children, a:qf_list, a:depth + 1)
@@ -786,7 +1079,7 @@ function! lsp_bridge#open_log() abort
     echo 'lsp-bridge not running'
     return
   endif
-  
+
   execute 'split ' . fnameescape(s:log_file)
 endfunction
 
@@ -799,16 +1092,16 @@ let s:inlay_hints = {}
 function! s:show_inlay_hints(hints) abort
   " 清除当前buffer的旧hints
   call s:clear_inlay_hints()
-  
+
   if empty(a:hints)
     echo "No inlay hints available"
     return
   endif
-  
+
   " 存储hints并显示
   let s:inlay_hints[bufnr('%')] = a:hints
   call s:render_inlay_hints()
-  
+
   echo 'Showing ' . len(a:hints) . ' inlay hints'
 endfunction
 
@@ -826,7 +1119,7 @@ function! s:clear_inlay_hints() abort
         " 如果属性类型不存在，忽略错误
       endtry
     endif
-    
+
     " 清除所有匹配项（降级模式）
     call clearmatches()
     unlet s:inlay_hints[bufnr]
@@ -845,7 +1138,7 @@ function! s:render_inlay_hints() abort
   if !has_key(s:inlay_hints, bufnr)
     return
   endif
-  
+
   " 定义highlight组
   if !hlexists('InlayHintType')
     highlight InlayHintType ctermfg=8 ctermbg=NONE gui=italic guifg=#888888 guibg=NONE
@@ -853,14 +1146,14 @@ function! s:render_inlay_hints() abort
   if !hlexists('InlayHintParameter')
     highlight InlayHintParameter ctermfg=6 ctermbg=NONE gui=italic guifg=#008080 guibg=NONE
   endif
-  
+
   " 为每个hint添加virtual text（如果支持的话）
   for hint in s:inlay_hints[bufnr]
     let line_num = hint.line + 1  " Convert to 1-based
     let col_num = hint.column + 1
     let text = hint.label
     let hl_group = hint.kind == 'type' ? 'InlayHintType' : 'InlayHintParameter'
-    
+
     " 使用文本属性（Vim 8.1+）显示inlay hints
     if exists('*prop_type_add')
       " 确保属性类型存在
@@ -869,7 +1162,7 @@ function! s:render_inlay_hints() abort
       catch /E969/
         " 属性类型已存在，忽略错误
       endtry
-      
+
       " 添加文本属性
       try
         call prop_add(line_num, col_num, {
@@ -899,24 +1192,24 @@ function! s:apply_workspace_edit(edits) abort
     echo 'No changes to apply'
     return
   endif
-  
+
   let total_changes = 0
   let files_changed = 0
-  
+
   " 保存当前光标位置和缓冲区
   let current_buf = bufnr('%')
   let current_pos = getpos('.')
-  
+
   try
     " 处理每个文件的编辑
     for file_edit in a:edits
       let file_path = file_edit.file
       let edits = file_edit.edits
-      
+
       if empty(edits)
         continue
       endif
-      
+
       " 打开文件（如果尚未打开）
       let file_buf = bufnr(file_path)
       if file_buf == -1
@@ -925,30 +1218,30 @@ function! s:apply_workspace_edit(edits) abort
       else
         execute 'buffer ' . file_buf
       endif
-      
+
       " 按行号逆序排序编辑，避免行号偏移问题
-      let sorted_edits = sort(copy(edits), {a, b -> 
-        \ a.start_line == b.start_line ? 
-        \   (b.start_column - a.start_column) : 
+      let sorted_edits = sort(copy(edits), {a, b ->
+        \ a.start_line == b.start_line ?
+        \   (b.start_column - a.start_column) :
         \   (b.start_line - a.start_line)})
-      
+
       " 应用编辑
       for edit in sorted_edits
         call s:apply_text_edit(edit)
         let total_changes += 1
       endfor
-      
+
       let files_changed += 1
     endfor
-    
+
     " 返回到原始缓冲区和位置
     if bufexists(current_buf)
       execute 'buffer ' . current_buf
       call setpos('.', current_pos)
     endif
-    
+
     echo printf('Applied %d changes across %d files', total_changes, files_changed)
-    
+
   catch
     echoerr 'Error applying workspace edit: ' . v:exception
   endtry
@@ -961,10 +1254,10 @@ function! s:apply_text_edit(edit) abort
   let start_col = a:edit.start_column + 1
   let end_line = a:edit.end_line + 1
   let end_col = a:edit.end_column + 1
-  
+
   " 定位到编辑位置
   call cursor(start_line, start_col)
-  
+
   " 如果是插入操作（开始和结束位置相同）
   if start_line == end_line && start_col == end_col
     " 纯插入
@@ -983,28 +1276,28 @@ function! s:apply_text_edit(edit) abort
     else
       " 跨行替换
       let lines = []
-      
+
       " 第一行：保留开头，替换剩余部分
       let first_line = getline(start_line)
       let first_part = first_line[0 : start_col - 2]
-      
+
       " 最后一行：替换开头，保留剩余部分
       let last_line = getline(end_line)
       let last_part = last_line[end_col - 1 :]
-      
+
       " 合并新文本
       let new_text_lines = split(a:edit.new_text, '\n', 1)
       if empty(new_text_lines)
         let new_text_lines = ['']
       endif
-      
+
       " 构建最终行
       let new_text_lines[0] = first_part . new_text_lines[0]
       let new_text_lines[-1] = new_text_lines[-1] . last_part
-      
+
       " 删除原有行
       execute start_line . ',' . end_line . 'delete'
-      
+
       " 插入新行
       call append(start_line - 1, new_text_lines)
     endif
@@ -1019,23 +1312,23 @@ function! s:apply_folding_ranges(ranges) abort
     echo "No folding ranges available"
     return
   endif
-  
+
   " 设置折叠方法为手动并清除现有折叠
   setlocal foldmethod=manual
   normal! zE
-  
+
   " 应用每个折叠范围
   for range in a:ranges
     " 转换为1-based行号
     let start_line = range.start_line + 1
     let end_line = range.end_line + 1
-    
+
     " 确保行号有效
     if start_line >= 1 && end_line <= line('$') && start_line < end_line
       execute start_line . ',' . end_line . 'fold'
     endif
   endfor
-  
+
   echo 'Applied ' . len(a:ranges) . ' folding ranges'
 endfunction
 
@@ -1047,7 +1340,7 @@ function! s:show_code_actions(actions) abort
     echo "No code actions available"
     return
   endif
-  
+
   echo "Available code actions:"
   let index = 1
   for action in a:actions
@@ -1061,20 +1354,20 @@ function! s:show_code_actions(actions) abort
     echo display
     let index += 1
   endfor
-  
+
   " 获取用户选择
   let choice = input("Select action (1-" . len(a:actions) . ", or <Enter> to cancel): ")
   if empty(choice)
     echo "\nAction cancelled"
     return
   endif
-  
+
   let choice_num = str2nr(choice)
   if choice_num < 1 || choice_num > len(a:actions)
     echo "\nInvalid selection"
     return
   endif
-  
+
   let selected_action = a:actions[choice_num - 1]
   call s:execute_code_action(selected_action)
 endfunction
@@ -1087,7 +1380,7 @@ function! s:execute_code_action(action) abort
     echo "Direct edit actions not yet supported. Use command-based actions."
     return
   endif
-  
+
   if has_key(a:action, 'command') && !empty(a:action.command)
     " Execute the command
     let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
@@ -1108,7 +1401,7 @@ function! s:show_diagnostics(diagnostics) abort
     echom "DEBUG: s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics"
     echom "DEBUG: virtual text enabled = " . s:diagnostic_virtual_text.enabled
   endif
-  
+
   if empty(a:diagnostics)
     " Clear virtual text when no diagnostics
     if s:diagnostic_virtual_text.enabled
@@ -1117,12 +1410,12 @@ function! s:show_diagnostics(diagnostics) abort
     echo "No diagnostics found"
     return
   endif
-  
+
   " Debug: show first diagnostic structure (only if debug enabled)
   if get(g:, 'lsp_bridge_debug', 0) && len(a:diagnostics) > 0
     echom "DEBUG: First diagnostic: " . string(a:diagnostics[0])
   endif
-  
+
   let qf_list = []
   for diag in a:diagnostics
     let type = diag.severity
@@ -1135,7 +1428,7 @@ function! s:show_diagnostics(diagnostics) abort
     elseif type == 'Hint'
       let type = 'H'
     endif
-    
+
     let text = diag.severity . ': ' . diag.message
     if has_key(diag, 'source') && !empty(diag.source)
       let text = '[' . diag.source . '] ' . text
@@ -1143,7 +1436,7 @@ function! s:show_diagnostics(diagnostics) abort
     if has_key(diag, 'code') && !empty(diag.code)
       let text = text . ' (' . diag.code . ')'
     endif
-    
+
     call add(qf_list, {
       \ 'filename': diag.file,
       \ 'lnum': diag.line + 1,
@@ -1152,10 +1445,10 @@ function! s:show_diagnostics(diagnostics) abort
       \ 'text': text
       \ })
   endfor
-  
+
   " Update quickfix list but don't auto-open it
   call setqflist(qf_list)
-  
+
   " Update virtual text if enabled
   if s:diagnostic_virtual_text.enabled
     call s:update_diagnostic_virtual_text(a:diagnostics)
@@ -1195,10 +1488,10 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     endif
     return
   endif
-  
+
   " 诊断按文件分组
   let diagnostics_by_file = {}
-  
+
   for diag in a:diagnostics
     let file_path = diag.file
     if !has_key(diagnostics_by_file, file_path)
@@ -1206,13 +1499,13 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     endif
     call add(diagnostics_by_file[file_path], diag)
   endfor
-  
+
   " 清除不再有诊断的buffer的虚拟文本
   let files_with_diagnostics = {}
   for [file_path, file_diagnostics] in items(diagnostics_by_file)
     let files_with_diagnostics[file_path] = 1
   endfor
-  
+
   " 清除不再有诊断的buffer（复制keys避免在循环中修改字典）
   let buffers_to_clear = []
   for bufnr in keys(s:diagnostic_virtual_text.storage)
@@ -1221,22 +1514,22 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
       call add(buffers_to_clear, bufnr)
     endif
   endfor
-  
+
   " 安全地清除buffer
   for bufnr in buffers_to_clear
     call s:clear_diagnostic_virtual_text(bufnr)
   endfor
-  
+
   " 为每个文件更新虚拟文本
   for [file_path, file_diagnostics] in items(diagnostics_by_file)
     let bufnr = bufnr(file_path)
-    
+
     " 只有当文件在缓冲区中时才处理
     if bufnr != -1
       if get(g:, 'lsp_bridge_debug', 0)
         echom "DEBUG: update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics"
       endif
-      
+
       " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
       if exists('*prop_remove')
         for severity in ['error', 'warning', 'info', 'hint']
@@ -1247,10 +1540,10 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
           endtry
         endfor
       endif
-      
+
       " 存储诊断数据
       let s:diagnostic_virtual_text.storage[bufnr] = file_diagnostics
-      
+
       " 渲染虚拟文本
       call s:render_diagnostic_virtual_text(bufnr)
     else
@@ -1266,19 +1559,19 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
   if get(g:, 'lsp_bridge_debug', 0)
     echom "DEBUG: render_diagnostic_virtual_text called for buffer " . a:bufnr
   endif
-  
+
   if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
     if get(g:, 'lsp_bridge_debug', 0)
       echom "DEBUG: No diagnostics stored for buffer " . a:bufnr
     endif
     return
   endif
-  
+
   let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
   if get(g:, 'lsp_bridge_debug', 0)
     echom "DEBUG: Found " . len(diagnostics) . " diagnostics to render"
   endif
-  
+
   " 为每个诊断添加virtual text
   for diag in diagnostics
     let line_num = diag.line + 1  " Convert to 1-based
@@ -1287,7 +1580,7 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
     if get(g:, 'lsp_bridge_debug', 0)
       echom "DEBUG: Processing diagnostic at line " . line_num . ": " . text
     endif
-    
+
     " 根据严重程度选择高亮组
     let hl_group = 'DiagnosticHint'
     if diag.severity == 'Error'
@@ -1297,7 +1590,7 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
     elseif diag.severity == 'Info'
       let hl_group = 'DiagnosticInfo'
     endif
-    
+
     " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
     if exists('*prop_type_add')
       if get(g:, 'lsp_bridge_debug', 0)
@@ -1316,7 +1609,7 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
           echom "DEBUG: Prop type " . prop_type . " already exists"
         endif
       endtry
-      
+
       " 在行尾添加虚拟文本
       try
         call prop_add(line_num, 0, {
@@ -1381,7 +1674,7 @@ function! s:clear_diagnostic_virtual_text(bufnr) abort
       endtry
     endfor
   endif
-  
+
   " 清除storage记录
   if has_key(s:diagnostic_virtual_text.storage, a:bufnr)
     unlet s:diagnostic_virtual_text.storage[a:bufnr]
@@ -1392,7 +1685,7 @@ endfunction
 function! lsp_bridge#toggle_diagnostic_virtual_text() abort
   let s:diagnostic_virtual_text.enabled = !s:diagnostic_virtual_text.enabled
   let bufnr = bufnr('%')
-  
+
   if s:diagnostic_virtual_text.enabled
     " 重新渲染当前buffer的诊断
     call s:render_diagnostic_virtual_text(bufnr)

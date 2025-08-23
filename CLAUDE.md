@@ -10,7 +10,7 @@ The project consists of two main components:
 1. **lsp-bridge**: A Rust binary (~380 lines) that acts as a stdin/stdout bridge between Vim and LSP servers
 2. **Vim Plugin**: VimScript files (~380 lines) that provide Vim integration via job control
 
-**IMPORTANT**: The current implementation uses direct stdin/stdout communication, NOT a server-client TCP architecture as described in the README. The README contains outdated information about the project's architecture.
+**IMPORTANT**: The current implementation uses vim crate with individual callback handlers per LSP method, featuring clean `Option<Location>` response semantics and eliminating redundant protocol metadata.
 
 ## README vs Reality
 
@@ -99,7 +99,11 @@ tail -f /tmp/lsp-bridge.log
 
 **Workspace Structure:**
 - `crates/lsp-bridge/` - Main bridge binary (~380 lines Rust)
-- `crates/lsp-client/` - LSP client library with JSON-RPC handling
+  - `src/handlers/` - Organized LSP request handlers (definition, file_open, etc.)
+  - `src/main.rs` - Entry point and vim crate integration
+  - `src/lib.rs` - Core LSP bridge logic and data structures
+- `crates/lsp-client/` - LSP client library with JSON-RPC handling  
+- `crates/vim/` - vim crate implementation with unified message processing
 - `vim/` - Vim plugin files (~380 lines VimScript total)
 - `test_data/` - Test Rust project for development
 - `tests/vim/` - Vim integration tests
@@ -107,46 +111,64 @@ tail -f /tmp/lsp-bridge.log
 
 **Communication Flow:**
 ```
-Vim Plugin (job_start) → JSON stdin/stdout → lsp-bridge → LSP Server (rust-analyzer)
+Vim Plugin (ch_sendexpr) → vim crate (JSON-RPC) → lsp-bridge → LSP Server (rust-analyzer)
 ```
 
 **Process Model:**
-- Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'raw'`
+- Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'json'`
 - Each Vim instance has its own `lsp-bridge` process (no shared server)
-- Communication is purely stdin/stdout with line-delimited JSON
+- Communication uses vim crate's unified message processing with JSON-RPC protocol
 - Process terminates when Vim closes or `:LspStop` is called
 
-### Protocol Design
+### Individual Callback Design
 
-The system uses a simplified Command-Action protocol (v0.2):
+The system uses dedicated callback handlers for each LSP method, eliminating request tracking complexity:
 
-**Vim → lsp-bridge (Commands):**
-```json
-{
-  "command": "goto_definition", // or "goto_declaration"
-  "file": "/absolute/path/to/file.rs",
-  "line": 31,    // 0-based
-  "column": 26   // 0-based
-}
+**Method-Specific Callbacks:**
+```vim
+" 1. Create request with dedicated callback
+call s:send_command({
+  \ 'method': 'goto_definition',
+  \ 'params': {'command': 'goto_definition', 'file': '...', 'line': 31, 'column': 26}
+\ }, 's:handle_goto_definition_response')
+
+" 2. Dedicated response handler
+function! s:handle_goto_definition_response(channel, response) abort
+  if !empty(a:response)  " Option<Location> semantics
+    call s:jump_to_location(a:response)
+  endif
+endfunction
 ```
 
-**lsp-bridge → Vim (Actions):**
-```json
-{
-  "action": "jump",
-  "file": "/path/to/definition.rs", 
-  "line": 13,    // 0-based
-  "column": 11   // 0-based
+**Simplified Data Structures:**
+```rust
+// Clean Option<Location> response - no redundant metadata
+pub struct Location {
+    pub file: String,     // Complete location data
+    pub line: u32,        // or nothing at all
+    pub column: u32,
 }
+pub type DefinitionResponse = Option<Location>;
+```
+
+**Protocol Semantics:**
+```json
+// Success: complete location data
+{"file": "/path/file.rs", "line": 31, "column": 26}
+// Failure: empty object (no metadata needed)
+{}
 ```
 
 ### Key Implementation Details
 
-1. **Auto-initialization**: LSP servers start when files are opened (`BufReadPost`/`BufNewFile`)
-2. **Silent error handling**: "No definition found" errors are handled silently
-3. **Workspace detection**: Automatically finds `Cargo.toml` for workspace root
-4. **Raw channel mode**: Vim uses `'mode': 'raw'` for JSON communication
-5. **Legacy code removed**: v0.2 simplified from complex unified request handling
+1. **Individual callbacks**: Each LSP method has dedicated response handler, eliminating request correlation complexity
+2. **Option<Location> semantics**: Data either exists completely or not at all, no partial states
+3. **Linus-style data structures**: "Bad programmers worry about the code. Good programmers worry about data structures"
+4. **Silent error handling**: Empty responses are handled silently, no explicit error checking needed
+5. **Auto-initialization**: LSP servers start when files are opened (`BufReadPost`/`BufNewFile`)
+6. **Workspace detection**: Automatically finds `Cargo.toml` for workspace root
+7. **JSON channel mode**: Vim uses `'mode': 'json'` for vim crate communication
+8. **Type-safe responses**: Rust type system guarantees response data integrity
 
 ## Plugin Configuration
 
@@ -184,7 +206,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 ### Available Commands
 ```vim
 :LspStart              " Start LSP bridge process
-:LspStop               " Stop LSP bridge process
+:LspStop               " Stop LSP bridge process  
 :LspDefinition         " Jump to symbol definition
 :LspDeclaration        " Jump to symbol declaration
 :LspTypeDefinition     " Jump to type definition
@@ -195,6 +217,9 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 :LspInlayHints         " Show inlay hints for current file
 :LspClearInlayHints    " Clear displayed inlay hints
 :LspOpenLog            " Open LSP bridge log file
+:LspDebugToggle        " Toggle debug mode for message logging
+:LspDebugStatus        " Show debug status, pending requests, and log locations
+:LspClearPendingRequests " Clear stale pending requests (30s+ timeout)
 ```
 
 ### Log Viewing Commands
@@ -206,6 +231,18 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 **Log Features**:
 - Each lsp-bridge process has isolated log file: `/tmp/lsp-bridge-<pid>.log`
 - Press 'r' in log buffer to refresh content
+
+### Debug Mode Commands
+```vim
+:LspDebugToggle        " Enable/disable debug logging
+:LspDebugStatus        " Show current debug state and log paths
+```
+
+**Debug Features**:
+- **Command Send/Receive Logging**: Shows outgoing commands and incoming responses
+- **Channel Communication Logging**: Logs to `/tmp/vim_channel.log` when debug enabled
+- **Request Correlation**: Tracks request/response pairs with unique IDs
+- **Process Restart**: Automatically restarts process when debug is enabled to capture logs
 
 ## Current Functionality
 
@@ -244,13 +281,42 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 
 ## Development Principles
 
-The codebase follows strict simplicity constraints:
+The codebase follows strict simplicity constraints and Linus Torvalds' engineering philosophy:
+
+### Core Design Philosophy
+- **Good Taste**: "Bad programmers worry about the code. Good programmers worry about data structures"
+- **Eliminate Special Cases**: Use proper data structures to eliminate conditional complexity
+- **Option<Location> Pattern**: Data either exists completely (Location) or not at all (None)
+- **No Partial States**: Avoid invalid combinations like `file` existing but `line` missing
+
+### Implementation Constraints  
 - **Code limit**: Target ~800 lines total (currently ~760: 380 Rust + 380 VimScript)
 - **No over-engineering**: "Make it work, make it right, make it fast"  
 - **Unix philosophy**: Do one thing (LSP bridging) and do it well
-- **Linus-style**: Eliminate special cases, prefer direct solutions
+- **Data-driven design**: Let type system enforce correctness rather than runtime checks
 
-Legacy protocol handling was removed in v0.2 to maintain simplicity. The current implementation prioritizes clarity over performance optimizations.
+### Recent Architecture Evolution
+- **v0.1**: Unified request tracking with complex dispatch logic (~150 lines of complexity)
+- **v0.2**: Individual callback handlers with `Option<Location>` semantics (simplified to ~50 lines)
+- **Protocol cleanup**: Removed redundant `action` fields, embraced data presence as signal
+
+The current implementation prioritizes architectural clarity following "good taste" principles over micro-optimizations.
+
+### Handler Organization
+
+**Structured Handler Directory:**
+```
+crates/lsp-bridge/src/handlers/
+├── mod.rs           - Module exports and documentation
+├── definition.rs    - goto_definition, goto_declaration, etc.
+└── file_open.rs     - File initialization and LSP setup
+```
+
+**Benefits of Handler Organization:**
+- **Clear separation of concerns**: Each handler file focuses on specific LSP functionality
+- **Easy extensibility**: Adding new LSP features requires creating new handler files  
+- **Better maintainability**: Related code is grouped together logically
+- **Import clarity**: `use handlers::{DefinitionHandler, FileOpenHandler}` vs scattered individual imports
 
 ## Testing and Debugging
 
@@ -287,9 +353,19 @@ Auto-completion must be tested manually due to the nature of interactive events:
    - Smart context detection (no completion in strings/comments)
 
 ### Debug Information
-- LSP bridge logs: `/tmp/lsp-bridge.log`
-- Enable debug with `RUST_LOG=debug`
-- No `:LspStatus` command implemented yet
+- LSP bridge logs: `/tmp/lsp-bridge-<pid>.log`
+- Vim debug logs: Use `:LspDebugToggle` to enable
+- Channel logs: `/tmp/vim_channel.log` when debug mode enabled
+- Enable Rust debug with `RUST_LOG=debug`
+
+**Debug Usage Example:**
+```vim
+:LspDebugToggle        " Enable debug mode
+:LspDefinition         " Will show:
+" LspDebug[SEND]: goto_definition -> lib.rs:31:26
+" LspDebug[JSON]: {"method": "goto_definition", "params": {...}}
+" LspDebug[RECV]: goto_definition response: {"file": "/path/file.rs", "line": 31, "column": 26}
+```
 
 The test data includes a simple Rust project structure for validating LSP functionality.
 
@@ -304,8 +380,8 @@ The test data includes a simple Rust project structure for validating LSP functi
 # Check if binary exists and is executable
 ls -la ./target/release/lsp-bridge
 
-# Test binary manually (it waits for JSON input)
-echo '{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0}' | ./target/release/lsp-bridge
+# Test binary manually (it expects JSON-RPC format)
+echo '[1, {"method":"goto_definition","params":{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0}}]' | ./target/release/lsp-bridge
 
 # Check rust-analyzer is installed
 which rust-analyzer
