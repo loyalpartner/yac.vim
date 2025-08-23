@@ -55,7 +55,12 @@ impl Handler for DidCloseHandler {
         };
 
         // Ensure client exists
-        if self.lsp_registry.get_client(&language, &input.file).await.is_err() {
+        if self
+            .lsp_registry
+            .get_client(&language, &input.file)
+            .await
+            .is_err()
+        {
             return Ok(Some(Some(DidCloseResult::new(false))));
         }
 

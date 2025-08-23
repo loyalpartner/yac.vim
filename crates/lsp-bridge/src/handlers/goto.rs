@@ -77,7 +77,12 @@ impl Handler for GotoHandler {
         };
 
         // Ensure client exists
-        if self.lsp_registry.get_client(&language, &input.file).await.is_err() {
+        if self
+            .lsp_registry
+            .get_client(&language, &input.file)
+            .await
+            .is_err()
+        {
             return Ok(None);
         }
 
