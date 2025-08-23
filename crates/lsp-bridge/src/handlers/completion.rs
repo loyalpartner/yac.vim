@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -62,12 +61,14 @@ impl CompletionInfo {
 }
 
 pub struct CompletionHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl CompletionHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 
     fn completion_kind_to_string(kind: Option<lsp_types::CompletionItemKind>) -> Option<String> {
@@ -112,16 +113,24 @@ impl Handler for CompletionHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(None), // Unsupported file type
+        };
+
+        // Ensure client exists
+        if let Err(_) = self.lsp_registry.get_client(&language, &input.file).await {
+            return Ok(None);
+        }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(None),
         };
 
-        // Make LSP completion request
+        // Prepare LSP completion request
         let mut params = lsp_types::CompletionParams {
             text_document_position: lsp_types::TextDocumentPositionParams {
                 text_document: lsp_types::TextDocumentIdentifier {
@@ -138,19 +147,20 @@ impl Handler for CompletionHandler {
         };
 
         // Set trigger context if provided
-        if let Some(trigger_char) = input.trigger_character {
+        if let Some(trigger_char) = input.trigger_character.clone() {
             params.context = Some(lsp_types::CompletionContext {
                 trigger_kind: lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
                 trigger_character: Some(trigger_char),
             });
         }
 
-        let response = match client
-            .request::<lsp_types::request::Completion>(params)
+        let response = match self
+            .lsp_registry
+            .request::<lsp_types::request::Completion>(&language, params)
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(None),
         };
 
         debug!("completion response: {:?}", response);
@@ -158,11 +168,11 @@ impl Handler for CompletionHandler {
         let (items, is_incomplete) = match response {
             Some(lsp_types::CompletionResponse::Array(items)) => (items, false),
             Some(lsp_types::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
-            None => return Ok(Some(None)), // 处理了请求，但没有补全
+            None => return Ok(None), // No completions
         };
 
         if items.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有补全项
+            return Ok(None); // No completion items
         }
 
         // Convert completion items

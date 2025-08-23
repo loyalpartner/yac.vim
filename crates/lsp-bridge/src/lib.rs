@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+pub mod lsp_registry;
+pub use lsp_registry::{LspRegistry, LspServerConfig};
+
 // 宏：简化 file_path_to_uri 的错误处理
 macro_rules! try_uri {
     ($lsp_bridge:expr, $file_path:expr) => {

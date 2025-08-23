@@ -1,10 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -48,14 +47,14 @@ pub type GotoResponse = Option<Location>;
 
 #[derive(Clone)]
 pub struct GotoHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
     goto_type: GotoType,
 }
 
 impl GotoHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>, method: &str) -> Option<Self> {
+    pub fn new(registry: Arc<LspRegistry>, method: &str) -> Option<Self> {
         GotoType::from_method(method).map(|goto_type| Self {
-            lsp_client: client,
+            lsp_registry: registry,
             goto_type,
         })
     }
@@ -71,13 +70,21 @@ impl Handler for GotoHandler {
         ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(None), // Unsupported file type
+        };
 
-        // Convert file path to URI - 使用通用函数
+        // Ensure client exists
+        if let Err(_) = self.lsp_registry.get_client(&language, &input.file).await {
+            return Ok(None);
+        }
+
+        // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(None),
         };
 
         let lsp_uri = lsp_types::Url::parse(&uri)?;
@@ -98,8 +105,8 @@ impl Handler for GotoHandler {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                client
-                    .request::<lsp_types::request::GotoDefinition>(params)
+                self.lsp_registry
+                    .request::<lsp_types::request::GotoDefinition>(&language, params)
                     .await
             }
             GotoType::Declaration => {
@@ -108,8 +115,8 @@ impl Handler for GotoHandler {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                client
-                    .request::<lsp_types::request::GotoDeclaration>(params)
+                self.lsp_registry
+                    .request::<lsp_types::request::GotoDeclaration>(&language, params)
                     .await
             }
             GotoType::TypeDefinition => {
@@ -118,8 +125,8 @@ impl Handler for GotoHandler {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                client
-                    .request::<lsp_types::request::GotoTypeDefinition>(params)
+                self.lsp_registry
+                    .request::<lsp_types::request::GotoTypeDefinition>(&language, params)
                     .await
             }
             GotoType::Implementation => {
@@ -128,30 +135,32 @@ impl Handler for GotoHandler {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
                 };
-                client
-                    .request::<lsp_types::request::GotoImplementation>(params)
+                self.lsp_registry
+                    .request::<lsp_types::request::GotoImplementation>(&language, params)
                     .await
             }
         };
 
         let location_result = match response {
-            Ok(Some(goto_response)) => {
+            Ok(goto_response) => {
                 // Handle different response types from LSP
                 match goto_response {
-                    lsp_types::GotoDefinitionResponse::Scalar(location) => Some(location),
-                    lsp_types::GotoDefinitionResponse::Array(locations) => {
-                        locations.first().cloned()
-                    }
-                    lsp_types::GotoDefinitionResponse::Link(links) => {
-                        links.first().map(|link| lsp_types::Location {
-                            uri: link.target_uri.clone(),
-                            range: link.target_selection_range,
-                        })
-                    }
+                    Some(response_data) => match response_data {
+                        lsp_types::GotoDefinitionResponse::Scalar(location) => Some(location),
+                        lsp_types::GotoDefinitionResponse::Array(locations) => {
+                            locations.first().cloned()
+                        }
+                        lsp_types::GotoDefinitionResponse::Link(links) => {
+                            links.first().map(|link| lsp_types::Location {
+                                uri: link.target_uri.clone(),
+                                range: link.target_selection_range,
+                            })
+                        }
+                    },
+                    None => None,
                 }
             }
-            Ok(None) => None,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(None), // LSP error
         };
 
         debug!("{:?} response: {:?}", self.goto_type, location_result);
