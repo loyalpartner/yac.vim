@@ -1728,8 +1728,16 @@ endfunction
 
 " 显示文件搜索浮动窗口
 function! s:show_file_search_popup() abort
-  " 关闭之前的搜索窗口
-  call s:close_file_search_popup()
+  " 关闭之前的搜索窗口（但不重置数据）
+  if s:file_search.popup_id != -1 && exists('*popup_close')
+    call popup_close(s:file_search.popup_id)
+    let s:file_search.popup_id = -1
+  endif
+  
+  if s:file_search.input_popup_id != -1 && exists('*popup_close')
+    call popup_close(s:file_search.input_popup_id)
+    let s:file_search.input_popup_id = -1
+  endif
   
   if empty(s:file_search.files)
     echo "No files found"
