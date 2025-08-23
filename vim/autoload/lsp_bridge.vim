@@ -79,6 +79,9 @@ endfunction
 
 " LSP 方法
 function! lsp_bridge#goto_definition() abort
+  " Send notification first (for logging/tracking)
+  call s:send_goto_definition_notification()
+  
   call s:send_command({
     \ 'method': 'goto_definition',
     \ 'params': {
@@ -367,6 +370,42 @@ function! lsp_bridge#did_close() abort
     \   'column': 0
     \ }
     \ }, 's:handle_did_close_response')
+endfunction
+
+" 发送 goto definition 通知（用于日志记录）
+function! s:send_goto_definition_notification() abort
+  " Send notification to bridge for logging
+  " 注意：通知不需要回调处理器，因为不期望响应
+  call s:send_notification({
+    \ 'method': 'goto_definition_notification',
+    \ 'params': {
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ })
+endfunction
+
+" 发送通知（无响应）
+function! s:send_notification(jsonrpc_msg) abort
+  call lsp_bridge#start()  " 自动启动
+
+  if s:job != v:null && job_status(s:job) == 'run'
+    " 调试模式：记录发送的通知
+    if get(g:, 'lsp_bridge_debug', 0)
+      let params = get(a:jsonrpc_msg, 'params', {})
+      echom printf('LspDebug[NOTIFY]: %s -> %s:%d:%d',
+        \ a:jsonrpc_msg.method,
+        \ fnamemodify(get(params, 'file', ''), ':t'),
+        \ get(params, 'line', -1), get(params, 'column', -1))
+      echom printf('LspDebug[JSON]: %s', string(a:jsonrpc_msg))
+    endif
+
+    " 发送通知（不需要回调）
+    call ch_sendraw(s:job, json_encode([0, a:jsonrpc_msg]) . "\n")
+  else
+    echoerr 'lsp-bridge not running'
+  endif
 endfunction
 
 " 获取当前光标位置的词前缀
