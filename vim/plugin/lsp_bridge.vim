@@ -37,6 +37,7 @@ command! LspToggleDiagnosticVirtualText call lsp_bridge#toggle_diagnostic_virtua
 command! LspClearDiagnosticVirtualText call lsp_bridge#clear_diagnostic_virtual_text()
 command! LspDebugToggle    call lsp_bridge#debug_toggle()
 command! LspDebugStatus    call lsp_bridge#debug_status()
+command! -nargs=? LspFileSearch call lsp_bridge#file_search(<q-args>)
 
 " 默认快捷键
 nnoremap <silent> gd :LspDefinition<CR>
@@ -52,6 +53,7 @@ nnoremap <silent> <leader>s :LspDocumentSymbols<CR>
 nnoremap <silent> <leader>f :LspFoldingRange<CR>
 nnoremap <silent> <leader>ca :LspCodeAction<CR>
 nnoremap <silent> <leader>dt :LspToggleDiagnosticVirtualText<CR>
+nnoremap <silent> <C-P> :LspFileSearch<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)
