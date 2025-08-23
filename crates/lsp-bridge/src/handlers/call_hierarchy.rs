@@ -136,7 +136,11 @@ impl Handler for CallHierarchyHandler {
     type Input = CallHierarchyRequest;
     type Output = CallHierarchyResponse;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>> {
+    async fn handle(
+        &self,
+        _ctx: &mut dyn vim::VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>> {
         let client_lock = self.lsp_client.lock().await;
         let client = client_lock.as_ref().unwrap();
 

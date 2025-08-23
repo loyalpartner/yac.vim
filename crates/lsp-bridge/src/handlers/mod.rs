@@ -16,7 +16,6 @@ pub mod execute_command;
 pub mod file_open;
 pub mod folding_range;
 pub mod goto; // Unified handler for all goto operations
-pub mod goto_definition_notification;
 pub mod hover;
 pub mod inlay_hints;
 pub mod references;
@@ -38,7 +37,6 @@ pub use execute_command::ExecuteCommandHandler;
 pub use file_open::FileOpenHandler;
 pub use folding_range::FoldingRangeHandler;
 pub use goto::GotoHandler; // Unified goto handler
-pub use goto_definition_notification::GotoDefinitionNotificationHandler;
 pub use hover::HoverHandler;
 pub use inlay_hints::InlayHintsHandler;
 pub use references::ReferencesHandler;

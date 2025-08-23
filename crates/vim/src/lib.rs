@@ -221,31 +221,73 @@ impl VimMessage {
 }
 
 // ================================================================
+// VimContext trait - Interface segregation for handlers
+// ================================================================
+
+/// VimContext trait - Provides vim execution context for handlers
+/// This follows interface segregation principle - handlers only get what they need
+/// No access to transport, handlers, pending_calls, or other internal state
+#[async_trait]
+pub trait VimContext: Send + Sync {
+    /// Call vim function with response: ["call", func, args, id]
+    async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value>;
+
+    /// Call vim function without response: ["call", func, args]
+    async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()>;
+
+    /// Execute vim expression with response: ["expr", expr, id]
+    async fn expr(&mut self, expr: &str) -> Result<Value>;
+
+    /// Execute vim expression without response: ["expr", expr]
+    async fn expr_async(&mut self, expr: &str) -> Result<()>;
+
+    /// Execute ex command: ["ex", command]
+    async fn ex(&mut self, command: &str) -> Result<()>;
+
+    /// Execute normal mode command: ["normal", keys]
+    async fn normal(&mut self, keys: &str) -> Result<()>;
+
+    /// Redraw vim screen: ["redraw", force?]
+    async fn redraw(&mut self, force: bool) -> Result<()>;
+
+    /// Legacy compatibility: Execute vim expression via call
+    async fn eval(&mut self, expr: &str) -> Result<Value>;
+
+    /// Legacy compatibility: Execute vim command via call
+    async fn execute(&mut self, cmd: &str) -> Result<Value>;
+}
+
+// ================================================================
 // Unified Handler trait - v4 core design
 // ================================================================
 
 /// Unified Handler trait - eliminates method/notification special cases
 /// Option<Output> perfectly expresses return semantics: None=notification, Some=response
+/// VimContext parameter provides controlled access to vim capabilities (interface segregation)
 #[async_trait]
 pub trait Handler: Send + Sync {
     type Input: DeserializeOwned;
     type Output: Serialize;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>>;
+    async fn handle(
+        &self,
+        ctx: &mut dyn VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>>;
 }
 
 /// Type-erased dispatcher - compile-time type safety to runtime dispatch
 #[async_trait]
 trait HandlerDispatch: Send + Sync {
-    async fn dispatch(&self, params: Value) -> Result<Option<Value>>;
+    async fn dispatch(&self, ctx: &mut dyn VimContext, params: Value) -> Result<Option<Value>>;
 }
 
 /// Auto implementation - converts type-safe Handler to runtime dispatch version
 #[async_trait]
 impl<H: Handler> HandlerDispatch for H {
-    async fn dispatch(&self, params: Value) -> Result<Option<Value>> {
+    async fn dispatch(&self, ctx: &mut dyn VimContext, params: Value) -> Result<Option<Value>> {
         let input: H::Input = serde_json::from_value(params)?;
-        let result = self.handle(input).await?;
+        let result = self.handle(ctx, input).await?;
 
         match result {
             Some(output) => Ok(Some(serde_json::to_value(output)?)),
@@ -326,7 +368,7 @@ impl MessageTransport for StdioTransport {
 /// The main vim client - handles all vim communication via channel commands
 pub struct Vim {
     transport: Box<dyn MessageTransport>,
-    handlers: HashMap<String, Box<dyn HandlerDispatch>>,
+    handlers: HashMap<String, std::sync::Arc<dyn HandlerDispatch>>,
     pending_calls: HashMap<u64, oneshot::Sender<Value>>,
     next_id: u64,
 }
@@ -350,7 +392,8 @@ impl Vim {
 
     /// Type-safe handler registration - compile-time checks
     pub fn add_handler<H: Handler + 'static>(&mut self, method: &str, handler: H) {
-        self.handlers.insert(method.to_string(), Box::new(handler));
+        self.handlers
+            .insert(method.to_string(), std::sync::Arc::new(handler));
     }
 
     /// Call vim function - channel command
@@ -498,8 +541,10 @@ impl Vim {
     /// Handle requests from vim
     async fn handle_request(&mut self, id: u64, method: String, params: Value) -> Result<()> {
         tracing::debug!("Handling request: method={}, params={}", method, params);
-        if let Some(handler) = self.handlers.get(&method) {
-            match handler.dispatch(params).await {
+
+        // Clone Arc to avoid borrow checker issues
+        if let Some(handler) = self.handlers.get(&method).cloned() {
+            match handler.dispatch(self, params).await {
                 Ok(Some(result)) => {
                     // Has return value - send response
                     let response = VimMessage::Response {
@@ -542,11 +587,75 @@ impl Vim {
 
     /// Handle notifications
     async fn handle_notification(&mut self, method: String, params: Value) -> Result<()> {
-        if let Some(handler) = self.handlers.get(&method) {
+        if let Some(handler) = self.handlers.get(&method).cloned() {
             // notification processing same as request - just no response sent
-            let _ = handler.dispatch(params).await;
+            let _ = handler.dispatch(self, params).await;
         }
         Ok(())
+    }
+}
+
+// ================================================================
+// VimContext implementation for Vim - Interface segregation
+// ================================================================
+
+/// Implementation of VimContext trait for Vim
+/// This provides handlers with vim execution context they need
+/// Following interface segregation principle - no access to internal state
+#[async_trait]
+impl VimContext for Vim {
+    /// Call vim function with response: ["call", func, args, id]
+    async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value> {
+        // Delegate to existing implementation
+        self.call(func, args).await
+    }
+
+    /// Call vim function without response: ["call", func, args]
+    async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()> {
+        // Delegate to existing implementation
+        self.call_async(func, args).await
+    }
+
+    /// Execute vim expression with response: ["expr", expr, id]
+    async fn expr(&mut self, expr: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.expr(expr).await
+    }
+
+    /// Execute vim expression without response: ["expr", expr]
+    async fn expr_async(&mut self, expr: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.expr_async(expr).await
+    }
+
+    /// Execute ex command: ["ex", command]
+    async fn ex(&mut self, command: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.ex(command).await
+    }
+
+    /// Execute normal mode command: ["normal", keys]
+    async fn normal(&mut self, keys: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.normal(keys).await
+    }
+
+    /// Redraw vim screen: ["redraw", force?]
+    async fn redraw(&mut self, force: bool) -> Result<()> {
+        // Delegate to existing implementation
+        self.redraw(force).await
+    }
+
+    /// Legacy compatibility: Execute vim expression via call
+    async fn eval(&mut self, expr: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.eval(expr).await
+    }
+
+    /// Legacy compatibility: Execute vim command via call
+    async fn execute(&mut self, cmd: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.execute(cmd).await
     }
 }
 

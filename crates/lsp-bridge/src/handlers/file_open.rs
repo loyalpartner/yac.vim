@@ -127,7 +127,11 @@ impl Handler for FileOpenHandler {
     type Input = FileOpenRequest;
     type Output = FileOpenResponse;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>> {
+    async fn handle(
+        &self,
+        _ctx: &mut dyn vim::VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>> {
         // Ensure LSP client is initialized
         if let Err(e) = self.init_client(&input.file).await {
             return Ok(Some(FileOpenResponse::error(format!(

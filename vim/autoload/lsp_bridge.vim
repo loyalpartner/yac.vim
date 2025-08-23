@@ -80,21 +80,21 @@ endfunction
 " LSP 方法
 function! lsp_bridge#goto_definition() abort
   " Send notification first (for logging/tracking)
-  call s:send_goto_definition_notification()
+  " call s:send_goto_definition_notification()
 
-  " call s:send_command({
-  "   \ 'method': 'goto_definition',
-  "   \ 'params': {
-  "   \   'command': 'goto_definition',
-  "   \   'file': expand('%:p'),
-  "   \   'line': line('.') - 1,
-  "   \   'column': col('.') - 1
-  "   \ }
-  "   \ }, 's:handle_goto_definition_response')
+  call s:send_notification({
+    \ 'method': 'goto_definition',
+    \ 'params': {
+    \   'command': 'goto_definition',
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }
+    \ })
 endfunction
 
 function! lsp_bridge#goto_declaration() abort
-  call s:send_command({
+  call s:send_notification({
     \ 'method': 'goto_declaration',
     \ 'params': {
     \   'command': 'goto_declaration',
@@ -102,11 +102,11 @@ function! lsp_bridge#goto_declaration() abort
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }
-    \ }, 's:handle_goto_declaration_response')
+    \ })
 endfunction
 
 function! lsp_bridge#goto_type_definition() abort
-  call s:send_command({
+  call s:send_notification({
     \ 'method': 'goto_type_definition',
     \ 'params': {
     \   'command': 'goto_type_definition',
@@ -114,11 +114,11 @@ function! lsp_bridge#goto_type_definition() abort
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }
-    \ }, 's:handle_goto_type_definition_response')
+    \ })
 endfunction
 
 function! lsp_bridge#goto_implementation() abort
-  call s:send_command({
+  call s:send_notification({
     \ 'method': 'goto_implementation',
     \ 'params': {
     \   'command': 'goto_implementation',
@@ -126,7 +126,7 @@ function! lsp_bridge#goto_implementation() abort
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }
-    \ }, 's:handle_goto_implementation_response')
+    \ })
 endfunction
 
 function! lsp_bridge#hover() abort

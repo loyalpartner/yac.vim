@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use lsp_client::LspClient;
 use serde::Deserialize;
+use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -65,7 +66,11 @@ impl Handler for GotoHandler {
     type Input = GotoRequest;
     type Output = GotoResponse;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>> {
+    async fn handle(
+        &self,
+        ctx: &mut dyn vim::VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>> {
         let client_lock = self.lsp_client.lock().await;
         let client = client_lock.as_ref().unwrap();
 
@@ -151,14 +156,31 @@ impl Handler for GotoHandler {
 
         debug!("{:?} response: {:?}", self.goto_type, location_result);
 
-        match location_result {
-            Some(lsp_location) => {
-                match Location::from_lsp_location(lsp_location) {
-                    Ok(location) => Ok(Some(Some(location))),
-                    Err(_) => Ok(Some(None)), // 转换失败
-                }
+        // match location_result {
+        //     Some(lsp_location) => {
+        //         match Location::from_lsp_location(lsp_location) {
+        //             Ok(location) => Ok(Some(Some(location))),
+        //             Err(_) => Ok(Some(None)), // 转换失败
+        //         }
+        //     }
+        //     None => Ok(Some(None)), // 没找到位置
+        // }
+
+        if let Some(lsp_location) = location_result {
+            if let Ok(location) = Location::from_lsp_location(lsp_location) {
+                debug!("location: {:?}", location);
+                ctx.ex(format!("edit {}", location.file).as_str())
+                    .await
+                    .ok();
+                ctx.call_async(
+                    "cursor",
+                    vec![json!(location.line + 1), json!(location.column + 1)],
+                )
+                .await
+                .ok();
             }
-            None => Ok(Some(None)), // 没找到位置
         }
+
+        Ok(None)
     }
 }

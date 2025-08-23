@@ -16,7 +16,6 @@ use handlers::{
     ExecuteCommandHandler,
     FileOpenHandler,
     FoldingRangeHandler,
-    GotoDefinitionNotificationHandler,
     GotoHandler,
     HoverHandler,
     InlayHintsHandler,
@@ -87,9 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execute_command_handler = ExecuteCommandHandler::new(shared_lsp_client.clone());
     let call_hierarchy_handler = CallHierarchyHandler::new(shared_lsp_client.clone());
 
-    // Notification handlers
-    let goto_definition_notification_handler = GotoDefinitionNotificationHandler::new();
-
     // Document lifecycle handlers
     let did_save_handler = DidSaveHandler::new(shared_lsp_client.clone());
     let did_change_handler = DidChangeHandler::new(shared_lsp_client.clone());
@@ -99,10 +95,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register handlers for all supported commands
     // Core LSP functionality - Linus style: type-safe dispatch
     vim.add_handler("file_open", file_open_handler);
-    vim.add_handler("goto_definition", definition_handler);
-    vim.add_handler("goto_declaration", declaration_handler);
-    vim.add_handler("goto_type_definition", type_definition_handler);
-    vim.add_handler("goto_implementation", implementation_handler);
     vim.add_handler("hover", hover_handler);
     vim.add_handler("completion", completion_handler);
     vim.add_handler("references", references_handler);
@@ -117,10 +109,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
 
     // Notification handlers
-    vim.add_handler(
-        "goto_definition_notification",
-        goto_definition_notification_handler,
-    );
+    vim.add_handler("goto_definition", definition_handler);
+    vim.add_handler("goto_declaration", declaration_handler);
+    vim.add_handler("goto_type_definition", type_definition_handler);
+    vim.add_handler("goto_implementation", implementation_handler);
 
     // Document lifecycle handlers
     vim.add_handler("did_save", did_save_handler);
