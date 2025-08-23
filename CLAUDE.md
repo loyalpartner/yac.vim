@@ -6,11 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is yac.vim - a minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Another Code completion), this is specifically a lightweight LSP bridge, not a completion system.
 
-The project consists of two main components:
-1. **lsp-bridge**: A Rust binary (~380 lines) that acts as a stdin/stdout bridge between Vim and LSP servers
-2. **Vim Plugin**: VimScript files (~380 lines) that provide Vim integration via job control
+The project consists of three main components:
+1. **vim crate**: A comprehensive vim client library (~900 lines) with v4 specification support
+2. **lsp-bridge**: A Rust binary with modular LSP handlers (~3000 lines total) that bridges Vim and LSP servers
+3. **Vim Plugin**: VimScript files (~1660 lines) that provide comprehensive Vim integration
 
-**IMPORTANT**: The current implementation uses vim crate with individual callback handlers per LSP method, featuring clean `Option<Location>` response semantics and eliminating redundant protocol metadata.
+**IMPORTANT**: The current implementation uses vim crate v4 with unified message processing, featuring dual request/notification semantics, clean `Option<Location>` response handling, and elimination of redundant protocol metadata.
 
 ## README vs Reality
 
@@ -103,7 +104,7 @@ tail -f /tmp/lsp-bridge.log
   - `src/main.rs` - Entry point and vim crate integration
   - `src/lib.rs` - Core LSP bridge logic and data structures
 - `crates/lsp-client/` - LSP client library with JSON-RPC handling  
-- `crates/vim/` - vim crate implementation with unified message processing
+- `crates/vim/` - vim crate v4 implementation with unified VimMessage protocol and VimContext trait
 - `vim/` - Vim plugin files (~380 lines VimScript total)
 - `test_data/` - Test Rust project for development
 - `tests/vim/` - Vim integration tests
@@ -111,64 +112,91 @@ tail -f /tmp/lsp-bridge.log
 
 **Communication Flow:**
 ```
-Vim Plugin (ch_sendexpr) → vim crate (JSON-RPC) → lsp-bridge → LSP Server (rust-analyzer)
+# Requests (need response):
+Vim Plugin (ch_sendexpr) → vim crate v4 (JSON-RPC) → lsp-bridge → LSP Server
+
+# Notifications (fire-and-forget):
+Vim Plugin (ch_sendraw) → vim crate v4 (JSON array) → lsp-bridge → LSP Server
 ```
 
 **Process Model:**
 - Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'json'`
 - Each Vim instance has its own `lsp-bridge` process (no shared server)
-- Communication uses vim crate's unified message processing with JSON-RPC protocol
+- Communication uses vim crate v4's unified message processing with dual JSON-RPC/notification protocols
 - Process terminates when Vim closes or `:LspStop` is called
 
-### Individual Callback Design
+### Unified Request/Notification Architecture
 
-The system uses dedicated callback handlers for each LSP method, eliminating request tracking complexity:
+The system uses vim crate v4 with unified message processing supporting both request/response and notification patterns:
 
-**Method-Specific Callbacks:**
+**Dual Request/Notification API:**
 ```vim
-" 1. Create request with dedicated callback
-call s:send_command({
-  \ 'method': 'goto_definition',
-  \ 'params': {'command': 'goto_definition', 'file': '...', 'line': 31, 'column': 26}
-\ }, 's:handle_goto_definition_response')
+" 1. Request pattern - expects response
+function! s:request(method, params, callback_func)
+  call ch_sendexpr(s:job, jsonrpc_msg, {'callback': a:callback_func})
+endfunction
 
-" 2. Dedicated response handler
-function! s:handle_goto_definition_response(channel, response) abort
-  if !empty(a:response)  " Option<Location> semantics
-    call s:jump_to_location(a:response)
-  endif
+" 2. Notification pattern - fire-and-forget 
+function! s:notify(method, params)
+  call ch_sendraw(s:job, json_encode([jsonrpc_msg]) . "\n")
+endfunction
+
+" 3. LSP goto methods now use notifications for immediate action
+function! lsp_bridge#goto_definition()
+  call s:notify('goto_definition', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1})
 endfunction
 ```
 
-**Simplified Data Structures:**
+**Vim Crate v4 Message Types:**
 ```rust
-// Clean Option<Location> response - no redundant metadata
+/// Unified Vim message types - handles both JSON-RPC and Vim channel protocols
+pub enum VimMessage {
+    // JSON-RPC messages (vim-to-client)
+    Request { id: u64, method: String, params: Value },
+    Response { id: i64, result: Value },
+    Notification { method: String, params: Value },
+    
+    // Vim channel commands (client-to-vim)
+    Call { func: String, args: Vec<Value>, id: u64 },
+    CallAsync { func: String, args: Vec<Value> },
+    Expr { expr: String, id: u64 },
+    // ... more command types
+}
+
+// Clean Option<Location> response - no redundant metadata  
 pub struct Location {
     pub file: String,     // Complete location data
     pub line: u32,        // or nothing at all
     pub column: u32,
 }
-pub type DefinitionResponse = Option<Location>;
+pub type GotoResponse = Option<Location>;
 ```
 
 **Protocol Semantics:**
 ```json
-// Success: complete location data
-{"file": "/path/file.rs", "line": 31, "column": 26}
-// Failure: empty object (no metadata needed)
-{}
+// Request message (JSON-RPC)
+{"id": 1, "method": "goto_definition", "params": {"file": "/path/file.rs", "line": 31, "column": 26}}
+
+// Notification message (JSON array)
+[{"method": "goto_definition", "params": {"file": "/path/file.rs", "line": 31, "column": 26}}]
+
+// Response data (Option<Location> semantics)
+{"file": "/path/file.rs", "line": 31, "column": 26}  // Success
+{}  // No definition found
 ```
 
 ### Key Implementation Details
 
-1. **Individual callbacks**: Each LSP method has dedicated response handler, eliminating request correlation complexity
-2. **Option<Location> semantics**: Data either exists completely or not at all, no partial states
-3. **Linus-style data structures**: "Bad programmers worry about the code. Good programmers worry about data structures"
-4. **Silent error handling**: Empty responses are handled silently, no explicit error checking needed
-5. **Auto-initialization**: LSP servers start when files are opened (`BufReadPost`/`BufNewFile`)
-6. **Workspace detection**: Automatically finds `Cargo.toml` for workspace root
-7. **JSON channel mode**: Vim uses `'mode': 'json'` for vim crate communication
-8. **Type-safe responses**: Rust type system guarantees response data integrity
+1. **Unified message processing**: vim crate v4 handles both JSON-RPC requests and notification arrays intelligently
+2. **Dual semantics**: Clear separation between requests (need response) and notifications (fire-and-forget)
+3. **Option<Location> responses**: Data either exists completely or not at all, no partial states
+4. **Handler trait integration**: All handlers now take `&mut Vim` parameter for direct vim interaction
+5. **Protocol intelligence**: Automatic encoding/parsing based on message type eliminates protocol confusion
+6. **Silent error handling**: Empty responses are handled silently, no explicit error checking needed
+7. **Auto-initialization**: LSP servers start when files are opened (`BufReadPost`/`BufNewFile`)
+8. **Workspace detection**: Automatically finds `Cargo.toml` for workspace root
+9. **JSON channel mode**: Vim uses `'mode': 'json'` for vim crate v4 communication
+10. **Type-safe responses**: Rust type system guarantees response data integrity
 
 ## Plugin Configuration
 
@@ -246,10 +274,36 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 
 ## Current Functionality
 
+### Notification System
+
+**Dual Request/Response Architecture:**
+- **Requests** (`s:request`): For operations needing responses (completion, hover, etc.)
+- **Notifications** (`s:notify`): For fire-and-forget operations (goto definition, diagnostics)
+
+**Key Characteristics:**
+- **Request Transport**: Uses `ch_sendexpr()` with callback handlers
+- **Notification Transport**: Uses `ch_sendraw()` with JSON array format
+- **Protocol Intelligence**: vim crate v4 automatically detects and parses message types
+- **Immediate Action**: Notifications trigger immediate LSP server-side actions without waiting
+
+**Example Usage:**
+```vim
+" Fire-and-forget notification for goto definition
+call s:notify('goto_definition', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1})
+
+" Request with response callback for hover information  
+call s:request('hover', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1}, 's:handle_hover_response')
+```
+
+**Debug Features:**
+- `[SEND]` prefix for requests in debug output
+- `[NOTIFY]` prefix for notifications in debug output
+- Separate logging paths track request vs notification flows
+
 ### Implemented Features ✅
 - `file_open` command - Initialize file in LSP server
-- `goto_definition` command - Jump to symbol definitions with popup window display
-- `goto_declaration` command - Jump to symbol declarations with popup window display
+- `goto_definition` command - Jump to symbol definitions using notification-based immediate action
+- `goto_declaration` command - Jump to symbol declarations using notification-based immediate action
 - `hover` command - Show documentation/type information in floating popup  
 - `completion` command - Advanced code completion with:
   - **Auto-trigger**: Automatically shows completions while typing (300ms delay)
@@ -290,7 +344,7 @@ The codebase follows strict simplicity constraints and Linus Torvalds' engineeri
 - **No Partial States**: Avoid invalid combinations like `file` existing but `line` missing
 
 ### Implementation Constraints  
-- **Code limit**: Target ~800 lines total (currently ~760: 380 Rust + 380 VimScript)
+- **Code organization**: Structured into focused modules (vim crate: ~900 lines, handlers: ~2800 lines, vim plugin: ~1660 lines)
 - **No over-engineering**: "Make it work, make it right, make it fast"  
 - **Unix philosophy**: Do one thing (LSP bridging) and do it well
 - **Data-driven design**: Let type system enforce correctness rather than runtime checks
@@ -298,9 +352,11 @@ The codebase follows strict simplicity constraints and Linus Torvalds' engineeri
 ### Recent Architecture Evolution
 - **v0.1**: Unified request tracking with complex dispatch logic (~150 lines of complexity)
 - **v0.2**: Individual callback handlers with `Option<Location>` semantics (simplified to ~50 lines)
+- **v0.3**: vim crate v4 implementation with unified message processing and dual request/notification patterns
 - **Protocol cleanup**: Removed redundant `action` fields, embraced data presence as signal
+- **Handler modernization**: All handlers now use `&mut Vim` parameter for direct vim interaction
 
-The current implementation prioritizes architectural clarity following "good taste" principles over micro-optimizations.
+The current v4 implementation prioritizes architectural clarity and protocol intelligence following "good taste" principles over micro-optimizations.
 
 ### Handler Organization
 
@@ -317,6 +373,42 @@ crates/lsp-bridge/src/handlers/
 - **Easy extensibility**: Adding new LSP features requires creating new handler files  
 - **Better maintainability**: Related code is grouped together logically
 - **Import clarity**: `use handlers::{DefinitionHandler, FileOpenHandler}` vs scattered individual imports
+
+### VimContext Integration
+
+**Interface Segregation Pattern:**
+The vim crate v4 provides a clean `VimContext` trait that handlers use for vim interaction:
+
+```rust
+#[async_trait]
+pub trait VimContext: Send + Sync {
+    async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value>;
+    async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()>;
+    async fn expr(&mut self, expr: &str) -> Result<Value>;
+    async fn ex(&mut self, command: &str) -> Result<()>;
+    async fn normal(&mut self, keys: &str) -> Result<()>;
+    // ... more vim operations
+}
+```
+
+**Handler Integration:**
+```rust
+#[async_trait]
+impl Handler for GotoHandler {
+    async fn handle(&self, ctx: &mut dyn VimContext, input: Self::Input) -> Result<Option<Self::Output>> {
+        // Direct vim interaction - no complex callback setup needed
+        ctx.ex(format!("edit {}", location.file).as_str()).await.ok();
+        ctx.call_async("cursor", vec![json!(location.line + 1), json!(location.column + 1)]).await.ok();
+        Ok(None)
+    }
+}
+```
+
+**Benefits:**
+- **Direct Action**: Handlers can immediately perform vim actions (edit files, move cursor)
+- **No Callbacks**: Eliminates complex vim-side response handling for simple operations
+- **Interface Segregation**: Handlers only get vim operations they need, not transport internals
+- **Type Safety**: Rust async/await with proper error handling
 
 ## Testing and Debugging
 

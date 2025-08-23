@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::oneshot;
+use tracing::error;
 
 // ================================================================
 // Core data structures - Vim protocol messages
@@ -73,6 +74,21 @@ impl VimMessage {
     /// Intelligent protocol parsing - handles both JSON-RPC and Vim channel formats
     pub fn parse(json: &Value) -> Result<Self> {
         match json.as_array() {
+            Some(arr) if arr.len() == 1 && arr[0].is_object() => {
+                match &arr[0] {
+                    Value::Object(obj) => {
+                        // [{"method":"goto_definition_notification","params":{"file":"test_data/src/lib.rs","column":15,"line":14}}]
+                        Ok(VimMessage::Notification {
+                            method: obj["method"]
+                                .as_str()
+                                .ok_or_else(|| Error::msg("Missing method"))?
+                                .to_string(),
+                            params: obj["params"].clone(),
+                        })
+                    }
+                    _ => Err(Error::msg("Invalid message format")),
+                }
+            }
             Some(arr) if arr.len() >= 2 => {
                 match &arr[0] {
                     // JSON-RPC protocol
@@ -96,7 +112,6 @@ impl VimMessage {
                             result: arr[1].clone(),
                         })
                     }
-
                     // Vim channel protocol
                     Value::String(s) if s == "call" && arr.len() >= 3 => {
                         let func = arr[1]
@@ -157,17 +172,7 @@ impl VimMessage {
                     _ => Err(Error::msg("Invalid message format")),
                 }
             }
-            _ => {
-                // Regular JSON object - internal notification
-                if let Some(method) = json["method"].as_str() {
-                    Ok(VimMessage::Notification {
-                        method: method.to_string(),
-                        params: json["params"].clone(),
-                    })
-                } else {
-                    Err(Error::msg("Invalid message format"))
-                }
-            }
+            _ => Err(Error::msg("Invalid message format")),
         }
     }
 
@@ -182,7 +187,7 @@ impl VimMessage {
                 json!([*id, result])
             }
             VimMessage::Notification { method, params } => {
-                json!({"method": method, "params": params})
+                json![vec![json!({"method": method, "params": params})]]
             }
 
             // Vim channel format
@@ -216,31 +221,73 @@ impl VimMessage {
 }
 
 // ================================================================
+// VimContext trait - Interface segregation for handlers
+// ================================================================
+
+/// VimContext trait - Provides vim execution context for handlers
+/// This follows interface segregation principle - handlers only get what they need
+/// No access to transport, handlers, pending_calls, or other internal state
+#[async_trait]
+pub trait VimContext: Send + Sync {
+    /// Call vim function with response: ["call", func, args, id]
+    async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value>;
+
+    /// Call vim function without response: ["call", func, args]
+    async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()>;
+
+    /// Execute vim expression with response: ["expr", expr, id]
+    async fn expr(&mut self, expr: &str) -> Result<Value>;
+
+    /// Execute vim expression without response: ["expr", expr]
+    async fn expr_async(&mut self, expr: &str) -> Result<()>;
+
+    /// Execute ex command: ["ex", command]
+    async fn ex(&mut self, command: &str) -> Result<()>;
+
+    /// Execute normal mode command: ["normal", keys]
+    async fn normal(&mut self, keys: &str) -> Result<()>;
+
+    /// Redraw vim screen: ["redraw", force?]
+    async fn redraw(&mut self, force: bool) -> Result<()>;
+
+    /// Legacy compatibility: Execute vim expression via call
+    async fn eval(&mut self, expr: &str) -> Result<Value>;
+
+    /// Legacy compatibility: Execute vim command via call
+    async fn execute(&mut self, cmd: &str) -> Result<Value>;
+}
+
+// ================================================================
 // Unified Handler trait - v4 core design
 // ================================================================
 
 /// Unified Handler trait - eliminates method/notification special cases
 /// Option<Output> perfectly expresses return semantics: None=notification, Some=response
+/// VimContext parameter provides controlled access to vim capabilities (interface segregation)
 #[async_trait]
 pub trait Handler: Send + Sync {
     type Input: DeserializeOwned;
     type Output: Serialize;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>>;
+    async fn handle(
+        &self,
+        ctx: &mut dyn VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>>;
 }
 
 /// Type-erased dispatcher - compile-time type safety to runtime dispatch
 #[async_trait]
 trait HandlerDispatch: Send + Sync {
-    async fn dispatch(&self, params: Value) -> Result<Option<Value>>;
+    async fn dispatch(&self, ctx: &mut dyn VimContext, params: Value) -> Result<Option<Value>>;
 }
 
 /// Auto implementation - converts type-safe Handler to runtime dispatch version
 #[async_trait]
 impl<H: Handler> HandlerDispatch for H {
-    async fn dispatch(&self, params: Value) -> Result<Option<Value>> {
+    async fn dispatch(&self, ctx: &mut dyn VimContext, params: Value) -> Result<Option<Value>> {
         let input: H::Input = serde_json::from_value(params)?;
-        let result = self.handle(input).await?;
+        let result = self.handle(ctx, input).await?;
 
         match result {
             Some(output) => Ok(Some(serde_json::to_value(output)?)),
@@ -321,7 +368,7 @@ impl MessageTransport for StdioTransport {
 /// The main vim client - handles all vim communication via channel commands
 pub struct Vim {
     transport: Box<dyn MessageTransport>,
-    handlers: HashMap<String, Box<dyn HandlerDispatch>>,
+    handlers: HashMap<String, std::sync::Arc<dyn HandlerDispatch>>,
     pending_calls: HashMap<u64, oneshot::Sender<Value>>,
     next_id: u64,
 }
@@ -345,7 +392,8 @@ impl Vim {
 
     /// Type-safe handler registration - compile-time checks
     pub fn add_handler<H: Handler + 'static>(&mut self, method: &str, handler: H) {
-        self.handlers.insert(method.to_string(), Box::new(handler));
+        self.handlers
+            .insert(method.to_string(), std::sync::Arc::new(handler));
     }
 
     /// Call vim function - channel command
@@ -449,15 +497,16 @@ impl Vim {
             match self.transport.recv().await {
                 Ok(msg) => {
                     if let Err(e) = self.handle_message(msg).await {
-                        eprintln!("Message handling error: {}", e);
+                        error!("Message handling error: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("Transport error: {}", e);
-                    break;
+                    error!("Transport error: {}", e);
+                    continue;
                 }
             }
         }
+        #[allow(unreachable_code)]
         Ok(())
     }
 
@@ -492,8 +541,10 @@ impl Vim {
     /// Handle requests from vim
     async fn handle_request(&mut self, id: u64, method: String, params: Value) -> Result<()> {
         tracing::debug!("Handling request: method={}, params={}", method, params);
-        if let Some(handler) = self.handlers.get(&method) {
-            match handler.dispatch(params).await {
+
+        // Clone Arc to avoid borrow checker issues
+        if let Some(handler) = self.handlers.get(&method).cloned() {
+            match handler.dispatch(self, params).await {
                 Ok(Some(result)) => {
                     // Has return value - send response
                     let response = VimMessage::Response {
@@ -536,24 +587,76 @@ impl Vim {
 
     /// Handle notifications
     async fn handle_notification(&mut self, method: String, params: Value) -> Result<()> {
-        if let Some(handler) = self.handlers.get(&method) {
+        if let Some(handler) = self.handlers.get(&method).cloned() {
             // notification processing same as request - just no response sent
-            let _ = handler.dispatch(params).await;
+            let _ = handler.dispatch(self, params).await;
         }
         Ok(())
     }
 }
 
 // ================================================================
-// Common types for handlers
+// VimContext implementation for Vim - Interface segregation
 // ================================================================
 
-/// LSP location result type
-#[derive(Serialize)]
-pub struct Location {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
+/// Implementation of VimContext trait for Vim
+/// This provides handlers with vim execution context they need
+/// Following interface segregation principle - no access to internal state
+#[async_trait]
+impl VimContext for Vim {
+    /// Call vim function with response: ["call", func, args, id]
+    async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value> {
+        // Delegate to existing implementation
+        self.call(func, args).await
+    }
+
+    /// Call vim function without response: ["call", func, args]
+    async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()> {
+        // Delegate to existing implementation
+        self.call_async(func, args).await
+    }
+
+    /// Execute vim expression with response: ["expr", expr, id]
+    async fn expr(&mut self, expr: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.expr(expr).await
+    }
+
+    /// Execute vim expression without response: ["expr", expr]
+    async fn expr_async(&mut self, expr: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.expr_async(expr).await
+    }
+
+    /// Execute ex command: ["ex", command]
+    async fn ex(&mut self, command: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.ex(command).await
+    }
+
+    /// Execute normal mode command: ["normal", keys]
+    async fn normal(&mut self, keys: &str) -> Result<()> {
+        // Delegate to existing implementation
+        self.normal(keys).await
+    }
+
+    /// Redraw vim screen: ["redraw", force?]
+    async fn redraw(&mut self, force: bool) -> Result<()> {
+        // Delegate to existing implementation
+        self.redraw(force).await
+    }
+
+    /// Legacy compatibility: Execute vim expression via call
+    async fn eval(&mut self, expr: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.eval(expr).await
+    }
+
+    /// Legacy compatibility: Execute vim command via call
+    async fn execute(&mut self, cmd: &str) -> Result<Value> {
+        // Delegate to existing implementation
+        self.execute(cmd).await
+    }
 }
 
 #[cfg(test)]
@@ -586,21 +689,118 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_call_async_method() {
-        // Test that call_async creates proper notification message
-        let mut vim = Vim::new_stdio();
+    #[test]
+    fn test_notification_parsing() {
+        // Test notification message parsing: [{"method": "xxx", "params": {...}}]
+        // According to the parsing logic, this should be treated as an array with first element being an object
+        let json = json!([{"method": "goto_definition_notification", "params": {"file": "test.rs", "line": 10, "column": 5}}]);
+        let msg = VimMessage::parse(&json).unwrap();
 
-        // This would normally send the message, but we can't test actual I/O
-        // Instead we verify the method signature and basic functionality
-        let func = "test_func";
-        let args = vec![json!("arg1"), json!(42)];
+        match msg {
+            VimMessage::Notification { method, params } => {
+                assert_eq!(method, "goto_definition_notification");
+                assert_eq!(params["file"], "test.rs");
+                assert_eq!(params["line"], 10);
+                assert_eq!(params["column"], 5);
+            }
+            _ => panic!("Expected Notification"),
+        }
+    }
 
-        // Verify the method compiles and has correct signature
-        let result = vim.call_async(func, args).await;
-        // In real usage this would succeed, but in tests it may fail due to no I/O
-        // The important part is that it compiles and has the right interface
-        assert!(result.is_ok() || result.is_err()); // Either outcome is fine for this test
+    #[test]
+    fn test_vim_channel_parsing() {
+        // Test vim channel command parsing
+
+        // Test call with response: ["call", "func", args, id]
+        let json = json!(["call", "test_func", ["arg1", 42], 123]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Call { func, args, id } => {
+                assert_eq!(func, "test_func");
+                assert_eq!(args, vec![json!("arg1"), json!(42)]);
+                assert_eq!(id, 123);
+            }
+            _ => panic!("Expected Call"),
+        }
+
+        // Test async call: ["call", "func", args]
+        let json = json!(["call", "async_func", ["data"]]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::CallAsync { func, args } => {
+                assert_eq!(func, "async_func");
+                assert_eq!(args, vec![json!("data")]);
+            }
+            _ => panic!("Expected CallAsync"),
+        }
+
+        // Test expr with response: ["expr", "expression", id]
+        let json = json!(["expr", "line('$')", 456]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Expr { expr, id } => {
+                assert_eq!(expr, "line('$')");
+                assert_eq!(id, 456);
+            }
+            _ => panic!("Expected Expr"),
+        }
+
+        // Test async expr: ["expr", "expression"]
+        let json = json!(["expr", "echo 'test'"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::ExprAsync { expr } => {
+                assert_eq!(expr, "echo 'test'");
+            }
+            _ => panic!("Expected ExprAsync"),
+        }
+
+        // Test ex command: ["ex", "command"]
+        let json = json!(["ex", "set number"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Ex { command } => {
+                assert_eq!(command, "set number");
+            }
+            _ => panic!("Expected Ex"),
+        }
+
+        // Test normal command: ["normal", "keys"]
+        let json = json!(["normal", "ggVG"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Normal { keys } => {
+                assert_eq!(keys, "ggVG");
+            }
+            _ => panic!("Expected Normal"),
+        }
+
+        // Test redraw: ["redraw"] and ["redraw", "force"]
+        let json = json!(["redraw", ""]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Redraw { force } => {
+                assert!(!force);
+            }
+            _ => panic!("Expected Redraw"),
+        }
+
+        let json = json!(["redraw", "force"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Redraw { force } => {
+                assert!(force);
+            }
+            _ => panic!("Expected Redraw with force"),
+        }
     }
 
     #[test]

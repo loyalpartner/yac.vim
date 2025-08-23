@@ -50,17 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("lsp-bridge starting with log: {}", log_path);
 
-    // Create channel for diagnostic notifications
-    // let (diagnostic_tx, _diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
-    // let bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
-    // let bridge_arc = std::sync::Arc::new(tokio::sync::Mutex::new(bridge));
-
     // Create shared LSP client
     let shared_lsp_client = std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
     // Create vim client with handler
     let mut vim = Vim::new_stdio();
-    // let handler = LspBridgeHandler { bridge: bridge_arc };
 
     // Create dedicated handlers with shared client
     // Core LSP functionality handlers - Linus style: one handler per function
@@ -95,10 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register handlers for all supported commands
     // Core LSP functionality - Linus style: type-safe dispatch
     vim.add_handler("file_open", file_open_handler);
-    vim.add_handler("goto_definition", definition_handler);
-    vim.add_handler("goto_declaration", declaration_handler);
-    vim.add_handler("goto_type_definition", type_definition_handler);
-    vim.add_handler("goto_implementation", implementation_handler);
     vim.add_handler("hover", hover_handler);
     vim.add_handler("completion", completion_handler);
     vim.add_handler("references", references_handler);
@@ -111,6 +101,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("execute_command", execute_command_handler);
     vim.add_handler("call_hierarchy_incoming", call_hierarchy_handler.clone());
     vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
+
+    // Notification handlers
+    vim.add_handler("goto_definition", definition_handler);
+    vim.add_handler("goto_declaration", declaration_handler);
+    vim.add_handler("goto_type_definition", type_definition_handler);
+    vim.add_handler("goto_implementation", implementation_handler);
 
     // Document lifecycle handlers
     vim.add_handler("did_save", did_save_handler);

@@ -175,7 +175,11 @@ impl Handler for DiagnosticsHandler {
     type Input = DiagnosticsRequest;
     type Output = DiagnosticsResponse;
 
-    async fn handle(&self, input: Self::Input) -> Result<Option<Self::Output>> {
+    async fn handle(
+        &self,
+        _ctx: &mut dyn vim::VimContext,
+        input: Self::Input,
+    ) -> Result<Option<Self::Output>> {
         // Note: Diagnostics are typically pushed by the server, not requested by client
         // This handler is for cases where we want to explicitly request diagnostics
         // Most LSP servers publish diagnostics automatically, so this might not be used often
