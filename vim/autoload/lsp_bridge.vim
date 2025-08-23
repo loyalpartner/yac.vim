@@ -81,16 +81,16 @@ endfunction
 function! lsp_bridge#goto_definition() abort
   " Send notification first (for logging/tracking)
   call s:send_goto_definition_notification()
-  
-  call s:send_command({
-    \ 'method': 'goto_definition',
-    \ 'params': {
-    \   'command': 'goto_definition',
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }
-    \ }, 's:handle_goto_definition_response')
+
+  " call s:send_command({
+  "   \ 'method': 'goto_definition',
+  "   \ 'params': {
+  "   \   'command': 'goto_definition',
+  "   \   'file': expand('%:p'),
+  "   \   'line': line('.') - 1,
+  "   \   'column': col('.') - 1
+  "   \ }
+  "   \ }, 's:handle_goto_definition_response')
 endfunction
 
 function! lsp_bridge#goto_declaration() abort
@@ -402,7 +402,7 @@ function! s:send_notification(jsonrpc_msg) abort
     endif
 
     " 发送通知（不需要回调）
-    call ch_sendraw(s:job, json_encode([0, a:jsonrpc_msg]) . "\n")
+    call ch_sendraw(s:job, json_encode([a:jsonrpc_msg]) . "\n")
   else
     echoerr 'lsp-bridge not running'
   endif

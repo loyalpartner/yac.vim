@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::oneshot;
+use tracing::error;
 
 // ================================================================
 // Core data structures - Vim protocol messages
@@ -73,6 +74,21 @@ impl VimMessage {
     /// Intelligent protocol parsing - handles both JSON-RPC and Vim channel formats
     pub fn parse(json: &Value) -> Result<Self> {
         match json.as_array() {
+            Some(arr) if arr.len() == 1 && arr[0].is_object() => {
+                match &arr[0] {
+                    Value::Object(obj) => {
+                        // [{"method":"goto_definition_notification","params":{"file":"test_data/src/lib.rs","column":15,"line":14}}]
+                        Ok(VimMessage::Notification {
+                            method: obj["method"]
+                                .as_str()
+                                .ok_or_else(|| Error::msg("Missing method"))?
+                                .to_string(),
+                            params: obj["params"].clone(),
+                        })
+                    }
+                    _ => Err(Error::msg("Invalid message format")),
+                }
+            }
             Some(arr) if arr.len() >= 2 => {
                 match &arr[0] {
                     // JSON-RPC protocol
@@ -96,7 +112,6 @@ impl VimMessage {
                             result: arr[1].clone(),
                         })
                     }
-
                     // Vim channel protocol
                     Value::String(s) if s == "call" && arr.len() >= 3 => {
                         let func = arr[1]
@@ -157,17 +172,7 @@ impl VimMessage {
                     _ => Err(Error::msg("Invalid message format")),
                 }
             }
-            _ => {
-                // Regular JSON object - internal notification
-                if let Some(method) = json["method"].as_str() {
-                    Ok(VimMessage::Notification {
-                        method: method.to_string(),
-                        params: json["params"].clone(),
-                    })
-                } else {
-                    Err(Error::msg("Invalid message format"))
-                }
-            }
+            _ => Err(Error::msg("Invalid message format")),
         }
     }
 
@@ -182,7 +187,7 @@ impl VimMessage {
                 json!([*id, result])
             }
             VimMessage::Notification { method, params } => {
-                json!({"method": method, "params": params})
+                json![vec![json!({"method": method, "params": params})]]
             }
 
             // Vim channel format
@@ -449,15 +454,16 @@ impl Vim {
             match self.transport.recv().await {
                 Ok(msg) => {
                     if let Err(e) = self.handle_message(msg).await {
-                        eprintln!("Message handling error: {}", e);
+                        error!("Message handling error: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("Transport error: {}", e);
-                    break;
+                    error!("Transport error: {}", e);
+                    continue;
                 }
             }
         }
+        #[allow(unreachable_code)]
         Ok(())
     }
 
@@ -544,18 +550,6 @@ impl Vim {
     }
 }
 
-// ================================================================
-// Common types for handlers
-// ================================================================
-
-/// LSP location result type
-#[derive(Serialize)]
-pub struct Location {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,21 +580,118 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_call_async_method() {
-        // Test that call_async creates proper notification message
-        let mut vim = Vim::new_stdio();
+    #[test]
+    fn test_notification_parsing() {
+        // Test notification message parsing: [{"method": "xxx", "params": {...}}]
+        // According to the parsing logic, this should be treated as an array with first element being an object
+        let json = json!([{"method": "goto_definition_notification", "params": {"file": "test.rs", "line": 10, "column": 5}}]);
+        let msg = VimMessage::parse(&json).unwrap();
 
-        // This would normally send the message, but we can't test actual I/O
-        // Instead we verify the method signature and basic functionality
-        let func = "test_func";
-        let args = vec![json!("arg1"), json!(42)];
+        match msg {
+            VimMessage::Notification { method, params } => {
+                assert_eq!(method, "goto_definition_notification");
+                assert_eq!(params["file"], "test.rs");
+                assert_eq!(params["line"], 10);
+                assert_eq!(params["column"], 5);
+            }
+            _ => panic!("Expected Notification"),
+        }
+    }
 
-        // Verify the method compiles and has correct signature
-        let result = vim.call_async(func, args).await;
-        // In real usage this would succeed, but in tests it may fail due to no I/O
-        // The important part is that it compiles and has the right interface
-        assert!(result.is_ok() || result.is_err()); // Either outcome is fine for this test
+    #[test]
+    fn test_vim_channel_parsing() {
+        // Test vim channel command parsing
+
+        // Test call with response: ["call", "func", args, id]
+        let json = json!(["call", "test_func", ["arg1", 42], 123]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Call { func, args, id } => {
+                assert_eq!(func, "test_func");
+                assert_eq!(args, vec![json!("arg1"), json!(42)]);
+                assert_eq!(id, 123);
+            }
+            _ => panic!("Expected Call"),
+        }
+
+        // Test async call: ["call", "func", args]
+        let json = json!(["call", "async_func", ["data"]]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::CallAsync { func, args } => {
+                assert_eq!(func, "async_func");
+                assert_eq!(args, vec![json!("data")]);
+            }
+            _ => panic!("Expected CallAsync"),
+        }
+
+        // Test expr with response: ["expr", "expression", id]
+        let json = json!(["expr", "line('$')", 456]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Expr { expr, id } => {
+                assert_eq!(expr, "line('$')");
+                assert_eq!(id, 456);
+            }
+            _ => panic!("Expected Expr"),
+        }
+
+        // Test async expr: ["expr", "expression"]
+        let json = json!(["expr", "echo 'test'"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::ExprAsync { expr } => {
+                assert_eq!(expr, "echo 'test'");
+            }
+            _ => panic!("Expected ExprAsync"),
+        }
+
+        // Test ex command: ["ex", "command"]
+        let json = json!(["ex", "set number"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Ex { command } => {
+                assert_eq!(command, "set number");
+            }
+            _ => panic!("Expected Ex"),
+        }
+
+        // Test normal command: ["normal", "keys"]
+        let json = json!(["normal", "ggVG"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Normal { keys } => {
+                assert_eq!(keys, "ggVG");
+            }
+            _ => panic!("Expected Normal"),
+        }
+
+        // Test redraw: ["redraw"] and ["redraw", "force"]
+        let json = json!(["redraw", ""]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Redraw { force } => {
+                assert!(!force);
+            }
+            _ => panic!("Expected Redraw"),
+        }
+
+        let json = json!(["redraw", "force"]);
+        let msg = VimMessage::parse(&json).unwrap();
+
+        match msg {
+            VimMessage::Redraw { force } => {
+                assert!(force);
+            }
+            _ => panic!("Expected Redraw with force"),
+        }
     }
 
     #[test]

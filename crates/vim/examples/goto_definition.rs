@@ -2,7 +2,7 @@
 //!
 //! This example demonstrates all three Handler patterns in the vim crate:
 //! 1. **Method with return value** (main example): `Output = T`, returns `Ok(Some(value))`
-//! 2. **Notification without return**: `Output = ()`, returns `Ok(None)`  
+//! 2. **Notification without return**: `Output = ()`, returns `Ok(None)`
 //! 3. **Optional return value**: `Output = T`, returns `Ok(Some(value))` or `Ok(None)`
 //!
 //! The unified Handler trait uses `Option<Output>` to eliminate method/notification
@@ -10,8 +10,8 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Deserialize;
-use vim::{Handler, Location, Vim};
+use serde::{Deserialize, Serialize};
+use vim::{Handler, Vim};
 
 /// Goto definition handler - demonstrates method with return value pattern
 ///
@@ -22,7 +22,7 @@ use vim::{Handler, Location, Vim};
 /// impl Handler for NotificationHandler {
 ///     type Input = NotificationParams;
 ///     type Output = (); // Key: use unit type for notifications
-///     
+///
 ///     async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
 ///         // Do side effect (e.g., open file, send notification to LSP)
 ///         perform_action(params).await?;
@@ -32,11 +32,11 @@ use vim::{Handler, Location, Vim};
 /// ```
 ///
 /// **Optional return pattern** (may or may not have value):
-/// ```ignore  
+/// ```ignore
 /// impl Handler for OptionalHandler {
 ///     type Input = QueryParams;
 ///     type Output = QueryResult;
-///     
+///
 ///     async fn handle(&self, params: Self::Input) -> Result<Option<Self::Output>> {
 ///         match query_data(params).await {
 ///             Some(result) => Ok(Some(result)), // Found data
@@ -49,6 +49,14 @@ pub struct GotoDefinitionHandler;
 
 #[derive(Deserialize)]
 pub struct GotoDefinitionParams {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// LSP location result type
+#[derive(Serialize)]
+pub struct Location {
     pub file: String,
     pub line: u32,
     pub column: u32,
