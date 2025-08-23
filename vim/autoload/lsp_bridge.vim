@@ -77,79 +77,106 @@ function! s:send_command(jsonrpc_msg, callback_func) abort
   endif
 endfunction
 
+" === New Linus-style API ===
+
+" Request with response - clear semantics
+function! s:request(method, params, callback_func) abort
+  let jsonrpc_msg = {
+    \ 'method': a:method,
+    \ 'params': extend(a:params, {'command': a:method})
+    \ }
+  
+  call lsp_bridge#start()  " 自动启动
+
+  if s:job != v:null && job_status(s:job) == 'run'
+    " 调试模式：记录发送的请求
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('LspDebug[SEND]: %s -> %s:%d:%d',
+        \ a:method,
+        \ fnamemodify(get(a:params, 'file', ''), ':t'),
+        \ get(a:params, 'line', -1), get(a:params, 'column', -1))
+      echom printf('LspDebug[JSON]: %s', string(jsonrpc_msg))
+    endif
+
+    " 使用指定的回调函数
+    call ch_sendexpr(s:job, jsonrpc_msg, {'callback': a:callback_func})
+  else
+    echoerr 'lsp-bridge not running'
+  endif
+endfunction
+
+" Notification - fire and forget, clear semantics  
+function! s:notify(method, params) abort
+  let jsonrpc_msg = {
+    \ 'method': a:method,
+    \ 'params': extend(a:params, {'command': a:method})
+    \ }
+    
+  call lsp_bridge#start()  " 自动启动
+
+  if s:job != v:null && job_status(s:job) == 'run'
+    " 调试模式：记录发送的通知
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('LspDebug[NOTIFY]: %s -> %s:%d:%d',
+        \ a:method,
+        \ fnamemodify(get(a:params, 'file', ''), ':t'),
+        \ get(a:params, 'line', -1), get(a:params, 'column', -1))
+      echom printf('LspDebug[JSON]: %s', string(jsonrpc_msg))
+    endif
+
+    " 发送通知（不需要回调）
+    call ch_sendraw(s:job, json_encode([jsonrpc_msg]) . "\n")
+  else
+    echoerr 'lsp-bridge not running'
+  endif
+endfunction
+
 " LSP 方法
 function! lsp_bridge#goto_definition() abort
-  " Send notification first (for logging/tracking)
-  " call s:send_goto_definition_notification()
-
-  call s:send_notification({
-    \ 'method': 'goto_definition',
-    \ 'params': {
-    \   'command': 'goto_definition',
+  call s:notify('goto_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ })
 endfunction
 
 function! lsp_bridge#goto_declaration() abort
-  call s:send_notification({
-    \ 'method': 'goto_declaration',
-    \ 'params': {
-    \   'command': 'goto_declaration',
+  call s:notify('goto_declaration', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ })
 endfunction
 
 function! lsp_bridge#goto_type_definition() abort
-  call s:send_notification({
-    \ 'method': 'goto_type_definition',
-    \ 'params': {
-    \   'command': 'goto_type_definition',
+  call s:notify('goto_type_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ })
 endfunction
 
 function! lsp_bridge#goto_implementation() abort
-  call s:send_notification({
-    \ 'method': 'goto_implementation',
-    \ 'params': {
-    \   'command': 'goto_implementation',
+  call s:notify('goto_implementation', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ })
 endfunction
 
 function! lsp_bridge#hover() abort
-  call s:send_command({
-    \ 'method': 'hover',
-    \ 'params': {
-    \   'command': 'hover',
+  call s:request('hover', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_hover_response')
 endfunction
 
 function! lsp_bridge#open_file() abort
-  call s:send_command({
-    \ 'method': 'file_open',
-    \ 'params': {
-    \   'command': 'file_open',
+  call s:request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
-    \ }
     \ }, 's:handle_file_open_response')
 endfunction
 
@@ -163,38 +190,26 @@ function! lsp_bridge#complete() abort
   " 获取当前输入的前缀用于高亮
   let s:completion.prefix = s:get_current_word_prefix()
 
-  call s:send_command({
-    \ 'method': 'completion',
-    \ 'params': {
-    \   'command': 'completion',
+  call s:request('completion', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_completion_response')
 endfunction
 
 function! lsp_bridge#references() abort
-  call s:send_command({
-    \ 'method': 'references',
-    \ 'params': {
-    \   'command': 'references',
+  call s:request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_references_response')
 endfunction
 
 function! lsp_bridge#inlay_hints() abort
-  call s:send_command({
-    \ 'method': 'inlay_hints',
-    \ 'params': {
-    \   'command': 'inlay_hints',
+  call s:request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
-    \ }
     \ }, 's:handle_inlay_hints_response')
 endfunction
 
@@ -214,73 +229,49 @@ function! lsp_bridge#rename(...) abort
     endif
   endif
 
-  call s:send_command({
-    \ 'method': 'rename',
-    \ 'params': {
-    \   'command': 'rename',
+  call s:request('rename', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
     \   'new_name': new_name
-    \ }
     \ }, 's:handle_rename_response')
 endfunction
 
 function! lsp_bridge#call_hierarchy_incoming() abort
-  call s:send_command({
-    \ 'method': 'call_hierarchy_incoming',
-    \ 'params': {
-    \   'command': 'call_hierarchy_incoming',
+  call s:request('call_hierarchy_incoming', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
 function! lsp_bridge#call_hierarchy_outgoing() abort
-  call s:send_command({
-    \ 'method': 'call_hierarchy_outgoing',
-    \ 'params': {
-    \   'command': 'call_hierarchy_outgoing',
+  call s:request('call_hierarchy_outgoing', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
 function! lsp_bridge#document_symbols() abort
-  call s:send_command({
-    \ 'method': 'document_symbols',
-    \ 'params': {
-    \   'command': 'document_symbols',
+  call s:request('document_symbols', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
-    \ }
     \ }, 's:handle_document_symbols_response')
 endfunction
 
 function! lsp_bridge#folding_range() abort
-  call s:send_command({
-    \ 'method': 'folding_range',
-    \ 'params': {
-    \   'command': 'folding_range',
+  call s:request('folding_range', {
     \   'file': expand('%:p')
-    \ }
     \ }, 's:handle_folding_range_response')
 endfunction
 
 function! lsp_bridge#code_action() abort
-  call s:send_command({
-    \ 'method': 'code_action',
-    \ 'params': {
-    \   'command': 'code_action',
+  call s:request('code_action', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }
     \ }, 's:handle_code_action_response')
 endfunction
 
@@ -294,96 +285,58 @@ function! lsp_bridge#execute_command(...) abort
   let command_name = a:1
   let arguments = a:000[1:]  " Rest of the arguments
 
-  call s:send_command({
-    \ 'method': 'execute_command',
-    \ 'params': {
-    \   'command': 'execute_command',
+  call s:request('execute_command', {
     \   'command_name': command_name,
     \   'arguments': arguments
-    \ }
     \ }, 's:handle_execute_command_response')
 endfunction
 
 function! lsp_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
-  call s:send_command({
-    \ 'method': 'did_save',
-    \ 'params': {
-    \   'command': 'did_save',
+  call s:request('did_save', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
-    \ }
     \ }, 's:handle_did_save_response')
 endfunction
 
 function! lsp_bridge#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
-  call s:send_command({
-    \ 'method': 'did_change',
-    \ 'params': {
-    \   'command': 'did_change',
+  call s:request('did_change', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
-    \ }
     \ }, 's:handle_did_change_response')
 endfunction
 
 function! lsp_bridge#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
-  call s:send_command({
-    \ 'method': 'will_save',
-    \ 'params': {
-    \   'command': 'will_save',
+  call s:request('will_save', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'save_reason': save_reason
-    \ }
     \ }, 's:handle_will_save_response')
 endfunction
 
 function! lsp_bridge#will_save_wait_until(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
-  call s:send_command({
-    \ 'method': 'will_save_wait_until',
-    \ 'params': {
-    \   'command': 'will_save_wait_until',
+  call s:request('will_save_wait_until', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'save_reason': save_reason
-    \ }
     \ }, 's:handle_will_save_wait_until_response')
 endfunction
 
 function! lsp_bridge#did_close() abort
-  call s:send_command({
-    \ 'method': 'did_close',
-    \ 'params': {
-    \   'command': 'did_close',
+  call s:request('did_close', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
-    \ }
     \ }, 's:handle_did_close_response')
-endfunction
-
-" 发送 goto definition 通知（用于日志记录）
-function! s:send_goto_definition_notification() abort
-  " Send notification to bridge for logging
-  " 注意：通知不需要回调处理器，因为不期望响应
-  call s:send_notification({
-    \ 'method': 'goto_definition_notification',
-    \ 'params': {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }
-    \ })
 endfunction
 
 " 发送通知（无响应）
@@ -422,40 +375,6 @@ function! s:get_current_word_prefix() abort
   return line[start : col - 1]
 endfunction
 
-" === 独立的响应处理器 ===
-
-" 通用跳转处理器 - Linus-style: 数据驱动，消除 action 字段
-function! s:handle_jump_response(method_name, channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: %s response: %s', a:method_name, string(a:response))
-  endif
-
-  " Linus-style: Option<Location> 语义 - 数据要么完整存在，要么不存在
-  if !empty(a:response)
-    execute 'edit ' . fnameescape(a:response.file)
-    call cursor(a:response.line + 1, a:response.column + 1)
-    normal! zz
-    echo printf('Jumped to %s at line %d', substitute(a:method_name, 'goto_', '', ''), a:response.line + 1)
-  endif
-  " None = 静默处理，相信数据结构的完整性
-endfunction
-
-" 数据驱动的跳转回调处理器 - Linus-style: 消除重复代码
-function! s:handle_goto_definition_response(channel, response) abort
-  call s:handle_jump_response('goto_definition', a:channel, a:response)
-endfunction
-
-function! s:handle_goto_declaration_response(channel, response) abort
-  call s:handle_jump_response('goto_declaration', a:channel, a:response)
-endfunction
-
-function! s:handle_goto_type_definition_response(channel, response) abort
-  call s:handle_jump_response('goto_type_definition', a:channel, a:response)
-endfunction
-
-function! s:handle_goto_implementation_response(channel, response) abort
-  call s:handle_jump_response('goto_implementation', a:channel, a:response)
-endfunction
 
 " hover 响应处理器 - 简化：有 content 就显示
 function! s:handle_hover_response(channel, response) abort
@@ -1423,11 +1342,10 @@ function! s:execute_code_action(action) abort
   if has_key(a:action, 'command') && !empty(a:action.command)
     " Execute the command
     let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
-    call s:send_command({
-      \ 'command': 'execute_command',
+    call s:request('execute_command', {
       \ 'command_name': a:action.command,
       \ 'arguments': arguments
-      \ })
+      \ }, '')
     echo "Executing: " . a:action.title
   else
     echo "Action has no executable command"

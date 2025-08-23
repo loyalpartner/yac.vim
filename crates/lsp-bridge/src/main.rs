@@ -50,17 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("lsp-bridge starting with log: {}", log_path);
 
-    // Create channel for diagnostic notifications
-    // let (diagnostic_tx, _diagnostic_rx) = mpsc::unbounded_channel::<VimAction>();
-    // let bridge = LspBridge::with_diagnostic_sender(diagnostic_tx);
-    // let bridge_arc = std::sync::Arc::new(tokio::sync::Mutex::new(bridge));
-
     // Create shared LSP client
     let shared_lsp_client = std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
     // Create vim client with handler
     let mut vim = Vim::new_stdio();
-    // let handler = LspBridgeHandler { bridge: bridge_arc };
 
     // Create dedicated handlers with shared client
     // Core LSP functionality handlers - Linus style: one handler per function
