@@ -19,10 +19,15 @@ use handlers::{
     GotoHandler,
     HoverHandler,
     InlayHintsHandler,
+    // Notification handlers
+    NotificationRegistrationHandler,
     ReferencesHandler,
     RenameHandler,
     WillSaveHandler,
 };
+
+// Notification handler implementation removed for now to avoid dead code warnings
+// The enhanced notification handler is available in the handlers module
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -86,6 +91,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let will_save_handler = WillSaveHandler::new(shared_lsp_client.clone());
     let did_close_handler = DidCloseHandler::new(shared_lsp_client.clone());
 
+    // Create a channel for LSP server notifications
+    let (notification_tx, _notification_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Notification registration handler - allows Vim to request specific notification types
+    let notification_registration_handler =
+        NotificationRegistrationHandler::new(shared_lsp_client.clone(), notification_tx);
+
     // Register handlers for all supported commands
     // Core LSP functionality - Linus style: type-safe dispatch
     vim.add_handler("file_open", file_open_handler);
@@ -114,9 +126,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("will_save", will_save_handler);
     vim.add_handler("did_close", did_close_handler);
 
+    // Notification management handlers
+    vim.add_handler("register_notifications", notification_registration_handler);
+
     info!("vim client configured, starting message loop...");
 
+    // For now, we'll integrate notification handling into the main vim message loop
+    // The enhanced notification handler will use the channel to send VimActions
+    // which will be processed by the LSP bridge and forwarded appropriately
+
     // Run the vim client - this replaces the manual stdin/stdout loop
+    // The notification handling is integrated into the LSP client background task
     vim.run().await?;
 
     info!("lsp-bridge shutting down...");

@@ -27,6 +27,9 @@ pub mod did_close;
 pub mod did_save;
 pub mod will_save;
 
+// Notification handlers
+pub mod notification;
+
 // Re-export main handler types used in main.rs - Linus style: clear and simple
 pub use call_hierarchy::CallHierarchyHandler;
 pub use code_action::CodeActionHandler;
@@ -47,3 +50,6 @@ pub use did_change::DidChangeHandler;
 pub use did_close::DidCloseHandler;
 pub use did_save::DidSaveHandler;
 pub use will_save::WillSaveHandler;
+
+// Notification handlers
+pub use notification::NotificationRegistrationHandler;
