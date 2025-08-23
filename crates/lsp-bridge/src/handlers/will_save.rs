@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -29,12 +28,14 @@ impl WillSaveResult {
 }
 
 pub struct WillSaveHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl WillSaveHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 
     fn reason_to_lsp(&self, reason: &str) -> lsp_types::TextDocumentSaveReason {
@@ -57,8 +58,16 @@ impl Handler for WillSaveHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Detect language
+        let language = match self.lsp_registry.detect_language(&input.file) {
+            Some(lang) => lang,
+            None => return Ok(Some(Some(WillSaveResult::new(false)))), // Unsupported file type
+        };
+
+        // Ensure client exists
+        if self.lsp_registry.get_client(&language, &input.file).await.is_err() {
+            return Ok(Some(Some(WillSaveResult::new(false))));
+        }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
@@ -75,7 +84,11 @@ impl Handler for WillSaveHandler {
         };
 
         // willSave is a notification, not a request (no response expected)
-        match client.notify("textDocument/willSave", params).await {
+        match self
+            .lsp_registry
+            .notify(&language, "textDocument/willSave", params)
+            .await
+        {
             Ok(_) => {
                 debug!(
                     "WillSave notification sent for: {} (reason: {})",

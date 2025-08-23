@@ -56,7 +56,7 @@ impl Handler for DidSaveHandler {
         };
 
         // Ensure client exists
-        if let Err(_) = self.lsp_registry.get_client(&language, &input.file).await {
+        if self.lsp_registry.get_client(&language, &input.file).await.is_err() {
             return Ok(Some(Some(DidSaveResult::new(false))));
         }
 

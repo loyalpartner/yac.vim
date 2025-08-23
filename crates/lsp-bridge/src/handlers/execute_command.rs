@@ -1,9 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use lsp_client::LspClient;
+use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::debug;
 use vim::Handler;
 
@@ -12,6 +11,7 @@ use vim::Handler;
 pub struct ExecuteCommandRequest {
     pub command: String,
     pub arguments: Option<Vec<serde_json::Value>>,
+    pub language: String, // Specify which language server to use
 }
 
 #[derive(Debug, Serialize)]
@@ -29,12 +29,14 @@ impl ExecuteCommandResult {
 }
 
 pub struct ExecuteCommandHandler {
-    lsp_client: Arc<Mutex<Option<LspClient>>>,
+    lsp_registry: Arc<LspRegistry>,
 }
 
 impl ExecuteCommandHandler {
-    pub fn new(client: Arc<Mutex<Option<LspClient>>>) -> Self {
-        Self { lsp_client: client }
+    pub fn new(registry: Arc<LspRegistry>) -> Self {
+        Self {
+            lsp_registry: registry,
+        }
     }
 }
 
@@ -48,8 +50,10 @@ impl Handler for ExecuteCommandHandler {
         _ctx: &mut dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        let client_lock = self.lsp_client.lock().await;
-        let client = client_lock.as_ref().unwrap();
+        // Check if the language server exists
+        if !self.lsp_registry.get_existing_client(&input.language).await {
+            return Ok(Some(None)); // Language server not available
+        }
 
         // Make LSP execute command request
         let params = lsp_types::ExecuteCommandParams {
@@ -58,8 +62,9 @@ impl Handler for ExecuteCommandHandler {
             work_done_progress_params: Default::default(),
         };
 
-        let response = match client
-            .request::<lsp_types::request::ExecuteCommand>(params)
+        let response = match self
+            .lsp_registry
+            .request::<lsp_types::request::ExecuteCommand>(&input.language, params)
             .await
         {
             Ok(response) => response,
