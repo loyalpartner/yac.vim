@@ -2041,7 +2041,22 @@ endfunction
 
 " 文件搜索回调（当popup窗口关闭时调用）
 function! s:file_search_callback(id, result) abort
-  call s:close_file_search_popup()
+  " Reset search state without calling popup_close (to avoid recursion)
+  let s:file_search.popup_id = -1
+  
+  " Close input popup if it exists
+  if s:file_search.input_popup_id != -1 && exists('*popup_close')
+    call popup_close(s:file_search.input_popup_id)
+    let s:file_search.input_popup_id = -1
+  endif
+  
+  " Reset state
+  let s:file_search.files = []
+  let s:file_search.selected = 0
+  let s:file_search.query = ''
+  let s:file_search.current_page = 0
+  let s:file_search.has_more = v:false
+  let s:file_search.total_count = 0
 endfunction
 
 " 命令行界面（降级模式）
