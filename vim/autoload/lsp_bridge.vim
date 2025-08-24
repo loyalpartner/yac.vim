@@ -1033,12 +1033,31 @@ endfunction
 
 " 简单打开日志文件
 function! lsp_bridge#open_log() abort
-  if empty(s:log_file)
+  " 检查LSP bridge进程是否运行
+  if s:job == v:null || job_status(s:job) != 'run'
     echo 'lsp-bridge not running'
     return
   endif
 
-  execute 'split ' . fnameescape(s:log_file)
+  " 如果s:log_file未设置，根据进程PID构造日志文件路径
+  let log_file = s:log_file
+  if empty(log_file)
+    let job_info = job_info(s:job)
+    if has_key(job_info, 'process') && job_info.process > 0
+      let log_file = '/tmp/lsp-bridge-' . job_info.process . '.log'
+    else
+      echo 'Unable to determine log file path'
+      return
+    endif
+  endif
+
+  " 检查日志文件是否存在
+  if !filereadable(log_file)
+    echo 'Log file does not exist: ' . log_file
+    return
+  endif
+
+  execute 'split ' . fnameescape(log_file)
 endfunction
 
 " === Inlay Hints 功能 ===
