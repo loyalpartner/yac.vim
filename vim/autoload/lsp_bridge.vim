@@ -1065,7 +1065,11 @@ function! lsp_bridge#open_log() abort
     return
   endif
 
-  execute 'split ' . fnameescape(log_file)
+  " Use a safer approach to open the log file
+  split
+  execute 'edit ' . fnameescape(log_file)
+  setlocal filetype=log
+  setlocal nomodeline
 endfunction
 
 " === Inlay Hints 功能 ===
