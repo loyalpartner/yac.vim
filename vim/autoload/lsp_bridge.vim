@@ -2343,6 +2343,15 @@ function! s:open_selected_file() abort
   endif
   
   let selected_file = s:file_search.files[s:file_search.selected]
+  
+  " 记录选择的文件到历史中（发送到 Rust 后端）
+  call s:notify('file_search', {
+    \ 'selected_file': selected_file.relative_path,
+    \ 'query': '',
+    \ 'page': 0,
+    \ 'page_size': 1
+    \ })
+  
   call s:close_file_search_popup()
   
   " 打开文件
