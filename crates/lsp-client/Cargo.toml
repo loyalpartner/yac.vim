@@ -1,36 +1,36 @@
 [package]
 name = "lsp-client"
-version = "0.1.0"
-edition = "2021"
-authors = ["LSP Bridge Team"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 description = "LSP client implementation with protocol type support"
-license = "MIT"
 
 [dependencies]
 # LSP protocol types
-lsp-types = "0.94"
+lsp-types.workspace = true
 
 # Async runtime
-tokio = { version = "1.35", features = ["full", "process"] }
+tokio = { workspace = true, features = ["process"] }
 
 # JSON and serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde.workspace = true
+serde_json.workspace = true
 
 # Error handling
-thiserror = "1.0"
+thiserror.workspace = true
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", optional = true }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 
 # Networking and IO
-bytes = "1.5"
+bytes.workspace = true
 
 [dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3.8"
-tracing-subscriber = "0.3"
+tokio-test.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 [[example]]
 name = "goto_definition"
