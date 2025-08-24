@@ -84,9 +84,10 @@ impl FileSearchHandler {
         }
 
         debug!(
-            "Added '{}' to recent files (total: {})",
+            "Added '{}' to recent files (total: {}). Recent list: {:?}",
             file_path,
-            recent.len()
+            recent.len(),
+            recent.iter().take(5).collect::<Vec<_>>()
         );
     }
 
@@ -200,6 +201,15 @@ impl FileSearchHandler {
 
         // ALWAYS boost score for recently selected files (works for both empty and non-empty queries)
         let recent = self.recent_files.read().await;
+
+        // Debug: show comparison details
+        debug!(
+            "Scoring file '{}' (query: '{}'), recent files: {:?}",
+            file_path,
+            query,
+            recent.iter().take(3).collect::<Vec<_>>()
+        );
+
         if let Some(position) = recent
             .iter()
             .position(|recent_file| recent_file == file_path)
@@ -208,8 +218,8 @@ impl FileSearchHandler {
             let recency_boost = 200.0 - (position as f64 * 9.0); // 200, 191, 182, 173, etc.
             score += recency_boost;
             debug!(
-                "Applied recency boost of {:.1} to '{}' (query: '{}')",
-                recency_boost, file_path, query
+                "Applied recency boost of {:.1} to '{}' (position: {}, final score: {:.1})",
+                recency_boost, file_path, position, score
             );
         }
 
@@ -326,6 +336,16 @@ impl Handler for FileSearchHandler {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.relative_path.len().cmp(&b.relative_path.len()))
         });
+
+        // Debug: show top files and their scores
+        debug!(
+            "Top 5 files after scoring: {:?}",
+            scored_files
+                .iter()
+                .take(5)
+                .map(|f| (f.relative_path.as_str(), f.score))
+                .collect::<Vec<_>>()
+        );
 
         let total_count = scored_files.len();
         let start_index = input.page * input.page_size;

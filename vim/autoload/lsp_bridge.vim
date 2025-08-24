@@ -2344,19 +2344,26 @@ function! s:open_selected_file() abort
   
   let selected_file = s:file_search.files[s:file_search.selected]
   
-  " 记录选择的文件到历史中（发送到 Rust 后端）
-  call s:notify('file_search', {
+  call s:close_file_search_popup()
+  
+  " 记录选择的文件到历史中（发送到 Rust 后端，同步请求确保完成）
+  call s:request('file_search', {
     \ 'selected_file': selected_file.relative_path,
     \ 'query': '',
     \ 'page': 0,
     \ 'page_size': 1
-    \ })
-  
-  call s:close_file_search_popup()
+    \ }, 's:handle_recent_file_response')
   
   " 打开文件
   execute 'edit ' . fnameescape(selected_file.path)
   echo 'Opened: ' . selected_file.relative_path
+endfunction
+
+" 处理最近文件记录响应
+function! s:handle_recent_file_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom 'LspDebug: Recent file recorded: ' . string(a:response)
+  endif
 endfunction
 
 " 关闭文件搜索浮动窗口
