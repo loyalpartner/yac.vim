@@ -572,6 +572,14 @@ function! s:handle_response(channel, msg) abort
   endif
 endfunction
 
+" VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
+function! lsp_bridge#set_log_file(log_path) abort
+  let s:log_file = a:log_path
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom 'LspDebug: Log file path set to: ' . a:log_path
+  endif
+endfunction
+
 " 停止进程
 function! lsp_bridge#stop() abort
   if s:job != v:null

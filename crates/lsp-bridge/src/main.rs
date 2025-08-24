@@ -57,6 +57,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create vim client with handler
     let mut vim = Vim::new_stdio();
 
+    // Proactively communicate log file path to Vim via call_async
+    // This implements the hybrid approach suggested by loyalpartner
+    if let Err(e) = vim
+        .call_async("lsp_bridge#set_log_file", vec![log_path.clone().into()])
+        .await
+    {
+        info!("Failed to set log file path in Vim: {}", e);
+    } else {
+        info!("Successfully communicated log path to Vim: {}", log_path);
+    }
+
     // Create dedicated handlers with multi-language registry
     // Core LSP functionality handlers - Linus style: one handler per function
     let file_open_handler = FileOpenHandler::new(lsp_registry.clone());
