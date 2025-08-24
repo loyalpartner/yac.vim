@@ -1777,7 +1777,7 @@ function! s:show_file_search_popup() abort
     let s:file_search.popup_id = popup_create(display_lines, {
       \ 'title': ' File Search: ' . s:file_search.query . ' ',
       \ 'line': 5,
-      \ 'col': 'center',
+      \ 'col': (&columns - max_width) / 2,
       \ 'minwidth': 60,
       \ 'maxwidth': max_width,
       \ 'maxheight': s:file_search.window_size + 5,
@@ -1804,7 +1804,7 @@ function! s:show_file_search_input() abort
   
   let s:file_search.input_popup_id = popup_create(['Search: ' . s:file_search.query], {
     \ 'line': 3,
-    \ 'col': 'center', 
+    \ 'col': (&columns - 60) / 2,
     \ 'minwidth': 40,
     \ 'maxwidth': 60,
     \ 'border': [],
