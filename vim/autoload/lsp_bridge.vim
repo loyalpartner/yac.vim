@@ -2025,7 +2025,9 @@ function! s:show_file_search_popup() abort
       \ 'border': [],
       \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
       \ 'filter': function('s:file_search_filter'),
-      \ 'callback': function('s:file_search_callback')
+      \ 'callback': function('s:file_search_callback'),
+      \ 'cursorline': 1,
+      \ 'mapping': 0
       \ })
       
     " Debug: 确认popup创建
