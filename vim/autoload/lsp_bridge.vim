@@ -467,12 +467,17 @@ function! s:show_interactive_file_search() abort
     \ 'border': [],
     \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
     \ 'filter': function('s:interactive_file_search_filter'),
-    \ 'callback': function('s:file_search_callback')
+    \ 'callback': function('s:file_search_callback'),
+    \ 'cursorline': 1,
+    \ 'mapping': 0
     \ })
 endfunction
 
 " 交互式文件搜索过滤器
 function! s:interactive_file_search_filter(winid, key) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug[FILTER]: key=%s winid=%d', string(a:key), a:winid)
+  endif
   " ESC 关闭搜索
   if a:key == "\<Esc>"
     call s:close_file_search_popup()
@@ -540,8 +545,12 @@ function! s:handle_interactive_search_update(response) abort
   let s:file_search.current_page = get(a:response, 'page', 0)
   let s:file_search.selected = 0
 
-  " 更新显示
-  call s:show_interactive_file_search()
+  " 更新显示 - 使用settext避免重新创建popup
+  if s:file_search.popup_id != -1
+    call s:update_interactive_file_search_display()
+  else
+    call s:show_interactive_file_search()
+  endif
 endfunction
 
 " 命令行模式文件搜索（降级）
@@ -2102,6 +2111,61 @@ function! s:file_search_filter(winid, key) abort
   return 0
 endfunction
 
+" 更新交互式文件搜索显示（不重新创建popup）
+function! s:update_interactive_file_search_display() abort
+  if s:file_search.popup_id == -1
+    return
+  endif
+  
+  " 计算窗口尺寸
+  let max_width = min([80, &columns - 4])
+  let max_height = min([20, &lines - 6])
+  
+  " 准备显示内容
+  let display_lines = []
+  
+  " 添加搜索提示
+  call add(display_lines, 'Type to search files (ESC to cancel, Enter to open):')
+  call add(display_lines, 'Query: ' . s:file_search.query . '█')
+  call add(display_lines, repeat('─', max_width - 2))
+  
+  " 添加文件列表
+  if empty(s:file_search.files)
+    call add(display_lines, 'No files found')
+  else
+    let file_count = min([len(s:file_search.files), max_height - 6])
+    for i in range(file_count)
+      let file = s:file_search.files[i]
+      let marker = (i == s:file_search.selected) ? '▶ ' : '  '
+      let relative_path = has_key(file, 'relative_path') ? file.relative_path : file.path
+      
+      " 截断过长路径
+      if len(relative_path) > max_width - 6
+        let relative_path = '...' . relative_path[-(max_width-9):]
+      endif
+      
+      call add(display_lines, marker . relative_path)
+    endfor
+  endif
+  
+  " 添加状态信息
+  if len(s:file_search.files) > 0
+    let status = printf('Showing %d/%d files', 
+      \ min([len(s:file_search.files), max_height - 6]), 
+      \ s:file_search.total_count)
+    call add(display_lines, repeat('─', max_width - 2))
+    call add(display_lines, status)
+  endif
+
+  " 更新现有popup的内容，保持filter函数连接
+  call popup_settext(s:file_search.popup_id, display_lines)
+  
+  " 确保popup有焦点和cursorline
+  if exists('*popup_setoptions')
+    call popup_setoptions(s:file_search.popup_id, {'cursorline': 1})
+  endif
+endfunction
+
 " 移动文件搜索选择
 function! s:move_file_search_selection(direction) abort
   let new_selected = s:file_search.selected + a:direction
@@ -2115,9 +2179,9 @@ function! s:move_file_search_selection(direction) abort
   
   let s:file_search.selected = new_selected
   
-  " 使用新的交互式显示更新
+  " 使用新的交互式显示更新 - 使用settext避免重新创建popup
   if exists('*popup_create')
-    call s:show_interactive_file_search()
+    call s:update_interactive_file_search_display()
   else
     call s:update_file_search_display()
   endif
