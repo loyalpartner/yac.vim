@@ -1832,6 +1832,11 @@ function! s:show_file_search_popup() abort
     
     " 创建输入框
     call s:show_file_search_input()
+    
+    " 确保主 popup 获得焦点以处理键盘输入
+    if exists('*popup_setoptions')
+      call popup_setoptions(s:file_search.popup_id, {'cursorline': 1})
+    endif
   else
     " 降级到命令行界面（老版本 Vim）
     echo join(display_lines, "\n")
@@ -1853,7 +1858,6 @@ function! s:show_file_search_input() abort
     \ 'border': [],
     \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
     \ 'title': ' Search Files (Ctrl+P) ',
-    \ 'filter': function('s:file_search_filter'),
     \ })
 endfunction
 
