@@ -2194,12 +2194,12 @@ function! s:update_interactive_file_search_display() abort
   
   " Set cursor position to highlight selected item in popup
   if exists('*popup_setoptions') && len(s:file_search.files) > 0
-    " Calculate the line number of selected item in the popup (1-indexed)
+    " Calculate the line number of selected item within the popup content (1-indexed)
     " 3 header lines + (selected_index - scroll_offset) + 1
     let cursor_line = 4 + (s:file_search.selected - scroll_offset)
+    " Only set cursorline option - don't change popup position with 'line'
     call popup_setoptions(s:file_search.popup_id, {
-      \ 'cursorline': 1,
-      \ 'line': cursor_line
+      \ 'cursorline': 1
       \ })
   endif
 endfunction
@@ -2217,12 +2217,9 @@ function! s:move_file_search_selection(direction) abort
   
   let s:file_search.selected = new_selected
   
-  " 使用新的交互式显示更新 - 使用settext避免重新创建popup
-  if exists('*popup_create')
-    call s:update_interactive_file_search_display()
-  else
-    call s:update_file_search_display()
-  endif
+  " 始终使用交互式显示更新 - 使用settext避免重新创建popup
+  " 这样popup窗口位置保持稳定，只更新内容
+  call s:update_interactive_file_search_display()
 endfunction
 
 " 更新文件搜索显示 (non-interactive mode with scrolling)
