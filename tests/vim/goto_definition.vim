@@ -2,7 +2,7 @@
 echo "=== Testing Goto Definition ==="
 
 " 启动 LSP
-LspStart
+YacStart
 
 " 打开测试文件
 edit test_data/src/lib.rs
@@ -19,7 +19,7 @@ normal! f:
 normal! w
 let start_line = line('.')
 echo 'Position: line ' . start_line . ', column: ' . col('.') . ', word: ' . expand('<cword>')
-LspDefinition
+YacDefinition
 sleep 2
 let end_line = line('.')
 if end_line != start_line
@@ -40,7 +40,7 @@ normal! f:
 normal! 2w
 let start_line = line('.')
 echo 'Position: line ' . start_line . ', column: ' . col('.') . ', word: ' . expand('<cword>')
-LspDefinition
+YacDefinition
 sleep 2
 let end_line = line('.')
 if end_line != start_line
@@ -51,4 +51,4 @@ endif
 
 echo ""
 echo "=== Test completed ==="
-echo "Check detailed logs: tail -f /tmp/lsp-bridge.log"
+echo "Check detailed logs: tail -f /tmp/lsp-bridge-*.log"

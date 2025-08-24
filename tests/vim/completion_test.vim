@@ -2,7 +2,7 @@
 echo "=== Testing Enhanced Completion ==="
 
 " 启动 LSP
-LspStart
+YacStart
 
 " 打开测试文件
 edit test_data/src/lib.rs
@@ -19,7 +19,7 @@ normal! o
 " 输入部分字符然后触发补全
 execute "normal! iHas"
 echo "Position: line " . line('.') . ", column: " . col('.') . ", input: 'Has'"
-LspComplete
+YacComplete
 sleep 3
 
 echo ""
@@ -27,7 +27,7 @@ echo "Test 2: Manual completion trigger"
 normal! cc
 execute "normal! iVe"
 echo "Position: line " . line('.') . ", column: " . col('.') . ", input: 'Ve'"
-LspComplete
+YacComplete
 sleep 3
 
 echo ""
@@ -39,4 +39,4 @@ echo "- ▶ marker for selected item"
 echo "- [match] highlighting for typed prefix"
 echo "- Different colors for Function/Variable/etc"
 echo ""
-echo "Check detailed logs: tail -f /tmp/lsp-bridge.log"
+echo "Check detailed logs: tail -f /tmp/lsp-bridge-*.log"
