@@ -825,6 +825,14 @@ function! s:handle_response(channel, msg) abort
   endif
 endfunction
 
+" VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
+function! lsp_bridge#set_log_file(log_path) abort
+  let s:log_file = a:log_path
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom 'LspDebug: Log file path set to: ' . a:log_path
+  endif
+endfunction
+
 " 停止进程
 function! lsp_bridge#stop() abort
   if s:job != v:null
@@ -1286,12 +1294,35 @@ endfunction
 
 " 简单打开日志文件
 function! lsp_bridge#open_log() abort
-  if empty(s:log_file)
+  " 检查LSP bridge进程是否运行
+  if s:job == v:null || job_status(s:job) != 'run'
     echo 'lsp-bridge not running'
     return
   endif
 
-  execute 'split ' . fnameescape(s:log_file)
+  " 如果s:log_file未设置，根据进程PID构造日志文件路径
+  let log_file = s:log_file
+  if empty(log_file)
+    let job_info = job_info(s:job)
+    if has_key(job_info, 'process') && job_info.process > 0
+      let log_file = '/tmp/lsp-bridge-' . job_info.process . '.log'
+    else
+      echo 'Unable to determine log file path'
+      return
+    endif
+  endif
+
+  " 检查日志文件是否存在
+  if !filereadable(log_file)
+    echo 'Log file does not exist: ' . log_file
+    return
+  endif
+
+  " Use a safer approach to open the log file
+  split
+  execute 'edit ' . fnameescape(log_file)
+  setlocal filetype=log
+  setlocal nomodeline
 endfunction
 
 " === Inlay Hints 功能 ===
