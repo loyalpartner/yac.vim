@@ -13,8 +13,24 @@ use std::{
     sync::Arc,
 };
 use tokio::fs;
+use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info};
 use vim::{Handler, VimContext};
+
+// Constants to eliminate magic numbers
+const DEFAULT_PAGE_SIZE: usize = 50;
+const MAX_RECENT_FILES: usize = 20;
+const RECENT_FILE_BASE_BOOST: f64 = 200.0;
+const RECENT_FILE_DECAY_RATE: f64 = 9.0;
+const BASE_SCORE: f64 = 1.0;
+const EXACT_MATCH_SCORE: f64 = 100.0;
+const PREFIX_MATCH_BASE: f64 = 50.0;
+const PREFIX_MATCH_BONUS: f64 = 30.0;
+const CONTAINS_MATCH_BASE: f64 = 25.0;
+const CONTAINS_MATCH_BONUS: f64 = 15.0;
+const PATH_MATCH_BASE: f64 = 10.0;
+const PATH_MATCH_BONUS: f64 = 5.0;
+const PATH_DEPTH_PENALTY: f64 = 0.1;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileSearchInput {
@@ -31,7 +47,7 @@ pub struct FileSearchInput {
 }
 
 fn default_page_size() -> usize {
-    50
+    DEFAULT_PAGE_SIZE
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,22 +68,22 @@ pub struct FileItem {
 #[derive(Clone)]
 pub struct FileSearchHandler {
     _lsp_registry: Arc<LspRegistry>,
-    file_cache: Arc<tokio::sync::RwLock<Option<Vec<PathBuf>>>>,
-    recent_files: Arc<tokio::sync::RwLock<VecDeque<String>>>,
+    file_cache: Arc<OnceCell<Vec<PathBuf>>>,
+    recent_files: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl FileSearchHandler {
     pub fn new(lsp_registry: Arc<LspRegistry>) -> Self {
         Self {
             _lsp_registry: lsp_registry,
-            file_cache: Arc::new(tokio::sync::RwLock::new(None)),
-            recent_files: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
+            file_cache: Arc::new(OnceCell::new()),
+            recent_files: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
     /// Add a file to the recent selection history
     async fn add_to_recent_files(&self, file_path: &str) {
-        let mut recent = self.recent_files.write().await;
+        let mut recent = self.recent_files.lock().await;
 
         // Remove if already exists to avoid duplicates
         if let Some(pos) = recent.iter().position(|x| x == file_path) {
@@ -77,8 +93,7 @@ impl FileSearchHandler {
         // Add to front
         recent.push_front(file_path.to_string());
 
-        // Keep only last 20 files
-        const MAX_RECENT_FILES: usize = 20;
+        // Keep only last N files
         while recent.len() > MAX_RECENT_FILES {
             recent.pop_back();
         }
@@ -94,7 +109,9 @@ impl FileSearchHandler {
     /// Discover files in workspace root, with common exclusions
     async fn discover_files(&self, root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
-        let excluded_dirs = [
+
+        // Use constants for maintainable exclusion lists
+        const EXCLUDED_DIRS: &[&str] = &[
             ".git",
             "node_modules",
             "target",
@@ -107,7 +124,7 @@ impl FileSearchHandler {
             ".next",
             "coverage",
         ];
-        let excluded_extensions = [".o", ".so", ".dylib", ".dll", ".exe"];
+        const EXCLUDED_EXTENSIONS: &[&str] = &[".o", ".so", ".dylib", ".dll", ".exe"];
 
         // Use a work queue to avoid deep recursion
         let mut queue = vec![root.to_path_buf()];
@@ -137,14 +154,14 @@ impl FileSearchHandler {
                 if metadata.is_dir() {
                     // Skip excluded directories
                     if let Some(dir_name) = path.file_name() {
-                        if !excluded_dirs.iter().any(|&excluded| dir_name == excluded) {
+                        if !EXCLUDED_DIRS.iter().any(|&excluded| dir_name == excluded) {
                             queue.push(path);
                         }
                     }
                 } else if metadata.is_file() {
                     // Skip excluded file extensions
                     if let Some(extension) = path.extension() {
-                        if excluded_extensions
+                        if EXCLUDED_EXTENSIONS
                             .iter()
                             .any(|&ext| extension == ext.trim_start_matches('.'))
                         {
@@ -162,9 +179,9 @@ impl FileSearchHandler {
 
     /// Calculate relevance score for a file based on query
     async fn calculate_score(&self, file_path: &str, query: &str) -> f64 {
-        let mut score = 0.0;
+        let mut score = BASE_SCORE; // Start with base score for all files
 
-        // Only apply fuzzy matching score if there's a query
+        // Apply fuzzy matching score if there's a query
         if !query.is_empty() {
             let query_lower = query.to_lowercase();
             let file_lower = file_path.to_lowercase();
@@ -176,31 +193,31 @@ impl FileSearchHandler {
 
             // Exact basename match gets highest score
             if basename == query_lower {
-                score += 100.0;
+                score += EXACT_MATCH_SCORE;
             }
             // Basename starts with query
             else if basename.starts_with(&query_lower) {
-                score += 50.0 + (query.len() as f64 / basename.len() as f64) * 30.0;
+                score += PREFIX_MATCH_BASE
+                    + (query.len() as f64 / basename.len() as f64) * PREFIX_MATCH_BONUS;
             }
             // Query is contained in basename
             else if basename.contains(&query_lower) {
-                score += 25.0 + (query.len() as f64 / basename.len() as f64) * 15.0;
+                score += CONTAINS_MATCH_BASE
+                    + (query.len() as f64 / basename.len() as f64) * CONTAINS_MATCH_BONUS;
             }
             // Full path contains query
             else if file_lower.contains(&query_lower) {
-                score += 10.0 + (query.len() as f64 / file_lower.len() as f64) * 5.0;
+                score += PATH_MATCH_BASE
+                    + (query.len() as f64 / file_lower.len() as f64) * PATH_MATCH_BONUS;
             }
 
             // Prefer files closer to root (shorter paths)
             let path_segments = file_path.split('/').count() as f64;
-            score -= path_segments * 0.1;
-        } else {
-            // For empty queries, start with a base score
-            score = 1.0;
+            score -= path_segments * PATH_DEPTH_PENALTY;
         }
 
-        // ALWAYS boost score for recently selected files (works for both empty and non-empty queries)
-        let recent = self.recent_files.read().await;
+        // ALWAYS boost score for recently selected files
+        let recent = self.recent_files.lock().await;
 
         // Debug: show comparison details
         debug!(
@@ -215,7 +232,7 @@ impl FileSearchHandler {
             .position(|recent_file| recent_file == file_path)
         {
             // Most recent file gets highest boost, decreasing for older files
-            let recency_boost = 200.0 - (position as f64 * 9.0); // 200, 191, 182, 173, etc.
+            let recency_boost = RECENT_FILE_BASE_BOOST - (position as f64 * RECENT_FILE_DECAY_RATE);
             score += recency_boost;
             debug!(
                 "Applied recency boost of {:.1} to '{}' (position: {}, final score: {:.1})",
@@ -291,42 +308,38 @@ impl Handler for FileSearchHandler {
 
         debug!("Using workspace root: {:?}", workspace_root);
 
-        // Get or discover files
-        let all_files = {
-            let cache = self.file_cache.read().await;
-            if let Some(ref cached_files) = *cache {
-                cached_files.clone()
-            } else {
-                drop(cache);
+        // Get or discover files (race-condition-free caching)
+        let all_files = self
+            .file_cache
+            .get_or_try_init(|| self.discover_files(&workspace_root))
+            .await?;
 
-                // Discover files and cache them
-                let discovered = self.discover_files(&workspace_root).await?;
-                let mut cache = self.file_cache.write().await;
-                *cache = Some(discovered.clone());
-                discovered
-            }
-        };
-
-        // Filter and score files (async)
+        // Filter and score files (chunked async processing to avoid blocking)
         let mut scored_files: Vec<FileItem> = Vec::new();
-        for path in &all_files {
-            let path_str = path.to_string_lossy();
-            let relative_path = path
-                .strip_prefix(&workspace_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+        const CHUNK_SIZE: usize = 100; // Process files in chunks to yield control
 
-            let score = self.calculate_score(&relative_path, &input.query).await;
+        for chunk in all_files.chunks(CHUNK_SIZE) {
+            for path in chunk {
+                let path_str = path.to_string_lossy();
+                let relative_path = path
+                    .strip_prefix(&workspace_root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
 
-            // Only include files that match the query (score > 0) or when no query is provided
-            if input.query.is_empty() || score > 0.0 {
-                scored_files.push(FileItem {
-                    path: path_str.to_string(),
-                    relative_path,
-                    score,
-                });
+                let score = self.calculate_score(&relative_path, &input.query).await;
+
+                // Only include files that match the query (score > 0) or when no query is provided
+                if input.query.is_empty() || score > 0.0 {
+                    scored_files.push(FileItem {
+                        path: path_str.to_string(),
+                        relative_path,
+                        score,
+                    });
+                }
             }
+            // Yield control back to the async runtime after each chunk
+            tokio::task::yield_now().await;
         }
 
         // Sort by score (descending) and then by path length (ascending)

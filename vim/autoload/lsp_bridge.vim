@@ -27,8 +27,16 @@ let s:diagnostic_virtual_text = {}
 let s:diagnostic_virtual_text.enabled = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
 let s:diagnostic_virtual_text.storage = {}  " buffer_id -> diagnostics
 
-" 文件搜索状态
+" File search constants - eliminate magic numbers
+const s:FILE_SEARCH_PAGE_SIZE = 50
+const s:FILE_SEARCH_MAX_WIDTH = 80
+const s:FILE_SEARCH_MAX_HEIGHT = 20
+const s:FILE_SEARCH_WINDOW_SIZE = 15
+
+" File search state - unified state management
+" States: 'closed' | 'loading' | 'displaying' | 'filtering'
 let s:file_search = {}
+let s:file_search.state = 'closed'
 let s:file_search.popup_id = -1
 let s:file_search.input_popup_id = -1
 let s:file_search.files = []
@@ -37,7 +45,6 @@ let s:file_search.query = ''
 let s:file_search.current_page = 0
 let s:file_search.has_more = v:false
 let s:file_search.total_count = 0
-let s:file_search.window_size = 15
 
 " 启动进程
 function! lsp_bridge#start() abort
@@ -364,7 +371,7 @@ function! lsp_bridge#file_search(...) abort
     call s:request('file_search', {
       \   'query': query,
       \   'page': 0,
-      \   'page_size': 50,
+      \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
       \   'workspace_root': s:find_workspace_root()
       \ }, 's:handle_file_search_response')
   endif
@@ -382,7 +389,7 @@ function! s:start_interactive_file_search() abort
   call s:request('file_search', {
     \   'query': '',
     \   'page': 0,
-    \   'page_size': 50,
+    \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
     \   'workspace_root': s:find_workspace_root()
     \ }, 's:handle_interactive_file_search_response')
 endfunction
@@ -413,8 +420,8 @@ function! s:show_interactive_file_search() abort
   endif
 
   " 计算窗口尺寸
-  let max_width = min([80, &columns - 4])
-  let max_height = min([20, &lines - 6])
+  let max_width = min([s:FILE_SEARCH_MAX_WIDTH, &columns - 4])
+  let max_height = min([s:FILE_SEARCH_MAX_HEIGHT, &lines - 6])
   
   " 准备显示内容
   let display_lines = []
@@ -527,7 +534,7 @@ function! s:update_file_search_with_query() abort
   call s:request('file_search', {
     \   'query': s:file_search.query,
     \   'page': 0,
-    \   'page_size': 50,
+    \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
     \   'workspace_root': s:find_workspace_root()
     \ }, 's:handle_interactive_search_update')
 endfunction
@@ -562,7 +569,7 @@ function! s:file_search_command_line_mode() abort
     call s:request('file_search', {
       \   'query': query,
       \   'page': 0,
-      \   'page_size': 50,
+      \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
       \   'workspace_root': s:find_workspace_root()
       \ }, 's:handle_file_search_response')
   endif
@@ -900,7 +907,7 @@ function! s:show_hover_popup(content) abort
   endif
 
   " 计算窗口大小
-  let max_width = 80
+  let max_width = s:FILE_SEARCH_MAX_WIDTH
   let content_width = 0
   for line in lines
     let content_width = max([content_width, len(line)])
@@ -1957,7 +1964,7 @@ function! s:show_file_search_popup() abort
   
   " 准备显示的文件列表
   let display_lines = []
-  let max_width = 80
+  let max_width = s:FILE_SEARCH_MAX_WIDTH
   
   for i in range(len(s:file_search.files))
     let file = s:file_search.files[i]
@@ -1994,7 +2001,7 @@ function! s:show_file_search_popup() abort
   " 添加状态行
   let status = printf('Page %d/%d - %d files total', 
     \ s:file_search.current_page + 1,
-    \ (s:file_search.total_count + 49) / 50,
+    \ (s:file_search.total_count + s:FILE_SEARCH_PAGE_SIZE - 1) / s:FILE_SEARCH_PAGE_SIZE,
     \ s:file_search.total_count)
   if s:file_search.has_more
     let status .= ' (more available)'
@@ -2120,8 +2127,8 @@ function! s:update_interactive_file_search_display() abort
   endif
   
   " 计算窗口尺寸
-  let max_width = min([80, &columns - 4])
-  let max_height = min([20, &lines - 6])
+  let max_width = min([s:FILE_SEARCH_MAX_WIDTH, &columns - 4])
+  let max_height = min([s:FILE_SEARCH_MAX_HEIGHT, &lines - 6])
   
   " 准备显示内容
   let display_lines = []
@@ -2229,8 +2236,8 @@ function! s:update_file_search_display() abort
   endif
   
   " Calculate display window size
-  let max_width = 80
-  let max_display_lines = s:file_search.window_size " Use the configured window size
+  let max_width = s:FILE_SEARCH_MAX_WIDTH
+  let max_display_lines = s:FILE_SEARCH_WINDOW_SIZE " Use the configured window size
   let total_files = len(s:file_search.files)
   let selected_idx = s:file_search.selected
   
@@ -2268,7 +2275,7 @@ function! s:update_file_search_display() abort
   " 状态行 with scroll info
   let status = printf('Page %d/%d - %d files total',
     \ s:file_search.current_page + 1,
-    \ (s:file_search.total_count + 49) / 50,
+    \ (s:file_search.total_count + s:FILE_SEARCH_PAGE_SIZE - 1) / s:FILE_SEARCH_PAGE_SIZE,
     \ s:file_search.total_count)
   if s:file_search.has_more
     let status .= ' (more available)'
@@ -2301,7 +2308,7 @@ function! s:update_file_search_query(new_query) abort
   call s:request('file_search', {
     \   'query': a:new_query,
     \   'page': 0,
-    \   'page_size': 50,
+    \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
     \   'workspace_root': s:find_workspace_root()
     \ }, 's:handle_file_search_response')
 endfunction
@@ -2316,7 +2323,7 @@ function! s:load_next_file_search_page() abort
   call s:request('file_search', {
     \   'query': s:file_search.query,
     \   'page': next_page,
-    \   'page_size': 50,
+    \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
     \   'workspace_root': s:find_workspace_root()
     \ }, 's:handle_file_search_response')
 endfunction
@@ -2331,7 +2338,7 @@ function! s:load_prev_file_search_page() abort
   call s:request('file_search', {
     \   'query': s:file_search.query,
     \   'page': prev_page,
-    \   'page_size': 50,
+    \   'page_size': s:FILE_SEARCH_PAGE_SIZE,
     \   'workspace_root': s:find_workspace_root()
     \ }, 's:handle_file_search_response')
 endfunction
