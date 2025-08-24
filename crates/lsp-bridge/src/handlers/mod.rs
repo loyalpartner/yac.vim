@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod document_symbols;
 pub mod execute_command;
 pub mod file_open;
+pub mod file_search;
 pub mod folding_range;
 pub mod goto; // Unified handler for all goto operations
 pub mod hover;
@@ -35,6 +36,7 @@ pub use diagnostics::DiagnosticsHandler;
 pub use document_symbols::DocumentSymbolsHandler;
 pub use execute_command::ExecuteCommandHandler;
 pub use file_open::FileOpenHandler;
+pub use file_search::FileSearchHandler;
 pub use folding_range::FoldingRangeHandler;
 pub use goto::GotoHandler; // Unified goto handler
 pub use hover::HoverHandler;
