@@ -354,15 +354,209 @@ endfunction
 function! lsp_bridge#file_search(...) abort
   " 获取查询字符串（可选参数）
   let query = a:0 > 0 ? a:1 : ''
-  let s:file_search.query = query
-  let s:file_search.current_page = 0
+  
+  " 如果没有提供查询字符串，使用交互式输入
+  if empty(query)
+    call s:start_interactive_file_search()
+  else
+    let s:file_search.query = query
+    let s:file_search.current_page = 0
+    call s:request('file_search', {
+      \   'query': query,
+      \   'page': 0,
+      \   'page_size': 50,
+      \   'workspace_root': s:find_workspace_root()
+      \ }, 's:handle_file_search_response')
+  endif
+endfunction
 
+" 开始交互式文件搜索
+function! s:start_interactive_file_search() abort
+  " 初始化搜索状态
+  let s:file_search.query = ''
+  let s:file_search.current_page = 0
+  let s:file_search.files = []
+  let s:file_search.selected = 0
+  
+  " 显示初始搜索（所有文件）
   call s:request('file_search', {
-    \   'query': query,
+    \   'query': '',
     \   'page': 0,
     \   'page_size': 50,
     \   'workspace_root': s:find_workspace_root()
-    \ }, 's:handle_file_search_response')
+    \ }, 's:handle_interactive_file_search_response')
+endfunction
+
+" 处理交互式文件搜索响应
+function! s:handle_interactive_file_search_response(response) abort
+  if !has_key(a:response, 'files')
+    return
+  endif
+
+  " 更新搜索状态
+  let s:file_search.files = a:response.files
+  let s:file_search.has_more = get(a:response, 'has_more', v:false)
+  let s:file_search.total_count = get(a:response, 'total_count', 0)
+  let s:file_search.current_page = get(a:response, 'page', 0)
+  let s:file_search.selected = 0
+
+  " 显示文件搜索界面
+  call s:show_interactive_file_search()
+endfunction
+
+" 显示交互式文件搜索界面
+function! s:show_interactive_file_search() abort
+  if !exists('*popup_create')
+    " 降级到命令行模式
+    call s:file_search_command_line_mode()
+    return
+  endif
+
+  " 计算窗口尺寸
+  let max_width = min([80, &columns - 4])
+  let max_height = min([20, &lines - 6])
+  
+  " 准备显示内容
+  let display_lines = []
+  
+  " 添加搜索提示
+  call add(display_lines, 'Type to search files (ESC to cancel, Enter to open):')
+  call add(display_lines, 'Query: ' . s:file_search.query . '█')
+  call add(display_lines, repeat('─', max_width - 2))
+  
+  " 添加文件列表
+  if empty(s:file_search.files)
+    call add(display_lines, 'No files found')
+  else
+    let file_count = min([len(s:file_search.files), max_height - 6])
+    for i in range(file_count)
+      let file = s:file_search.files[i]
+      let marker = (i == s:file_search.selected) ? '▶ ' : '  '
+      let relative_path = has_key(file, 'relative_path') ? file.relative_path : file.path
+      
+      " 截断过长路径
+      if len(relative_path) > max_width - 6
+        let relative_path = '...' . relative_path[-(max_width-9):]
+      endif
+      
+      call add(display_lines, marker . relative_path)
+    endfor
+  endif
+  
+  " 添加状态信息
+  if len(s:file_search.files) > 0
+    let status = printf('Showing %d/%d files', 
+      \ min([len(s:file_search.files), max_height - 6]), 
+      \ s:file_search.total_count)
+    call add(display_lines, repeat('─', max_width - 2))
+    call add(display_lines, status)
+  endif
+
+  " 创建或更新主popup
+  if s:file_search.popup_id != -1 && exists('*popup_close')
+    call popup_close(s:file_search.popup_id)
+  endif
+  
+  let s:file_search.popup_id = popup_create(display_lines, {
+    \ 'title': ' File Search ',
+    \ 'line': 3,
+    \ 'col': (&columns - max_width) / 2,
+    \ 'minwidth': max_width,
+    \ 'maxwidth': max_width,
+    \ 'maxheight': max_height,
+    \ 'border': [],
+    \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+    \ 'filter': function('s:interactive_file_search_filter'),
+    \ 'callback': function('s:file_search_callback')
+    \ })
+endfunction
+
+" 交互式文件搜索过滤器
+function! s:interactive_file_search_filter(winid, key) abort
+  " ESC 关闭搜索
+  if a:key == "\<Esc>"
+    call s:close_file_search_popup()
+    return 1
+  " Enter 打开选中文件
+  elseif a:key == "\<CR>"
+    call s:open_selected_file()
+    return 1
+  " Tab 也可以打开文件
+  elseif a:key == "\<Tab>"
+    call s:open_selected_file()
+    return 1
+  " 上下方向键移动选择
+  elseif a:key == "\<Down>" || a:key == "\<C-N>"
+    call s:move_file_search_selection(1)
+    return 1
+  elseif a:key == "\<Up>" || a:key == "\<C-P>"
+    call s:move_file_search_selection(-1)
+    return 1
+  " Backspace 删除字符
+  elseif a:key == "\<BS>" || a:key == "\<C-H>"
+    if len(s:file_search.query) > 0
+      let s:file_search.query = s:file_search.query[0:-2]
+      call s:update_file_search_with_query()
+    endif
+    return 1
+  " Ctrl+U 清空查询
+  elseif a:key == "\<C-U>"
+    let s:file_search.query = ''
+    call s:update_file_search_with_query()
+    return 1
+  " 字母数字和常用符号用于搜索
+  elseif a:key =~ '^[a-zA-Z0-9._/-]$' || a:key == ' '
+    let s:file_search.query .= a:key
+    call s:update_file_search_with_query()
+    return 1
+  endif
+  
+  return 0
+endfunction
+
+" 使用新查询更新文件搜索
+function! s:update_file_search_with_query() abort
+  let s:file_search.current_page = 0
+  let s:file_search.selected = 0
+  
+  call s:request('file_search', {
+    \   'query': s:file_search.query,
+    \   'page': 0,
+    \   'page_size': 50,
+    \   'workspace_root': s:find_workspace_root()
+    \ }, 's:handle_interactive_search_update')
+endfunction
+
+" 处理搜索更新响应
+function! s:handle_interactive_search_update(response) abort
+  if !has_key(a:response, 'files')
+    return
+  endif
+
+  " 更新数据
+  let s:file_search.files = a:response.files
+  let s:file_search.has_more = get(a:response, 'has_more', v:false)
+  let s:file_search.total_count = get(a:response, 'total_count', 0)
+  let s:file_search.current_page = get(a:response, 'page', 0)
+  let s:file_search.selected = 0
+
+  " 更新显示
+  call s:show_interactive_file_search()
+endfunction
+
+" 命令行模式文件搜索（降级）
+function! s:file_search_command_line_mode() abort
+  let query = input('Search files: ', s:file_search.query)
+  if !empty(query)
+    let s:file_search.query = query
+    let s:file_search.current_page = 0
+    call s:request('file_search', {
+      \   'query': query,
+      \   'page': 0,
+      \   'page_size': 50,
+      \   'workspace_root': s:find_workspace_root()
+      \ }, 's:handle_file_search_response')
+  endif
 endfunction
 
 " 发送通知（无响应）
@@ -1920,7 +2114,13 @@ function! s:move_file_search_selection(direction) abort
   endif
   
   let s:file_search.selected = new_selected
-  call s:update_file_search_display()
+  
+  " 使用新的交互式显示更新
+  if exists('*popup_create')
+    call s:show_interactive_file_search()
+  else
+    call s:update_file_search_display()
+  endif
 endfunction
 
 " 更新文件搜索显示
