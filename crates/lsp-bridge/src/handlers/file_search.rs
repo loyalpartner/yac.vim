@@ -161,42 +161,44 @@ impl FileSearchHandler {
 
     /// Calculate relevance score for a file based on query
     async fn calculate_score(&self, file_path: &str, query: &str) -> f64 {
-        if query.is_empty() {
-            return 1.0;
-        }
-
-        let query_lower = query.to_lowercase();
-        let file_lower = file_path.to_lowercase();
-        let basename = Path::new(file_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
         let mut score = 0.0;
 
-        // Exact basename match gets highest score
-        if basename == query_lower {
-            score += 100.0;
-        }
-        // Basename starts with query
-        else if basename.starts_with(&query_lower) {
-            score += 50.0 + (query.len() as f64 / basename.len() as f64) * 30.0;
-        }
-        // Query is contained in basename
-        else if basename.contains(&query_lower) {
-            score += 25.0 + (query.len() as f64 / basename.len() as f64) * 15.0;
-        }
-        // Full path contains query
-        else if file_lower.contains(&query_lower) {
-            score += 10.0 + (query.len() as f64 / file_lower.len() as f64) * 5.0;
+        // Only apply fuzzy matching score if there's a query
+        if !query.is_empty() {
+            let query_lower = query.to_lowercase();
+            let file_lower = file_path.to_lowercase();
+            let basename = Path::new(file_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            // Exact basename match gets highest score
+            if basename == query_lower {
+                score += 100.0;
+            }
+            // Basename starts with query
+            else if basename.starts_with(&query_lower) {
+                score += 50.0 + (query.len() as f64 / basename.len() as f64) * 30.0;
+            }
+            // Query is contained in basename
+            else if basename.contains(&query_lower) {
+                score += 25.0 + (query.len() as f64 / basename.len() as f64) * 15.0;
+            }
+            // Full path contains query
+            else if file_lower.contains(&query_lower) {
+                score += 10.0 + (query.len() as f64 / file_lower.len() as f64) * 5.0;
+            }
+
+            // Prefer files closer to root (shorter paths)
+            let path_segments = file_path.split('/').count() as f64;
+            score -= path_segments * 0.1;
+        } else {
+            // For empty queries, start with a base score
+            score = 1.0;
         }
 
-        // Prefer files closer to root (shorter paths)
-        let path_segments = file_path.split('/').count() as f64;
-        score -= path_segments * 0.1;
-
-        // Boost score for recently selected files
+        // ALWAYS boost score for recently selected files (works for both empty and non-empty queries)
         let recent = self.recent_files.read().await;
         if let Some(position) = recent
             .iter()
@@ -206,8 +208,8 @@ impl FileSearchHandler {
             let recency_boost = 200.0 - (position as f64 * 9.0); // 200, 191, 182, 173, etc.
             score += recency_boost;
             debug!(
-                "Applied recency boost of {:.1} to '{}'",
-                recency_boost, file_path
+                "Applied recency boost of {:.1} to '{}' (query: '{}')",
+                recency_boost, file_path, query
             );
         }
 
