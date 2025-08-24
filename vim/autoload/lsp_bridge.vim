@@ -1853,6 +1853,7 @@ function! s:show_file_search_input() abort
     \ 'border': [],
     \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
     \ 'title': ' Search Files (Ctrl+P) ',
+    \ 'filter': function('s:file_search_filter'),
     \ })
 endfunction
 
