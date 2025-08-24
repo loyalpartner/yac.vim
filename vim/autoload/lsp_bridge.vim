@@ -2129,12 +2129,36 @@ function! s:update_interactive_file_search_display() abort
   call add(display_lines, 'Query: ' . s:file_search.query . '█')
   call add(display_lines, repeat('─', max_width - 2))
   
-  " 添加文件列表
+  " Calculate scrolling window parameters first
+  let available_lines = max_height - 6  " Reserve space for header, status
+  let total_files = len(s:file_search.files)
+  let selected_idx = s:file_search.selected
+  let scroll_offset = 0
+  
+  " 添加文件列表 with scrolling support
   if empty(s:file_search.files)
     call add(display_lines, 'No files found')
   else
-    let file_count = min([len(s:file_search.files), max_height - 6])
-    for i in range(file_count)
+    " Calculate scroll offset to keep selection visible
+    if total_files > available_lines
+      " If selected item is beyond visible area, scroll to show it
+      if selected_idx >= available_lines
+        " Position selection in the middle of visible area when possible
+        let scroll_offset = selected_idx - available_lines / 2
+        " Ensure we don't scroll past the end
+        if scroll_offset + available_lines > total_files
+          let scroll_offset = total_files - available_lines
+        endif
+        " Ensure scroll_offset is not negative
+        if scroll_offset < 0
+          let scroll_offset = 0
+        endif
+      endif
+    endif
+    
+    " Display files in the visible window
+    let end_idx = min([scroll_offset + available_lines, total_files])
+    for i in range(scroll_offset, end_idx - 1)
       let file = s:file_search.files[i]
       let marker = (i == s:file_search.selected) ? '▶ ' : '  '
       let relative_path = has_key(file, 'relative_path') ? file.relative_path : file.path
@@ -2148,11 +2172,17 @@ function! s:update_interactive_file_search_display() abort
     endfor
   endif
   
-  " 添加状态信息
+  " 添加状态信息 with scroll indicator
   if len(s:file_search.files) > 0
-    let status = printf('Showing %d/%d files', 
-      \ min([len(s:file_search.files), max_height - 6]), 
-      \ s:file_search.total_count)
+    let visible_count = min([len(s:file_search.files), available_lines])
+    let status = printf('Showing %d/%d files', visible_count, s:file_search.total_count)
+    
+    " Add scroll indicators if there are more files
+    if total_files > available_lines
+      let scroll_info = printf(' [%d-%d]', scroll_offset + 1, min([scroll_offset + available_lines, total_files]))
+      let status .= scroll_info
+    endif
+    
     call add(display_lines, repeat('─', max_width - 2))
     call add(display_lines, status)
   endif
@@ -2160,9 +2190,15 @@ function! s:update_interactive_file_search_display() abort
   " 更新现有popup的内容，保持filter函数连接
   call popup_settext(s:file_search.popup_id, display_lines)
   
-  " 确保popup有焦点和cursorline
-  if exists('*popup_setoptions')
-    call popup_setoptions(s:file_search.popup_id, {'cursorline': 1})
+  " Set cursor position to highlight selected item in popup
+  if exists('*popup_setoptions') && len(s:file_search.files) > 0
+    " Calculate the line number of selected item in the popup (1-indexed)
+    " 3 header lines + (selected_index - scroll_offset) + 1
+    let cursor_line = 4 + (s:file_search.selected - scroll_offset)
+    call popup_setoptions(s:file_search.popup_id, {
+      \ 'cursorline': 1,
+      \ 'line': cursor_line
+      \ })
   endif
 endfunction
 
@@ -2187,21 +2223,42 @@ function! s:move_file_search_selection(direction) abort
   endif
 endfunction
 
-" 更新文件搜索显示
+" 更新文件搜索显示 (non-interactive mode with scrolling)
 function! s:update_file_search_display() abort
   if s:file_search.popup_id == -1
     return
   endif
   
+  " Calculate display window size
+  let max_width = 80
+  let max_display_lines = s:file_search.window_size " Use the configured window size
+  let total_files = len(s:file_search.files)
+  let selected_idx = s:file_search.selected
+  
+  " Calculate scroll offset to keep selection visible
+  let scroll_offset = 0
+  if total_files > max_display_lines
+    if selected_idx >= max_display_lines
+      let scroll_offset = selected_idx - max_display_lines / 2
+      if scroll_offset + max_display_lines > total_files
+        let scroll_offset = total_files - max_display_lines
+      endif
+      if scroll_offset < 0
+        let scroll_offset = 0
+      endif
+    endif
+  endif
+  
   " 重新准备显示行
   let display_lines = []
-  let max_width = 80
   
-  for i in range(len(s:file_search.files))
+  " Display files in visible window
+  let end_idx = min([scroll_offset + max_display_lines, total_files])
+  for i in range(scroll_offset, end_idx - 1)
     let file = s:file_search.files[i]
     let marker = (i == s:file_search.selected) ? '▶ ' : '  '
     
-    let display_path = file.relative_path
+    let display_path = has_key(file, 'relative_path') ? file.relative_path : file.path
     if len(display_path) > max_width - 4
       let display_path = '...' . display_path[-(max_width-7):]
     endif
@@ -2209,7 +2266,7 @@ function! s:update_file_search_display() abort
     call add(display_lines, marker . display_path)
   endfor
   
-  " 状态行
+  " 状态行 with scroll info
   let status = printf('Page %d/%d - %d files total',
     \ s:file_search.current_page + 1,
     \ (s:file_search.total_count + 49) / 50,
@@ -2217,6 +2274,13 @@ function! s:update_file_search_display() abort
   if s:file_search.has_more
     let status .= ' (more available)'
   endif
+  
+  " Add scroll indicator if scrolling
+  if total_files > max_display_lines
+    let scroll_info = printf(' [%d-%d]', scroll_offset + 1, min([scroll_offset + max_display_lines, total_files]))
+    let status .= scroll_info
+  endif
+  
   call add(display_lines, '')
   call add(display_lines, status)
   
