@@ -1744,6 +1744,14 @@ function! s:show_file_search_popup() abort
     return
   endif
   
+  " Debug: 打印文件数据结构
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug: Building display for %d files', len(s:file_search.files))
+    if len(s:file_search.files) > 0
+      echom printf('LspDebug: First file structure: %s', string(s:file_search.files[0]))
+    endif
+  endif
+  
   " 准备显示的文件列表
   let display_lines = []
   let max_width = 80
@@ -1753,13 +1761,32 @@ function! s:show_file_search_popup() abort
     let marker = (i == s:file_search.selected) ? '▶ ' : '  '
     
     " 显示相对路径，截断过长的路径
-    let display_path = file.relative_path
+    " 安全访问relative_path字段
+    if type(file) == type({}) && has_key(file, 'relative_path')
+      let display_path = file.relative_path
+    else
+      " 降级处理：如果没有relative_path，尝试使用path
+      if type(file) == type({}) && has_key(file, 'path')
+        let display_path = fnamemodify(file.path, ':.')
+      else
+        let display_path = string(file)
+      endif
+    endif
+    
     if len(display_path) > max_width - 4
       let display_path = '...' . display_path[-(max_width-7):]
     endif
     
     call add(display_lines, marker . display_path)
   endfor
+  
+  " Debug: 打印display_lines
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug: Built %d display lines', len(display_lines))
+    if len(display_lines) > 0
+      echom printf('LspDebug: First display line: "%s"', display_lines[0])
+    endif
+  endif
   
   " 添加状态行
   let status = printf('Page %d/%d - %d files total', 
@@ -1771,6 +1798,17 @@ function! s:show_file_search_popup() abort
   endif
   call add(display_lines, '')
   call add(display_lines, status)
+  
+  " 确保我们有内容显示
+  if empty(display_lines)
+    call add(display_lines, "No files to display")
+  endif
+  
+  " 最终调试：显示即将用于popup的完整内容
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('LspDebug: Final display_lines count: %d', len(display_lines))
+    echom printf('LspDebug: Creating popup with content: %s', string(display_lines))
+  endif
   
   if exists('*popup_create')
     " 使用 Vim 8.1+ popup
@@ -1786,6 +1824,11 @@ function! s:show_file_search_popup() abort
       \ 'filter': function('s:file_search_filter'),
       \ 'callback': function('s:file_search_callback')
       \ })
+      
+    " Debug: 确认popup创建
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('LspDebug: Popup created with ID: %d', s:file_search.popup_id)
+    endif
     
     " 创建输入框
     call s:show_file_search_input()
