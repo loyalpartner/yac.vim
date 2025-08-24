@@ -388,7 +388,7 @@ function! s:start_interactive_file_search() abort
 endfunction
 
 " 处理交互式文件搜索响应
-function! s:handle_interactive_file_search_response(response) abort
+function! s:handle_interactive_file_search_response(channel, response) abort
   if !has_key(a:response, 'files')
     return
   endif
@@ -533,7 +533,7 @@ function! s:update_file_search_with_query() abort
 endfunction
 
 " 处理搜索更新响应
-function! s:handle_interactive_search_update(response) abort
+function! s:handle_interactive_search_update(channel, response) abort
   if !has_key(a:response, 'files')
     return
   endif
