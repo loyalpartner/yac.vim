@@ -55,18 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shared LSP registry for multi-language support
     let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
-    // Bridge mode selection - environment variable driven
+    // Simplified bridge mode - local bridge is always stdio, just forward data
     let mut vim = if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {
-        if std::env::var("YAC_SERVER_MODE").is_ok() {
-            info!("Starting Unix socket server mode on: {}", socket_path);
-            Vim::new_unix_socket_server(&socket_path).await?
-        } else {
-            info!(
-                "Starting Unix socket client mode connecting to: {}",
-                socket_path
-            );
-            Vim::new_unix_socket(&socket_path).await?
-        }
+        info!("Starting Unix socket server mode on: {}", socket_path);
+        Vim::new_unix_socket_server(&socket_path).await?
     } else {
         info!("Starting stdio mode (default)");
         Vim::new_stdio()

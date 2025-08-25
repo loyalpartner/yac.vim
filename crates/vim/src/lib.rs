@@ -9,7 +9,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tracing::error;
 
@@ -369,17 +369,6 @@ pub struct UnixSocketTransport {
 }
 
 impl UnixSocketTransport {
-    /// Connect to existing Unix socket (client mode)
-    pub async fn connect(socket_path: &str) -> Result<Self> {
-        let stream = UnixStream::connect(socket_path).await?;
-        let (read_half, write_half) = stream.into_split();
-
-        Ok(Self {
-            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
-            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
-        })
-    }
-
     /// Create Unix socket server and accept first connection (server mode)
     pub async fn bind_and_accept(socket_path: &str) -> Result<Self> {
         // Remove existing socket file if it exists
@@ -456,16 +445,6 @@ impl Vim {
         }
     }
 
-    /// Create Unix socket client (connects to existing socket)
-    pub async fn new_unix_socket(socket_path: &str) -> Result<Self> {
-        Ok(Self {
-            transport: Box::new(UnixSocketTransport::connect(socket_path).await?),
-            handlers: HashMap::new(),
-            pending_calls: HashMap::new(),
-            next_id: 1,
-        })
-    }
-
     /// Create Unix socket server (binds and accepts first connection)
     pub async fn new_unix_socket_server(socket_path: &str) -> Result<Self> {
         Ok(Self {
@@ -474,12 +453,6 @@ impl Vim {
             pending_calls: HashMap::new(),
             next_id: 1,
         })
-    }
-
-    /// Create TCP client (placeholder for future implementation)
-    pub async fn new_tcp(_addr: &str) -> Result<Self> {
-        // TODO: Implement TCP transport
-        Err(Error::msg("TCP transport not yet implemented"))
     }
 
     /// Type-safe handler registration - compile-time checks
@@ -997,17 +970,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unix_socket_transport() {
-        // Test Unix socket transport creation
+    async fn test_unix_socket_transport_server() {
+        // Test Unix socket server creation
         let socket_path = "/tmp/test_yac_socket";
 
         // Clean up any existing socket
         let _ = std::fs::remove_file(socket_path);
 
-        // Test that we can create a transport (this will test bind functionality)
-        let server_result = UnixSocketTransport::bind_and_accept(socket_path).await;
-        // We expect this to block waiting for a connection, so we just verify the socket was created
-        drop(server_result);
+        // Test that we can create a server (this will test bind functionality)
+        // We expect this to block waiting for a connection, so we can't test the full flow
+        // Just verify the function doesn't panic
+        let server_result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            UnixSocketTransport::bind_and_accept(socket_path),
+        )
+        .await;
+
+        // Should timeout waiting for connection, which is expected
+        assert!(server_result.is_err());
 
         // Clean up
         let _ = std::fs::remove_file(socket_path);
