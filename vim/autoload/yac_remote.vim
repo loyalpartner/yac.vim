@@ -11,13 +11,24 @@ let g:loaded_yac_remote = 1
 function! yac_remote#enhanced_lsp_start() abort
   let l:filepath = expand('%:p')
   
-  " Check if this is an SSH file (scp:// or ssh:// protocol)
+  " Debug logging for mode detection
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Enhanced LSP start for: %s', l:filepath)
+  endif
+  
+  " Check if this is an SSH file (scp:// or ssh:// protocol)  
   if l:filepath =~# '^s\(cp\|sh\)://'
     " SSH file detected - enable remote mode with path conversion
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: SSH file detected, enabling remote mode: %s', l:filepath)
+    endif
     echo "SSH file detected: " . l:filepath
     call s:start_ssh_mode_with_path_conversion(l:filepath)
   else
     " Local file - use standard mode
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Local file detected, using standard mode: %s', l:filepath)
+    endif
     call yac#start()
     call yac#open_file()
   endif
@@ -27,12 +38,19 @@ endfunction
 
 " Start SSH mode with path conversion for remote editing
 function! s:start_ssh_mode_with_path_conversion(filepath) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Starting SSH mode with path conversion for: %s', a:filepath)
+  endif
+  
   " Parse SSH connection info from filepath
   " Format: scp://user@host//path/to/file or ssh://user@host/path/to/file
   " Note: scp:// uses // to indicate absolute path on remote machine
   let l:match = matchlist(a:filepath, '^s\(cp\|sh\)://\([^@]\+@[^/]\+\)\(//\?\(.*\)\)')
   
   if empty(l:match)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Failed to parse SSH path: %s', a:filepath)
+    endif
     echoerr "Invalid SSH file format: " . a:filepath
     return
   endif
@@ -43,6 +61,10 @@ function! s:start_ssh_mode_with_path_conversion(filepath) abort
   " Ensure remote path starts with /
   if l:remote_path !~# '^/'
     let l:remote_path = '/' . l:remote_path
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Parsed connection - Host: %s, Path: %s', l:user_host, l:remote_path)
   endif
   
   echo "Parsed SSH: " . l:user_host . " -> " . l:remote_path
@@ -62,6 +84,10 @@ endfunction
 
 " Convert SSH buffer path to real path for LSP operations
 function! s:convert_ssh_path_for_lsp(real_path) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Converting SSH path for LSP: %s -> %s', expand('%:p'), a:real_path)
+  endif
+  
   " Store original SSH filepath for display
   let b:yac_original_ssh_path = expand('%:p')
   let b:yac_converted_path = a:real_path
@@ -69,6 +95,10 @@ function! s:convert_ssh_path_for_lsp(real_path) abort
   " Temporarily change buffer filename to real path for LSP
   " This ensures remote LSP server receives /home/lee/.zshrc instead of scp://...
   silent! execute 'file ' . fnameescape(a:real_path)
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Path conversion complete. Buffer filename now: %s', expand('%:p'))
+  endif
   
   echo "Path converted for LSP: " . b:yac_original_ssh_path . " -> " . a:real_path
 endfunction
@@ -82,18 +112,37 @@ endfunction
 
 " Set up remote lsp-bridge and SSH tunnel
 function! s:setup_remote_bridge(user_host, remote_path) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Setting up remote bridge for %s (path: %s)', a:user_host, a:remote_path)
+  endif
+  
   " Generate unique socket paths for this SSH session
   let l:local_socket = '/tmp/yac-ssh-' . substitute(a:user_host, '@', '-', 'g') . '.sock'
   let l:remote_socket = '/tmp/yac-remote-' . substitute(a:user_host, '@', '-', 'g') . '.sock'
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Generated socket paths - Local: %s, Remote: %s', l:local_socket, l:remote_socket)
+  endif
   
   " Set environment variable to enable remote forwarding mode
   " YAC_REMOTE_SOCKET tells local lsp-bridge to act as client/forwarder
   let $YAC_REMOTE_SOCKET = l:local_socket
   
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Set YAC_REMOTE_SOCKET environment variable: %s', l:local_socket)
+  endif
+  
   " Check if tunnel already exists
   if s:tunnel_exists(l:local_socket)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Tunnel already exists for %s, reusing', a:user_host)
+    endif
     echo "SSH tunnel already active for " . a:user_host
     return
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: No existing tunnel found, setting up new tunnel for %s', a:user_host)
   endif
   
   echo "Setting up SSH tunnel for " . a:user_host . "..."
@@ -124,36 +173,77 @@ endfunction
 
 " Deploy lsp-bridge binary to remote host
 function! s:deploy_remote_binary(user_host) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Starting binary deployment to %s', a:user_host)
+  endif
+  
   let l:local_binary = './target/release/lsp-bridge'
   let l:remote_path = 'lsp-bridge'  " Deploy to home directory without ~/
   
   " Check if local binary exists
   if !filereadable(l:local_binary)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Local binary not found at %s, building...', l:local_binary)
+    endif
     echo "Building lsp-bridge binary..."
     let l:result = system('cargo build --release')
     if v:shell_error != 0
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom printf('YacDebug[SSH]: Build failed with error: %s', l:result)
+      endif
       echoerr "Failed to build lsp-bridge: " . l:result
       return 0
+    endif
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Build completed successfully')
+    endif
+  else
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Local binary exists at %s', l:local_binary)
     endif
   endif
   
   " Deploy binary via scp - use home directory directly
   echo "Deploying lsp-bridge to " . a:user_host . "..."
   let l:cmd = 'scp ' . shellescape(l:local_binary) . ' ' . shellescape(a:user_host) . ':' . shellescape(l:remote_path)
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Executing SCP command: %s', l:cmd)
+  endif
+  
   let l:result = system(l:cmd)
   
   if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: SCP failed with error: %s', l:result)
+    endif
     echoerr "Failed to deploy binary: " . l:result
     return 0
   endif
   
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Binary deployed successfully, setting permissions')
+  endif
+  
   " Make binary executable
   let l:chmod_cmd = 'ssh ' . shellescape(a:user_host) . ' ' . shellescape('chmod +x ' . l:remote_path)
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Executing chmod command: %s', l:chmod_cmd)
+  endif
+  
   let l:result = system(l:chmod_cmd)
   
   if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Chmod failed with error: %s', l:result)
+    endif
     echoerr "Failed to make binary executable: " . l:result
     return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Binary deployment completed successfully for %s', a:user_host)
   endif
   
   return 1
@@ -161,6 +251,10 @@ endfunction
 
 " Start remote lsp-bridge server
 function! s:start_remote_server(user_host, remote_socket) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Starting remote server on %s (socket: %s)', a:user_host, a:remote_socket)
+  endif
+  
   " Kill any existing remote server for this socket
   call s:stop_remote_server(a:user_host, a:remote_socket)
   
@@ -169,12 +263,23 @@ function! s:start_remote_server(user_host, remote_socket) abort
   let l:remote_cmd = 'cd ~ && YAC_UNIX_SOCKET=' . shellescape(a:remote_socket) . ' ./lsp-bridge'
   let l:ssh_cmd = 'ssh -f ' . shellescape(a:user_host) . ' ' . shellescape(l:remote_cmd)
   
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Executing remote server command: %s', l:ssh_cmd)
+  endif
+  
   echo "Starting remote server: " . l:ssh_cmd
   let l:result = system(l:ssh_cmd)
   
   if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Remote server start failed: %s', l:result)
+    endif
     echoerr "Failed to start remote server: " . l:result
     return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Remote server started, waiting for socket creation')
   endif
   
   " Wait a moment for server to start
@@ -182,11 +287,23 @@ function! s:start_remote_server(user_host, remote_socket) abort
   
   " Verify server is running
   let l:check_cmd = 'ssh ' . shellescape(a:user_host) . ' "test -S ' . shellescape(a:remote_socket) . '"'
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Verifying remote socket exists: %s', l:check_cmd)
+  endif
+  
   let l:result = system(l:check_cmd)
   
   if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Socket verification failed: %s', l:result)
+    endif
     echoerr "Remote server socket not found: " . a:remote_socket
     return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Remote server started successfully on %s', a:user_host)
   endif
   
   return 1
@@ -194,20 +311,38 @@ endfunction
 
 " Create SSH tunnel between local and remote sockets
 function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Creating SSH tunnel: %s (local) -> %s (remote) via %s', a:local_socket, a:remote_socket, a:user_host)
+  endif
+  
   " Remove existing local socket if it exists
   if filereadable(a:local_socket)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Removing existing local socket: %s', a:local_socket)
+    endif
     call delete(a:local_socket)
   endif
   
   " Create SSH tunnel: local socket forwards to remote socket
   let l:tunnel_cmd = 'ssh -f -N -L ' . shellescape(a:local_socket) . ':' . shellescape(a:remote_socket) . ' ' . shellescape(a:user_host)
   
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Executing tunnel command: %s', l:tunnel_cmd)
+  endif
+  
   echo "Creating tunnel: " . l:tunnel_cmd
   let l:result = system(l:tunnel_cmd)
   
   if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Tunnel creation failed: %s', l:result)
+    endif
     echoerr "Failed to create SSH tunnel: " . l:result
     return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Tunnel command executed, waiting for establishment')
   endif
   
   " Wait for tunnel to establish
@@ -216,13 +351,23 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
   " Verify local socket exists
   let l:wait_count = 0
   while !filereadable(a:local_socket) && l:wait_count < 10
+    if get(g:, 'lsp_bridge_debug', 0) && l:wait_count == 0
+      echom printf('YacDebug[SSH]: Waiting for local socket to appear: %s', a:local_socket)
+    endif
     sleep 100m
     let l:wait_count += 1
   endwhile
   
   if !filereadable(a:local_socket)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Tunnel socket creation failed after %d attempts', l:wait_count)
+    endif
     echoerr "Tunnel socket not created: " . a:local_socket
     return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: SSH tunnel established successfully: %s -> %s', a:local_socket, a:remote_socket)
   endif
   
   return 1
@@ -265,45 +410,90 @@ endfunction
 
 " Clean up all active tunnels
 function! yac_remote#cleanup_tunnels() abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Starting cleanup of %d active tunnels', len(s:active_tunnels))
+  endif
+  
   for [l:user_host, l:tunnel] in items(s:active_tunnels)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Cleaning up tunnel for %s (local: %s, remote: %s)', l:user_host, l:tunnel.local_socket, l:tunnel.remote_socket)
+    endif
+    
     echo "Cleaning up tunnel for " . l:user_host
     
     " Kill SSH tunnel process
     let l:kill_ssh = 'pkill -f "ssh.*' . l:tunnel.local_socket . '"'
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Executing tunnel kill command: %s', l:kill_ssh)
+    endif
     call system(l:kill_ssh)
     
     " Remove local socket
     if filereadable(l:tunnel.local_socket)
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom printf('YacDebug[SSH]: Removing local socket: %s', l:tunnel.local_socket)
+      endif
       call delete(l:tunnel.local_socket)
     endif
     
     " Stop remote server
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Stopping remote server for %s', l:user_host)
+    endif
     call s:stop_remote_server(l:user_host, l:tunnel.remote_socket)
   endfor
   
   let s:active_tunnels = {}
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Tunnel cleanup completed')
+  endif
 endfunction
 
 " Reconnect tunnel if connection is lost
 function! yac_remote#reconnect_tunnel(user_host) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Reconnecting tunnel for %s', a:user_host)
+  endif
+  
   if !has_key(s:active_tunnels, a:user_host)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: No tunnel registered for %s', a:user_host)
+    endif
     echoerr "No tunnel registered for " . a:user_host
     return 0
   endif
   
   let l:tunnel = s:active_tunnels[a:user_host]
   
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Found existing tunnel config - Local: %s, Remote: %s', l:tunnel.local_socket, l:tunnel.remote_socket)
+  endif
+  
   echo "Reconnecting tunnel for " . a:user_host . "..."
   
   " Clean up existing tunnel
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Cleaning up existing tunnel for reconnection')
+  endif
   call s:stop_remote_server(a:user_host, l:tunnel.remote_socket)
   
   " Re-establish tunnel
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Re-establishing tunnel connection')
+  endif
+  
   if s:start_remote_server(a:user_host, l:tunnel.remote_socket) && 
      \ s:create_ssh_tunnel(a:user_host, l:tunnel.local_socket, l:tunnel.remote_socket)
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Tunnel reconnected successfully for %s', a:user_host)
+    endif
     echo "Tunnel reconnected successfully"
     return 1
   else
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Tunnel reconnection failed for %s', a:user_host)
+    endif
     echoerr "Failed to reconnect tunnel"
     return 0
   endif
