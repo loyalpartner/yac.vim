@@ -21,6 +21,7 @@ let s:completion.selected = 0
 let s:completion.prefix = ''
 let s:completion.window_offset = 0
 let s:completion.window_size = 8
+let s:completion.popup_pos = {}  " 存储popup初始位置，避免导航时漂移
 
 " 诊断虚拟文本状态
 let s:diagnostic_virtual_text = {}
@@ -1026,23 +1027,27 @@ function! s:filter_completions() abort
 endfunction
 
 
-" 光标附近popup创建
+" 光标附近popup创建 - 稳定定位避免导航时漂移
 function! s:create_or_update_completion_popup(lines) abort
   if exists('*popup_create')
     if s:completion.popup_id != -1
-      call popup_close(s:completion.popup_id)
+      " 更新现有popup内容，保持位置稳定
+      call popup_settext(s:completion.popup_id, a:lines)
+    else
+      " 首次创建popup时记录位置
+      let s:completion.popup_pos = {'line': line('.') + 1, 'col': col('.')}
+      
+      let s:completion.popup_id = popup_create(a:lines, {
+        \ 'line': s:completion.popup_pos.line,
+        \ 'col': s:completion.popup_pos.col,
+        \ 'minwidth': 30,
+        \ 'maxwidth': 40,
+        \ 'maxheight': len(a:lines),
+        \ 'border': [],
+        \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+        \ 'filter': function('s:completion_filter')
+        \ })
     endif
-
-    let s:completion.popup_id = popup_create(a:lines, {
-      \ 'line': 'cursor+1',
-      \ 'col': 'cursor',
-      \ 'minwidth': 30,
-      \ 'maxwidth': 40,
-      \ 'maxheight': len(a:lines),
-      \ 'border': [],
-      \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
-      \ 'filter': function('s:completion_filter')
-      \ })
   else
     echo "Completions: " . join(a:lines, " | ")
   endif
@@ -1215,6 +1220,7 @@ function! s:close_completion_popup() abort
   let s:completion.original_items = []
   let s:completion.selected = 0
   let s:completion.prefix = ''
+  let s:completion.popup_pos = {}  " 清除位置记录
 endfunction
 
 " 补全窗口按键过滤器
