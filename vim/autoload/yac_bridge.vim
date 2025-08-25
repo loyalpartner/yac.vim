@@ -312,32 +312,32 @@ endfunction
 
 function! yac_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
-  call s:request('did_save', {
+  call s:notify('did_save', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
-    \ }, 's:handle_did_save_response')
+    \ })
 endfunction
 
 function! yac_bridge#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
-  call s:request('did_change', {
+  call s:notify('did_change', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
-    \ }, 's:handle_did_change_response')
+    \ })
 endfunction
 
 function! yac_bridge#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
-  call s:request('will_save', {
+  call s:notify('will_save', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'save_reason': save_reason
-    \ }, 's:handle_will_save_response')
+    \ })
 endfunction
 
 function! yac_bridge#will_save_wait_until(...) abort
@@ -351,11 +351,11 @@ function! yac_bridge#will_save_wait_until(...) abort
 endfunction
 
 function! yac_bridge#did_close() abort
-  call s:request('did_close', {
+  call s:notify('did_close', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
-    \ }, 's:handle_did_close_response')
+    \ })
 endfunction
 
 function! yac_bridge#file_search(...) abort
@@ -734,30 +734,6 @@ function! s:handle_file_open_response(channel, response) abort
   endif
 endfunction
 
-" did_save 响应处理器
-function! s:handle_did_save_response(channel, response) abort
-  " 通常没有响应，除非出错
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: did_save response: %s', string(a:response))
-  endif
-endfunction
-
-" did_change 响应处理器
-function! s:handle_did_change_response(channel, response) abort
-  " 通常没有响应，除非出错
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: did_change response: %s', string(a:response))
-  endif
-endfunction
-
-" will_save 响应处理器
-function! s:handle_will_save_response(channel, response) abort
-  " 通常没有响应，除非出错
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: will_save response: %s', string(a:response))
-  endif
-endfunction
-
 " will_save_wait_until 响应处理器
 function! s:handle_will_save_wait_until_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
@@ -767,14 +743,6 @@ function! s:handle_will_save_wait_until_response(channel, response) abort
   " 可能返回文本编辑
   if has_key(a:response, 'edits')
     " 应用编辑
-  endif
-endfunction
-
-" did_close 响应处理器
-function! s:handle_did_close_response(channel, response) abort
-  " 通常没有响应，除非出错
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: did_close response: %s', string(a:response))
   endif
 endfunction
 
