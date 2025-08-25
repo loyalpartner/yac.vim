@@ -1,6 +1,5 @@
 use lsp_bridge::LspRegistry;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tracing::info;
 use vim::Vim;
 
@@ -28,43 +27,72 @@ use handlers::{
     WillSaveHandler,
 };
 
-/// Pure stdio-to-socket forwarder for local bridge mode
-/// This function implements transparent message forwarding:
-/// - stdin (vim messages) -> Unix socket (remote bridge)  
-/// - Unix socket (responses) -> stdout (vim)
+/// SSH forwarder for local bridge mode (no socat required)
+/// This function implements direct SSH communication:
+/// - stdin (vim messages) -> SSH -> remote lsp-bridge process
+/// - remote lsp-bridge stdout -> SSH -> stdout (vim)
 ///
-/// Local bridge executes NO LSP logic - just forwards data
-async fn run_stdio_to_socket_forwarder(
-    socket_path: &str,
+/// Local bridge executes NO LSP logic - just forwards data via SSH
+async fn run_stdio_to_ssh_forwarder(
+    ssh_host: &str,
+    remote_socket: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Connecting to remote bridge at: {}", socket_path);
-    let socket = UnixStream::connect(socket_path).await?;
-    let (socket_reader, socket_writer) = socket.into_split();
+    info!(
+        "Starting SSH forwarder to {} (socket: {})",
+        ssh_host, remote_socket
+    );
+
+    // Start persistent SSH connection that runs remote lsp-bridge directly
+    // The remote lsp-bridge will use Unix socket server mode
+    let remote_cmd = format!("YAC_UNIX_SOCKET={} ./lsp-bridge", remote_socket);
+    let ssh_cmd = format!("ssh {} '{}'", ssh_host, remote_cmd);
+
+    info!("Executing SSH command: {}", ssh_cmd);
+
+    let mut ssh_process = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&ssh_cmd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
 
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
-    let mut socket_reader = BufReader::new(socket_reader);
-    let mut socket_writer = socket_writer;
 
-    info!("Local bridge forwarder started - transparent data forwarding");
+    let ssh_stdin = ssh_process.stdin.take().ok_or("Failed to get SSH stdin")?;
+    let ssh_stdout = ssh_process
+        .stdout
+        .take()
+        .ok_or("Failed to get SSH stdout")?;
+    let ssh_stderr = ssh_process
+        .stderr
+        .take()
+        .ok_or("Failed to get SSH stderr")?;
 
-    // Spawn two concurrent tasks for bidirectional forwarding
-    let stdin_to_socket = async {
+    let mut ssh_stdin = tokio::io::BufWriter::new(ssh_stdin);
+    let mut ssh_stdout = BufReader::new(ssh_stdout);
+    let mut ssh_stderr = BufReader::new(ssh_stderr);
+
+    info!("SSH process started, setting up bidirectional forwarding");
+
+    // Forward stdin to SSH
+    let stdin_to_ssh = async {
         let mut line = String::new();
         loop {
             line.clear();
             match stdin.read_line(&mut line).await {
                 Ok(0) => {
-                    info!("stdin EOF - shutting down forwarder");
+                    info!("stdin EOF - closing SSH stdin");
                     break;
                 }
                 Ok(_) => {
-                    if let Err(e) = socket_writer.write_all(line.as_bytes()).await {
-                        info!("Failed to forward to socket: {}", e);
+                    if let Err(e) = ssh_stdin.write_all(line.as_bytes()).await {
+                        info!("Failed to write to SSH stdin: {}", e);
                         break;
                     }
-                    if let Err(e) = socket_writer.flush().await {
-                        info!("Failed to flush socket: {}", e);
+                    if let Err(e) = ssh_stdin.flush().await {
+                        info!("Failed to flush SSH stdin: {}", e);
                         break;
                     }
                 }
@@ -76,18 +104,19 @@ async fn run_stdio_to_socket_forwarder(
         }
     };
 
-    let socket_to_stdout = async {
+    // Forward SSH stdout to stdout
+    let ssh_to_stdout = async {
         let mut line = String::new();
         loop {
             line.clear();
-            match socket_reader.read_line(&mut line).await {
+            match ssh_stdout.read_line(&mut line).await {
                 Ok(0) => {
-                    info!("socket EOF - shutting down forwarder");
+                    info!("SSH stdout EOF");
                     break;
                 }
                 Ok(_) => {
                     if let Err(e) = stdout.write_all(line.as_bytes()).await {
-                        info!("Failed to forward to stdout: {}", e);
+                        info!("Failed to write to stdout: {}", e);
                         break;
                     }
                     if let Err(e) = stdout.flush().await {
@@ -96,20 +125,42 @@ async fn run_stdio_to_socket_forwarder(
                     }
                 }
                 Err(e) => {
-                    info!("socket read error: {}", e);
+                    info!("SSH stdout read error: {}", e);
                     break;
                 }
             }
         }
     };
 
-    // Run both directions concurrently - terminates when either fails
+    // Monitor SSH stderr for errors
+    let ssh_stderr_monitor = async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match ssh_stderr.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    info!("SSH stderr: {}", line.trim());
+                }
+                Err(_) => break,
+            }
+        }
+    };
+
+    // Run all forwarding tasks concurrently
     tokio::select! {
-        _ = stdin_to_socket => {},
-        _ = socket_to_stdout => {},
+        _ = stdin_to_ssh => {},
+        _ = ssh_to_stdout => {},
+        _ = ssh_stderr_monitor => {},
+        result = ssh_process.wait() => {
+            match result {
+                Ok(status) => info!("SSH process exited with status: {}", status),
+                Err(e) => info!("SSH process error: {}", e),
+            }
+        }
     }
 
-    info!("Local bridge forwarder terminated");
+    info!("SSH forwarder terminated");
     Ok(())
 }
 
@@ -128,32 +179,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(&log_path)?;
 
     tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(log_file)
-                .with_ansi(false)
-                .with_file(true)
-                .with_line_number(true),
-        )
+        .with(fmt::layer().with_writer(log_file).with_ansi(false))
         .init();
 
-    info!("lsp-bridge starting with log: {}", log_path);
+    info!("LSP Bridge started with PID: {}", pid);
+    info!("Log file: {}", log_path);
 
-    // Create shared LSP registry for multi-language support
     let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
-    // Bridge mode selection based on role:
+    // Bridge mode selection based on role (no socat dependency):
+    // - YAC_SSH_HOST + YAC_REMOTE_SOCKET: Local bridge (SSH forwarder mode)
     // - YAC_UNIX_SOCKET set: Remote bridge (server mode for LSP processing)
-    // - YAC_REMOTE_SOCKET set: Local bridge (pure stdio-to-socket forwarder)
     // - Neither set: Standard local mode (stdio)
 
-    if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
+    // Check for SSH forwarding mode first (no socat required)
+    if let (Ok(ssh_host), Ok(remote_socket)) = (
+        std::env::var("YAC_SSH_HOST"),
+        std::env::var("YAC_REMOTE_SOCKET"),
+    ) {
         info!(
-            "Starting local bridge forwarder mode: stdio <-> {}",
-            remote_socket
+            "Starting SSH forwarding mode (local bridge): {} -> {}",
+            ssh_host, remote_socket
         );
-        run_stdio_to_socket_forwarder(&remote_socket).await?;
-        return Ok(()); // Pure forwarder - no vim client needed
+        run_stdio_to_ssh_forwarder(&ssh_host, &remote_socket).await?;
+        return Ok(()); // Pure SSH forwarder - no vim client needed
     }
 
     let mut vim = if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {
@@ -191,57 +240,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GotoHandler::new(lsp_registry.clone(), "goto_implementation").unwrap();
     let hover_handler = HoverHandler::new(lsp_registry.clone());
     let completion_handler = CompletionHandler::new(lsp_registry.clone());
-    // Updated handlers using LspRegistry
     let references_handler = ReferencesHandler::new(lsp_registry.clone());
     let inlay_hints_handler = InlayHintsHandler::new(lsp_registry.clone());
     let rename_handler = RenameHandler::new(lsp_registry.clone());
-    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
-    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
-    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
     let code_action_handler = CodeActionHandler::new(lsp_registry.clone());
     let execute_command_handler = ExecuteCommandHandler::new(lsp_registry.clone());
+    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
     let call_hierarchy_handler = CallHierarchyHandler::new(lsp_registry.clone());
+    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
+    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
 
-    // Document lifecycle handlers - Updated
-    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
+    // Document lifecycle handlers
     let did_change_handler = DidChangeHandler::new(lsp_registry.clone());
-    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
     let did_close_handler = DidCloseHandler::new(lsp_registry.clone());
+    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
+    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
 
-    // Register handlers for all supported commands
-    // Core LSP functionality - Linus style: type-safe dispatch
+    // Register all handlers using the vim crate API
     vim.add_handler("file_open", file_open_handler);
     vim.add_handler("file_search", file_search_handler);
+    vim.add_handler("goto_definition", definition_handler);
+    vim.add_handler("goto_declaration", declaration_handler);
+    vim.add_handler("goto_type_definition", type_definition_handler);
+    vim.add_handler("goto_implementation", implementation_handler);
     vim.add_handler("hover", hover_handler);
     vim.add_handler("completion", completion_handler);
     vim.add_handler("references", references_handler);
     vim.add_handler("inlay_hints", inlay_hints_handler);
     vim.add_handler("rename", rename_handler);
-    vim.add_handler("document_symbols", document_symbols_handler);
-    vim.add_handler("folding_range", folding_range_handler);
-    vim.add_handler("diagnostics", diagnostics_handler);
     vim.add_handler("code_action", code_action_handler);
     vim.add_handler("execute_command", execute_command_handler);
-    vim.add_handler("call_hierarchy_incoming", call_hierarchy_handler.clone());
-    vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
+    vim.add_handler("document_symbols", document_symbols_handler);
+    vim.add_handler("call_hierarchy", call_hierarchy_handler);
+    vim.add_handler("folding_range", folding_range_handler);
+    vim.add_handler("diagnostics", diagnostics_handler);
 
-    // Notification handlers
-    vim.add_handler("goto_definition", definition_handler);
-    vim.add_handler("goto_declaration", declaration_handler);
-    vim.add_handler("goto_type_definition", type_definition_handler);
-    vim.add_handler("goto_implementation", implementation_handler);
-
-    // Document lifecycle handlers - Updated
-    vim.add_handler("did_save", did_save_handler);
+    // Document lifecycle handlers
     vim.add_handler("did_change", did_change_handler);
-    vim.add_handler("will_save", will_save_handler);
     vim.add_handler("did_close", did_close_handler);
+    vim.add_handler("did_save", did_save_handler);
+    vim.add_handler("will_save", will_save_handler);
 
-    info!("vim client configured, starting message loop...");
-
-    // Run the vim client - this replaces the manual stdin/stdout loop
+    // Start the message processing loop
     vim.run().await?;
 
-    info!("lsp-bridge shutting down...");
     Ok(())
 }

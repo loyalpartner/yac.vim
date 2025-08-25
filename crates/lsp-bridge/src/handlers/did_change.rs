@@ -57,6 +57,7 @@ impl TextDocumentContentChangeEvent {
     }
 }
 
+#[derive(Clone)]
 pub struct DidChangeHandler {
     lsp_registry: Arc<LspRegistry>,
 }
