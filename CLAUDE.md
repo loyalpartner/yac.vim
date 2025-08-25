@@ -232,6 +232,8 @@ inoremap <silent> <C-Space> <C-o>:YacComplete<CR>
 ```
 
 ### Available Commands
+
+#### Core LSP Commands
 ```vim
 :YacStart              " Start LSP bridge process
 :YacStop               " Stop LSP bridge process
@@ -244,6 +246,16 @@ inoremap <silent> <C-Space> <C-o>:YacComplete<CR>
 :YacReferences         " Find all references
 :YacInlayHints         " Show inlay hints for current file
 :YacClearInlayHints    " Clear displayed inlay hints
+```
+
+#### SSH Remote Commands
+```vim
+:YacRemoteReconnect user@host   " Reconnect lost SSH tunnel for specific host
+:YacRemoteCleanup              " Clean up all active SSH tunnels and remote servers
+```
+
+#### Debug and Logging Commands
+```vim
 :YacOpenLog            " Open LSP bridge log file
 :YacDebugToggle        " Toggle debug mode for message logging
 :YacDebugStatus        " Show debug status, pending requests, and log locations
@@ -327,6 +339,130 @@ call s:request('hover', {'file': expand('%:p'), 'line': line('.')-1, 'column': c
 ### Language Support
 - **Rust**: Full support via `rust-analyzer`
 - **Other languages**: Framework exists but not implemented
+
+## SSH Tunnel Infrastructure
+
+### SSH Remote Editing Support
+
+The project now includes comprehensive SSH tunnel infrastructure for remote LSP editing, allowing transparent access to LSP servers running on remote machines through SSH tunnels.
+
+#### Architecture Overview
+
+**SSH Tunnel Communication Flow:**
+```
+Vim ↔ local lsp-bridge (forwarder) ↔ SSH tunnel ↔ remote lsp-bridge (LSP server) ↔ rust-analyzer
+```
+
+**Three Operation Modes:**
+
+1. **Standard Mode** (local files):
+   - No environment variables set
+   - Direct stdio communication: `Vim ↔ lsp-bridge ↔ rust-analyzer`
+
+2. **Local Bridge Mode** (SSH forwarder):
+   - `YAC_REMOTE_SOCKET=/tmp/local.sock` set
+   - Pure stdio-to-socket forwarder: `Vim ↔ lsp-bridge (client) ↔ SSH tunnel`
+
+3. **Remote Bridge Mode** (SSH server):
+   - `YAC_UNIX_SOCKET=/tmp/remote.sock` set  
+   - Unix socket server for LSP processing: `SSH tunnel ↔ lsp-bridge (server) ↔ rust-analyzer`
+
+#### Key Features
+
+**🔍 Auto SSH Detection:**
+- Automatically detects SSH file formats: `scp://user@host//path/file.rs`
+- Seamlessly switches between local and remote modes
+- No manual configuration required
+
+**🔄 Path Conversion:**
+- Transparently converts SSH paths to regular paths for LSP operations
+- Example: `scp://user@host//home/user/file.rs` → `/home/user/file.rs`
+- Remote LSP server receives standard Unix paths
+
+**📦 Auto Deployment:**
+- Automatically builds and deploys lsp-bridge binary to remote hosts via `scp`
+- Sets executable permissions and verifies deployment
+- Handles build process if binary doesn't exist locally
+
+**🖥️ Remote Server Management:**
+- SSH-based remote lsp-bridge server startup
+- Process management and cleanup
+- Socket existence verification
+
+**🔧 SSH Tunnel Management:**
+- Creates Unix socket tunnels: local socket ↔ remote socket
+- Connection verification and retry logic
+- Automatic cleanup on Vim exit
+
+**🔄 Connection Resilience:**
+- Tunnel registry for managing multiple SSH connections
+- Reconnection capabilities for lost connections
+- Comprehensive cleanup mechanisms
+
+#### Usage
+
+**Automatic SSH Mode Activation:**
+```vim
+" Opening SSH files automatically enables remote mode
+:e scp://user@dev-server//home/user/project/src/main.rs
+
+" The system automatically:
+" 1. Detects SSH file format
+" 2. Deploys lsp-bridge to remote host
+" 3. Starts remote lsp-bridge server
+" 4. Creates SSH tunnel
+" 5. Starts local forwarder bridge
+" 6. Opens file with path conversion
+```
+
+**Manual Tunnel Management:**
+```vim
+:YacRemoteReconnect user@host    " Reconnect lost SSH tunnel
+:YacRemoteCleanup               " Clean up all SSH tunnels
+```
+
+#### Implementation Details
+
+**Path Conversion Logic (yac_remote.vim:30-74):**
+```vim
+" Parse: scp://lee@127.0.0.1//home/lee/.zshrc
+" Extract: user_host="lee@127.0.0.1", remote_path="/home/lee/.zshrc"
+" Convert buffer filename temporarily for LSP operations
+silent! execute 'file ' . fnameescape(a:real_path)
+```
+
+**Stdio-to-Socket Forwarder (main.rs:37-114):**
+```rust
+// Pure forwarder mode - no vim client instantiation
+if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
+    run_stdio_to_socket_forwarder(&remote_socket).await?;
+    return Ok(()); // Transparent bidirectional forwarding
+}
+```
+
+**Three-Mode Architecture (main.rs:150-168):**
+```rust
+// Mode selection based on environment variables
+if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
+    // Local bridge: stdio → socket forwarder
+    run_stdio_to_socket_forwarder(&remote_socket).await?;
+} else if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {
+    // Remote bridge: Unix socket → LSP server
+    Vim::new_unix_socket_server(&socket_path).await?
+} else {
+    // Standard mode: stdio → direct LSP
+    Vim::new_stdio()
+};
+```
+
+#### Technical Benefits
+
+- **Zero Breaking Changes**: Full backward compatibility with existing functionality
+- **Transport Abstraction**: Clean separation between local/remote communication layers  
+- **Firewall Friendly**: Uses SSH tunneling instead of direct TCP connections
+- **Auto-initialization**: Remote LSP servers start automatically when SSH files opened
+- **Resource Management**: Comprehensive cleanup prevents resource leaks
+- **Error Resilience**: Robust error handling and recovery mechanisms
 
 ### Planned Features
 - Multi-language support (Python, TypeScript, Go, etc.)

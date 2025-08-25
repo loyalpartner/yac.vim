@@ -68,6 +68,7 @@ impl RenameInfo {
     }
 }
 
+#[derive(Clone)]
 pub struct RenameHandler {
     lsp_registry: Arc<LspRegistry>,
 }

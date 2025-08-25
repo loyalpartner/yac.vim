@@ -183,6 +183,9 @@ impl Handler for GotoHandler {
         if let Some(lsp_location) = location_result {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
+
+                // Direct file editing - no path conversion needed
+                // Remote server sees normal paths, not SSH format
                 ctx.ex(format!("edit {}", location.file).as_str())
                     .await
                     .ok();

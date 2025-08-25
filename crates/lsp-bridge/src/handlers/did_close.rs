@@ -15,6 +15,7 @@ pub struct DidCloseRequest {
 // Notification pattern - no response data needed
 pub type DidCloseResponse = Option<()>;
 
+#[derive(Clone)]
 pub struct DidCloseHandler {
     lsp_registry: Arc<LspRegistry>,
 }

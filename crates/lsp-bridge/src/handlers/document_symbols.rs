@@ -84,6 +84,7 @@ impl DocumentSymbolsInfo {
     }
 }
 
+#[derive(Clone)]
 pub struct DocumentSymbolsHandler {
     lsp_registry: Arc<LspRegistry>,
 }
