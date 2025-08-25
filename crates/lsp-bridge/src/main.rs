@@ -1,4 +1,6 @@
 use lsp_bridge::LspRegistry;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 use tracing::info;
 use vim::Vim;
 
@@ -25,6 +27,91 @@ use handlers::{
     RenameHandler,
     WillSaveHandler,
 };
+
+/// Pure stdio-to-socket forwarder for local bridge mode
+/// This function implements transparent message forwarding:
+/// - stdin (vim messages) -> Unix socket (remote bridge)  
+/// - Unix socket (responses) -> stdout (vim)
+///
+/// Local bridge executes NO LSP logic - just forwards data
+async fn run_stdio_to_socket_forwarder(
+    socket_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to remote bridge at: {}", socket_path);
+    let socket = UnixStream::connect(socket_path).await?;
+    let (socket_reader, socket_writer) = socket.into_split();
+
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    let mut socket_reader = BufReader::new(socket_reader);
+    let mut socket_writer = socket_writer;
+
+    info!("Local bridge forwarder started - transparent data forwarding");
+
+    // Spawn two concurrent tasks for bidirectional forwarding
+    let stdin_to_socket = async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match stdin.read_line(&mut line).await {
+                Ok(0) => {
+                    info!("stdin EOF - shutting down forwarder");
+                    break;
+                }
+                Ok(_) => {
+                    if let Err(e) = socket_writer.write_all(line.as_bytes()).await {
+                        info!("Failed to forward to socket: {}", e);
+                        break;
+                    }
+                    if let Err(e) = socket_writer.flush().await {
+                        info!("Failed to flush socket: {}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    info!("stdin read error: {}", e);
+                    break;
+                }
+            }
+        }
+    };
+
+    let socket_to_stdout = async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match socket_reader.read_line(&mut line).await {
+                Ok(0) => {
+                    info!("socket EOF - shutting down forwarder");
+                    break;
+                }
+                Ok(_) => {
+                    if let Err(e) = stdout.write_all(line.as_bytes()).await {
+                        info!("Failed to forward to stdout: {}", e);
+                        break;
+                    }
+                    if let Err(e) = stdout.flush().await {
+                        info!("Failed to flush stdout: {}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    info!("socket read error: {}", e);
+                    break;
+                }
+            }
+        }
+    };
+
+    // Run both directions concurrently - terminates when either fails
+    tokio::select! {
+        _ = stdin_to_socket => {},
+        _ = socket_to_stdout => {},
+    }
+
+    info!("Local bridge forwarder terminated");
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,14 +144,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Bridge mode selection based on role:
     // - YAC_UNIX_SOCKET set: Remote bridge (server mode for LSP processing)
-    // - YAC_REMOTE_SOCKET set: Local bridge (client mode for message forwarding) 
+    // - YAC_REMOTE_SOCKET set: Local bridge (pure stdio-to-socket forwarder)
     // - Neither set: Standard local mode (stdio)
+
+    if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
+        info!(
+            "Starting local bridge forwarder mode: stdio <-> {}",
+            remote_socket
+        );
+        run_stdio_to_socket_forwarder(&remote_socket).await?;
+        return Ok(()); // Pure forwarder - no vim client needed
+    }
+
     let mut vim = if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {
-        info!("Starting Unix socket server mode (remote bridge): {}", socket_path);
+        info!(
+            "Starting Unix socket server mode (remote bridge): {}",
+            socket_path
+        );
         Vim::new_unix_socket_server(&socket_path).await?
-    } else if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
-        info!("Starting Unix socket client mode (local bridge forwarder): {}", remote_socket);
-        Vim::new_unix_socket_client(&remote_socket).await?
     } else {
         info!("Starting stdio mode (standard local)");
         Vim::new_stdio()
