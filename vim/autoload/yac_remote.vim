@@ -180,6 +180,27 @@ function! s:deploy_remote_binary(user_host) abort
   let l:local_binary = './target/release/lsp-bridge'
   let l:remote_path = 'lsp-bridge'  " Deploy to home directory without ~/
   
+  " Check if remote binary already exists and is executable
+  let l:remote_check_cmd = 'ssh ' . shellescape(a:user_host) . ' "test -x ' . shellescape(l:remote_path) . '"'
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Checking if remote binary exists: %s', l:remote_check_cmd)
+  endif
+  
+  let l:result = system(l:remote_check_cmd)
+  
+  if v:shell_error == 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Remote binary already exists and is executable at %s:%s', a:user_host, l:remote_path)
+    endif
+    echo "Remote lsp-bridge binary already exists, skipping deployment"
+    return 1
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Remote binary not found or not executable, proceeding with deployment')
+  endif
+  
   " Check if local binary exists
   if !filereadable(l:local_binary)
     if get(g:, 'lsp_bridge_debug', 0)
