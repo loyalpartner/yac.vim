@@ -22,7 +22,7 @@ The README.md file describes a completely different architecture than what's act
 | README Claims | Actual Implementation |
 |---------------|----------------------|
 | TCP server-client architecture | stdin/stdout process communication |
-| `:YACStart`, `:YACStatus` commands | `:LspDefinition`, `:LspHover`, `:LspComplete` commands |
+| `:YACStart`, `:YACStatus` commands | `:YacDefinition`, `:YacHover`, `:YacComplete` commands |
 | Multi-editor server support | One process per Vim instance |
 | Performance benchmarks (800ms→200ms) | No benchmarks performed |
 | Config files in `~/.config/yac-vim/` | No config file support |
@@ -78,7 +78,7 @@ vim -u vimrc test_data/src/lib.rs
 # Test other features:
 # - Press 'K' for hover information
 # - Press 'gD' for goto declaration
-# - Use :LspComplete for completion
+# - Use :YacComplete for completion
 ```
 
 ### Development and Debugging
@@ -123,7 +123,7 @@ Vim Plugin (ch_sendraw) → vim crate v4 (JSON array) → lsp-bridge → LSP Ser
 - Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'json'`
 - Each Vim instance has its own `lsp-bridge` process (no shared server)
 - Communication uses vim crate v4's unified message processing with dual JSON-RPC/notification protocols
-- Process terminates when Vim closes or `:LspStop` is called
+- Process terminates when Vim closes or `:YacStop` is called
 
 ### Unified Request/Notification Architecture
 
@@ -142,7 +142,7 @@ function! s:notify(method, params)
 endfunction
 
 " 3. LSP goto methods now use notifications for immediate action
-function! lsp_bridge#goto_definition()
+function! yac_bridge#goto_definition()
   call s:notify('goto_definition', {'file': expand('%:p'), 'line': line('.')-1, 'column': col('.')-1})
 endfunction
 ```
@@ -203,15 +203,15 @@ pub type GotoResponse = Option<Location>;
 ### Development Setup
 The `vimrc` file provides test configuration:
 ```vim
-let g:lsp_bridge_command = ['./target/release/lsp-bridge']
-let g:lsp_bridge_auto_start = 1
+let g:yac_bridge_command = ['./target/release/lsp-bridge']
+let g:yac_bridge_auto_start = 1
 ```
 
 ### Auto-Completion Settings
 ```vim
-let g:lsp_bridge_auto_complete = 1          " Enable auto-completion (default: 1)
-let g:lsp_bridge_auto_complete_delay = 200  " Delay in milliseconds (default: 200)
-let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (default: 1)
+let g:yac_bridge_auto_complete = 1          " Enable auto-completion (default: 1)
+let g:yac_bridge_auto_complete_delay = 200  " Delay in milliseconds (default: 200)
+let g:yac_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (default: 1)
 ```
 
 **Smart Delay Strategy**:
@@ -221,39 +221,39 @@ let g:lsp_bridge_auto_complete_min_chars = 1 " Minimum characters to trigger (de
 
 ### Default Key Mappings
 ```vim
-nnoremap <silent> gd :LspDefinition<CR>
-nnoremap <silent> gD :LspDeclaration<CR>
-nnoremap <silent> gy :LspTypeDefinition<CR>
-nnoremap <silent> gi :LspImplementation<CR>
-nnoremap <silent> gr :LspReferences<CR>
-nnoremap <silent> K  :LspHover<CR>
+nnoremap <silent> gd :YacDefinition<CR>
+nnoremap <silent> gD :YacDeclaration<CR>
+nnoremap <silent> gy :YacTypeDefinition<CR>
+nnoremap <silent> gi :YacImplementation<CR>
+nnoremap <silent> gr :YacReferences<CR>
+nnoremap <silent> K  :YacHover<CR>
 " Manual completion trigger
-inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
+inoremap <silent> <C-Space> <C-o>:YacComplete<CR>
 ```
 
 ### Available Commands
 ```vim
-:LspStart              " Start LSP bridge process
-:LspStop               " Stop LSP bridge process
-:LspDefinition         " Jump to symbol definition
-:LspDeclaration        " Jump to symbol declaration
-:LspTypeDefinition     " Jump to type definition
-:LspImplementation     " Jump to implementation
-:LspHover              " Show hover information
-:LspComplete           " Trigger completion manually
-:LspReferences         " Find all references
-:LspInlayHints         " Show inlay hints for current file
-:LspClearInlayHints    " Clear displayed inlay hints
-:LspOpenLog            " Open LSP bridge log file
-:LspDebugToggle        " Toggle debug mode for message logging
-:LspDebugStatus        " Show debug status, pending requests, and log locations
-:LspClearPendingRequests " Clear stale pending requests (30s+ timeout)
+:YacStart              " Start LSP bridge process
+:YacStop               " Stop LSP bridge process
+:YacDefinition         " Jump to symbol definition
+:YacDeclaration        " Jump to symbol declaration
+:YacTypeDefinition     " Jump to type definition
+:YacImplementation     " Jump to implementation
+:YacHover              " Show hover information
+:YacComplete           " Trigger completion manually
+:YacReferences         " Find all references
+:YacInlayHints         " Show inlay hints for current file
+:YacClearInlayHints    " Clear displayed inlay hints
+:YacOpenLog            " Open LSP bridge log file
+:YacDebugToggle        " Toggle debug mode for message logging
+:YacDebugStatus        " Show debug status, pending requests, and log locations
+:YacClearPendingRequests " Clear stale pending requests (30s+ timeout)
 ```
 
 ### Log Viewing Commands
 ```vim
-:LspOpenLog    " Open log viewer in a new buffer
-:LspClearLog   " Clear current log file
+:YacOpenLog    " Open log viewer in a new buffer
+:YacClearLog   " Clear current log file
 ```
 
 **Log Features**:
@@ -262,8 +262,8 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR>
 
 ### Debug Mode Commands
 ```vim
-:LspDebugToggle        " Enable/disable debug logging
-:LspDebugStatus        " Show current debug state and log paths
+:YacDebugToggle        " Enable/disable debug logging
+:YacDebugStatus        " Show current debug state and log paths
 ```
 
 **Debug Features**:
@@ -446,17 +446,17 @@ Auto-completion must be tested manually due to the nature of interactive events:
 
 ### Debug Information
 - LSP bridge logs: `/tmp/lsp-bridge-<pid>.log`
-- Vim debug logs: Use `:LspDebugToggle` to enable
+- Vim debug logs: Use `:YacDebugToggle` to enable
 - Channel logs: `/tmp/vim_channel.log` when debug mode enabled
 - Enable Rust debug with `RUST_LOG=debug`
 
 **Debug Usage Example:**
 ```vim
-:LspDebugToggle        " Enable debug mode
-:LspDefinition         " Will show:
-" LspDebug[SEND]: goto_definition -> lib.rs:31:26
-" LspDebug[JSON]: {"method": "goto_definition", "params": {...}}
-" LspDebug[RECV]: goto_definition response: {"file": "/path/file.rs", "line": 31, "column": 26}
+:YacDebugToggle        " Enable debug mode
+:YacDefinition         " Will show:
+" YacDebug[SEND]: goto_definition -> lib.rs:31:26
+" YacDebug[JSON]: {"method": "goto_definition", "params": {...}}
+" YacDebug[RECV]: goto_definition response: {"file": "/path/file.rs", "line": 31, "column": 26}
 ```
 
 The test data includes a simple Rust project structure for validating LSP functionality.
