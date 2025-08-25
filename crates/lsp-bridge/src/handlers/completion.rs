@@ -175,11 +175,17 @@ impl Handler for CompletionHandler {
             context: None,
         };
 
-        // Set trigger context if provided
+        // Set trigger context - always provide context for better completion results
         if let Some(trigger_char) = input.trigger_character.clone() {
             params.context = Some(lsp_types::CompletionContext {
                 trigger_kind: lsp_types::CompletionTriggerKind::TRIGGER_CHARACTER,
                 trigger_character: Some(trigger_char),
+            });
+        } else {
+            // Manual completion request - use INVOKED trigger kind
+            params.context = Some(lsp_types::CompletionContext {
+                trigger_kind: lsp_types::CompletionTriggerKind::INVOKED,
+                trigger_character: None,
             });
         }
 
