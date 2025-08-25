@@ -6,6 +6,52 @@ if !hlexists('YacBridgeMatchChar')
   highlight YacBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
 endif
 
+" 定义补全项类型的高亮组
+if !hlexists('YacCompletionFunction')
+  highlight YacCompletionFunction ctermfg=Blue ctermbg=NONE guifg=#61AFEF guibg=NONE
+endif
+if !hlexists('YacCompletionVariable')
+  highlight YacCompletionVariable ctermfg=Green ctermbg=NONE guifg=#98C379 guibg=NONE
+endif
+if !hlexists('YacCompletionStruct')
+  highlight YacCompletionStruct ctermfg=Magenta ctermbg=NONE guifg=#C678DD guibg=NONE
+endif
+if !hlexists('YacCompletionKeyword')
+  highlight YacCompletionKeyword ctermfg=Red ctermbg=NONE guifg=#E06C75 guibg=NONE
+endif
+if !hlexists('YacCompletionModule')
+  highlight YacCompletionModule ctermfg=Cyan ctermbg=NONE guifg=#56B6C2 guibg=NONE
+endif
+
+" 补全项类型图标映射
+let s:completion_icons = {
+  \ 'Function': '󰊕 ',
+  \ 'Method': '󰊕 ',
+  \ 'Variable': '󰀫 ',
+  \ 'Field': '󰆧 ',
+  \ 'TypeParameter': '󰅲 ',
+  \ 'Constant': '󰏿 ',
+  \ 'Class': '󰠱 ',
+  \ 'Interface': '󰜰 ',
+  \ 'Struct': '󰌗 ',
+  \ 'Enum': ' ',
+  \ 'EnumMember': ' ',
+  \ 'Module': '󰆧 ',
+  \ 'Property': '󰜢 ',
+  \ 'Unit': '󰑭 ',
+  \ 'Value': '󰎠 ',
+  \ 'Keyword': '󰌋 ',
+  \ 'Snippet': '󰅴 ',
+  \ 'Text': '󰉿 ',
+  \ 'File': '󰈙 ',
+  \ 'Reference': '󰈇 ',
+  \ 'Folder': '󰉋 ',
+  \ 'Color': '󰏘 ',
+  \ 'Constructor': '󰆧 ',
+  \ 'Operator': '󰆕 ',
+  \ 'Event': '󱐋 '
+  \ }
+
 " 简化状态管理
 let s:job = v:null
 let s:log_file = ''
@@ -200,10 +246,28 @@ function! yac#open_file() abort
 endfunction
 
 function! yac#complete() abort
-  " 如果补全窗口已存在且有原始数据，直接重新过滤
+  " 如果补全窗口已存在且有原始数据，检查是否需要新请求
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    call s:filter_completions()
-    return
+    " 检查是否刚输入了触发字符，如果是则需要新的LSP请求
+    let line = getline('.')
+    let col = col('.') - 1
+    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+    
+    let needs_new_request = 0
+    for trigger in triggers
+      if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
+        let needs_new_request = 1
+        break
+      endif
+    endfor
+    
+    if !needs_new_request
+      call s:filter_completions()
+      return
+    endif
+    
+    " 关闭现有窗口，将进行新的LSP请求
+    call s:close_completion_popup()
   endif
 
   " 获取当前输入的前缀用于高亮
@@ -330,6 +394,89 @@ function! yac#did_change(...) abort
     \   'column': 0,
     \   'text': text_content
     \ })
+endfunction
+
+" 自动补全触发检查
+function! yac#auto_complete_trigger() abort
+  " 检查是否启用自动补全
+  if !get(g:, 'yac_auto_complete', 1)
+    return
+  endif
+
+  " 如果补全窗口已打开，检查是否需要新的LSP请求还是只需要过滤
+  if s:completion.popup_id != -1 && !empty(s:completion.original_items)
+    " 检查是否刚输入了触发字符，如果是则需要新的LSP请求
+    let line = getline('.')
+    let col = col('.') - 1
+    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+    
+    let needs_new_request = 0
+    for trigger in triggers
+      if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
+        let needs_new_request = 1
+        break
+      endif
+    endfor
+    
+    if !needs_new_request
+      call s:filter_completions()
+      return
+    endif
+    
+    " 关闭现有窗口，将进行新的LSP请求
+    call s:close_completion_popup()
+  endif
+
+  " 检查当前模式是否为插入模式
+  if mode() != 'i'
+    return
+  endif
+
+  " 获取当前行和光标位置
+  let current_line = getline('.')
+  let col = col('.') - 1
+  
+  " 避免在字符串或注释中触发
+  if s:in_string_or_comment()
+    return
+  endif
+
+  " 获取当前词前缀
+  let prefix = s:get_current_word_prefix()
+  
+  " 检查最小字符数要求
+  let min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
+  if len(prefix) < min_chars
+    " 检查是否有触发字符
+    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+    let should_trigger = 0
+    
+    for trigger in triggers
+      if col >= len(trigger) && current_line[col - len(trigger):col - 1] == trigger
+        let should_trigger = 1
+        break
+      endif
+    endfor
+    
+    if !should_trigger
+      return
+    endif
+  endif
+
+  " 设置延迟触发
+  let delay = get(g:, 'yac_auto_complete_delay', 300)
+  call timer_start(delay, 'yac#delayed_complete')
+endfunction
+
+" 延迟补全触发
+function! yac#delayed_complete(timer_id) abort
+  " 确保仍在插入模式
+  if mode() != 'i'
+    return
+  endif
+
+  " 触发补全
+  call yac#complete()
 endfunction
 
 function! yac#will_save(...) abort
@@ -613,6 +760,14 @@ function! s:get_current_word_prefix() abort
   return line[start : col - 1]
 endfunction
 
+" 检查是否在字符串或注释中
+function! s:in_string_or_comment() abort
+  " 获取当前位置的语法高亮组
+  let synname = synIDattr(synID(line('.'), col('.'), 1), 'name')
+  
+  " 检查是否为字符串或注释的语法组
+  return synname =~? 'comment\|string\|char'
+endfunction
 
 " hover 响应处理器 - 简化：有 content 就显示
 function! s:handle_hover_response(channel, response) abort
@@ -633,6 +788,9 @@ function! s:handle_completion_response(channel, response) abort
 
   if has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completions(a:response.items)
+  else
+    " Close completion popup when no completions available
+    call s:close_completion_popup()
   endif
 endfunction
 
@@ -952,6 +1110,24 @@ function! s:ensure_selected_visible() abort
   let s:completion.window_offset = max([0, min([ideal_offset, max_offset])])
 endfunction
 
+" 格式化补全项显示
+function! s:format_completion_item(item, marker) abort
+  " 获取图标
+  let icon = get(s:completion_icons, a:item.kind, '󰉿 ')
+  
+  " 基础显示格式
+  let display = a:marker . icon . a:item.label
+  
+  " 添加类型信息（如果存在）
+  if has_key(a:item, 'detail') && !empty(a:item.detail)
+    let display .= ' ' . a:item.detail
+  else
+    let display .= ' (' . a:item.kind . ')'
+  endif
+  
+  return display
+endfunction
+
 " 渲染补全窗口 - 单一职责
 function! s:render_completion_window() abort
   call s:ensure_selected_visible()
@@ -963,7 +1139,7 @@ function! s:render_completion_window() abort
     if i < len(s:completion.items)
       let marker = (i == s:completion.selected) ? '▶ ' : '  '
       let item = s:completion.items[i]
-      call add(lines, marker . item.label . ' (' . item.kind . ')')
+      call add(lines, s:format_completion_item(item, marker))
     endif
   endfor
 
@@ -972,17 +1148,81 @@ function! s:render_completion_window() abort
   call s:show_completion_documentation()
 endfunction
 
-" 简单过滤补全项
+" 计算模糊匹配评分
+function! s:fuzzy_match_score(text, pattern) abort
+  if empty(a:pattern)
+    return 1000  " 空模式匹配所有项目，给高分
+  endif
+  
+  let text = tolower(a:text)
+  let pattern = tolower(a:pattern)
+  
+  " 精确前缀匹配 - 最高优先级
+  if text =~# '^' . escape(pattern, '[]^$.*\~')
+    return 2000 + (1000 - len(a:text))  " 越短的匹配越好
+  endif
+  
+  " 连续子序列匹配
+  let idx = 0
+  let match_positions = []
+  let last_pos = -1
+  
+  for char in split(pattern, '\zs')
+    let pos = stridx(text, char, idx)
+    if pos == -1
+      return 0  " 没有匹配
+    endif
+    call add(match_positions, pos)
+    let idx = pos + 1
+    let last_pos = pos
+  endfor
+  
+  " 计算评分：基于匹配位置和连续性
+  let score = 1000
+  
+  " 首字符匹配加分
+  if match_positions[0] == 0
+    let score += 500
+  endif
+  
+  " 连续匹配加分
+  for i in range(1, len(match_positions) - 1)
+    if match_positions[i] == match_positions[i-1] + 1
+      let score += 100
+    endif
+  endfor
+  
+  " 匹配密度加分（匹配字符占总长度比例）
+  let density = len(pattern) * 100 / len(a:text)
+  let score += density
+  
+  " 总长度短的优先（相同匹配情况下）
+  let score -= len(a:text)
+  
+  return score
+endfunction
+
+" 智能过滤补全项
 function! s:filter_completions() abort
   let current_prefix = s:get_current_word_prefix()
   let s:completion.prefix = current_prefix
 
-  " 简单前缀匹配
-  let s:completion.items = []
+  " 收集匹配项和评分
+  let scored_items = []
   for item in s:completion.original_items
-    if empty(current_prefix) || item.label =~? '^' . escape(current_prefix, '[]^$.*\~')
-      call add(s:completion.items, item)
+    let score = s:fuzzy_match_score(item.label, current_prefix)
+    if score > 0
+      call add(scored_items, {'item': item, 'score': score})
     endif
+  endfor
+
+  " 按评分排序（降序）
+  call sort(scored_items, {a, b -> b.score - a.score})
+  
+  " 提取排序后的项目
+  let s:completion.items = []
+  for scored in scored_items
+    call add(s:completion.items, scored.item)
   endfor
 
   let s:completion.selected = 0
@@ -1098,10 +1338,10 @@ function! s:completion_filter(winid, key) abort
       call s:insert_completion(s:completion.items[idx])
     endif
     return 1
-  " Esc 退出
+  " Esc 退出 - 关闭弹窗但让ESC继续处理以退出插入模式
   elseif a:key == "\<Esc>"
     call s:close_completion_popup()
-    return 1
+    return 0
   endif
 
   " 其他键继续传递
