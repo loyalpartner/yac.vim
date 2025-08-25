@@ -182,37 +182,16 @@ impl Handler for GotoHandler {
 
         if let Some(lsp_location) = location_result {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
-                debug!("Navigating to location: {:?}", location);
-
-                // Open the file - use proper error logging
-                if let Err(e) = ctx.ex(format!("edit {}", location.file).as_str()).await {
-                    debug!("Failed to open file {}: {}", location.file, e);
-                    return Ok(None);
-                }
-                debug!("Successfully opened file: {}", location.file);
-
-                // Move cursor - use normal mode command instead of cursor() function
-                let cursor_cmd = format!("{}G{}|", location.line + 1, location.column + 1);
-                if let Err(e) = ctx.normal(&cursor_cmd).await {
-                    debug!("Failed to move cursor with command '{}': {}", cursor_cmd, e);
-                    // Try alternative cursor positioning method
-                    if let Err(e2) = ctx
-                        .call_async(
-                            "cursor",
-                            vec![json!(location.line + 1), json!(location.column + 1)],
-                        )
-                        .await
-                    {
-                        debug!("Failed cursor() function as well: {}", e2);
-                    } else {
-                        debug!("Successfully moved cursor with cursor() function");
-                    }
-                } else {
-                    debug!(
-                        "Successfully moved cursor with normal command: {}",
-                        cursor_cmd
-                    );
-                }
+                debug!("location: {:?}", location);
+                ctx.ex(format!("edit {}", location.file).as_str())
+                    .await
+                    .ok();
+                ctx.call_async(
+                    "cursor",
+                    vec![json!(location.line + 1), json!(location.column + 1)],
+                )
+                .await
+                .ok();
             }
         }
 
