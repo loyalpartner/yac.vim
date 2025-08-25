@@ -265,6 +265,15 @@ impl LspRegistry {
 
     /// Open a file in the appropriate language server
     pub async fn open_file(&self, file_path: &str) -> Result<()> {
+        self.open_file_with_content(file_path, None).await
+    }
+
+    /// Open a file with optional content override (for new buffers)
+    pub async fn open_file_with_content(
+        &self,
+        file_path: &str,
+        content: Option<&str>,
+    ) -> Result<()> {
         let language = self
             .detect_language(file_path)
             .ok_or_else(|| anyhow::anyhow!("Unsupported file type: {}", file_path))?;
@@ -272,7 +281,20 @@ impl LspRegistry {
         // Ensure client exists
         self.get_client(&language, file_path).await?;
 
-        let text = std::fs::read_to_string(file_path)?;
+        // Use provided content or read from disk
+        let text = if let Some(content) = content {
+            debug!("Using provided buffer content for {}", file_path);
+            content.to_string()
+        } else {
+            std::fs::read_to_string(file_path).unwrap_or_else(|_| {
+                debug!(
+                    "File {} doesn't exist on disk yet, using empty content",
+                    file_path
+                );
+                String::new()
+            })
+        };
+
         let uri = lsp_types::Url::from_file_path(file_path)
             .map_err(|_| anyhow::anyhow!("Invalid file path: {}", file_path))?;
 

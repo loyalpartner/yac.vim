@@ -238,10 +238,14 @@ function! yac#hover() abort
 endfunction
 
 function! yac#open_file() abort
+  " Get current buffer content
+  let l:content = join(getline(1, '$'), "\n")
+  
   call s:request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
-    \   'column': 0
+    \   'column': 0,
+    \   'content': l:content
     \ }, 's:handle_file_open_response')
 endfunction
 
