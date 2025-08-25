@@ -55,12 +55,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shared LSP registry for multi-language support
     let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
-    // Simplified bridge mode - local bridge is always stdio, just forward data
+    // Bridge mode selection based on role:
+    // - YAC_UNIX_SOCKET set: Remote bridge (server mode for LSP processing)
+    // - YAC_REMOTE_SOCKET set: Local bridge (client mode for message forwarding) 
+    // - Neither set: Standard local mode (stdio)
     let mut vim = if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {
-        info!("Starting Unix socket server mode on: {}", socket_path);
+        info!("Starting Unix socket server mode (remote bridge): {}", socket_path);
         Vim::new_unix_socket_server(&socket_path).await?
+    } else if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
+        info!("Starting Unix socket client mode (local bridge forwarder): {}", remote_socket);
+        Vim::new_unix_socket_client(&remote_socket).await?
     } else {
-        info!("Starting stdio mode (default)");
+        info!("Starting stdio mode (standard local)");
         Vim::new_stdio()
     };
 

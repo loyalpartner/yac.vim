@@ -52,9 +52,9 @@ function! s:setup_remote_bridge(user_host, remote_path) abort
   let l:local_socket = '/tmp/yac-ssh-' . substitute(a:user_host, '@', '-', 'g') . '.sock'
   let l:remote_socket = '/tmp/yac-remote-' . substitute(a:user_host, '@', '-', 'g') . '.sock'
   
-  " Set environment variable to enable Unix socket mode
-  " This tells local lsp-bridge to use Unix socket instead of stdio
-  let $YAC_UNIX_SOCKET = l:local_socket
+  " Set environment variable to enable remote forwarding mode
+  " YAC_REMOTE_SOCKET tells local lsp-bridge to act as client/forwarder
+  let $YAC_REMOTE_SOCKET = l:local_socket
   
   " Check if tunnel already exists
   if s:tunnel_exists(l:local_socket)
@@ -130,7 +130,8 @@ function! s:start_remote_server(user_host, remote_socket) abort
   " Kill any existing remote server for this socket
   call s:stop_remote_server(a:user_host, a:remote_socket)
   
-  " Start remote lsp-bridge in background
+  " Start remote lsp-bridge server in background 
+  " YAC_UNIX_SOCKET tells remote lsp-bridge to act as server for LSP processing
   let l:remote_cmd = 'cd ~ && YAC_UNIX_SOCKET=' . shellescape(a:remote_socket) . ' ./lsp-bridge'
   let l:ssh_cmd = 'ssh -f ' . shellescape(a:user_host) . ' ' . shellescape(l:remote_cmd)
   

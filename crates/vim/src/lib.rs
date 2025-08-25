@@ -383,6 +383,17 @@ impl UnixSocketTransport {
             writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
         })
     }
+
+    /// Create Unix socket client connection (client mode for message forwarding)
+    pub async fn connect(socket_path: &str) -> Result<Self> {
+        let stream = tokio::net::UnixStream::connect(socket_path).await?;
+        let (read_half, write_half) = stream.into_split();
+
+        Ok(Self {
+            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
+            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
+        })
+    }
 }
 
 #[async_trait]
@@ -449,6 +460,16 @@ impl Vim {
     pub async fn new_unix_socket_server(socket_path: &str) -> Result<Self> {
         Ok(Self {
             transport: Box::new(UnixSocketTransport::bind_and_accept(socket_path).await?),
+            handlers: HashMap::new(),
+            pending_calls: HashMap::new(),
+            next_id: 1,
+        })
+    }
+
+    /// Create Unix socket client (connects to remote server for message forwarding)
+    pub async fn new_unix_socket_client(socket_path: &str) -> Result<Self> {
+        Ok(Self {
+            transport: Box::new(UnixSocketTransport::connect(socket_path).await?),
             handlers: HashMap::new(),
             pending_calls: HashMap::new(),
             next_id: 1,
