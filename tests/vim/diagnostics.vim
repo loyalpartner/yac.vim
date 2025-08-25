@@ -1,5 +1,5 @@
 " Diagnostics functionality test
-echo "=== Testing LSP Diagnostics ==="
+echo "=== Testing YAC Diagnostics ==="
 
 " Start LSP
 YacStart
