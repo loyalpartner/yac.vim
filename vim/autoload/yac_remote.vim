@@ -13,37 +13,71 @@ function! yac_remote#enhanced_lsp_start() abort
   
   " Check if this is an SSH file (scp:// or ssh:// protocol)
   if l:filepath =~# '^s\(cp\|sh\)://'
-    " SSH file detected - enable remote mode
+    " SSH file detected - enable remote mode with path conversion
     echo "SSH file detected: " . l:filepath
-    call s:start_ssh_mode(l:filepath)
+    call s:start_ssh_mode_with_path_conversion(l:filepath)
   else
     " Local file - use standard mode
     call yac#start()
+    call yac#open_file()
   endif
   
-  call yac#open_file()
   return 1
 endfunction
 
-" Start SSH mode for remote editing
-function! s:start_ssh_mode(filepath) abort
+" Start SSH mode with path conversion for remote editing
+function! s:start_ssh_mode_with_path_conversion(filepath) abort
   " Parse SSH connection info from filepath
   " Format: scp://user@host//path/to/file or ssh://user@host/path/to/file
-  let l:match = matchlist(a:filepath, '^s\(cp\|sh\)://\([^@]\+@[^/]\+\)\(/.*\)\?')
+  " Note: scp:// uses // to indicate absolute path on remote machine
+  let l:match = matchlist(a:filepath, '^s\(cp\|sh\)://\([^@]\+@[^/]\+\)\(//\?\(.*\)\)')
   
   if empty(l:match)
     echoerr "Invalid SSH file format: " . a:filepath
     return
   endif
   
-  let l:user_host = l:match[2]  " user@host
-  let l:remote_path = l:match[3] " /path/to/file
+  let l:user_host = l:match[2]  " user@host (e.g., lee@127.0.0.1)
+  let l:remote_path = l:match[4] " path without leading slashes (e.g., home/lee/.zshrc)
+  
+  " Ensure remote path starts with /
+  if l:remote_path !~# '^/'
+    let l:remote_path = '/' . l:remote_path
+  endif
+  
+  echo "Parsed SSH: " . l:user_host . " -> " . l:remote_path
+  
+  " Convert SSH path to real path for LSP operations
+  call s:convert_ssh_path_for_lsp(l:remote_path)
   
   " Set up remote environment
   call s:setup_remote_bridge(l:user_host, l:remote_path)
   
   " Start local bridge in forwarding mode
   call yac#start()
+  
+  " Open file with converted path
+  call yac#open_file()
+endfunction
+
+" Convert SSH buffer path to real path for LSP operations
+function! s:convert_ssh_path_for_lsp(real_path) abort
+  " Store original SSH filepath for display
+  let b:yac_original_ssh_path = expand('%:p')
+  let b:yac_converted_path = a:real_path
+  
+  " Temporarily change buffer filename to real path for LSP
+  " This ensures remote LSP server receives /home/lee/.zshrc instead of scp://...
+  silent! execute 'file ' . fnameescape(a:real_path)
+  
+  echo "Path converted for LSP: " . b:yac_original_ssh_path . " -> " . a:real_path
+endfunction
+
+" Restore original SSH path display (for future use)
+function! s:restore_ssh_path_display() abort
+  if exists('b:yac_original_ssh_path')
+    silent! execute 'file ' . fnameescape(b:yac_original_ssh_path)
+  endif
 endfunction
 
 " Set up remote lsp-bridge and SSH tunnel
