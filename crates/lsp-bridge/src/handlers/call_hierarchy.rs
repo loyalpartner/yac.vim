@@ -20,69 +20,35 @@ pub struct CallHierarchyItem {
     pub name: String,
     pub kind: String,
     pub detail: Option<String>,
-    pub uri: String,
-    pub range: Range,
-    pub selection_range: Range,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Range {
-    pub start_line: u32,
-    pub start_column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CallHierarchyCall {
-    pub item: CallHierarchyItem,
-    pub from_ranges: Vec<Range>,
+    pub file: String,
+    pub selection_line: u32,
+    pub selection_column: u32,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CallHierarchyInfo {
-    pub items: Vec<CallHierarchyCall>,
+    pub items: Vec<CallHierarchyItem>,
 }
 
 // Linus-style: CallHierarchyInfo 要么完整存在，要么不存在
 pub type CallHierarchyResponse = Option<CallHierarchyInfo>;
-
-impl Range {
-    pub fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
-        Self {
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        }
-    }
-
-    pub fn from_lsp_range(range: lsp_types::Range) -> Self {
-        Self::new(
-            range.start.line,
-            range.start.character,
-            range.end.line,
-            range.end.character,
-        )
-    }
-}
 
 impl CallHierarchyItem {
     pub fn new(
         name: String,
         kind: String,
         detail: Option<String>,
-        uri: String,
-        range: Range,
-        selection_range: Range,
+        file: String,
+        selection_line: u32,
+        selection_column: u32,
     ) -> Self {
         Self {
             name,
             kind,
             detail,
-            uri,
-            range,
-            selection_range,
+            file,
+            selection_line,
+            selection_column,
         }
     }
 
@@ -96,25 +62,22 @@ impl CallHierarchyItem {
             _ => "Unknown".to_string(),
         };
 
+        // Convert URI to file path
+        let file_path = super::common::uri_to_file_path(item.uri.as_ref())?;
+
         Ok(Self::new(
             item.name,
             kind,
             item.detail,
-            item.uri.to_string(),
-            Range::from_lsp_range(item.range),
-            Range::from_lsp_range(item.selection_range),
+            file_path,
+            item.selection_range.start.line,
+            item.selection_range.start.character,
         ))
     }
 }
 
-impl CallHierarchyCall {
-    pub fn new(item: CallHierarchyItem, from_ranges: Vec<Range>) -> Self {
-        Self { item, from_ranges }
-    }
-}
-
 impl CallHierarchyInfo {
-    pub fn new(items: Vec<CallHierarchyCall>) -> Self {
+    pub fn new(items: Vec<CallHierarchyItem>) -> Self {
         Self { items }
     }
 }
@@ -199,7 +162,7 @@ impl Handler for CallHierarchyHandler {
         // Use the first item for incoming/outgoing calls
         let item = &items[0];
 
-        let calls = match input.direction.as_str() {
+        let items = match input.direction.as_str() {
             "incoming" => {
                 let params = lsp_types::CallHierarchyIncomingCallsParams {
                     item: item.clone(),
@@ -214,15 +177,7 @@ impl Handler for CallHierarchyHandler {
                 {
                     Ok(Some(calls)) => calls
                         .into_iter()
-                        .filter_map(|call| {
-                            let item = CallHierarchyItem::from_lsp_item(call.from).ok()?;
-                            let from_ranges = call
-                                .from_ranges
-                                .into_iter()
-                                .map(Range::from_lsp_range)
-                                .collect();
-                            Some(CallHierarchyCall::new(item, from_ranges))
-                        })
+                        .filter_map(|call| CallHierarchyItem::from_lsp_item(call.from).ok())
                         .collect(),
                     _ => Vec::new(),
                 }
@@ -241,15 +196,7 @@ impl Handler for CallHierarchyHandler {
                 {
                     Ok(Some(calls)) => calls
                         .into_iter()
-                        .filter_map(|call| {
-                            let item = CallHierarchyItem::from_lsp_item(call.to).ok()?;
-                            let from_ranges = call
-                                .from_ranges
-                                .into_iter()
-                                .map(Range::from_lsp_range)
-                                .collect();
-                            Some(CallHierarchyCall::new(item, from_ranges))
-                        })
+                        .filter_map(|call| CallHierarchyItem::from_lsp_item(call.to).ok())
                         .collect(),
                     _ => Vec::new(),
                 }
@@ -263,13 +210,13 @@ impl Handler for CallHierarchyHandler {
         debug!(
             "{} call hierarchy response: {} items",
             input.direction,
-            calls.len()
+            items.len()
         );
 
-        if calls.is_empty() {
+        if items.is_empty() {
             return Ok(Some(None)); // 处理了请求，但没有调用
         }
 
-        Ok(Some(Some(CallHierarchyInfo::new(calls))))
+        Ok(Some(Some(CallHierarchyInfo::new(items))))
     }
 }

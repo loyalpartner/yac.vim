@@ -260,7 +260,8 @@ function! yac#call_hierarchy_incoming() abort
   call s:request('call_hierarchy_incoming', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
-    \   'column': col('.') - 1
+    \   'column': col('.') - 1,
+    \   'direction': 'incoming'
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
@@ -268,7 +269,8 @@ function! yac#call_hierarchy_outgoing() abort
   call s:request('call_hierarchy_outgoing', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
-    \   'column': col('.') - 1
+    \   'column': col('.') - 1,
+    \   'direction': 'outgoing'
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 

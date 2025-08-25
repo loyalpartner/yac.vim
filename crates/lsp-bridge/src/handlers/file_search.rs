@@ -264,7 +264,10 @@ impl FileSearchHandler {
                 || file_path.ends_with(&recent_file.trim_start_matches("./"))
         };
 
-        if let Some(position) = recent.iter().position(|recent_file| file_matches_recent(recent_file)) {
+        if let Some(position) = recent
+            .iter()
+            .position(|recent_file| file_matches_recent(recent_file))
+        {
             // Most recent file gets highest boost, decreasing for older files
             let recency_boost = RECENT_FILE_BASE_BOOST - (position as f64 * RECENT_FILE_DECAY_RATE);
             score += recency_boost;

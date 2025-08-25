@@ -36,3 +36,12 @@ pub fn file_path_to_uri(file_path: &str) -> Result<String> {
     let canonical = path.canonicalize()?;
     Ok(format!("file://{}", canonical.display()))
 }
+
+/// Convert URI to file path - used by handlers that need to convert LSP URIs back to paths
+pub fn uri_to_file_path(uri: &str) -> Result<String> {
+    let lsp_uri = lsp_types::Url::parse(uri)?;
+    let file_path = lsp_uri
+        .to_file_path()
+        .map_err(|_| anyhow::anyhow!("Invalid file URI"))?;
+    Ok(file_path.to_string_lossy().to_string())
+}
