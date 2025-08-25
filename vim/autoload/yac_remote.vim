@@ -315,6 +315,16 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
     echom printf('YacDebug[SSH]: Creating SSH tunnel: %s (local) -> %s (remote) via %s', a:local_socket, a:remote_socket, a:user_host)
   endif
   
+  " Check if socat is available
+  let l:socat_check = system('which socat')
+  if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: socat not found, tunnel creation will fail')
+    endif
+    echoerr "socat is required for SSH tunnel creation but not found. Please install socat."
+    return 0
+  endif
+  
   " Remove existing local socket if it exists
   if filereadable(a:local_socket)
     if get(g:, 'lsp_bridge_debug', 0)
@@ -323,14 +333,16 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
     call delete(a:local_socket)
   endif
   
-  " Create SSH tunnel: local socket forwards to remote socket
-  let l:tunnel_cmd = 'ssh -f -N -L ' . shellescape(a:local_socket) . ':' . shellescape(a:remote_socket) . ' ' . shellescape(a:user_host)
+  " Create SSH tunnel using socat for Unix socket forwarding
+  " Format: socat UNIX-LISTEN:local_socket,fork EXEC:"ssh host socat STDIO UNIX-CONNECT:remote_socket"
+  let l:socat_cmd = 'socat UNIX-LISTEN:' . shellescape(a:local_socket) . ',fork EXEC:"ssh ' . shellescape(a:user_host) . ' socat STDIO UNIX-CONNECT:' . shellescape(a:remote_socket) . '"'
+  let l:tunnel_cmd = 'nohup ' . l:socat_cmd . ' >/dev/null 2>&1 &'
   
   if get(g:, 'lsp_bridge_debug', 0)
     echom printf('YacDebug[SSH]: Executing tunnel command: %s', l:tunnel_cmd)
   endif
   
-  echo "Creating tunnel: " . l:tunnel_cmd
+  echo "Creating tunnel: " . l:socat_cmd
   let l:result = system(l:tunnel_cmd)
   
   if v:shell_error != 0
@@ -421,12 +433,12 @@ function! yac_remote#cleanup_tunnels() abort
     
     echo "Cleaning up tunnel for " . l:user_host
     
-    " Kill SSH tunnel process
-    let l:kill_ssh = 'pkill -f "ssh.*' . l:tunnel.local_socket . '"'
+    " Kill socat tunnel process
+    let l:kill_socat = 'pkill -f "socat.*' . l:tunnel.local_socket . '"'
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[SSH]: Executing tunnel kill command: %s', l:kill_ssh)
+      echom printf('YacDebug[SSH]: Executing tunnel kill command: %s', l:kill_socat)
     endif
-    call system(l:kill_ssh)
+    call system(l:kill_socat)
     
     " Remove local socket
     if filereadable(l:tunnel.local_socket)
