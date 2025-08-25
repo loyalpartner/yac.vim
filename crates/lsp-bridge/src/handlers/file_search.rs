@@ -180,6 +180,7 @@ impl FileSearchHandler {
     /// Calculate relevance score for a file based on query
     async fn calculate_score(&self, file_path: &str, query: &str) -> f64 {
         let mut score = BASE_SCORE; // Start with base score for all files
+        let mut has_match = false; // Track if the file matches the query
 
         // Apply fuzzy matching score if there's a query
         if !query.is_empty() {
@@ -194,21 +195,30 @@ impl FileSearchHandler {
             // Exact basename match gets highest score
             if basename == query_lower {
                 score += EXACT_MATCH_SCORE;
+                has_match = true;
             }
             // Basename starts with query
             else if basename.starts_with(&query_lower) {
                 score += PREFIX_MATCH_BASE
                     + (query.len() as f64 / basename.len() as f64) * PREFIX_MATCH_BONUS;
+                has_match = true;
             }
             // Query is contained in basename
             else if basename.contains(&query_lower) {
                 score += CONTAINS_MATCH_BASE
                     + (query.len() as f64 / basename.len() as f64) * CONTAINS_MATCH_BONUS;
+                has_match = true;
             }
             // Full path contains query
             else if file_lower.contains(&query_lower) {
                 score += PATH_MATCH_BASE
                     + (query.len() as f64 / file_lower.len() as f64) * PATH_MATCH_BONUS;
+                has_match = true;
+            }
+
+            // If no match found and query is not empty, return 0 to exclude the file
+            if !has_match {
+                return 0.0;
             }
 
             // Prefer files closer to root (shorter paths)

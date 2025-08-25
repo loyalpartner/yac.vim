@@ -439,7 +439,7 @@ function! s:show_interactive_file_search() abort
     for i in range(file_count)
       let file = s:file_search.files[i]
       let marker = (i == s:file_search.selected) ? '▶ ' : '  '
-      let relative_path = has_key(file, 'relative_path') ? file.relative_path : file.path
+      let relative_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
       
       " 截断过长路径
       if len(relative_path) > max_width - 6
@@ -2169,7 +2169,7 @@ function! s:update_interactive_file_search_display() abort
     for i in range(scroll_offset, end_idx - 1)
       let file = s:file_search.files[i]
       let marker = (i == s:file_search.selected) ? '▶ ' : '  '
-      let relative_path = has_key(file, 'relative_path') ? file.relative_path : file.path
+      let relative_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
       
       " 截断过长路径
       if len(relative_path) > max_width - 6
@@ -2263,7 +2263,7 @@ function! s:update_file_search_display() abort
     let file = s:file_search.files[i]
     let marker = (i == s:file_search.selected) ? '▶ ' : '  '
     
-    let display_path = has_key(file, 'relative_path') ? file.relative_path : file.path
+    let display_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
     if len(display_path) > max_width - 4
       let display_path = '...' . display_path[-(max_width-7):]
     endif
