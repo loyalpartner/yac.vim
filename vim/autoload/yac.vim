@@ -246,10 +246,28 @@ function! yac#open_file() abort
 endfunction
 
 function! yac#complete() abort
-  " 如果补全窗口已存在且有原始数据，直接重新过滤
+  " 如果补全窗口已存在且有原始数据，检查是否需要新请求
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    call s:filter_completions()
-    return
+    " 检查是否刚输入了触发字符，如果是则需要新的LSP请求
+    let line = getline('.')
+    let col = col('.') - 1
+    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+    
+    let needs_new_request = 0
+    for trigger in triggers
+      if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
+        let needs_new_request = 1
+        break
+      endif
+    endfor
+    
+    if !needs_new_request
+      call s:filter_completions()
+      return
+    endif
+    
+    " 关闭现有窗口，将进行新的LSP请求
+    call s:close_completion_popup()
   endif
 
   " 获取当前输入的前缀用于高亮
@@ -385,10 +403,28 @@ function! yac#auto_complete_trigger() abort
     return
   endif
 
-  " 如果补全窗口已打开，触发重新过滤而不是重复请求LSP
+  " 如果补全窗口已打开，检查是否需要新的LSP请求还是只需要过滤
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    call s:filter_completions()
-    return
+    " 检查是否刚输入了触发字符，如果是则需要新的LSP请求
+    let line = getline('.')
+    let col = col('.') - 1
+    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+    
+    let needs_new_request = 0
+    for trigger in triggers
+      if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
+        let needs_new_request = 1
+        break
+      endif
+    endfor
+    
+    if !needs_new_request
+      call s:filter_completions()
+      return
+    endif
+    
+    " 关闭现有窗口，将进行新的LSP请求
+    call s:close_completion_popup()
   endif
 
   " 检查当前模式是否为插入模式
