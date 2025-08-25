@@ -125,7 +125,7 @@ endfunction
 " Deploy lsp-bridge binary to remote host
 function! s:deploy_remote_binary(user_host) abort
   let l:local_binary = './target/release/lsp-bridge'
-  let l:remote_path = '~/lsp-bridge'
+  let l:remote_path = 'lsp-bridge'  " Deploy to home directory without ~/
   
   " Check if local binary exists
   if !filereadable(l:local_binary)
@@ -137,9 +137,9 @@ function! s:deploy_remote_binary(user_host) abort
     endif
   endif
   
-  " Deploy binary via scp
+  " Deploy binary via scp - use home directory directly
   echo "Deploying lsp-bridge to " . a:user_host . "..."
-  let l:cmd = 'scp ' . shellescape(l:local_binary) . ' ' . shellescape(a:user_host . ':' . l:remote_path)
+  let l:cmd = 'scp ' . shellescape(l:local_binary) . ' ' . shellescape(a:user_host) . ':' . shellescape(l:remote_path)
   let l:result = system(l:cmd)
   
   if v:shell_error != 0
@@ -148,7 +148,7 @@ function! s:deploy_remote_binary(user_host) abort
   endif
   
   " Make binary executable
-  let l:chmod_cmd = 'ssh ' . shellescape(a:user_host) . ' "chmod +x ' . l:remote_path . '"'
+  let l:chmod_cmd = 'ssh ' . shellescape(a:user_host) . ' ' . shellescape('chmod +x ' . l:remote_path)
   let l:result = system(l:chmod_cmd)
   
   if v:shell_error != 0
