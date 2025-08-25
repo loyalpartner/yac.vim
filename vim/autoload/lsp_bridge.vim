@@ -21,6 +21,7 @@ let s:completion.selected = 0
 let s:completion.prefix = ''
 let s:completion.window_offset = 0
 let s:completion.window_size = 8
+let s:completion.popup_position = {}  " 存储popup初始位置
 
 " 诊断虚拟文本状态
 let s:diagnostic_virtual_text = {}
@@ -765,22 +766,32 @@ function! s:filter_completions() abort
 endfunction
 
 
-" 光标附近popup创建
+" 光标附近popup创建 - 修复位置漂移问题
 function! s:create_or_update_completion_popup(lines) abort
   if exists('*popup_create')
     if s:completion.popup_id != -1
-      call popup_close(s:completion.popup_id)
+      " 更新现有popup内容而不是重新创建
+      call popup_settext(s:completion.popup_id, a:lines)
+      return
     endif
 
+    " 只在首次创建时记录位置
+    let cursor_pos = getpos('.')
+    let s:completion.popup_position = {
+      \ 'line': cursor_pos[1] + 1,
+      \ 'col': cursor_pos[2]
+      \ }
+
     let s:completion.popup_id = popup_create(a:lines, {
-      \ 'line': 'cursor+1',
-      \ 'col': 'cursor',
+      \ 'line': s:completion.popup_position.line,
+      \ 'col': s:completion.popup_position.col,
       \ 'minwidth': 30,
       \ 'maxwidth': 40,
       \ 'maxheight': len(a:lines),
       \ 'border': [],
       \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
-      \ 'filter': function('s:completion_filter')
+      \ 'filter': function('s:completion_filter'),
+      \ 'moved': 'any'
       \ })
   else
     echo "Completions: " . join(a:lines, " | ")
@@ -821,9 +832,12 @@ function! s:show_completion_documentation() abort
   endif
 
   " 创建文档popup，位于补全popup右侧
+  let doc_line = has_key(s:completion.popup_position, 'line') ? s:completion.popup_position.line : 'cursor+1'
+  let doc_col = has_key(s:completion.popup_position, 'col') ? s:completion.popup_position.col + 35 : 'cursor+35'
+  
   let s:completion.doc_popup_id = popup_create(doc_lines, {
-    \ 'line': 'cursor+1',
-    \ 'col': 'cursor+35',
+    \ 'line': doc_line,
+    \ 'col': doc_col,
     \ 'minwidth': 40,
     \ 'maxwidth': 80,
     \ 'maxheight': 15,
@@ -931,6 +945,7 @@ function! s:close_completion_popup() abort
     let s:completion.original_items = []
     let s:completion.selected = 0
     let s:completion.prefix = ''
+    let s:completion.popup_position = {}  " 清空位置缓存
   endif
   " 同时关闭文档popup
   call s:close_completion_documentation()
