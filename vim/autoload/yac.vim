@@ -1302,10 +1302,10 @@ function! s:completion_filter(winid, key) abort
       call s:insert_completion(s:completion.items[idx])
     endif
     return 1
-  " Esc 退出
+  " Esc 退出 - 关闭弹窗但让ESC继续处理以退出插入模式
   elseif a:key == "\<Esc>"
     call s:close_completion_popup()
-    return 1
+    return 0
   endif
 
   " 其他键继续传递
