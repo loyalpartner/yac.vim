@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
@@ -12,19 +12,8 @@ pub struct DidCloseRequest {
     pub file: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DidCloseResult {
-    pub success: bool,
-}
-
-// Linus-style: DidCloseResult 要么完整存在，要么不存在
-pub type DidCloseResponse = Option<DidCloseResult>;
-
-impl DidCloseResult {
-    pub fn new(success: bool) -> Self {
-        Self { success }
-    }
-}
+// Notification pattern - no response data needed
+pub type DidCloseResponse = Option<()>;
 
 pub struct DidCloseHandler {
     lsp_registry: Arc<LspRegistry>,
@@ -51,7 +40,7 @@ impl Handler for DidCloseHandler {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(Some(DidCloseResult::new(false)))), // Unsupported file type
+            None => return Ok(None), // Unsupported file type - notification ignores errors
         };
 
         // Ensure client exists
@@ -61,13 +50,13 @@ impl Handler for DidCloseHandler {
             .await
             .is_err()
         {
-            return Ok(Some(Some(DidCloseResult::new(false))));
+            return Ok(None); // No client available - notification ignores errors
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(Some(DidCloseResult::new(false)))), // 处理了请求，但转换失败
+            Err(_) => return Ok(None), // URI conversion failed - notification ignores errors
         };
 
         // Send LSP didClose notification
@@ -85,11 +74,11 @@ impl Handler for DidCloseHandler {
         {
             Ok(_) => {
                 debug!("DidClose notification sent for: {}", input.file);
-                Ok(Some(Some(DidCloseResult::new(true))))
+                Ok(None) // Notification pattern - no response needed
             }
             Err(e) => {
                 debug!("DidClose notification failed: {:?}", e);
-                Ok(Some(Some(DidCloseResult::new(false))))
+                Ok(None) // Notification pattern - ignore errors
             }
         }
     }
