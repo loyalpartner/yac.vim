@@ -47,7 +47,7 @@ let s:file_search.has_more = v:false
 let s:file_search.total_count = 0
 
 " 启动进程
-function! yac_bridge#start() abort
+function! yac#start() abort
   if s:job != v:null && job_status(s:job) == 'run'
     return
   endif
@@ -151,7 +151,7 @@ function! s:notify(method, params) abort
 endfunction
 
 " LSP 方法
-function! yac_bridge#goto_definition() abort
+function! yac#goto_definition() abort
   call s:notify('goto_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -159,7 +159,7 @@ function! yac_bridge#goto_definition() abort
     \ })
 endfunction
 
-function! yac_bridge#goto_declaration() abort
+function! yac#goto_declaration() abort
   call s:notify('goto_declaration', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -167,7 +167,7 @@ function! yac_bridge#goto_declaration() abort
     \ })
 endfunction
 
-function! yac_bridge#goto_type_definition() abort
+function! yac#goto_type_definition() abort
   call s:notify('goto_type_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -175,7 +175,7 @@ function! yac_bridge#goto_type_definition() abort
     \ })
 endfunction
 
-function! yac_bridge#goto_implementation() abort
+function! yac#goto_implementation() abort
   call s:notify('goto_implementation', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -183,7 +183,7 @@ function! yac_bridge#goto_implementation() abort
     \ })
 endfunction
 
-function! yac_bridge#hover() abort
+function! yac#hover() abort
   call s:request('hover', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -191,7 +191,7 @@ function! yac_bridge#hover() abort
     \ }, 's:handle_hover_response')
 endfunction
 
-function! yac_bridge#open_file() abort
+function! yac#open_file() abort
   call s:request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -199,7 +199,7 @@ function! yac_bridge#open_file() abort
     \ }, 's:handle_file_open_response')
 endfunction
 
-function! yac_bridge#complete() abort
+function! yac#complete() abort
   " 如果补全窗口已存在且有原始数据，直接重新过滤
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
     call s:filter_completions()
@@ -216,7 +216,7 @@ function! yac_bridge#complete() abort
     \ }, 's:handle_completion_response')
 endfunction
 
-function! yac_bridge#references() abort
+function! yac#references() abort
   call s:request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -224,7 +224,7 @@ function! yac_bridge#references() abort
     \ }, 's:handle_references_response')
 endfunction
 
-function! yac_bridge#inlay_hints() abort
+function! yac#inlay_hints() abort
   call s:request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -232,7 +232,7 @@ function! yac_bridge#inlay_hints() abort
     \ }, 's:handle_inlay_hints_response')
 endfunction
 
-function! yac_bridge#rename(...) abort
+function! yac#rename(...) abort
   " 获取新名称，可以是参数传入或用户输入
   let new_name = ''
 
@@ -256,7 +256,7 @@ function! yac_bridge#rename(...) abort
     \ }, 's:handle_rename_response')
 endfunction
 
-function! yac_bridge#call_hierarchy_incoming() abort
+function! yac#call_hierarchy_incoming() abort
   call s:request('call_hierarchy_incoming', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -264,7 +264,7 @@ function! yac_bridge#call_hierarchy_incoming() abort
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
-function! yac_bridge#call_hierarchy_outgoing() abort
+function! yac#call_hierarchy_outgoing() abort
   call s:request('call_hierarchy_outgoing', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -272,7 +272,7 @@ function! yac_bridge#call_hierarchy_outgoing() abort
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
-function! yac_bridge#document_symbols() abort
+function! yac#document_symbols() abort
   call s:request('document_symbols', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -280,13 +280,13 @@ function! yac_bridge#document_symbols() abort
     \ }, 's:handle_document_symbols_response')
 endfunction
 
-function! yac_bridge#folding_range() abort
+function! yac#folding_range() abort
   call s:request('folding_range', {
     \   'file': expand('%:p')
     \ }, 's:handle_folding_range_response')
 endfunction
 
-function! yac_bridge#code_action() abort
+function! yac#code_action() abort
   call s:request('code_action', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -295,7 +295,7 @@ function! yac_bridge#code_action() abort
 endfunction
 
 
-function! yac_bridge#execute_command(...) abort
+function! yac#execute_command(...) abort
   if a:0 == 0
     echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
     return
@@ -310,7 +310,7 @@ function! yac_bridge#execute_command(...) abort
     \ }, 's:handle_execute_command_response')
 endfunction
 
-function! yac_bridge#did_save(...) abort
+function! yac#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:notify('did_save', {
     \   'file': expand('%:p'),
@@ -320,7 +320,7 @@ function! yac_bridge#did_save(...) abort
     \ })
 endfunction
 
-function! yac_bridge#did_change(...) abort
+function! yac#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
   call s:notify('did_change', {
     \   'file': expand('%:p'),
@@ -330,7 +330,7 @@ function! yac_bridge#did_change(...) abort
     \ })
 endfunction
 
-function! yac_bridge#will_save(...) abort
+function! yac#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:notify('will_save', {
     \   'file': expand('%:p'),
@@ -340,7 +340,7 @@ function! yac_bridge#will_save(...) abort
     \ })
 endfunction
 
-function! yac_bridge#will_save_wait_until(...) abort
+function! yac#will_save_wait_until(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:request('will_save_wait_until', {
     \   'file': expand('%:p'),
@@ -350,7 +350,7 @@ function! yac_bridge#will_save_wait_until(...) abort
     \ }, 's:handle_will_save_wait_until_response')
 endfunction
 
-function! yac_bridge#did_close() abort
+function! yac#did_close() abort
   call s:notify('did_close', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -358,7 +358,7 @@ function! yac_bridge#did_close() abort
     \ })
 endfunction
 
-function! yac_bridge#file_search(...) abort
+function! yac#file_search(...) abort
   " 获取查询字符串（可选参数）
   let query = a:0 > 0 ? a:1 : ''
   
@@ -794,7 +794,7 @@ function! s:handle_response(channel, msg) abort
 endfunction
 
 " VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
-function! yac_bridge#set_log_file(log_path) abort
+function! yac#set_log_file(log_path) abort
   let s:log_file = a:log_path
   if get(g:, 'lsp_bridge_debug', 0)
     echom 'YacDebug: Log file path set to: ' . a:log_path
@@ -802,7 +802,7 @@ function! yac_bridge#set_log_file(log_path) abort
 endfunction
 
 " 停止进程
-function! yac_bridge#stop() abort
+function! yac#stop() abort
   if s:job != v:null
     if get(g:, 'lsp_bridge_debug', 0)
       echom 'YacDebug: Stopping lsp-bridge process'
@@ -815,7 +815,7 @@ endfunction
 " === Debug 功能 ===
 
 " 切换调试模式
-function! yac_bridge#debug_toggle() abort
+function! yac#debug_toggle() abort
   let g:lsp_bridge_debug = !get(g:, 'lsp_bridge_debug', 0)
 
   if g:lsp_bridge_debug
@@ -838,7 +838,7 @@ function! yac_bridge#debug_toggle() abort
 endfunction
 
 " 显示调试状态
-function! yac_bridge#debug_status() abort
+function! yac#debug_status() abort
   let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
   let job_running = (s:job != v:null && job_status(s:job) == 'run')
 
@@ -1261,7 +1261,7 @@ function! s:collect_symbols_recursive(symbols, qf_list, depth) abort
 endfunction
 
 " 简单打开日志文件
-function! yac_bridge#open_log() abort
+function! yac#open_log() abort
   " 检查LSP bridge进程是否运行
   if s:job == v:null || job_status(s:job) != 'run'
     echo 'lsp-bridge not running'
@@ -1337,7 +1337,7 @@ function! s:clear_inlay_hints() abort
 endfunction
 
 " 公开接口：清除inlay hints
-function! yac_bridge#clear_inlay_hints() abort
+function! yac#clear_inlay_hints() abort
   call s:clear_inlay_hints()
   echo 'Inlay hints cleared'
 endfunction
@@ -1891,7 +1891,7 @@ function! s:clear_diagnostic_virtual_text(bufnr) abort
 endfunction
 
 " 切换诊断虚拟文本显示
-function! yac_bridge#toggle_diagnostic_virtual_text() abort
+function! yac#toggle_diagnostic_virtual_text() abort
   let s:diagnostic_virtual_text.enabled = !s:diagnostic_virtual_text.enabled
   let bufnr = bufnr('%')
 
@@ -1907,7 +1907,7 @@ function! yac_bridge#toggle_diagnostic_virtual_text() abort
 endfunction
 
 " 清除所有诊断虚拟文本
-function! yac_bridge#clear_diagnostic_virtual_text() abort
+function! yac#clear_diagnostic_virtual_text() abort
   for bufnr in keys(s:diagnostic_virtual_text.storage)
     call s:clear_diagnostic_virtual_text(bufnr)
   endfor
