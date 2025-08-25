@@ -85,7 +85,7 @@ function! yac#lsp#hover() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_hover_response'))
+  call yac#core#send_request('hover', pos, function('s:handle_hover_response'))
 endfunction
 
 " 处理hover响应
@@ -137,7 +137,7 @@ function! yac#lsp#references() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_references_response'))
+  call yac#core#send_request('references', pos, function('s:handle_references_response'))
 endfunction
 
 " 处理references响应
@@ -253,7 +253,7 @@ function! yac#lsp#will_save_wait_until(...) abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_will_save_wait_until_response'))
+  call yac#core#send_request('will_save_wait_until', {'file': expand('%:p')}, function('s:handle_will_save_wait_until_response'))
 endfunction
 
 " 处理will_save_wait_until响应
@@ -294,7 +294,7 @@ function! yac#lsp#call_hierarchy_incoming() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_call_hierarchy_response'))
+  call yac#core#send_request('call_hierarchy_incoming', pos, function('s:handle_call_hierarchy_response'))
 endfunction
 
 function! yac#lsp#call_hierarchy_outgoing() abort
@@ -309,7 +309,7 @@ function! yac#lsp#call_hierarchy_outgoing() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_call_hierarchy_response'))
+  call yac#core#send_request('call_hierarchy_outgoing', pos, function('s:handle_call_hierarchy_response'))
 endfunction
 
 function! s:handle_call_hierarchy_response(channel, msg) abort
@@ -353,7 +353,7 @@ function! yac#lsp#document_symbols() abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_document_symbols_response'))
+  call yac#core#send_request('document_symbols', {'file': expand('%:p')}, function('s:handle_document_symbols_response'))
 endfunction
 
 function! s:handle_document_symbols_response(channel, msg) abort
@@ -401,7 +401,7 @@ function! yac#lsp#execute_command(...) abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_execute_command_response'))
+  call yac#core#send_request('execute_command', {'command': command, 'arguments': args}, function('s:handle_execute_command_response'))
 endfunction
 
 function! s:handle_execute_command_response(channel, msg) abort

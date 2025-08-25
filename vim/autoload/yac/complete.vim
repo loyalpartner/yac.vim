@@ -37,7 +37,7 @@ function! yac#complete#trigger() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_completion_response'))
+  call yac#core#send_request('completion', pos, function('s:handle_completion_response'))
 endfunction
 
 " 关闭补全窗口

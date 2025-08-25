@@ -278,7 +278,7 @@ function! yac#debug#connection_test() abort
       \ }
     
     echo 'Sending test message...'
-    call yac#core#send_request(test_msg, function('s:handle_connection_test_response'))
+    call yac#core#send_request('test_connection', {'timestamp': localtime()}, function('s:handle_connection_test_response'))
   else
     echohl ErrorMsg
     echo '✗ Failed to start YAC process'

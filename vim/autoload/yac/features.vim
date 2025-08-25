@@ -25,7 +25,7 @@ function! yac#features#inlay_hints() abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_inlay_hints_response'))
+  call yac#core#send_request('inlay_hints', {'file': expand('%:p'), 'line': 0, 'column': 0}, function('s:handle_inlay_hints_response'))
 endfunction
 
 " 处理 inlay hints 响应
@@ -167,7 +167,7 @@ function! yac#features#rename(...) abort
     \ 'params': extend(pos, {'new_name': new_name})
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_rename_response'))
+  call yac#core#send_request('rename', extend(pos, {'new_name': new_name}), function('s:handle_rename_response'))
 endfunction
 
 " 处理重命名响应
@@ -198,7 +198,7 @@ function! yac#features#code_action() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_code_action_response'))
+  call yac#core#send_request('code_action', pos, function('s:handle_code_action_response'))
 endfunction
 
 " 处理代码操作响应
@@ -266,7 +266,7 @@ function! yac#features#execute_command(...) abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_execute_command_response'))
+  call yac#core#send_request('execute_command', {'command': command, 'arguments': args}, function('s:handle_execute_command_response'))
 endfunction
 
 " 处理执行命令响应
@@ -295,7 +295,7 @@ function! yac#features#folding_range() abort
     \ 'params': {'file': expand('%:p')}
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_folding_range_response'))
+  call yac#core#send_request('folding_range', {'file': expand('%:p')}, function('s:handle_folding_range_response'))
 endfunction
 
 " 处理折叠范围响应
