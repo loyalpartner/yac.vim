@@ -1,8 +1,8 @@
 " 补全功能测试脚本
 echo "=== Testing Enhanced Completion ==="
 
-" 启动 LSP
-LspStart
+" 启动 YAC
+YacStart
 
 " 打开测试文件
 edit test_data/src/lib.rs
@@ -19,7 +19,7 @@ normal! o
 " 输入部分字符然后触发补全
 execute "normal! iHas"
 echo "Position: line " . line('.') . ", column: " . col('.') . ", input: 'Has'"
-LspComplete
+YacComplete
 sleep 3
 
 echo ""
@@ -27,7 +27,7 @@ echo "Test 2: Manual completion trigger"
 normal! cc
 execute "normal! iVe"
 echo "Position: line " . line('.') . ", column: " . col('.') . ", input: 'Ve'"
-LspComplete
+YacComplete
 sleep 3
 
 echo ""

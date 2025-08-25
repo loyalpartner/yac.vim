@@ -2,7 +2,7 @@
 " This test follows the same pattern as goto_definition.vim
 
 " Test script to verify declaration functionality
-echo "Testing LspDeclaration functionality"
+echo "Testing YacDeclaration functionality"
 
 " Open test file 
 e test_data/src/lib.rs
@@ -12,7 +12,7 @@ e test_data/src/lib.rs
 call cursor(31, 26)
 
 " Call the declaration command
-LspDeclaration
+YacDeclaration
 
 echo "Declaration test completed - check if it jumps correctly"
 echo "Expected: Jump to trait/interface declaration if available"
