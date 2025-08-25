@@ -751,6 +751,9 @@ function! s:handle_completion_response(channel, response) abort
 
   if has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completions(a:response.items)
+  else
+    " Close completion popup when no completions available
+    call s:close_completion_popup()
   endif
 endfunction
 
