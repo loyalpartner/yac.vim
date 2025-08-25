@@ -10,6 +10,12 @@ endif
 let g:lsp_bridge_command = get(g:, 'lsp_bridge_command', ['lsp-bridge'])
 let g:lsp_bridge_diagnostic_virtual_text = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
 
+" 自动补全配置选项
+let g:yac_auto_complete = get(g:, 'yac_auto_complete', 1)
+let g:yac_auto_complete_delay = get(g:, 'yac_auto_complete_delay', 300)
+let g:yac_auto_complete_min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
+let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+
 " 用户命令
 command! YacStart          call yac#start()
 command! YacStop           call yac#stop()
@@ -66,5 +72,7 @@ if get(g:, 'lsp_bridge_auto_start', 1)
     autocmd BufWritePost *.rs call yac#did_save()
     autocmd TextChanged,TextChangedI *.rs call yac#did_change()
     autocmd BufUnload *.rs call yac#did_close()
+    " 自动补全触发
+    autocmd TextChangedI *.rs call yac#auto_complete_trigger()
   augroup END
 endif
