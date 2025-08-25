@@ -70,7 +70,7 @@ function! s:request_file_search(query, page) abort
     \ }
     \ }
   
-  call yac#core#send_request(msg, function('s:handle_file_search_response'))
+  call yac#core#send_request('file_search', msg.params, function('s:handle_file_search_response'))
 endfunction
 
 " 处理交互式文件搜索响应
