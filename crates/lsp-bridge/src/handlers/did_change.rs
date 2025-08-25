@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
@@ -29,19 +29,8 @@ pub struct Range {
     pub end_column: u32,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DidChangeResult {
-    pub success: bool,
-}
-
-// Linus-style: DidChangeResult 要么完整存在，要么不存在
-pub type DidChangeResponse = Option<DidChangeResult>;
-
-impl DidChangeResult {
-    pub fn new(success: bool) -> Self {
-        Self { success }
-    }
-}
+// Notification pattern - no response data needed
+pub type DidChangeResponse = Option<()>;
 
 impl Range {
     pub fn to_lsp_range(&self) -> lsp_types::Range {
@@ -93,7 +82,7 @@ impl Handler for DidChangeHandler {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(Some(DidChangeResult::new(false)))), // Unsupported file type
+            None => return Ok(None), // Unsupported file type - notification ignores errors
         };
 
         // Ensure client exists
@@ -103,13 +92,13 @@ impl Handler for DidChangeHandler {
             .await
             .is_err()
         {
-            return Ok(Some(Some(DidChangeResult::new(false))));
+            return Ok(None); // No client available - notification ignores errors
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(Some(DidChangeResult::new(false)))), // 处理了请求，但转换失败
+            Err(_) => return Ok(None), // URI conversion failed - notification ignores errors
         };
 
         // Convert changes to LSP format
@@ -139,11 +128,11 @@ impl Handler for DidChangeHandler {
                     "DidChange notification sent for: {} (version {})",
                     input.file, input.version
                 );
-                Ok(Some(Some(DidChangeResult::new(true))))
+                Ok(None) // Notification pattern - no response needed
             }
             Err(e) => {
                 debug!("DidChange notification failed: {:?}", e);
-                Ok(Some(Some(DidChangeResult::new(false))))
+                Ok(None) // Notification pattern - ignore errors
             }
         }
     }

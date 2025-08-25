@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
@@ -13,19 +13,8 @@ pub struct WillSaveRequest {
     pub reason: String, // "Manual", "AfterDelay", "FocusOut"
 }
 
-#[derive(Debug, Serialize)]
-pub struct WillSaveResult {
-    pub success: bool,
-}
-
-// Linus-style: WillSaveResult 要么完整存在，要么不存在
-pub type WillSaveResponse = Option<WillSaveResult>;
-
-impl WillSaveResult {
-    pub fn new(success: bool) -> Self {
-        Self { success }
-    }
-}
+// Notification pattern - no response data needed
+pub type WillSaveResponse = Option<()>;
 
 pub struct WillSaveHandler {
     lsp_registry: Arc<LspRegistry>,
@@ -61,7 +50,7 @@ impl Handler for WillSaveHandler {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(Some(WillSaveResult::new(false)))), // Unsupported file type
+            None => return Ok(None), // Unsupported file type - notification ignores errors
         };
 
         // Ensure client exists
@@ -71,13 +60,13 @@ impl Handler for WillSaveHandler {
             .await
             .is_err()
         {
-            return Ok(Some(Some(WillSaveResult::new(false))));
+            return Ok(None); // No client available - notification ignores errors
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(Some(WillSaveResult::new(false)))), // 处理了请求，但转换失败
+            Err(_) => return Ok(None), // URI conversion failed - notification ignores errors
         };
 
         // Send LSP willSave notification
@@ -99,11 +88,11 @@ impl Handler for WillSaveHandler {
                     "WillSave notification sent for: {} (reason: {})",
                     input.file, input.reason
                 );
-                Ok(Some(Some(WillSaveResult::new(true))))
+                Ok(None) // Notification pattern - no response needed
             }
             Err(e) => {
                 debug!("WillSave notification failed: {:?}", e);
-                Ok(Some(Some(WillSaveResult::new(false))))
+                Ok(None) // Notification pattern - ignore errors
             }
         }
     }
