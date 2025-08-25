@@ -46,6 +46,7 @@ command! YacDebugStatus    call yac#debug_status()
 command! -nargs=? YacFileSearch call yac#file_search(<q-args>)
 " Remote editing commands
 command! YacRemoteCleanup  call yac_remote#cleanup_tunnels()
+command! -nargs=1 YacRemoteReconnect call yac_remote#reconnect_tunnel(<q-args>)
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
