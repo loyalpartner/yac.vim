@@ -356,8 +356,17 @@ endfunction
 
 " 文件搜索回调
 function! s:file_search_callback(id, result) abort
-  " 弹出窗口关闭时的清理
-  call s:close_file_search_popup()
+  " 弹出窗口关闭时的清理 - 只重置状态，不再次关闭弹窗
+  " 避免infinite recursion: callback -> close_popup -> callback -> ...
+  let s:file_search.popup_id = -1
+  let s:file_search.input_popup_id = -1
+  let s:file_search.files = []
+  let s:file_search.selected = 0
+  let s:file_search.query = ''
+  let s:file_search.current_page = 0
+  let s:file_search.has_more = v:false
+  let s:file_search.total_count = 0
+  let s:file_search.state = 'closed'
 endfunction
 
 " 查找工作区根目录
