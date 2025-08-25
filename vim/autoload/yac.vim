@@ -238,15 +238,9 @@ function! yac#hover() abort
 endfunction
 
 function! yac#open_file() abort
-  " Get current buffer content
-  let l:content = join(getline(1, '$'), "\n")
-  
-  call s:request('file_open', {
-    \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0,
-    \   'content': l:content
-    \ }, 's:handle_file_open_response')
+  call s:notify('file_open', {
+    \   'file': expand('%:p')
+    \ })
 endfunction
 
 function! yac#complete() abort
@@ -886,17 +880,6 @@ function! s:handle_execute_command_response(channel, response) abort
   endif
 endfunction
 
-" file_open 响应处理器
-function! s:handle_file_open_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: file_open response: %s', string(a:response))
-  endif
-
-  if has_key(a:response, 'log_file')
-    let s:log_file = a:response.log_file
-    echo 'lsp-bridge initialized with log: ' . s:log_file
-  endif
-endfunction
 
 " will_save_wait_until 响应处理器
 function! s:handle_will_save_wait_until_response(channel, response) abort

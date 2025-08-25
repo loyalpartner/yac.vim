@@ -10,9 +10,6 @@ use vim::Handler;
 pub struct FileOpenRequest {
     pub command: String,
     pub file: String,
-    pub line: u32,
-    pub column: u32,
-    pub content: Option<String>, // Buffer content for files that don't exist on disk yet
 }
 
 #[derive(Debug, Serialize)]
@@ -60,11 +57,7 @@ impl Handler for FileOpenHandler {
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Open file in appropriate language server
-        if let Err(e) = self
-            .lsp_registry
-            .open_file_with_content(&input.file, input.content.as_deref())
-            .await
-        {
+        if let Err(e) = self.lsp_registry.open_file(&input.file).await {
             return Ok(Some(FileOpenResponse::error(format!(
                 "Failed to open file: {}",
                 e
