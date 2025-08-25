@@ -44,6 +44,8 @@ command! YacClearDiagnosticVirtualText call yac#clear_diagnostic_virtual_text()
 command! YacDebugToggle    call yac#debug_toggle()
 command! YacDebugStatus    call yac#debug_status()
 command! -nargs=? YacFileSearch call yac#file_search(<q-args>)
+" Remote editing commands
+command! YacRemoteCleanup  call yac_remote#cleanup_tunnels()
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
@@ -65,8 +67,8 @@ nnoremap <silent> <C-P> :YacFileSearch<CR>
 if get(g:, 'lsp_bridge_auto_start', 1)
   augroup lsp_bridge_auto
     autocmd!
-    " 文件打开时启动LSP并打开文档
-    autocmd BufReadPost,BufNewFile *.rs call yac#start() | call yac#open_file()
+    " 智能LSP启动 - 检测本地或SSH文件
+    autocmd BufReadPost,BufNewFile *.rs call yac_remote#enhanced_lsp_start()
     " 文档生命周期管理
     autocmd BufWritePre *.rs call yac#will_save(1)
     autocmd BufWritePost *.rs call yac#did_save()
@@ -74,5 +76,7 @@ if get(g:, 'lsp_bridge_auto_start', 1)
     autocmd BufUnload *.rs call yac#did_close()
     " 自动补全触发
     autocmd TextChangedI *.rs call yac#auto_complete_trigger()
+    " SSH隧道清理 - Vim退出时清理所有隧道
+    autocmd VimLeave * call yac_remote#cleanup_tunnels()
   augroup END
 endif

@@ -183,9 +183,11 @@ impl Handler for GotoHandler {
         if let Some(lsp_location) = location_result {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
-                ctx.ex(format!("edit {}", location.file).as_str())
-                    .await
-                    .ok();
+
+                // SSH path conversion for remote editing
+                let file_to_edit = self.convert_to_ssh_path_if_remote(&location.file);
+
+                ctx.ex(format!("edit {}", file_to_edit).as_str()).await.ok();
                 ctx.call_async(
                     "cursor",
                     vec![json!(location.line + 1), json!(location.column + 1)],
@@ -196,5 +198,25 @@ impl Handler for GotoHandler {
         }
 
         Ok(None)
+    }
+}
+
+impl GotoHandler {
+    /// Convert local file path to SSH path if in remote mode
+    /// Uses environment variables to detect remote configuration
+    fn convert_to_ssh_path_if_remote(&self, file_path: &str) -> String {
+        // Check if we're running in remote mode (server side)
+        if std::env::var("YAC_SERVER_MODE").is_ok() {
+            // We're on the remote server - check if we have SSH client info
+            if let (Ok(ssh_user), Ok(ssh_host)) =
+                (std::env::var("YAC_SSH_USER"), std::env::var("YAC_SSH_HOST"))
+            {
+                // Convert local path to SSH path format
+                return format!("scp://{}@{}/{}", ssh_user, ssh_host, file_path);
+            }
+        }
+
+        // Not in remote mode or no SSH config - return original path
+        file_path.to_string()
     }
 }

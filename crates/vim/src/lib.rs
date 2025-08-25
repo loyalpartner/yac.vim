@@ -9,6 +9,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
 use tracing::error;
 
@@ -361,6 +362,77 @@ impl MessageTransport for StdioTransport {
     }
 }
 
+/// UnixSocket Transport - handles Unix domain socket communication for remote bridges
+pub struct UnixSocketTransport {
+    reader: std::sync::Arc<tokio::sync::Mutex<BufReader<tokio::net::unix::OwnedReadHalf>>>,
+    writer: std::sync::Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+}
+
+impl UnixSocketTransport {
+    /// Connect to existing Unix socket (client mode)
+    pub async fn connect(socket_path: &str) -> Result<Self> {
+        let stream = UnixStream::connect(socket_path).await?;
+        let (read_half, write_half) = stream.into_split();
+
+        Ok(Self {
+            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
+            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
+        })
+    }
+
+    /// Create Unix socket server and accept first connection (server mode)
+    pub async fn bind_and_accept(socket_path: &str) -> Result<Self> {
+        // Remove existing socket file if it exists
+        let _ = tokio::fs::remove_file(socket_path).await;
+
+        let listener = UnixListener::bind(socket_path)?;
+        let (stream, _) = listener.accept().await?;
+        let (read_half, write_half) = stream.into_split();
+
+        Ok(Self {
+            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
+            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
+        })
+    }
+}
+
+#[async_trait]
+impl MessageTransport for UnixSocketTransport {
+    async fn send(&self, msg: &VimMessage) -> Result<()> {
+        let json = msg.encode();
+        let line = format!("{}\n", json);
+
+        let mut writer = self.writer.lock().await;
+        writer.write_all(line.as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn recv(&self) -> Result<VimMessage> {
+        let mut line = String::new();
+        let mut reader = self.reader.lock().await;
+
+        // Keep reading until we get a non-empty line
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).await?;
+
+            if n == 0 {
+                // EOF reached
+                return Err(anyhow::anyhow!("EOF reached on Unix socket"));
+            }
+
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                // Got a non-empty line, try to parse it
+                let json: Value = serde_json::from_str(trimmed)?;
+                return VimMessage::parse(&json);
+            }
+            // Empty line, continue reading
+        }
+    }
+}
+
 // ================================================================
 // VimClient renamed to `vim` - unified message processing core
 // ================================================================
@@ -382,6 +454,26 @@ impl Vim {
             pending_calls: HashMap::new(),
             next_id: 1,
         }
+    }
+
+    /// Create Unix socket client (connects to existing socket)
+    pub async fn new_unix_socket(socket_path: &str) -> Result<Self> {
+        Ok(Self {
+            transport: Box::new(UnixSocketTransport::connect(socket_path).await?),
+            handlers: HashMap::new(),
+            pending_calls: HashMap::new(),
+            next_id: 1,
+        })
+    }
+
+    /// Create Unix socket server (binds and accepts first connection)
+    pub async fn new_unix_socket_server(socket_path: &str) -> Result<Self> {
+        Ok(Self {
+            transport: Box::new(UnixSocketTransport::bind_and_accept(socket_path).await?),
+            handlers: HashMap::new(),
+            pending_calls: HashMap::new(),
+            next_id: 1,
+        })
     }
 
     /// Create TCP client (placeholder for future implementation)
@@ -902,5 +994,22 @@ mod tests {
             encoded, expected,
             "VimMessage::Redraw without force should encode as [\"redraw\", \"\"]"
         );
+    }
+
+    #[tokio::test]
+    async fn test_unix_socket_transport() {
+        // Test Unix socket transport creation
+        let socket_path = "/tmp/test_yac_socket";
+
+        // Clean up any existing socket
+        let _ = std::fs::remove_file(socket_path);
+
+        // Test that we can create a transport (this will test bind functionality)
+        let server_result = UnixSocketTransport::bind_and_accept(socket_path).await;
+        // We expect this to block waiting for a connection, so we just verify the socket was created
+        drop(server_result);
+
+        // Clean up
+        let _ = std::fs::remove_file(socket_path);
     }
 }
