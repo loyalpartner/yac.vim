@@ -20,7 +20,7 @@ function! yac#lsp#goto_definition() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 跳转到声明
@@ -36,7 +36,7 @@ function! yac#lsp#goto_declaration() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 跳转到类型定义
@@ -52,7 +52,7 @@ function! yac#lsp#goto_type_definition() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 跳转到实现
@@ -68,7 +68,7 @@ function! yac#lsp#goto_implementation() abort
     \ 'params': pos
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " === Hover功能 ===
@@ -188,7 +188,7 @@ function! yac#lsp#open_file() abort
     \ }
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 文件保存后
@@ -204,7 +204,7 @@ function! yac#lsp#did_save(...) abort
     \ }
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 文件内容改变
@@ -221,7 +221,7 @@ function! yac#lsp#did_change(...) abort
     \ }
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 文件即将保存
@@ -237,7 +237,7 @@ function! yac#lsp#will_save(...) abort
     \ }
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " 文件即将保存并等待
@@ -277,7 +277,7 @@ function! yac#lsp#did_close() abort
     \ }
     \ }
   
-  call yac#core#send_notification(msg)
+  call yac#core#send_notification(msg.method, msg.params)
 endfunction
 
 " === Call Hierarchy ===
