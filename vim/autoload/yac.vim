@@ -385,8 +385,9 @@ function! yac#auto_complete_trigger() abort
     return
   endif
 
-  " 如果补全窗口已打开，不重复触发
-  if s:completion.popup_id != -1
+  " 如果补全窗口已打开，触发重新过滤而不是重复请求LSP
+  if s:completion.popup_id != -1 && !empty(s:completion.original_items)
+    call s:filter_completions()
     return
   endif
 
