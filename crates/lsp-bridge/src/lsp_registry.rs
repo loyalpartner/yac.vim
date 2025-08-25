@@ -1,6 +1,10 @@
 use anyhow::Result;
 use lsp_client::LspClient;
-use lsp_types::{request::Initialize, ClientCapabilities, InitializeParams, WorkspaceFolder};
+use lsp_types::{
+    request::Initialize, ClientCapabilities, CompletionClientCapabilities,
+    CompletionItemCapability, InitializeParams, MarkupKind, TextDocumentClientCapabilities,
+    WorkspaceFolder,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, sync::Arc};
 use tokio::sync::Mutex;
@@ -186,6 +190,43 @@ impl LspRegistry {
             "Initializing {} with workspace: {:?}",
             config.command, workspace_root
         );
+        debug!("LSP client capabilities include completion resolve support");
+
+        // Create proper client capabilities for auto-import support
+        let capabilities = ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                completion: Some(CompletionClientCapabilities {
+                    dynamic_registration: Some(false),
+                    completion_item: Some(CompletionItemCapability {
+                        snippet_support: Some(true),
+                        commit_characters_support: Some(true),
+                        documentation_format: Some(vec![
+                            MarkupKind::Markdown,
+                            MarkupKind::PlainText,
+                        ]),
+                        deprecated_support: Some(true),
+                        preselect_support: Some(true),
+                        tag_support: None,
+                        insert_replace_support: Some(true),
+                        resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
+                            properties: vec![
+                                "documentation".to_string(),
+                                "detail".to_string(),
+                                "additionalTextEdits".to_string(),
+                            ],
+                        }),
+                        insert_text_mode_support: None,
+                        label_details_support: Some(true),
+                    }),
+                    completion_item_kind: None,
+                    context_support: Some(true),
+                    insert_text_mode: None,
+                    completion_list: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
 
         #[allow(deprecated)]
         let params = InitializeParams {
@@ -193,7 +234,7 @@ impl LspRegistry {
             root_path: None,
             root_uri: workspace_root.clone(),
             initialization_options: None,
-            capabilities: ClientCapabilities::default(),
+            capabilities,
             trace: None,
             workspace_folders: workspace_root.map(|uri| {
                 vec![WorkspaceFolder {
