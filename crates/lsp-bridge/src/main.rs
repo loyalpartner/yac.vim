@@ -27,72 +27,58 @@ use handlers::{
     WillSaveHandler,
 };
 
-/// SSH forwarder for local bridge mode (no socat required)
-/// This function implements direct SSH communication:
-/// - stdin (vim messages) -> SSH -> remote lsp-bridge process
-/// - remote lsp-bridge stdout -> SSH -> stdout (vim)
+/// Stdio to Unix socket forwarder for local bridge mode
+/// This function implements proper stdio-to-socket forwarding:
+/// - stdin (vim messages) -> Unix socket -> remote lsp-bridge
+/// - remote lsp-bridge -> Unix socket -> stdout (vim)
 ///
-/// Local bridge executes NO LSP logic - just forwards data via SSH
-async fn run_stdio_to_ssh_forwarder(
-    ssh_host: &str,
-    remote_socket: &str,
+/// Local bridge executes NO LSP logic - just forwards data through socket
+async fn run_stdio_to_socket_forwarder(
+    socket_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    info!(
-        "Starting SSH forwarder to {} (socket: {})",
-        ssh_host, remote_socket
-    );
+    info!("Starting stdio-to-socket forwarder for: {}", socket_path);
 
-    // Start persistent SSH connection that runs remote lsp-bridge directly
-    // The remote lsp-bridge will use Unix socket server mode
-    let remote_cmd = format!("YAC_UNIX_SOCKET={} ./lsp-bridge", remote_socket);
-    let ssh_cmd = format!("ssh {} '{}'", ssh_host, remote_cmd);
+    use tokio::net::UnixStream;
 
-    info!("Executing SSH command: {}", ssh_cmd);
+    // Connect to the Unix socket (established via SSH tunnel)
+    let socket = match UnixStream::connect(socket_path).await {
+        Ok(s) => {
+            info!("Successfully connected to Unix socket: {}", socket_path);
+            s
+        }
+        Err(e) => {
+            info!("Failed to connect to Unix socket {}: {}", socket_path, e);
+            return Err(e.into());
+        }
+    };
 
-    let mut ssh_process = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(&ssh_cmd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+    let (socket_reader, socket_writer) = socket.into_split();
 
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
+    let mut socket_reader = BufReader::new(socket_reader);
+    let mut socket_writer = tokio::io::BufWriter::new(socket_writer);
 
-    let ssh_stdin = ssh_process.stdin.take().ok_or("Failed to get SSH stdin")?;
-    let ssh_stdout = ssh_process
-        .stdout
-        .take()
-        .ok_or("Failed to get SSH stdout")?;
-    let ssh_stderr = ssh_process
-        .stderr
-        .take()
-        .ok_or("Failed to get SSH stderr")?;
+    info!("Setting up bidirectional stdio-socket forwarding");
 
-    let mut ssh_stdin = tokio::io::BufWriter::new(ssh_stdin);
-    let mut ssh_stdout = BufReader::new(ssh_stdout);
-    let mut ssh_stderr = BufReader::new(ssh_stderr);
-
-    info!("SSH process started, setting up bidirectional forwarding");
-
-    // Forward stdin to SSH
-    let stdin_to_ssh = async {
+    // Forward stdin to socket
+    let stdin_to_socket = async {
         let mut line = String::new();
         loop {
             line.clear();
             match stdin.read_line(&mut line).await {
                 Ok(0) => {
-                    info!("stdin EOF - closing SSH stdin");
+                    info!("stdin EOF - closing socket writer");
+                    let _ = socket_writer.shutdown().await;
                     break;
                 }
                 Ok(_) => {
-                    if let Err(e) = ssh_stdin.write_all(line.as_bytes()).await {
-                        info!("Failed to write to SSH stdin: {}", e);
+                    if let Err(e) = socket_writer.write_all(line.as_bytes()).await {
+                        info!("Failed to write to socket: {}", e);
                         break;
                     }
-                    if let Err(e) = ssh_stdin.flush().await {
-                        info!("Failed to flush SSH stdin: {}", e);
+                    if let Err(e) = socket_writer.flush().await {
+                        info!("Failed to flush socket: {}", e);
                         break;
                     }
                 }
@@ -104,14 +90,14 @@ async fn run_stdio_to_ssh_forwarder(
         }
     };
 
-    // Forward SSH stdout to stdout
-    let ssh_to_stdout = async {
+    // Forward socket to stdout
+    let socket_to_stdout = async {
         let mut line = String::new();
         loop {
             line.clear();
-            match ssh_stdout.read_line(&mut line).await {
+            match socket_reader.read_line(&mut line).await {
                 Ok(0) => {
-                    info!("SSH stdout EOF");
+                    info!("Socket EOF");
                     break;
                 }
                 Ok(_) => {
@@ -125,42 +111,24 @@ async fn run_stdio_to_ssh_forwarder(
                     }
                 }
                 Err(e) => {
-                    info!("SSH stdout read error: {}", e);
+                    info!("Socket read error: {}", e);
                     break;
                 }
             }
         }
     };
 
-    // Monitor SSH stderr for errors
-    let ssh_stderr_monitor = async {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match ssh_stderr.read_line(&mut line).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    info!("SSH stderr: {}", line.trim());
-                }
-                Err(_) => break,
-            }
-        }
-    };
-
-    // Run all forwarding tasks concurrently
+    // Run both forwarding directions concurrently
     tokio::select! {
-        _ = stdin_to_ssh => {},
-        _ = ssh_to_stdout => {},
-        _ = ssh_stderr_monitor => {},
-        result = ssh_process.wait() => {
-            match result {
-                Ok(status) => info!("SSH process exited with status: {}", status),
-                Err(e) => info!("SSH process error: {}", e),
-            }
+        _ = stdin_to_socket => {
+            info!("stdin to socket forwarding completed");
+        },
+        _ = socket_to_stdout => {
+            info!("socket to stdout forwarding completed");
         }
     }
 
-    info!("SSH forwarder terminated");
+    info!("Stdio-socket forwarder terminated");
     Ok(())
 }
 
@@ -187,22 +155,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
-    // Bridge mode selection based on role (no socat dependency):
-    // - YAC_SSH_HOST + YAC_REMOTE_SOCKET: Local bridge (SSH forwarder mode)
+    // Bridge mode selection:
+    // - YAC_REMOTE_SOCKET set: Local bridge (stdio-to-socket forwarder)
     // - YAC_UNIX_SOCKET set: Remote bridge (server mode for LSP processing)
     // - Neither set: Standard local mode (stdio)
 
-    // Check for SSH forwarding mode first (no socat required)
-    if let (Ok(ssh_host), Ok(remote_socket)) = (
-        std::env::var("YAC_SSH_HOST"),
-        std::env::var("YAC_REMOTE_SOCKET"),
-    ) {
+    // Check for local bridge forwarding mode first
+    if let Ok(remote_socket) = std::env::var("YAC_REMOTE_SOCKET") {
         info!(
-            "Starting SSH forwarding mode (local bridge): {} -> {}",
-            ssh_host, remote_socket
+            "Starting local bridge mode (stdio-to-socket): {}",
+            remote_socket
         );
-        run_stdio_to_ssh_forwarder(&ssh_host, &remote_socket).await?;
-        return Ok(()); // Pure SSH forwarder - no vim client needed
+        run_stdio_to_socket_forwarder(&remote_socket).await?;
+        return Ok(()); // Pure forwarder - no vim client needed
     }
 
     let mut vim = if let Ok(socket_path) = std::env::var("YAC_UNIX_SOCKET") {

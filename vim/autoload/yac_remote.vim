@@ -332,13 +332,13 @@ function! s:start_remote_server(user_host, remote_socket) abort
   return 1
 endfunction
 
-" Setup SSH connection info (no persistent tunnel needed)
+" Create SSH tunnel using Unix domain socket forwarding
 function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[SSH]: Setting up SSH connection for direct SSH forwarding: %s -> %s via %s', a:local_socket, a:remote_socket, a:user_host)
+    echom printf('YacDebug[SSH]: Creating SSH tunnel: %s -> %s via %s', a:local_socket, a:remote_socket, a:user_host)
   endif
   
-  " Clean up any existing local socket
+  " Clean up any existing local socket and SSH tunnel
   if filereadable(a:local_socket)
     if get(g:, 'lsp_bridge_debug', 0)
       echom printf('YacDebug[SSH]: Removing existing local socket: %s', a:local_socket)
@@ -346,8 +346,8 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
     call delete(a:local_socket)
   endif
   
-  " Store SSH connection info for the bridge
-  call s:store_ssh_connection(a:user_host, a:local_socket, a:remote_socket)
+  " Kill any existing SSH tunnel for this connection
+  call s:kill_ssh_tunnel(a:user_host)
   
   " Verify remote server is ready by checking remote socket exists
   let l:check_cmd = 'ssh ' . shellescape(a:user_host) . ' "test -S ' . shellescape(a:remote_socket) . '"'
@@ -360,18 +360,54 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
   
   if v:shell_error != 0
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[SSH]: Remote socket verification failed: %s', l:result)
+      echom printf('YacDebug[SSH]: Remote socket not ready: %s', l:result)
     endif
     echoerr "Remote server socket not ready: " . a:remote_socket
     return 0
   endif
   
+  " Create SSH tunnel for Unix domain socket forwarding
+  " Uses -L for local forwarding: local_socket:remote_socket
+  let l:tunnel_cmd = printf('ssh -f -N -T -o ExitOnForwardFailure=yes -L %s:%s %s', 
+        \ shellescape(a:local_socket), shellescape(a:remote_socket), shellescape(a:user_host))
+  
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[SSH]: SSH forwarder connection ready for %s', a:user_host)
+    echom printf('YacDebug[SSH]: Creating tunnel: %s', l:tunnel_cmd)
   endif
   
-  echo "SSH forwarder ready for " . a:user_host
-  return 1
+  let l:result = system(l:tunnel_cmd)
+  
+  if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: SSH tunnel creation failed: %s', l:result)
+    endif
+    echoerr "Failed to create SSH tunnel: " . l:result
+    return 0
+  endif
+  
+  " Wait for tunnel to be established
+  let l:retry_count = 0
+  while l:retry_count < 10
+    if filereadable(a:local_socket)
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom printf('YacDebug[SSH]: SSH tunnel established successfully')
+      endif
+      
+      " Store SSH connection info
+      call s:store_ssh_connection(a:user_host, a:local_socket, a:remote_socket)
+      return 1
+    endif
+    
+    sleep 100m
+    let l:retry_count += 1
+  endwhile
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Tunnel socket not created after retries: %s', a:local_socket)
+  endif
+  
+  echoerr "Tunnel socket not created: " . a:local_socket
+  return 0
 endfunction
 
 " Store SSH connection information for the forwarder
@@ -419,6 +455,19 @@ function! s:stop_remote_server(user_host, remote_socket) abort
   call system(l:cleanup_cmd)
 endfunction
 
+" Kill SSH tunnels for a specific user_host
+function! s:kill_ssh_tunnel(user_host) abort
+  " Kill any existing SSH tunnels for this host
+  " Look for SSH processes doing socket forwarding to this host
+  let l:kill_cmd = printf('pkill -f "ssh.*%s.*-L.*sock" || true', shellescape(a:user_host))
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: Killing existing SSH tunnels: %s', l:kill_cmd)
+  endif
+  
+  call system(l:kill_cmd)
+endfunction
+
 " Tunnel registry for cleanup
 let s:active_tunnels = {}
 
@@ -444,10 +493,11 @@ function! yac_remote#cleanup_tunnels() abort
     
     echo "Cleaning up tunnel for " . l:user_host
     
-    " Clean up SSH connection info (no persistent tunnels to kill)
+    " Kill SSH tunnel
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[SSH]: Cleaning up SSH connection info for %s', l:user_host)
+      echom printf('YacDebug[SSH]: Killing SSH tunnel for %s', l:user_host)
     endif
+    call s:kill_ssh_tunnel(l:user_host)
     
     " Remove local socket
     if filereadable(l:tunnel.local_socket)
