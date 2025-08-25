@@ -1364,7 +1364,7 @@ function! s:move_completion_selection(direction) abort
   call s:render_completion_window()
 endfunction
 
-" 插入选择的补全项
+" 插入选择的补全项 - 支持auto-import
 function! s:insert_completion(item) abort
   call s:close_completion_popup()
 
@@ -1374,23 +1374,124 @@ function! s:insert_completion(item) abort
     return
   endif
 
+  " 检查是否需要resolve补全项以获取additional_text_edits
+  if has_key(a:item, 'data') && a:item.data != v:null && !has_key(a:item, 'additional_text_edits')
+    " 需要resolve - 先resolve然后再插入
+    call s:resolve_and_insert_completion(a:item)
+    return
+  endif
+
+  " 应用additional_text_edits (导入语句等)
+  if has_key(a:item, 'additional_text_edits') && !empty(a:item.additional_text_edits)
+    call s:apply_additional_text_edits(a:item.additional_text_edits)
+  endif
+
   " 获取当前前缀，需要替换掉这部分
   let current_prefix = s:get_current_word_prefix()
   let prefix_len = len(current_prefix)
 
+  " 获取要插入的文本
+  let insert_text = has_key(a:item, 'insert_text') && !empty(a:item.insert_text) ? a:item.insert_text : a:item.label
+
   if empty(current_prefix)
     " 没有前缀时，直接插入
-    call feedkeys(a:item.label, 'n')
-    echo printf("Inserted: %s", a:item.label)
+    call feedkeys(insert_text, 'n')
+    echo printf("Inserted: %s", insert_text)
+  else
+    " 删除已输入的前缀，然后插入完整的补全文本
+    let backspaces = repeat("\<BS>", prefix_len)
+    call feedkeys(backspaces . insert_text, 'n')
+    echo printf("Completed: %s → %s", current_prefix, insert_text)
+  endif
+
+  " 显示auto-import信息
+  if has_key(a:item, 'additional_text_edits') && !empty(a:item.additional_text_edits)
+    echo printf("Auto-imported %d items", len(a:item.additional_text_edits))
+  endif
+endfunction
+
+" resolve补全项并插入
+function! s:resolve_and_insert_completion(item) abort
+  " 请求resolve补全项
+  call s:request('completion_resolve', {
+    \   'item': a:item,
+    \   'file': expand('%:p')
+    \ }, 's:handle_completion_resolve_response')
+endfunction
+
+" resolve补全项响应处理器
+function! s:handle_completion_resolve_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[RECV]: completion resolve response: %s', string(a:response))
+  endif
+
+  if !empty(a:response)
+    " 插入resolved的补全项
+    call s:insert_completion(a:response)
+  else
+    echo "Failed to resolve completion item"
+  endif
+endfunction
+
+" 应用additional text edits (用于auto-import等)
+function! s:apply_additional_text_edits(text_edits) abort
+  if empty(a:text_edits)
     return
   endif
 
-  " 删除已输入的前缀，然后插入完整的补全文本
-  " 使用退格键删除前缀，然后插入完整文本
-  let backspaces = repeat("\<BS>", prefix_len)
-  call feedkeys(backspaces . a:item.label, 'n')
+  " 保存当前位置
+  let current_pos = getpos('.')
+  
+  " 按行号倒序排序，从后往前应用避免行号变化问题
+  let sorted_edits = sort(copy(a:text_edits), 's:compare_text_edits_by_line')
 
-  echo printf("Completed: %s → %s", current_prefix, a:item.label)
+  for edit in sorted_edits
+    call s:apply_single_text_edit(edit)
+  endfor
+
+  " 恢复光标位置 (可能需要调整)
+  call setpos('.', current_pos)
+endfunction
+
+" 应用单个text edit
+function! s:apply_single_text_edit(edit) abort
+  if !has_key(a:edit, 'range') || !has_key(a:edit, 'new_text')
+    return
+  endif
+
+  let range = a:edit.range
+  let new_text = a:edit.new_text
+
+  " LSP使用0-based行号和列号，Vim使用1-based
+  let start_line = range.start.line + 1
+  let start_col = range.start.character + 1
+  let end_line = range.end.line + 1  
+  let end_col = range.end.character + 1
+
+  " 如果是插入操作 (start == end)
+  if start_line == end_line && start_col == end_col
+    " 在指定位置插入文本
+    call setpos('.', [0, start_line, start_col, 0])
+    call feedkeys("\<Esc>i" . new_text, 'n')
+  else
+    " 替换操作 - 删除范围内的文本并插入新文本
+    " 选择要替换的范围
+    call setpos('.', [0, start_line, start_col, 0])
+    let end_pos = [0, end_line, end_col, 0]
+    
+    " 使用visual模式选择并替换
+    execute 'normal! v'
+    call setpos('.', end_pos)
+    call feedkeys('c' . new_text . "\<Esc>", 'n')
+  endif
+endfunction
+
+" 比较text edits的行号 (用于排序)
+function! s:compare_text_edits_by_line(edit1, edit2) abort
+  let line1 = a:edit1.range.start.line
+  let line2 = a:edit2.range.start.line
+  " 倒序排序，从大到小
+  return line2 - line1
 endfunction
 
 " 关闭补全窗口

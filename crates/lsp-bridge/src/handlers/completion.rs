@@ -15,13 +15,33 @@ pub struct CompletionRequest {
     pub trigger_character: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: Option<String>,
     pub detail: Option<String>,
     pub documentation: Option<String>,
     pub insert_text: Option<String>,
+    pub data: Option<serde_json::Value>,
+    pub additional_text_edits: Option<Vec<TextEdit>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextEdit {
+    pub range: TextRange,
+    pub new_text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextRange {
+    pub start: Position,
+    pub end: Position,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Position {
+    pub line: u32,
+    pub character: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +60,8 @@ impl CompletionItem {
         detail: Option<String>,
         documentation: Option<String>,
         insert_text: Option<String>,
+        data: Option<serde_json::Value>,
+        additional_text_edits: Option<Vec<TextEdit>>,
     ) -> Self {
         Self {
             label,
@@ -47,6 +69,8 @@ impl CompletionItem {
             detail,
             documentation,
             insert_text,
+            data,
+            additional_text_edits,
         }
     }
 }
@@ -198,6 +222,8 @@ impl Handler for CompletionHandler {
                     item.detail,
                     documentation,
                     insert_text,
+                    item.data,
+                    None, // additional_text_edits will be populated via resolve
                 )
             })
             .collect();

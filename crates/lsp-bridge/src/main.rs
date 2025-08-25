@@ -8,6 +8,7 @@ use handlers::{
     CallHierarchyHandler,
     CodeActionHandler,
     CompletionHandler,
+    CompletionResolveHandler,
     DiagnosticsHandler,
     // Document lifecycle handlers
     DidChangeHandler,
@@ -82,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GotoHandler::new(lsp_registry.clone(), "goto_implementation").unwrap();
     let hover_handler = HoverHandler::new(lsp_registry.clone());
     let completion_handler = CompletionHandler::new(lsp_registry.clone());
+    let completion_resolve_handler = CompletionResolveHandler::new(lsp_registry.clone());
     // Updated handlers using LspRegistry
     let references_handler = ReferencesHandler::new(lsp_registry.clone());
     let inlay_hints_handler = InlayHintsHandler::new(lsp_registry.clone());
@@ -105,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vim.add_handler("file_search", file_search_handler);
     vim.add_handler("hover", hover_handler);
     vim.add_handler("completion", completion_handler);
+    vim.add_handler("completion_resolve", completion_resolve_handler);
     vim.add_handler("references", references_handler);
     vim.add_handler("inlay_hints", inlay_hints_handler);
     vim.add_handler("rename", rename_handler);
