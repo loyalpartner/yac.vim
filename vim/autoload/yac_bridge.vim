@@ -2,8 +2,8 @@
 " Simple LSP bridge for Vim
 
 " 定义补全匹配字符的高亮组
-if !hlexists('LspBridgeMatchChar')
-  highlight LspBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
+if !hlexists('YacBridgeMatchChar')
+  highlight YacBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
 endif
 
 " 简化状态管理
@@ -47,7 +47,7 @@ let s:file_search.has_more = v:false
 let s:file_search.total_count = 0
 
 " 启动进程
-function! lsp_bridge#start() abort
+function! yac_bridge#start() abort
   if s:job != v:null && job_status(s:job) == 'run'
     return
   endif
@@ -57,12 +57,12 @@ function! lsp_bridge#start() abort
     " 启用调试模式时开启详细日志
     if get(g:, 'lsp_bridge_debug', 0)
       call ch_logfile('/tmp/vim_channel.log', 'w')
-      echom 'LspDebug: Channel logging enabled to /tmp/vim_channel.log'
+      echom 'YacDebug: Channel logging enabled to /tmp/vim_channel.log'
     endif
     let s:log_started = 1
   endif
 
-  let s:job = job_start(g:lsp_bridge_command, {
+  let s:job = job_start(g:yac_bridge_command, {
     \ 'mode': 'json',
     \ 'callback': function('s:handle_response'),
     \ 'err_cb': function('s:handle_error'),
@@ -76,17 +76,17 @@ endfunction
 
 " 发送命令（使用 ch_sendexpr 和指定的回调handler）
 function! s:send_command(jsonrpc_msg, callback_func) abort
-  call lsp_bridge#start()  " 自动启动
+  call yac_bridge#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的命令
     if get(g:, 'lsp_bridge_debug', 0)
       let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('LspDebug[SEND]: %s -> %s:%d:%d',
+      echom printf('YacDebug[SEND]: %s -> %s:%d:%d',
         \ a:jsonrpc_msg.method,
         \ fnamemodify(get(params, 'file', ''), ':t'),
         \ get(params, 'line', -1), get(params, 'column', -1))
-      echom printf('LspDebug[JSON]: %s', string(a:jsonrpc_msg))
+      echom printf('YacDebug[JSON]: %s', string(a:jsonrpc_msg))
     endif
 
     " 使用指定的回调函数
@@ -105,16 +105,16 @@ function! s:request(method, params, callback_func) abort
     \ 'params': extend(a:params, {'command': a:method})
     \ }
   
-  call lsp_bridge#start()  " 自动启动
+  call yac_bridge#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的请求
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('LspDebug[SEND]: %s -> %s:%d:%d',
+      echom printf('YacDebug[SEND]: %s -> %s:%d:%d',
         \ a:method,
         \ fnamemodify(get(a:params, 'file', ''), ':t'),
         \ get(a:params, 'line', -1), get(a:params, 'column', -1))
-      echom printf('LspDebug[JSON]: %s', string(jsonrpc_msg))
+      echom printf('YacDebug[JSON]: %s', string(jsonrpc_msg))
     endif
 
     " 使用指定的回调函数
@@ -131,16 +131,16 @@ function! s:notify(method, params) abort
     \ 'params': extend(a:params, {'command': a:method})
     \ }
     
-  call lsp_bridge#start()  " 自动启动
+  call yac_bridge#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的通知
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('LspDebug[NOTIFY]: %s -> %s:%d:%d',
+      echom printf('YacDebug[NOTIFY]: %s -> %s:%d:%d',
         \ a:method,
         \ fnamemodify(get(a:params, 'file', ''), ':t'),
         \ get(a:params, 'line', -1), get(a:params, 'column', -1))
-      echom printf('LspDebug[JSON]: %s', string(jsonrpc_msg))
+      echom printf('YacDebug[JSON]: %s', string(jsonrpc_msg))
     endif
 
     " 发送通知（不需要回调）
@@ -151,7 +151,7 @@ function! s:notify(method, params) abort
 endfunction
 
 " LSP 方法
-function! lsp_bridge#goto_definition() abort
+function! yac_bridge#goto_definition() abort
   call s:notify('goto_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -159,7 +159,7 @@ function! lsp_bridge#goto_definition() abort
     \ })
 endfunction
 
-function! lsp_bridge#goto_declaration() abort
+function! yac_bridge#goto_declaration() abort
   call s:notify('goto_declaration', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -167,7 +167,7 @@ function! lsp_bridge#goto_declaration() abort
     \ })
 endfunction
 
-function! lsp_bridge#goto_type_definition() abort
+function! yac_bridge#goto_type_definition() abort
   call s:notify('goto_type_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -175,7 +175,7 @@ function! lsp_bridge#goto_type_definition() abort
     \ })
 endfunction
 
-function! lsp_bridge#goto_implementation() abort
+function! yac_bridge#goto_implementation() abort
   call s:notify('goto_implementation', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -183,7 +183,7 @@ function! lsp_bridge#goto_implementation() abort
     \ })
 endfunction
 
-function! lsp_bridge#hover() abort
+function! yac_bridge#hover() abort
   call s:request('hover', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -191,7 +191,7 @@ function! lsp_bridge#hover() abort
     \ }, 's:handle_hover_response')
 endfunction
 
-function! lsp_bridge#open_file() abort
+function! yac_bridge#open_file() abort
   call s:request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -199,7 +199,7 @@ function! lsp_bridge#open_file() abort
     \ }, 's:handle_file_open_response')
 endfunction
 
-function! lsp_bridge#complete() abort
+function! yac_bridge#complete() abort
   " 如果补全窗口已存在且有原始数据，直接重新过滤
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
     call s:filter_completions()
@@ -216,7 +216,7 @@ function! lsp_bridge#complete() abort
     \ }, 's:handle_completion_response')
 endfunction
 
-function! lsp_bridge#references() abort
+function! yac_bridge#references() abort
   call s:request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -224,7 +224,7 @@ function! lsp_bridge#references() abort
     \ }, 's:handle_references_response')
 endfunction
 
-function! lsp_bridge#inlay_hints() abort
+function! yac_bridge#inlay_hints() abort
   call s:request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -232,7 +232,7 @@ function! lsp_bridge#inlay_hints() abort
     \ }, 's:handle_inlay_hints_response')
 endfunction
 
-function! lsp_bridge#rename(...) abort
+function! yac_bridge#rename(...) abort
   " 获取新名称，可以是参数传入或用户输入
   let new_name = ''
 
@@ -256,7 +256,7 @@ function! lsp_bridge#rename(...) abort
     \ }, 's:handle_rename_response')
 endfunction
 
-function! lsp_bridge#call_hierarchy_incoming() abort
+function! yac_bridge#call_hierarchy_incoming() abort
   call s:request('call_hierarchy_incoming', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -264,7 +264,7 @@ function! lsp_bridge#call_hierarchy_incoming() abort
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
-function! lsp_bridge#call_hierarchy_outgoing() abort
+function! yac_bridge#call_hierarchy_outgoing() abort
   call s:request('call_hierarchy_outgoing', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -272,7 +272,7 @@ function! lsp_bridge#call_hierarchy_outgoing() abort
     \ }, 's:handle_call_hierarchy_response')
 endfunction
 
-function! lsp_bridge#document_symbols() abort
+function! yac_bridge#document_symbols() abort
   call s:request('document_symbols', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -280,13 +280,13 @@ function! lsp_bridge#document_symbols() abort
     \ }, 's:handle_document_symbols_response')
 endfunction
 
-function! lsp_bridge#folding_range() abort
+function! yac_bridge#folding_range() abort
   call s:request('folding_range', {
     \   'file': expand('%:p')
     \ }, 's:handle_folding_range_response')
 endfunction
 
-function! lsp_bridge#code_action() abort
+function! yac_bridge#code_action() abort
   call s:request('code_action', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -295,7 +295,7 @@ function! lsp_bridge#code_action() abort
 endfunction
 
 
-function! lsp_bridge#execute_command(...) abort
+function! yac_bridge#execute_command(...) abort
   if a:0 == 0
     echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
     return
@@ -310,7 +310,7 @@ function! lsp_bridge#execute_command(...) abort
     \ }, 's:handle_execute_command_response')
 endfunction
 
-function! lsp_bridge#did_save(...) abort
+function! yac_bridge#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:request('did_save', {
     \   'file': expand('%:p'),
@@ -320,7 +320,7 @@ function! lsp_bridge#did_save(...) abort
     \ }, 's:handle_did_save_response')
 endfunction
 
-function! lsp_bridge#did_change(...) abort
+function! yac_bridge#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
   call s:request('did_change', {
     \   'file': expand('%:p'),
@@ -330,7 +330,7 @@ function! lsp_bridge#did_change(...) abort
     \ }, 's:handle_did_change_response')
 endfunction
 
-function! lsp_bridge#will_save(...) abort
+function! yac_bridge#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:request('will_save', {
     \   'file': expand('%:p'),
@@ -340,7 +340,7 @@ function! lsp_bridge#will_save(...) abort
     \ }, 's:handle_will_save_response')
 endfunction
 
-function! lsp_bridge#will_save_wait_until(...) abort
+function! yac_bridge#will_save_wait_until(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:request('will_save_wait_until', {
     \   'file': expand('%:p'),
@@ -350,7 +350,7 @@ function! lsp_bridge#will_save_wait_until(...) abort
     \ }, 's:handle_will_save_wait_until_response')
 endfunction
 
-function! lsp_bridge#did_close() abort
+function! yac_bridge#did_close() abort
   call s:request('did_close', {
     \   'file': expand('%:p'),
     \   'line': 0,
@@ -358,7 +358,7 @@ function! lsp_bridge#did_close() abort
     \ }, 's:handle_did_close_response')
 endfunction
 
-function! lsp_bridge#file_search(...) abort
+function! yac_bridge#file_search(...) abort
   " 获取查询字符串（可选参数）
   let query = a:0 > 0 ? a:1 : ''
   
@@ -483,7 +483,7 @@ endfunction
 " 交互式文件搜索过滤器
 function! s:interactive_file_search_filter(winid, key) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[FILTER]: key=%s winid=%d', string(a:key), a:winid)
+    echom printf('YacDebug[FILTER]: key=%s winid=%d', string(a:key), a:winid)
   endif
   " ESC 关闭搜索
   if a:key == "\<Esc>"
@@ -577,17 +577,17 @@ endfunction
 
 " 发送通知（无响应）
 function! s:send_notification(jsonrpc_msg) abort
-  call lsp_bridge#start()  " 自动启动
+  call yac_bridge#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的通知
     if get(g:, 'lsp_bridge_debug', 0)
       let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('LspDebug[NOTIFY]: %s -> %s:%d:%d',
+      echom printf('YacDebug[NOTIFY]: %s -> %s:%d:%d',
         \ a:jsonrpc_msg.method,
         \ fnamemodify(get(params, 'file', ''), ':t'),
         \ get(params, 'line', -1), get(params, 'column', -1))
-      echom printf('LspDebug[JSON]: %s', string(a:jsonrpc_msg))
+      echom printf('YacDebug[JSON]: %s', string(a:jsonrpc_msg))
     endif
 
     " 发送通知（不需要回调）
@@ -615,7 +615,7 @@ endfunction
 " hover 响应处理器 - 简化：有 content 就显示
 function! s:handle_hover_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: hover response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: hover response: %s', string(a:response))
   endif
 
   if has_key(a:response, 'content') && !empty(a:response.content)
@@ -626,7 +626,7 @@ endfunction
 " completion 响应处理器 - 简化：有 items 就显示
 function! s:handle_completion_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: completion response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: completion response: %s', string(a:response))
   endif
 
   if has_key(a:response, 'items') && !empty(a:response.items)
@@ -637,7 +637,7 @@ endfunction
 " references 响应处理器
 function! s:handle_references_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: references response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: references response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'locations')
@@ -648,7 +648,7 @@ endfunction
 " inlay_hints 响应处理器
 function! s:handle_inlay_hints_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: inlay_hints response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: inlay_hints response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'hints')
@@ -659,7 +659,7 @@ endfunction
 " rename 响应处理器
 function! s:handle_rename_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: rename response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: rename response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'edits')
@@ -670,7 +670,7 @@ endfunction
 " call_hierarchy 响应处理器（同时处理incoming和outgoing）
 function! s:handle_call_hierarchy_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: call_hierarchy response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: call_hierarchy response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'items')
@@ -681,7 +681,7 @@ endfunction
 " document_symbols 响应处理器
 function! s:handle_document_symbols_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: document_symbols response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: document_symbols response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'symbols')
@@ -692,7 +692,7 @@ endfunction
 " folding_range 响应处理器
 function! s:handle_folding_range_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: folding_range response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: folding_range response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'ranges')
@@ -703,7 +703,7 @@ endfunction
 " code_action 响应处理器
 function! s:handle_code_action_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: code_action response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: code_action response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'actions')
@@ -714,7 +714,7 @@ endfunction
 " execute_command 响应处理器
 function! s:handle_execute_command_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: execute_command response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: execute_command response: %s', string(a:response))
   endif
 
   if !empty(a:response) && has_key(a:response, 'edits')
@@ -725,7 +725,7 @@ endfunction
 " file_open 响应处理器
 function! s:handle_file_open_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: file_open response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: file_open response: %s', string(a:response))
   endif
 
   if has_key(a:response, 'log_file')
@@ -738,7 +738,7 @@ endfunction
 function! s:handle_did_save_response(channel, response) abort
   " 通常没有响应，除非出错
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: did_save response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: did_save response: %s', string(a:response))
   endif
 endfunction
 
@@ -746,7 +746,7 @@ endfunction
 function! s:handle_did_change_response(channel, response) abort
   " 通常没有响应，除非出错
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: did_change response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: did_change response: %s', string(a:response))
   endif
 endfunction
 
@@ -754,14 +754,14 @@ endfunction
 function! s:handle_will_save_response(channel, response) abort
   " 通常没有响应，除非出错
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: will_save response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: will_save response: %s', string(a:response))
   endif
 endfunction
 
 " will_save_wait_until 响应处理器
 function! s:handle_will_save_wait_until_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: will_save_wait_until response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: will_save_wait_until response: %s', string(a:response))
   endif
 
   " 可能返回文本编辑
@@ -774,14 +774,14 @@ endfunction
 function! s:handle_did_close_response(channel, response) abort
   " 通常没有响应，除非出错
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: did_close response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: did_close response: %s', string(a:response))
   endif
 endfunction
 
 " file_search 响应处理器
 function! s:handle_file_search_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug[RECV]: file_search response: %s', string(a:response))
+    echom printf('YacDebug[RECV]: file_search response: %s', string(a:response))
   endif
 
   if has_key(a:response, 'files')
@@ -826,18 +826,18 @@ function! s:handle_response(channel, msg) abort
 endfunction
 
 " VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
-function! lsp_bridge#set_log_file(log_path) abort
+function! yac_bridge#set_log_file(log_path) abort
   let s:log_file = a:log_path
   if get(g:, 'lsp_bridge_debug', 0)
-    echom 'LspDebug: Log file path set to: ' . a:log_path
+    echom 'YacDebug: Log file path set to: ' . a:log_path
   endif
 endfunction
 
 " 停止进程
-function! lsp_bridge#stop() abort
+function! yac_bridge#stop() abort
   if s:job != v:null
     if get(g:, 'lsp_bridge_debug', 0)
-      echom 'LspDebug: Stopping lsp-bridge process'
+      echom 'YacDebug: Stopping lsp-bridge process'
     endif
     call job_stop(s:job)
     let s:job = v:null
@@ -847,43 +847,43 @@ endfunction
 " === Debug 功能 ===
 
 " 切换调试模式
-function! lsp_bridge#debug_toggle() abort
+function! yac_bridge#debug_toggle() abort
   let g:lsp_bridge_debug = !get(g:, 'lsp_bridge_debug', 0)
 
   if g:lsp_bridge_debug
-    echo 'LspDebug: Debug mode ENABLED'
+    echo 'YacDebug: Debug mode ENABLED'
     echo '  - Command send/receive logging enabled'
     echo '  - Channel communication will be logged to /tmp/vim_channel.log'
-    echo '  - Use :LspDebugToggle to disable'
+    echo '  - Use :YacDebugToggle to disable'
 
     " 如果进程已经运行，重启以启用channel日志
     if s:job != v:null && job_status(s:job) == 'run'
-      echom 'LspDebug: Restarting process to enable channel logging...'
-      call lsp_bridge#stop()
-      call lsp_bridge#start()
+      echom 'YacDebug: Restarting process to enable channel logging...'
+      call yac_bridge#stop()
+      call yac_bridge#start()
     endif
   else
-    echo 'LspDebug: Debug mode DISABLED'
+    echo 'YacDebug: Debug mode DISABLED'
     echo '  - Command logging disabled'
     echo '  - Channel logging will stop for new connections'
   endif
 endfunction
 
 " 显示调试状态
-function! lsp_bridge#debug_status() abort
+function! yac_bridge#debug_status() abort
   let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
   let job_running = (s:job != v:null && job_status(s:job) == 'run')
 
-  echo 'LspDebug Status:'
+  echo 'YacDebug Status:'
   echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
   echo '  LSP Process: ' . (job_running ? 'RUNNING' : 'STOPPED')
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
   echo '  LSP Log: ' . (empty(s:log_file) ? 'Not available' : s:log_file)
   echo ''
   echo 'Commands:'
-  echo '  :LspDebugToggle - Toggle debug mode'
-  echo '  :LspDebugStatus - Show this status'
-  echo '  :LspOpenLog     - Open LSP process log'
+  echo '  :YacDebugToggle - Toggle debug mode'
+  echo '  :YacDebugStatus - Show this status'
+  echo '  :YacOpenLog     - Open LSP process log'
 endfunction
 
 
@@ -1293,7 +1293,7 @@ function! s:collect_symbols_recursive(symbols, qf_list, depth) abort
 endfunction
 
 " 简单打开日志文件
-function! lsp_bridge#open_log() abort
+function! yac_bridge#open_log() abort
   " 检查LSP bridge进程是否运行
   if s:job == v:null || job_status(s:job) != 'run'
     echo 'lsp-bridge not running'
@@ -1369,7 +1369,7 @@ function! s:clear_inlay_hints() abort
 endfunction
 
 " 公开接口：清除inlay hints
-function! lsp_bridge#clear_inlay_hints() abort
+function! yac_bridge#clear_inlay_hints() abort
   call s:clear_inlay_hints()
   echo 'Inlay hints cleared'
 endfunction
@@ -1923,7 +1923,7 @@ function! s:clear_diagnostic_virtual_text(bufnr) abort
 endfunction
 
 " 切换诊断虚拟文本显示
-function! lsp_bridge#toggle_diagnostic_virtual_text() abort
+function! yac_bridge#toggle_diagnostic_virtual_text() abort
   let s:diagnostic_virtual_text.enabled = !s:diagnostic_virtual_text.enabled
   let bufnr = bufnr('%')
 
@@ -1939,7 +1939,7 @@ function! lsp_bridge#toggle_diagnostic_virtual_text() abort
 endfunction
 
 " 清除所有诊断虚拟文本
-function! lsp_bridge#clear_diagnostic_virtual_text() abort
+function! yac_bridge#clear_diagnostic_virtual_text() abort
   for bufnr in keys(s:diagnostic_virtual_text.storage)
     call s:clear_diagnostic_virtual_text(bufnr)
   endfor
@@ -1987,9 +1987,9 @@ function! s:show_file_search_popup() abort
   
   " Debug: 打印文件数据结构
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug: Building display for %d files', len(s:file_search.files))
+    echom printf('YacDebug: Building display for %d files', len(s:file_search.files))
     if len(s:file_search.files) > 0
-      echom printf('LspDebug: First file structure: %s', string(s:file_search.files[0]))
+      echom printf('YacDebug: First file structure: %s', string(s:file_search.files[0]))
     endif
   endif
   
@@ -2023,9 +2023,9 @@ function! s:show_file_search_popup() abort
   
   " Debug: 打印display_lines
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug: Built %d display lines', len(display_lines))
+    echom printf('YacDebug: Built %d display lines', len(display_lines))
     if len(display_lines) > 0
-      echom printf('LspDebug: First display line: "%s"', display_lines[0])
+      echom printf('YacDebug: First display line: "%s"', display_lines[0])
     endif
   endif
   
@@ -2047,8 +2047,8 @@ function! s:show_file_search_popup() abort
   
   " 最终调试：显示即将用于popup的完整内容
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('LspDebug: Final display_lines count: %d', len(display_lines))
-    echom printf('LspDebug: Creating popup with content: %s', string(display_lines))
+    echom printf('YacDebug: Final display_lines count: %d', len(display_lines))
+    echom printf('YacDebug: Creating popup with content: %s', string(display_lines))
   endif
   
   if exists('*popup_create')
@@ -2070,7 +2070,7 @@ function! s:show_file_search_popup() abort
       
     " Debug: 确认popup创建
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('LspDebug: Popup created with ID: %d', s:file_search.popup_id)
+      echom printf('YacDebug: Popup created with ID: %d', s:file_search.popup_id)
     endif
     
     " 创建输入框
@@ -2400,7 +2400,7 @@ endfunction
 " 处理最近文件记录响应
 function! s:handle_recent_file_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom 'LspDebug: Recent file recorded: ' . string(a:response)
+    echom 'YacDebug: Recent file recorded: ' . string(a:response)
   endif
 endfunction
 
@@ -2448,7 +2448,7 @@ endfunction
 " 命令行界面（降级模式）
 function! s:file_search_command_line_interface() abort
   echo "File search (command line mode):"
-  echo "Use :LspFileSearch <pattern> to search files"
+  echo "Use :YacFileSearch <pattern> to search files"
   
   for i in range(min([10, len(s:file_search.files)]))
     let file = s:file_search.files[i]
