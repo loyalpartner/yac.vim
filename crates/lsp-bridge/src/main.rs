@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Proactively communicate log file path to Vim via call_async
     // This implements the hybrid approach suggested by loyalpartner
     if let Err(e) = vim
-        .call_async("yac_bridge#set_log_file", vec![log_path.clone().into()])
+        .call_async("yac#set_log_file", vec![log_path.clone().into()])
         .await
     {
         info!("Failed to set log file path in Vim: {}", e);
