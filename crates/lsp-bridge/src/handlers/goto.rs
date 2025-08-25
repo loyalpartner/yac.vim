@@ -8,6 +8,7 @@ use tracing::debug;
 use vim::Handler;
 
 use super::common::Location;
+use lsp_bridge::transport::RemoteConfig;
 
 // Base request structure that Vim sends
 #[derive(Debug, Deserialize)]
@@ -49,6 +50,7 @@ pub type GotoResponse = Option<Location>;
 pub struct GotoHandler {
     lsp_registry: Arc<LspRegistry>,
     goto_type: GotoType,
+    remote_config: Option<RemoteConfig>,
 }
 
 impl GotoHandler {
@@ -56,7 +58,15 @@ impl GotoHandler {
         GotoType::from_method(method).map(|goto_type| Self {
             lsp_registry: registry,
             goto_type,
+            remote_config: None, // TODO: Get from config
         })
+    }
+
+    /// Set remote configuration for SSH path conversion
+    #[allow(dead_code)]
+    pub fn with_remote_config(mut self, remote_config: Option<RemoteConfig>) -> Self {
+        self.remote_config = remote_config;
+        self
     }
 }
 
@@ -183,9 +193,19 @@ impl Handler for GotoHandler {
         if let Some(lsp_location) = location_result {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
-                ctx.ex(format!("edit {}", location.file).as_str())
-                    .await
-                    .ok();
+
+                // SSH path conversion for remote editing
+                let file_to_edit = if let Some(remote_config) = &self.remote_config {
+                    // Convert local path to SSH path: /path/file.rs -> scp://user@host//path/file.rs
+                    format!(
+                        "scp://{}@{}/{}",
+                        remote_config.ssh_user, remote_config.ssh_host, location.file
+                    )
+                } else {
+                    location.file.clone()
+                };
+
+                ctx.ex(format!("edit {}", file_to_edit).as_str()).await.ok();
                 ctx.call_async(
                     "cursor",
                     vec![json!(location.line + 1), json!(location.column + 1)],

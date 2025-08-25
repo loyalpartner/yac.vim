@@ -6,54 +6,63 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::transport::TransportConfig;
+
 /// Language server configuration - Linus style: data-driven approach
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerConfig {
-    pub command: String,
-    pub args: Vec<String>,
     pub language_id: String,
     pub file_patterns: Vec<String>,
     pub workspace_patterns: Vec<String>,
+    pub transport: TransportConfig,
 }
 
 impl LspServerConfig {
     pub fn rust_analyzer() -> Self {
         Self {
-            command: "rust-analyzer".to_string(),
-            args: vec![],
             language_id: "rust".to_string(),
             file_patterns: vec!["*.rs".to_string()],
             workspace_patterns: vec!["Cargo.toml".to_string()],
+            transport: TransportConfig::Local {
+                command: "rust-analyzer".to_string(),
+                args: vec![],
+            },
         }
     }
 
     pub fn pyright() -> Self {
         Self {
-            command: "pyright-langserver".to_string(),
-            args: vec!["--stdio".to_string()],
             language_id: "python".to_string(),
             file_patterns: vec!["*.py".to_string()],
             workspace_patterns: vec!["pyproject.toml".to_string(), "setup.py".to_string()],
+            transport: TransportConfig::Local {
+                command: "pyright-langserver".to_string(),
+                args: vec!["--stdio".to_string()],
+            },
         }
     }
 
     pub fn typescript_language_server() -> Self {
         Self {
-            command: "typescript-language-server".to_string(),
-            args: vec!["--stdio".to_string()],
             language_id: "typescript".to_string(),
             file_patterns: vec!["*.ts".to_string(), "*.js".to_string(), "*.tsx".to_string()],
             workspace_patterns: vec!["package.json".to_string(), "tsconfig.json".to_string()],
+            transport: TransportConfig::Local {
+                command: "typescript-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+            },
         }
     }
 
     pub fn gopls() -> Self {
         Self {
-            command: "gopls".to_string(),
-            args: vec![],
             language_id: "go".to_string(),
             file_patterns: vec!["*.go".to_string()],
             workspace_patterns: vec!["go.mod".to_string()],
+            transport: TransportConfig::Local {
+                command: "gopls".to_string(),
+                args: vec![],
+            },
         }
     }
 
@@ -178,13 +187,23 @@ impl LspRegistry {
 
     /// Create a new LSP client for the given configuration
     async fn create_client(&self, config: &LspServerConfig, file_path: &str) -> Result<LspClient> {
-        let args: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
-        let client = LspClient::new(&config.command, &args).await?;
+        let client = match &config.transport {
+            TransportConfig::Local { command, args } => {
+                let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                LspClient::new(command, &args_str).await?
+            }
+            TransportConfig::Remote(_remote_config) => {
+                // For now, return error - remote transport needs full implementation
+                return Err(anyhow::anyhow!(
+                    "Remote transport not yet fully implemented"
+                ));
+            }
+        };
         let workspace_root = config.find_workspace_root(file_path);
 
         debug!(
             "Initializing {} with workspace: {:?}",
-            config.command, workspace_root
+            config.language_id, workspace_root
         );
 
         #[allow(deprecated)]
