@@ -335,10 +335,10 @@ endfunction
 " Setup SSH connection info (no persistent tunnel needed)
 function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[SSH]: Setting up SSH connection info: %s -> %s via %s', a:local_socket, a:remote_socket, a:user_host)
+    echom printf('YacDebug[SSH]: Setting up SSH connection for direct SSH forwarding: %s -> %s via %s', a:local_socket, a:remote_socket, a:user_host)
   endif
   
-  " Remove existing local socket if it exists  
+  " Clean up any existing local socket
   if filereadable(a:local_socket)
     if get(g:, 'lsp_bridge_debug', 0)
       echom printf('YacDebug[SSH]: Removing existing local socket: %s', a:local_socket)
@@ -347,14 +347,30 @@ function! s:create_ssh_tunnel(user_host, local_socket, remote_socket) abort
   endif
   
   " Store SSH connection info for the bridge
-  " The local bridge will connect directly via SSH to the remote server
   call s:store_ssh_connection(a:user_host, a:local_socket, a:remote_socket)
   
+  " Verify remote server is ready by checking remote socket exists
+  let l:check_cmd = 'ssh ' . shellescape(a:user_host) . ' "test -S ' . shellescape(a:remote_socket) . '"'
+  
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[SSH]: SSH connection info stored successfully')
+    echom printf('YacDebug[SSH]: Verifying remote server is ready: %s', l:check_cmd)
   endif
   
-  echo "SSH connection ready for " . a:user_host
+  let l:result = system(l:check_cmd)
+  
+  if v:shell_error != 0
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[SSH]: Remote socket verification failed: %s', l:result)
+    endif
+    echoerr "Remote server socket not ready: " . a:remote_socket
+    return 0
+  endif
+  
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[SSH]: SSH forwarder connection ready for %s', a:user_host)
+  endif
+  
+  echo "SSH forwarder ready for " . a:user_host
   return 1
 endfunction
 
@@ -369,9 +385,20 @@ function! s:store_ssh_connection(user_host, local_socket, remote_socket) abort
   \ }
 endfunction
 
-" Check if tunnel already exists
+" Check if SSH connection is already established  
 function! s:tunnel_exists(local_socket) abort
-  return filereadable(a:local_socket) && s:socket_is_active(a:local_socket)
+  " In SSH forwarding mode, we check if we have an active SSH connection
+  " rather than checking for local socket files
+  if exists('s:ssh_connections')
+    for [l:host, l:info] in items(s:ssh_connections)
+      if l:info.local_socket ==# a:local_socket
+        " Check if remote server is still running
+        let l:check_cmd = 'ssh ' . shellescape(l:host) . ' "test -S ' . shellescape(l:info.remote_socket) . '"'
+        return system(l:check_cmd) == 0 && v:shell_error == 0
+      endif
+    endfor
+  endif
+  return 0
 endfunction
 
 " Check if socket is active (can connect)
