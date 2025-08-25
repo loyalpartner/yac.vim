@@ -1375,7 +1375,7 @@ function! s:insert_completion(item) abort
   endif
 
   " 检查是否需要resolve补全项以获取additional_text_edits
-  if has_key(a:item, 'data') && a:item.data != v:null && !has_key(a:item, 'additional_text_edits')
+  if has_key(a:item, 'data') && a:item.data != v:null && (!has_key(a:item, 'additional_text_edits') || empty(get(a:item, 'additional_text_edits', [])))
     " 需要resolve - 先resolve然后再插入
     call s:resolve_and_insert_completion(a:item)
     return
@@ -1412,6 +1412,9 @@ endfunction
 
 " resolve补全项并插入
 function! s:resolve_and_insert_completion(item) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[RESOLVE]: Requesting resolve for item: %s', a:item.label)
+  endif
   " 请求resolve补全项
   call s:request('completion_resolve', {
     \   'item': a:item,
