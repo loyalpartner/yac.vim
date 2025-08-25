@@ -85,13 +85,31 @@ impl FileSearchHandler {
     async fn add_to_recent_files(&self, file_path: &str) {
         let mut recent = self.recent_files.lock().await;
 
+        // Normalize the path - convert to relative if possible
+        let normalized_path = if let Some(stripped) = file_path.strip_prefix("./") {
+            stripped
+        } else if let Some(stripped) = file_path.strip_prefix(
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_ref(),
+        ) {
+            stripped.trim_start_matches('/')
+        } else {
+            file_path
+        }
+        .to_string();
+
         // Remove if already exists to avoid duplicates
-        if let Some(pos) = recent.iter().position(|x| x == file_path) {
+        if let Some(pos) = recent
+            .iter()
+            .position(|x| x == &normalized_path || x == file_path)
+        {
             recent.remove(pos);
         }
 
-        // Add to front
-        recent.push_front(file_path.to_string());
+        // Add normalized path to front
+        recent.push_front(normalized_path.clone());
 
         // Keep only last N files
         while recent.len() > MAX_RECENT_FILES {
@@ -99,8 +117,9 @@ impl FileSearchHandler {
         }
 
         debug!(
-            "Added '{}' to recent files (total: {}). Recent list: {:?}",
+            "Added '{}' (normalized: '{}') to recent files (total: {}). Recent list: {:?}",
             file_path,
+            normalized_path,
             recent.len(),
             recent.iter().take(5).collect::<Vec<_>>()
         );
@@ -237,10 +256,15 @@ impl FileSearchHandler {
             recent.iter().take(3).collect::<Vec<_>>()
         );
 
-        if let Some(position) = recent
-            .iter()
-            .position(|recent_file| recent_file == file_path)
-        {
+        // Check both relative and absolute path matches for recent files
+        // This handles cases where recent files might be stored with different path formats
+        let file_matches_recent = |recent_file: &str| {
+            recent_file == file_path
+                || recent_file.ends_with(&format!("/{}", file_path))
+                || file_path.ends_with(&recent_file.trim_start_matches("./"))
+        };
+
+        if let Some(position) = recent.iter().position(|recent_file| file_matches_recent(recent_file)) {
             // Most recent file gets highest boost, decreasing for older files
             let recency_boost = RECENT_FILE_BASE_BOOST - (position as f64 * RECENT_FILE_DECAY_RATE);
             score += recency_boost;
