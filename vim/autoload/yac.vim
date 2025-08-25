@@ -1374,6 +1374,13 @@ function! s:insert_completion(item) abort
     return
   endif
 
+  " 调试：打印补全项信息
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[INSERT]: Inserting completion item: %s', string(a:item))
+    echom printf('YacDebug[INSERT]: has data: %s, data: %s', has_key(a:item, 'data'), string(get(a:item, 'data', 'no-data')))
+    echom printf('YacDebug[INSERT]: has additional_text_edits: %s, edits: %s', has_key(a:item, 'additional_text_edits'), string(get(a:item, 'additional_text_edits', 'no-edits')))
+  endif
+
   " 检查是否需要resolve补全项以获取additional_text_edits
   if has_key(a:item, 'data') && a:item.data != v:null && (!has_key(a:item, 'additional_text_edits') || empty(get(a:item, 'additional_text_edits', [])))
     " 需要resolve - 先resolve然后再插入
@@ -1430,6 +1437,9 @@ function! s:handle_completion_resolve_response(channel, response) abort
 
   if !empty(a:response)
     " 插入resolved的补全项
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug[RESOLVED]: Final resolved item before insertion: %s', string(a:response))
+    endif
     call s:insert_completion(a:response)
   else
     echo "Failed to resolve completion item"
@@ -1438,6 +1448,10 @@ endfunction
 
 " 应用additional text edits (用于auto-import等)
 function! s:apply_additional_text_edits(text_edits) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[AUTO-IMPORT]: Applying %d additional text edits: %s', len(a:text_edits), string(a:text_edits))
+  endif
+
   if empty(a:text_edits)
     return
   endif
@@ -1454,6 +1468,12 @@ function! s:apply_additional_text_edits(text_edits) abort
 
   " 恢复光标位置 (可能需要调整)
   call setpos('.', current_pos)
+  
+  " 成功应用auto-import
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[AUTO-IMPORT]: Successfully applied %d auto-import edits', len(sorted_edits))
+  endif
+  echo printf('Auto-imported %d items', len(sorted_edits))
 endfunction
 
 " 应用单个text edit

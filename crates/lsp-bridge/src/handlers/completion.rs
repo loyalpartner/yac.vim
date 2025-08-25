@@ -216,6 +216,19 @@ impl Handler for CompletionHandler {
 
                 let insert_text = item.insert_text.or_else(|| Some(item.label.clone()));
 
+                // Debug: Log completion items with data
+                if item.data.is_some() {
+                    debug!(
+                        "Completion item with data: {} (kind: {:?}, data: {:?})",
+                        item.label, item.kind, item.data
+                    );
+                } else {
+                    debug!(
+                        "Completion item without data: {} (kind: {:?})",
+                        item.label, item.kind
+                    );
+                }
+
                 CompletionItem::new(
                     item.label,
                     Self::completion_kind_to_string(item.kind),
