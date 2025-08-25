@@ -76,7 +76,7 @@ endfunction
 
 " 发送命令（使用 ch_sendexpr 和指定的回调handler）
 function! s:send_command(jsonrpc_msg, callback_func) abort
-  call yac_bridge#start()  " 自动启动
+  call yac#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的命令
@@ -105,7 +105,7 @@ function! s:request(method, params, callback_func) abort
     \ 'params': extend(a:params, {'command': a:method})
     \ }
   
-  call yac_bridge#start()  " 自动启动
+  call yac#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的请求
@@ -131,7 +131,7 @@ function! s:notify(method, params) abort
     \ 'params': extend(a:params, {'command': a:method})
     \ }
     
-  call yac_bridge#start()  " 自动启动
+  call yac#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的通知
@@ -577,7 +577,7 @@ endfunction
 
 " 发送通知（无响应）
 function! s:send_notification(jsonrpc_msg) abort
-  call yac_bridge#start()  " 自动启动
+  call yac#start()  " 自动启动
 
   if s:job != v:null && job_status(s:job) == 'run'
     " 调试模式：记录发送的通知
@@ -827,8 +827,8 @@ function! yac#debug_toggle() abort
     " 如果进程已经运行，重启以启用channel日志
     if s:job != v:null && job_status(s:job) == 'run'
       echom 'YacDebug: Restarting process to enable channel logging...'
-      call yac_bridge#stop()
-      call yac_bridge#start()
+      call yac#stop()
+      call yac#start()
     endif
   else
     echo 'YacDebug: Debug mode DISABLED'
