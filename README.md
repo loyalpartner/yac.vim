@@ -4,8 +4,9 @@ A minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Anothe
 
 ## 🚀 Features
 
-- **Minimal & Fast**: ~760 lines total (380 Rust + 380 VimScript)
+- **Minimal & Fast**: ~800 lines total core codebase
 - **Simple Architecture**: Direct stdin/stdout communication between Vim and LSP servers
+- **SSH Remote Editing**: Full SSH tunnel infrastructure for remote LSP operations
 - **Memory Safe**: Rust compile-time guarantees prevent crashes and memory leaks  
 - **Auto-initialization**: LSP servers start automatically when files are opened
 - **Silent Error Handling**: Gracefully handles "No definition found" scenarios
@@ -92,6 +93,7 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR> " Manual completion
 ### Features
 
 - **Auto-initialization**: LSP starts automatically when opening `.rs` files
+- **SSH Remote Editing**: Seamless remote LSP via SSH tunnels (`scp://user@host//path/file`)
 - **Code Completion**: Advanced auto-completion with smart context detection
 - **Hover Information**: Press `K` to show documentation/type information
 - **Navigation**: Jump to definitions, declarations, implementations, and references
@@ -100,10 +102,16 @@ inoremap <silent> <C-Space> <C-o>:LspComplete<CR> " Manual completion
 
 ## 🏗️ Architecture
 
-yac.vim uses a simple stdin/stdout communication architecture:
+yac.vim supports both local and remote LSP operations:
 
+**Local Mode:**
 ```
 Vim Plugin (job_start) → JSON stdin/stdout → lsp-bridge → LSP Server (rust-analyzer)
+```
+
+**SSH Remote Mode:**
+```
+Vim → local lsp-bridge (forwarder) → SSH tunnel → remote lsp-bridge → rust-analyzer
 ```
 
 ### Process Model
