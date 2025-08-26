@@ -253,9 +253,9 @@ endfunction
 
 " Helper function to get job command - SSH Master支持
 function! s:get_job_command() abort
-  " 优先使用简化的SSH Master实现
-  if exists('*yac_remote_simple#get_job_command')
-    return yac_remote_simple#get_job_command()
+  " 优先使用SSH Master实现
+  if exists('*yac_remote#get_job_command')
+    return yac_remote#get_job_command()
   endif
   " 回退到标准命令
   return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
