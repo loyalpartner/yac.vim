@@ -8,6 +8,7 @@ use tracing::debug;
 use vim::Handler;
 
 use super::common::Location;
+use lsp_bridge::path_manager::PathManager;
 
 // Base request structure that Vim sends
 #[derive(Debug, Deserialize)]
@@ -181,9 +182,18 @@ impl Handler for GotoHandler {
         // }
 
         if let Some(lsp_location) = location_result {
-            if let Ok(location) = Location::from_lsp_location(lsp_location) {
+            // Parse original request path for context
+            let (path_context, _local_path) = PathManager::parse_ssh_path(&input.file)?;
+
+            if let Ok(location) =
+                Location::from_lsp_location_with_context(lsp_location, path_context)
+            {
                 debug!("location: {:?}", location);
-                ctx.ex(format!("edit {}", location.file).as_str())
+
+                // Use context-aware vim path for editing
+                let vim_file_path = location.vim_path();
+
+                ctx.ex(format!("edit {}", vim_file_path).as_str())
                     .await
                     .ok();
                 ctx.call_async(

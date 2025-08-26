@@ -20,6 +20,7 @@ tracing-subscriber.workspace = true
 vim.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true
