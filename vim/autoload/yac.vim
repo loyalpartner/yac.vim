@@ -202,7 +202,7 @@ endfunction
 " LSP 方法
 function! yac#goto_definition() abort
   call s:notify('goto_definition', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ })
@@ -210,7 +210,7 @@ endfunction
 
 function! yac#goto_declaration() abort
   call s:notify('goto_declaration', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ })
@@ -218,7 +218,7 @@ endfunction
 
 function! yac#goto_type_definition() abort
   call s:notify('goto_type_definition', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ })
@@ -226,7 +226,7 @@ endfunction
 
 function! yac#goto_implementation() abort
   call s:notify('goto_implementation', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ })
@@ -234,20 +234,14 @@ endfunction
 
 function! yac#hover() abort
   call s:request('hover', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }, 's:handle_hover_response')
 endfunction
 
 " Helper function to get file path for LSP operations
-function! s:get_lsp_file_path() abort
-  " Use SSH-converted path if available, otherwise use normal path
-  if exists('*yac_remote#get_lsp_file_path')
-    return yac_remote#get_lsp_file_path()
-  endif
-  return expand('%:p')
-endfunction
+" Removed s:get_lsp_file_path() - handlers now process SSH paths directly
 
 " Helper function to get job command - SSH Master支持
 function! s:get_job_command() abort
@@ -261,7 +255,7 @@ endfunction
 
 function! yac#open_file() abort
   call s:request('file_open', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
     \ }, 's:handle_file_open_response')
@@ -296,7 +290,7 @@ function! yac#complete() abort
   let s:completion.prefix = s:get_current_word_prefix()
 
   call s:request('completion', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }, 's:handle_completion_response')
@@ -304,7 +298,7 @@ endfunction
 
 function! yac#references() abort
   call s:request('references', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }, 's:handle_references_response')
@@ -312,7 +306,7 @@ endfunction
 
 function! yac#inlay_hints() abort
   call s:request('inlay_hints', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
     \ }, 's:handle_inlay_hints_response')
@@ -335,7 +329,7 @@ function! yac#rename(...) abort
   endif
 
   call s:request('rename', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
     \   'new_name': new_name
@@ -344,7 +338,7 @@ endfunction
 
 function! yac#call_hierarchy_incoming() abort
   call s:request('call_hierarchy_incoming', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
     \   'direction': 'incoming'
@@ -353,7 +347,7 @@ endfunction
 
 function! yac#call_hierarchy_outgoing() abort
   call s:request('call_hierarchy_outgoing', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
     \   'direction': 'outgoing'
@@ -362,7 +356,7 @@ endfunction
 
 function! yac#document_symbols() abort
   call s:request('document_symbols', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
     \ }, 's:handle_document_symbols_response')
@@ -376,7 +370,7 @@ endfunction
 
 function! yac#code_action() abort
   call s:request('code_action', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }, 's:handle_code_action_response')
@@ -401,7 +395,7 @@ endfunction
 function! yac#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:notify('did_save', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
@@ -411,7 +405,7 @@ endfunction
 function! yac#did_change(...) abort
   let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
   call s:notify('did_change', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'text': text_content
@@ -504,7 +498,7 @@ endfunction
 function! yac#will_save(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:notify('will_save', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'save_reason': save_reason
@@ -514,7 +508,7 @@ endfunction
 function! yac#will_save_wait_until(...) abort
   let save_reason = a:0 > 0 ? a:1 : 1
   call s:request('will_save_wait_until', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'save_reason': save_reason
@@ -523,7 +517,7 @@ endfunction
 
 function! yac#did_close() abort
   call s:notify('did_close', {
-    \   'file': s:get_lsp_file_path(),
+    \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
     \ })

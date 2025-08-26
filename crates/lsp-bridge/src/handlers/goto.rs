@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
 
-use super::common::Location;
+use super::common::{extract_ssh_path, restore_ssh_path, Location};
 
 // Base request structure that Vim sends
 #[derive(Debug, Deserialize)]
@@ -183,14 +183,9 @@ impl Handler for GotoHandler {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
 
-                // SSH path conversion: convert normal paths to SSH format when in SSH mode
-                let file_path = if let Ok(ssh_host) = std::env::var("YAC_SSH_HOST") {
-                    // SSH mode: convert normal path -> SSH path for vim operations
-                    format!("scp://{}//{}", ssh_host, location.file)
-                } else {
-                    // Local mode: use normal paths
-                    location.file.clone()
-                };
+                // SSH path handling: convert LSP response back to proper format for vim
+                let (ssh_host, _) = extract_ssh_path(&input.file);
+                let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
 
                 ctx.ex(format!("edit {}", file_path).as_str()).await.ok();
                 ctx.call_async(
