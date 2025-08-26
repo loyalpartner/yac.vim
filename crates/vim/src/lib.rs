@@ -466,16 +466,6 @@ impl Vim {
         })
     }
 
-    /// Create Unix socket client (connects to remote server for message forwarding)
-    pub async fn new_unix_socket_client(socket_path: &str) -> Result<Self> {
-        Ok(Self {
-            transport: Box::new(UnixSocketTransport::connect(socket_path).await?),
-            handlers: HashMap::new(),
-            pending_calls: HashMap::new(),
-            next_id: 1,
-        })
-    }
-
     /// Type-safe handler registration - compile-time checks
     pub fn add_handler<H: Handler + 'static>(&mut self, method: &str, handler: H) {
         self.handlers

@@ -88,26 +88,24 @@ function! s:convert_ssh_path_for_lsp(real_path) abort
     echom printf('YacDebug[SSH]: Converting SSH path for LSP: %s -> %s', expand('%:p'), a:real_path)
   endif
   
-  " Store original SSH filepath for display
+  " Store original SSH filepath for display and converted path for LSP
   let b:yac_original_ssh_path = expand('%:p')
-  let b:yac_converted_path = a:real_path
-  
-  " Temporarily change buffer filename to real path for LSP
-  " This ensures remote LSP server receives /home/lee/.zshrc instead of scp://...
-  silent! execute 'file ' . fnameescape(a:real_path)
+  let b:yac_real_path_for_lsp = a:real_path
   
   if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[SSH]: Path conversion complete. Buffer filename now: %s', expand('%:p'))
+    echom printf('YacDebug[SSH]: Path conversion complete. LSP will use: %s', a:real_path)
   endif
   
   echo "Path converted for LSP: " . b:yac_original_ssh_path . " -> " . a:real_path
 endfunction
 
-" Restore original SSH path display (for future use)
-function! s:restore_ssh_path_display() abort
-  if exists('b:yac_original_ssh_path')
-    silent! execute 'file ' . fnameescape(b:yac_original_ssh_path)
+" Get file path for LSP operations - returns converted path for SSH files
+function! yac_remote#get_lsp_file_path() abort
+  " If we have a converted path for LSP, use it; otherwise use normal path
+  if exists('b:yac_real_path_for_lsp')
+    return b:yac_real_path_for_lsp
   endif
+  return expand('%:p')
 endfunction
 
 " Set up remote lsp-bridge and SSH tunnel
