@@ -108,7 +108,10 @@ function! yac#start() abort
     let s:log_started = 1
   endif
 
-  let s:job = job_start(g:yac_bridge_command, {
+  " 获取job命令 - 支持SSH Master模式
+  let l:job_command = s:get_job_command()
+  
+  let s:job = job_start(l:job_command, {
     \ 'mode': 'json',
     \ 'callback': function('s:handle_response'),
     \ 'err_cb': function('s:handle_error'),
@@ -240,10 +243,22 @@ endfunction
 " Helper function to get file path for LSP operations
 function! s:get_lsp_file_path() abort
   " Use SSH-converted path if available, otherwise use normal path
-  if exists('*yac_remote#get_lsp_file_path')
+  if exists('*yac_remote_simple#get_lsp_file_path')
+    return yac_remote_simple#get_lsp_file_path()
+  elseif exists('*yac_remote#get_lsp_file_path')
     return yac_remote#get_lsp_file_path()
   endif
   return expand('%:p')
+endfunction
+
+" Helper function to get job command - SSH Master支持
+function! s:get_job_command() abort
+  " 优先使用简化的SSH Master实现
+  if exists('*yac_remote_simple#get_job_command')
+    return yac_remote_simple#get_job_command()
+  endif
+  " 回退到标准命令
+  return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
 endfunction
 
 function! yac#open_file() abort

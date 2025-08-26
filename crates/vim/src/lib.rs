@@ -362,12 +362,14 @@ impl MessageTransport for StdioTransport {
     }
 }
 
-/// UnixSocket Transport - handles Unix domain socket communication for remote bridges
+/// UnixSocket Transport - UNUSED: SSH Master eliminates need for socket forwarding  
+#[allow(dead_code)]
 pub struct UnixSocketTransport {
     reader: std::sync::Arc<tokio::sync::Mutex<BufReader<tokio::net::unix::OwnedReadHalf>>>,
     writer: std::sync::Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
 }
 
+#[allow(dead_code)]
 impl UnixSocketTransport {
     /// Create Unix socket server and accept first connection (server mode)
     pub async fn bind_and_accept(socket_path: &str) -> Result<Self> {
@@ -397,6 +399,7 @@ impl UnixSocketTransport {
 }
 
 #[async_trait]
+#[allow(dead_code)]
 impl MessageTransport for UnixSocketTransport {
     async fn send(&self, msg: &VimMessage) -> Result<()> {
         let json = msg.encode();
@@ -456,15 +459,7 @@ impl Vim {
         }
     }
 
-    /// Create Unix socket server (binds and accepts first connection)
-    pub async fn new_unix_socket_server(socket_path: &str) -> Result<Self> {
-        Ok(Self {
-            transport: Box::new(UnixSocketTransport::bind_and_accept(socket_path).await?),
-            handlers: HashMap::new(),
-            pending_calls: HashMap::new(),
-            next_id: 1,
-        })
-    }
+    // Removed: Unix socket server mode - simplified to stdio-only architecture
 
     /// Type-safe handler registration - compile-time checks
     pub fn add_handler<H: Handler + 'static>(&mut self, method: &str, handler: H) {
