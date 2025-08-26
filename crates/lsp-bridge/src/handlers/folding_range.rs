@@ -69,7 +69,6 @@ impl FoldingRangeInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct FoldingRangeHandler {
     lsp_registry: Arc<LspRegistry>,
 }

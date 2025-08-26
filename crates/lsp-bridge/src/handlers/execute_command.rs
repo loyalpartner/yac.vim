@@ -28,7 +28,6 @@ impl ExecuteCommandResult {
     }
 }
 
-#[derive(Clone)]
 pub struct ExecuteCommandHandler {
     lsp_registry: Arc<LspRegistry>,
 }

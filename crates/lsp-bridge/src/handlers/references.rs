@@ -31,7 +31,6 @@ impl ReferencesInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct ReferencesHandler {
     lsp_registry: Arc<LspRegistry>,
 }

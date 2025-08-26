@@ -16,7 +16,6 @@ pub struct WillSaveRequest {
 // Notification pattern - no response data needed
 pub type WillSaveResponse = Option<()>;
 
-#[derive(Clone)]
 pub struct WillSaveHandler {
     lsp_registry: Arc<LspRegistry>,
 }

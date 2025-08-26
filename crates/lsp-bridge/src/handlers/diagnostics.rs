@@ -158,7 +158,6 @@ impl DiagnosticsInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct DiagnosticsHandler {
     #[allow(dead_code)]
     lsp_registry: Arc<LspRegistry>,

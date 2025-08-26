@@ -126,7 +126,6 @@ impl CodeActionInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct CodeActionHandler {
     lsp_registry: Arc<LspRegistry>,
 }

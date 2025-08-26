@@ -55,7 +55,6 @@ impl InlayHintsInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct InlayHintsHandler {
     lsp_registry: Arc<LspRegistry>,
 }

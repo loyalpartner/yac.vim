@@ -30,7 +30,6 @@ impl HoverInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct HoverHandler {
     lsp_registry: Arc<LspRegistry>,
 }

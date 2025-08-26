@@ -60,7 +60,6 @@ impl CompletionInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct CompletionHandler {
     lsp_registry: Arc<LspRegistry>,
 }

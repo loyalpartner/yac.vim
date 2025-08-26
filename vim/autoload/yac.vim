@@ -243,9 +243,7 @@ endfunction
 " Helper function to get file path for LSP operations
 function! s:get_lsp_file_path() abort
   " Use SSH-converted path if available, otherwise use normal path
-  if exists('*yac_remote_simple#get_lsp_file_path')
-    return yac_remote_simple#get_lsp_file_path()
-  elseif exists('*yac_remote#get_lsp_file_path')
+  if exists('*yac_remote#get_lsp_file_path')
     return yac_remote#get_lsp_file_path()
   endif
   return expand('%:p')

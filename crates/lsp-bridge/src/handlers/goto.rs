@@ -45,7 +45,6 @@ impl GotoType {
 // Linus-style: Location 要么完整存在，要么不存在
 pub type GotoResponse = Option<Location>;
 
-#[derive(Clone)]
 pub struct GotoHandler {
     lsp_registry: Arc<LspRegistry>,
     goto_type: GotoType,

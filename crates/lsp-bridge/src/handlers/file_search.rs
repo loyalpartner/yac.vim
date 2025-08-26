@@ -65,7 +65,6 @@ pub struct FileItem {
     pub score: f64, // For relevance scoring
 }
 
-#[derive(Clone)]
 pub struct FileSearchHandler {
     _lsp_registry: Arc<LspRegistry>,
     file_cache: Arc<OnceCell<Vec<PathBuf>>>,

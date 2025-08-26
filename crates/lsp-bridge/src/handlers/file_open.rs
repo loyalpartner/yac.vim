@@ -36,7 +36,6 @@ impl FileOpenResponse {
     }
 }
 
-#[derive(Clone)]
 pub struct FileOpenHandler {
     lsp_registry: Arc<LspRegistry>,
 }
