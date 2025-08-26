@@ -31,14 +31,37 @@ function! s:start_ssh_master_mode(ssh_path) abort
   " Deploy lsp-bridge binary if needed
   call s:ensure_remote_binary(l:user_host)
   
-  " Step 1: Create SSH Master tunnel 
+  " Step 1: Create SSH Master tunnel using job_start for proper management
   let l:control_path = '/tmp/yac-' . substitute(l:user_host, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
   echo "Creating SSH Master tunnel to " . l:user_host . "..."
-  call system(printf('ssh -N -o ControlMaster=yes -o ControlPath=%s %s &', 
-    \ shellescape(l:control_path), shellescape(l:user_host)))
   
-  " Wait for master connection to establish
-  sleep 500m
+  " Start SSH Master as job with ControlPersist=no for connection state detection
+  let l:master_job = job_start(['ssh', '-N', '-o', 'ControlMaster=yes', 
+    \ '-o', 'ControlPath=' . l:control_path, '-o', 'ControlPersist=no', l:user_host], {
+    \ 'out_io': 'null', 'err_io': 'null'
+    \ })
+  
+  " Wait for master connection to establish and verify it's working
+  let l:attempts = 0
+  while l:attempts < 10
+    if job_status(l:master_job) == 'run'
+      " Test if ControlPath is working by trying a quick connection
+      if system(printf('ssh -o ControlPath=%s %s echo "connected" 2>/dev/null', 
+        \ shellescape(l:control_path), shellescape(l:user_host))) =~# 'connected'
+        break
+      endif
+    else
+      echoerr "SSH Master connection failed to " . l:user_host
+      return 0
+    endif
+    sleep 200m
+    let l:attempts += 1
+  endwhile
+  
+  if l:attempts >= 10
+    echoerr "SSH Master tunnel failed to establish to " . l:user_host
+    return 0
+  endif
   
   " Step 2: Set up SSH Master connection info
   let $YAC_SSH_HOST = l:user_host
@@ -49,12 +72,14 @@ function! s:start_ssh_master_mode(ssh_path) abort
   let b:yac_real_path_for_lsp = l:remote_path
   let b:yac_ssh_host = l:user_host
   let b:yac_ssh_control_path = l:control_path
+  let b:yac_ssh_master_job = l:master_job  " Store job for monitoring
   
   echo "SSH Master tunnel established for " . l:user_host
   
   " Step 3: Start yac with SSH Master job command
   call yac#start()
   call yac#open_file()
+  return 1
 endfunction
 
 " Parse SSH path into user@host and remote path
@@ -112,9 +137,31 @@ function! yac_remote#get_job_command() abort
   return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
 endfunction
 
+" Check if SSH Master is alive
+function! yac_remote#is_master_alive() abort
+  if !exists('b:yac_ssh_master_job')
+    return 0
+  endif
+  return job_status(b:yac_ssh_master_job) == 'run'
+endfunction
+
 " Cleanup command for SSH Master tunnels
 function! yac_remote#cleanup() abort
   echo "Cleaning up SSH Master tunnels..."
+  
+  " Stop job if it exists
+  if exists('b:yac_ssh_master_job')
+    if job_status(b:yac_ssh_master_job) == 'run'
+      call job_stop(b:yac_ssh_master_job, 'term')
+      sleep 100m
+      if job_status(b:yac_ssh_master_job) == 'run'
+        call job_stop(b:yac_ssh_master_job, 'kill')
+      endif
+    endif
+    unlet! b:yac_ssh_master_job
+  endif
+  
+  " Fallback cleanup
   call system('pkill -f "ssh.*ControlMaster.*yac-.*\.sock" || true')
   call system('rm -f /tmp/yac-*.sock')
   unlet! $YAC_SSH_HOST $YAC_SSH_CONTROL_PATH
