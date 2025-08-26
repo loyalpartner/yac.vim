@@ -9,7 +9,6 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tracing::error;
 
@@ -362,80 +361,6 @@ impl MessageTransport for StdioTransport {
     }
 }
 
-/// UnixSocket Transport - UNUSED: SSH Master eliminates need for socket forwarding  
-#[allow(dead_code)]
-pub struct UnixSocketTransport {
-    reader: std::sync::Arc<tokio::sync::Mutex<BufReader<tokio::net::unix::OwnedReadHalf>>>,
-    writer: std::sync::Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
-}
-
-#[allow(dead_code)]
-impl UnixSocketTransport {
-    /// Create Unix socket server and accept first connection (server mode)
-    pub async fn bind_and_accept(socket_path: &str) -> Result<Self> {
-        // Remove existing socket file if it exists
-        let _ = tokio::fs::remove_file(socket_path).await;
-
-        let listener = UnixListener::bind(socket_path)?;
-        let (stream, _) = listener.accept().await?;
-        let (read_half, write_half) = stream.into_split();
-
-        Ok(Self {
-            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
-            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
-        })
-    }
-
-    /// Create Unix socket client connection (client mode for message forwarding)
-    pub async fn connect(socket_path: &str) -> Result<Self> {
-        let stream = tokio::net::UnixStream::connect(socket_path).await?;
-        let (read_half, write_half) = stream.into_split();
-
-        Ok(Self {
-            reader: std::sync::Arc::new(tokio::sync::Mutex::new(BufReader::new(read_half))),
-            writer: std::sync::Arc::new(tokio::sync::Mutex::new(write_half)),
-        })
-    }
-}
-
-#[async_trait]
-#[allow(dead_code)]
-impl MessageTransport for UnixSocketTransport {
-    async fn send(&self, msg: &VimMessage) -> Result<()> {
-        let json = msg.encode();
-        let line = format!("{}\n", json);
-
-        let mut writer = self.writer.lock().await;
-        writer.write_all(line.as_bytes()).await?;
-        writer.flush().await?;
-        Ok(())
-    }
-
-    async fn recv(&self) -> Result<VimMessage> {
-        let mut line = String::new();
-        let mut reader = self.reader.lock().await;
-
-        // Keep reading until we get a non-empty line
-        loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-
-            if n == 0 {
-                // EOF reached
-                return Err(anyhow::anyhow!("EOF reached on Unix socket"));
-            }
-
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                // Got a non-empty line, try to parse it
-                let json: Value = serde_json::from_str(trimmed)?;
-                return VimMessage::parse(&json);
-            }
-            // Empty line, continue reading
-        }
-    }
-}
-
 // ================================================================
 // VimClient renamed to `vim` - unified message processing core
 // ================================================================
@@ -458,8 +383,6 @@ impl Vim {
             next_id: 1,
         }
     }
-
-    // Removed: Unix socket server mode - simplified to stdio-only architecture
 
     /// Type-safe handler registration - compile-time checks
     pub fn add_handler<H: Handler + 'static>(&mut self, method: &str, handler: H) {
@@ -973,29 +896,5 @@ mod tests {
             encoded, expected,
             "VimMessage::Redraw without force should encode as [\"redraw\", \"\"]"
         );
-    }
-
-    #[tokio::test]
-    async fn test_unix_socket_transport_server() {
-        // Test Unix socket server creation
-        let socket_path = "/tmp/test_yac_socket";
-
-        // Clean up any existing socket
-        let _ = std::fs::remove_file(socket_path);
-
-        // Test that we can create a server (this will test bind functionality)
-        // We expect this to block waiting for a connection, so we can't test the full flow
-        // Just verify the function doesn't panic
-        let server_result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            UnixSocketTransport::bind_and_accept(socket_path),
-        )
-        .await;
-
-        // Should timeout waiting for connection, which is expected
-        assert!(server_result.is_err());
-
-        // Clean up
-        let _ = std::fs::remove_file(socket_path);
     }
 }
