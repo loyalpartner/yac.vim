@@ -496,7 +496,7 @@ impl Vim {
                 }
                 Err(e) => {
                     error!("Transport error: {}", e);
-                    continue;
+                    break;
                 }
             }
         }
