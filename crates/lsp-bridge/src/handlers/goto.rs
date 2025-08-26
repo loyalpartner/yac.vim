@@ -184,11 +184,16 @@ impl Handler for GotoHandler {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
 
-                // Direct file editing - no path conversion needed
-                // Remote server sees normal paths, not SSH format
-                ctx.ex(format!("edit {}", location.file).as_str())
-                    .await
-                    .ok();
+                // SSH path conversion: convert normal paths to SSH format when in SSH mode
+                let file_path = if let Ok(ssh_host) = std::env::var("YAC_SSH_HOST") {
+                    // SSH mode: convert normal path -> SSH path for vim operations
+                    format!("scp://{}//{}", ssh_host, location.file)
+                } else {
+                    // Local mode: use normal paths
+                    location.file.clone()
+                };
+
+                ctx.ex(format!("edit {}", file_path).as_str()).await.ok();
                 ctx.call_async(
                     "cursor",
                     vec![json!(location.line + 1), json!(location.column + 1)],
