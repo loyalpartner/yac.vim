@@ -1,6 +1,6 @@
 use lsp_bridge::LspRegistry;
 use tracing::info;
-use vim::Vim;
+use vim::{Vim, VimContext};
 
 mod handlers;
 use handlers::{
