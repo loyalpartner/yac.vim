@@ -71,106 +71,128 @@ pub enum VimMessage {
 }
 
 impl VimMessage {
-    /// Intelligent protocol parsing - handles both JSON-RPC and Vim channel formats
+    /// Protocol parsing - uses data structures to eliminate special cases
+    /// Linus-style "good taste": let data structure do the work
     pub fn parse(json: &Value) -> Result<Self> {
-        match json.as_array() {
-            Some(arr) if arr.len() == 1 && arr[0].is_object() => {
-                match &arr[0] {
-                    Value::Object(obj) => {
-                        // [{"method":"goto_definition_notification","params":{"file":"test_data/src/lib.rs","column":15,"line":14}}]
-                        Ok(VimMessage::Notification {
-                            method: obj["method"]
-                                .as_str()
-                                .ok_or_else(|| Error::msg("Missing method"))?
-                                .to_string(),
-                            params: obj["params"].clone(),
-                        })
-                    }
-                    _ => Err(Error::msg("Invalid message format")),
+        let arr = json
+            .as_array()
+            .ok_or_else(|| Error::msg("Invalid message format"))?;
+
+        // Single object array: notification
+        if arr.len() == 1 && arr[0].is_object() {
+            return Self::parse_notification(&arr[0]);
+        }
+
+        // Multi-element array: check first element type
+        if arr.len() >= 2 {
+            return Self::parse_multi_element(arr);
+        }
+
+        Err(Error::msg("Invalid message format"))
+    }
+
+    /// Parse notification: [{"method":"xxx","params":{...}}]
+    fn parse_notification(obj: &Value) -> Result<Self> {
+        let obj = obj
+            .as_object()
+            .ok_or_else(|| Error::msg("Invalid notification format"))?;
+        Ok(VimMessage::Notification {
+            method: obj["method"]
+                .as_str()
+                .ok_or_else(|| Error::msg("Missing method"))?
+                .to_string(),
+            params: obj["params"].clone(),
+        })
+    }
+
+    /// Parse multi-element arrays - number or string first element
+    fn parse_multi_element(arr: &[Value]) -> Result<Self> {
+        match &arr[0] {
+            Value::Number(n) => Self::parse_numeric_message(n, arr),
+            Value::String(s) => Self::parse_string_command(s, arr),
+            _ => Err(Error::msg("Invalid message format")),
+        }
+    }
+
+    /// Parse numeric messages: JSON-RPC requests and responses
+    fn parse_numeric_message(n: &serde_json::Number, arr: &[Value]) -> Result<Self> {
+        let id = n.as_i64().ok_or_else(|| Error::msg("Invalid numeric id"))?;
+
+        if id > 0 {
+            // Positive: request [id, {"method":"xxx","params":{...}}]
+            let id = n.as_u64().ok_or_else(|| Error::msg("Invalid request id"))?;
+            let obj = &arr[1];
+            Ok(VimMessage::Request {
+                id,
+                method: obj["method"]
+                    .as_str()
+                    .ok_or_else(|| Error::msg("Missing method"))?
+                    .to_string(),
+                params: obj["params"].clone(),
+            })
+        } else {
+            // Negative: response [id, result]
+            Ok(VimMessage::Response {
+                id,
+                result: arr[1].clone(),
+            })
+        }
+    }
+
+    /// Parse string commands: vim channel protocol
+    fn parse_string_command(cmd: &str, arr: &[Value]) -> Result<Self> {
+        match cmd {
+            "call" if arr.len() >= 3 => {
+                let func = arr[1]
+                    .as_str()
+                    .ok_or_else(|| Error::msg("Invalid call function"))?
+                    .to_string();
+                let args = arr[2]
+                    .as_array()
+                    .ok_or_else(|| Error::msg("Invalid call args"))?
+                    .clone();
+
+                if arr.len() >= 4 {
+                    let id = arr[3]
+                        .as_u64()
+                        .ok_or_else(|| Error::msg("Invalid call id"))?;
+                    Ok(VimMessage::Call { func, args, id })
+                } else {
+                    Ok(VimMessage::CallAsync { func, args })
                 }
             }
-            Some(arr) if arr.len() >= 2 => {
-                match &arr[0] {
-                    // JSON-RPC protocol
-                    Value::Number(n) if n.as_i64().map(|x| x > 0).unwrap_or(false) => {
-                        // [positive_id, {"method": "xxx", "params": ...}] - vim request
-                        let obj = &arr[1];
-                        let id = n.as_u64().ok_or_else(|| Error::msg("Invalid request id"))?;
-                        Ok(VimMessage::Request {
-                            id,
-                            method: obj["method"]
-                                .as_str()
-                                .ok_or_else(|| Error::msg("Missing method"))?
-                                .to_string(),
-                            params: obj["params"].clone(),
-                        })
-                    }
-                    Value::Number(n) if n.as_i64().map(|x| x < 0).unwrap_or(false) => {
-                        // [negative_id, result] - vim response to our commands
-                        Ok(VimMessage::Response {
-                            id: n.as_i64().unwrap(),
-                            result: arr[1].clone(),
-                        })
-                    }
-                    // Vim channel protocol
-                    Value::String(s) if s == "call" && arr.len() >= 3 => {
-                        let func = arr[1]
-                            .as_str()
-                            .ok_or_else(|| Error::msg("Invalid call function"))?
-                            .to_string();
-                        let args = arr[2]
-                            .as_array()
-                            .ok_or_else(|| Error::msg("Invalid call args"))?
-                            .clone();
+            "expr" if arr.len() >= 2 => {
+                let expr = arr[1]
+                    .as_str()
+                    .ok_or_else(|| Error::msg("Invalid expr"))?
+                    .to_string();
 
-                        if arr.len() >= 4 {
-                            // ["call", func, args, id] - with response
-                            let id = arr[3]
-                                .as_u64()
-                                .ok_or_else(|| Error::msg("Invalid call id"))?;
-                            Ok(VimMessage::Call { func, args, id })
-                        } else {
-                            // ["call", func, args] - async
-                            Ok(VimMessage::CallAsync { func, args })
-                        }
-                    }
-                    Value::String(s) if s == "expr" && arr.len() >= 2 => {
-                        let expr = arr[1]
-                            .as_str()
-                            .ok_or_else(|| Error::msg("Invalid expr"))?
-                            .to_string();
-
-                        if arr.len() >= 3 {
-                            // ["expr", expr, id] - with response
-                            let id = arr[2]
-                                .as_u64()
-                                .ok_or_else(|| Error::msg("Invalid expr id"))?;
-                            Ok(VimMessage::Expr { expr, id })
-                        } else {
-                            // ["expr", expr] - async
-                            Ok(VimMessage::ExprAsync { expr })
-                        }
-                    }
-                    Value::String(s) if s == "ex" && arr.len() >= 2 => {
-                        let command = arr[1]
-                            .as_str()
-                            .ok_or_else(|| Error::msg("Invalid ex command"))?
-                            .to_string();
-                        Ok(VimMessage::Ex { command })
-                    }
-                    Value::String(s) if s == "normal" && arr.len() >= 2 => {
-                        let keys = arr[1]
-                            .as_str()
-                            .ok_or_else(|| Error::msg("Invalid normal keys"))?
-                            .to_string();
-                        Ok(VimMessage::Normal { keys })
-                    }
-                    Value::String(s) if s == "redraw" => {
-                        let force = arr.len() >= 2 && arr[1].as_str() == Some("force");
-                        Ok(VimMessage::Redraw { force })
-                    }
-                    _ => Err(Error::msg("Invalid message format")),
+                if arr.len() >= 3 {
+                    let id = arr[2]
+                        .as_u64()
+                        .ok_or_else(|| Error::msg("Invalid expr id"))?;
+                    Ok(VimMessage::Expr { expr, id })
+                } else {
+                    Ok(VimMessage::ExprAsync { expr })
                 }
+            }
+            "ex" if arr.len() >= 2 => {
+                let command = arr[1]
+                    .as_str()
+                    .ok_or_else(|| Error::msg("Invalid ex command"))?
+                    .to_string();
+                Ok(VimMessage::Ex { command })
+            }
+            "normal" if arr.len() >= 2 => {
+                let keys = arr[1]
+                    .as_str()
+                    .ok_or_else(|| Error::msg("Invalid normal keys"))?
+                    .to_string();
+                Ok(VimMessage::Normal { keys })
+            }
+            "redraw" => {
+                let force = arr.len() >= 2 && arr[1].as_str() == Some("force");
+                Ok(VimMessage::Redraw { force })
             }
             _ => Err(Error::msg("Invalid message format")),
         }
@@ -261,14 +283,24 @@ pub trait VimContext: Send + Sync {
 // Unified Handler trait - v4 core design
 // ================================================================
 
-/// Unified Handler trait - eliminates method/notification special cases
-/// Option<Output> perfectly expresses return semantics: None=notification, Some=response
+/// Unified Handler trait - clear semantics, no special cases
+///
+/// Return value semantics (Linus-style "good taste"):
+/// - Some(output): Request that needs response - will send JSON-RPC response
+/// - None: Notification/fire-and-forget - no response sent back to vim
+///
+/// This eliminates the request/notification handler distinction through data presence
 /// VimContext parameter provides controlled access to vim capabilities (interface segregation)
 #[async_trait]
 pub trait Handler: Send + Sync {
     type Input: DeserializeOwned;
     type Output: Serialize;
 
+    /// Handle a vim message
+    ///
+    /// Returns:
+    /// - Some(result): Sends JSON-RPC response back to vim
+    /// - None: No response sent (fire-and-forget notification)
     async fn handle(
         &self,
         ctx: &mut dyn VimContext,
@@ -510,69 +542,78 @@ impl Vim {
         Ok(())
     }
 
-    /// Unified message handling - no special cases
+    /// Message handling - data-driven dispatch eliminates special cases
     async fn handle_message(&mut self, msg: VimMessage) -> Result<()> {
+        use VimMessage::*;
         match msg {
-            // JSON-RPC messages
-            VimMessage::Request { id, method, params } => {
-                self.handle_request(id, method, params).await
+            Request { id, method, params } => {
+                self.handle_method_call(Some(id), method, params).await
             }
-            VimMessage::Response { id, result } => self.handle_response(id, result).await,
-            VimMessage::Notification { method, params } => {
-                self.handle_notification(method, params).await
-            }
+            Response { id, result } => self.handle_response(id, result).await,
+            Notification { method, params } => self.handle_method_call(None, method, params).await,
 
-            // Vim channel commands - these are outgoing commands, should not be received
-            // If received, they indicate a protocol error but we handle gracefully
-            VimMessage::Call { .. }
-            | VimMessage::CallAsync { .. }
-            | VimMessage::Expr { .. }
-            | VimMessage::ExprAsync { .. }
-            | VimMessage::Ex { .. }
-            | VimMessage::Normal { .. }
-            | VimMessage::Redraw { .. } => {
-                // These are outgoing commands, receiving them is unexpected
-                eprintln!("Warning: Received outgoing command message, ignoring");
+            // Outgoing commands - protocol errors, handle gracefully
+            Call { .. }
+            | CallAsync { .. }
+            | Expr { .. }
+            | ExprAsync { .. }
+            | Ex { .. }
+            | Normal { .. }
+            | Redraw { .. } => {
+                tracing::warn!("Received outgoing command message, ignoring");
                 Ok(())
             }
         }
     }
 
-    /// Handle requests from vim
-    async fn handle_request(&mut self, id: u64, method: String, params: Value) -> Result<()> {
-        tracing::debug!("Handling request: method={}, params={}", method, params);
+    /// Unified method call handler - handles both requests and notifications
+    /// Option<id> eliminates request/notification special cases through data presence
+    async fn handle_method_call(
+        &mut self,
+        response_id: Option<u64>,
+        method: String,
+        params: Value,
+    ) -> Result<()> {
+        tracing::debug!("Handling method call: method={}, params={}", method, params);
 
-        // Clone Arc to avoid borrow checker issues
+        // Get handler - same logic for both requests and notifications
         if let Some(handler) = self.handlers.get(&method).cloned() {
             match handler.dispatch(self, params).await {
                 Ok(Some(result)) => {
-                    // Has return value - send response
-                    let response = VimMessage::Response {
-                        id: id as i64,
-                        result,
-                    };
-                    self.transport.send(&response).await?;
+                    // Has result - send response if needed
+                    if let Some(id) = response_id {
+                        let response = VimMessage::Response {
+                            id: id as i64,
+                            result,
+                        };
+                        self.transport.send(&response).await?;
+                    }
                 }
                 Ok(None) => {
-                    // notification - no reply
+                    // No result - notification or fire-and-forget
                 }
                 Err(e) => {
-                    // Unified error handling
-                    let response = VimMessage::Response {
-                        id: id as i64,
-                        result: json!({"error": e.to_string()}),
-                    };
-                    self.transport.send(&response).await?;
+                    // Error - send error response if needed, otherwise log
+                    if let Some(id) = response_id {
+                        let response = VimMessage::Response {
+                            id: id as i64,
+                            result: json!({"error": e.to_string()}),
+                        };
+                        self.transport.send(&response).await?;
+                    } else {
+                        tracing::error!("Notification handler error: {}", e);
+                    }
                 }
             }
-        } else {
-            // Unknown method
+        } else if let Some(id) = response_id {
+            // Unknown method AND needs response
             let response = VimMessage::Response {
                 id: id as i64,
                 result: json!({"error": format!("Unknown method: {}", method)}),
             };
             self.transport.send(&response).await?;
         }
+        // Unknown method + notification = ignore silently
         Ok(())
     }
 
@@ -581,15 +622,6 @@ impl Vim {
         // Find and remove the pending call with matching ID
         if let Some(sender) = self.pending_calls.remove(&(id as u64)) {
             let _ = sender.send(result);
-        }
-        Ok(())
-    }
-
-    /// Handle notifications
-    async fn handle_notification(&mut self, method: String, params: Value) -> Result<()> {
-        if let Some(handler) = self.handlers.get(&method).cloned() {
-            // notification processing same as request - just no response sent
-            let _ = handler.dispatch(self, params).await;
         }
         Ok(())
     }
@@ -606,56 +638,94 @@ impl Vim {
 impl VimContext for Vim {
     /// Call vim function with response: ["call", func, args, id]
     async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value> {
-        // Delegate to existing implementation
-        self.call(func, args).await
+        self.next_id += 1;
+        let call_id = self.next_id;
+        let (tx, rx) = oneshot::channel();
+        self.pending_calls.insert(call_id, tx);
+
+        let msg = VimMessage::Call {
+            func: func.to_string(),
+            args,
+            id: call_id,
+        };
+
+        self.transport.send(&msg).await?;
+        rx.await.map_err(|_| Error::msg("Call timeout"))
     }
 
     /// Call vim function without response: ["call", func, args]
     async fn call_async(&mut self, func: &str, args: Vec<Value>) -> Result<()> {
-        // Delegate to existing implementation
-        self.call_async(func, args).await
+        let msg = VimMessage::CallAsync {
+            func: func.to_string(),
+            args,
+        };
+
+        self.transport.send(&msg).await?;
+        Ok(())
     }
 
     /// Execute vim expression with response: ["expr", expr, id]
     async fn expr(&mut self, expr: &str) -> Result<Value> {
-        // Delegate to existing implementation
-        self.expr(expr).await
+        self.next_id += 1;
+        let expr_id = self.next_id;
+        let (tx, rx) = oneshot::channel();
+        self.pending_calls.insert(expr_id, tx);
+
+        let msg = VimMessage::Expr {
+            expr: expr.to_string(),
+            id: expr_id,
+        };
+
+        self.transport.send(&msg).await?;
+        rx.await.map_err(|_| Error::msg("Expr timeout"))
     }
 
     /// Execute vim expression without response: ["expr", expr]
     async fn expr_async(&mut self, expr: &str) -> Result<()> {
-        // Delegate to existing implementation
-        self.expr_async(expr).await
+        let msg = VimMessage::ExprAsync {
+            expr: expr.to_string(),
+        };
+
+        self.transport.send(&msg).await?;
+        Ok(())
     }
 
     /// Execute ex command: ["ex", command]
     async fn ex(&mut self, command: &str) -> Result<()> {
-        // Delegate to existing implementation
-        self.ex(command).await
+        let msg = VimMessage::Ex {
+            command: command.to_string(),
+        };
+
+        self.transport.send(&msg).await?;
+        Ok(())
     }
 
     /// Execute normal mode command: ["normal", keys]
     async fn normal(&mut self, keys: &str) -> Result<()> {
-        // Delegate to existing implementation
-        self.normal(keys).await
+        let msg = VimMessage::Normal {
+            keys: keys.to_string(),
+        };
+
+        self.transport.send(&msg).await?;
+        Ok(())
     }
 
     /// Redraw vim screen: ["redraw", force?]
     async fn redraw(&mut self, force: bool) -> Result<()> {
-        // Delegate to existing implementation
-        self.redraw(force).await
+        let msg = VimMessage::Redraw { force };
+
+        self.transport.send(&msg).await?;
+        Ok(())
     }
 
     /// Legacy compatibility: Execute vim expression via call
     async fn eval(&mut self, expr: &str) -> Result<Value> {
-        // Delegate to existing implementation
-        self.eval(expr).await
+        self.call("eval", vec![json!(expr)]).await
     }
 
     /// Legacy compatibility: Execute vim command via call
     async fn execute(&mut self, cmd: &str) -> Result<Value> {
-        // Delegate to existing implementation
-        self.execute(cmd).await
+        self.call("execute", vec![json!(cmd)]).await
     }
 }
 
