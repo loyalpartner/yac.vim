@@ -15,7 +15,7 @@ use std::{
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info};
-use vim::{Handler, VimContext};
+use vim::Handler;
 
 // Constants to eliminate magic numbers
 const DEFAULT_PAGE_SIZE: usize = 50;
@@ -320,7 +320,7 @@ impl Handler for FileSearchHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn VimContext,
+        _sender: &vim::ChannelCommandSender,
         input: Self::Input,
     ) -> anyhow::Result<Option<Self::Output>> {
         debug!(

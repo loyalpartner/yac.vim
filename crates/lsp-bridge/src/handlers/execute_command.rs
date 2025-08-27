@@ -47,7 +47,7 @@ impl Handler for ExecuteCommandHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn vim::VimContext,
+        _sender: &vim::ChannelCommandSender,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Check if the language server exists

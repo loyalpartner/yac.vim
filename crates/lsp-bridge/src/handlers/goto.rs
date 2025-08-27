@@ -66,7 +66,7 @@ impl Handler for GotoHandler {
 
     async fn handle(
         &self,
-        ctx: &mut dyn vim::VimContext,
+        sender: &vim::ChannelCommandSender,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Detect language
@@ -187,13 +187,14 @@ impl Handler for GotoHandler {
                 let (ssh_host, _) = extract_ssh_path(&input.file);
                 let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
 
-                ctx.ex(format!("edit {}", file_path).as_str()).await.ok();
-                ctx.call_async(
-                    "cursor",
-                    vec![json!(location.line + 1), json!(location.column + 1)],
-                )
-                .await
-                .ok();
+                sender.ex(format!("edit {}", file_path).as_str()).await.ok();
+                sender
+                    .call(
+                        "cursor",
+                        vec![json!(location.line + 1), json!(location.column + 1)],
+                    )
+                    .await
+                    .ok();
             }
         }
 

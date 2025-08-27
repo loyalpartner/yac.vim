@@ -11,7 +11,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use vim::{Handler, Vim, VimContext};
+use vim::{ChannelCommandSender, Handler, Vim};
 
 /// Goto definition handler - demonstrates method with return value pattern
 ///
@@ -69,7 +69,7 @@ impl Handler for GotoDefinitionHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn VimContext,
+        _sender: &ChannelCommandSender,
         params: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Simulate LSP call

@@ -57,7 +57,7 @@ impl Handler for FileOpenHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn vim::VimContext,
+        _sender: &vim::ChannelCommandSender,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Extract real file path from SSH path if needed
