@@ -43,6 +43,9 @@ command! YacToggleDiagnosticVirtualText call yac#toggle_diagnostic_virtual_text(
 command! YacClearDiagnosticVirtualText call yac#clear_diagnostic_virtual_text()
 command! YacDebugToggle    call yac#debug_toggle()
 command! YacDebugStatus    call yac#debug_status()
+command! YacConnections    call yac#connections()
+command! YacCleanupConnections call yac#cleanup_connections()
+command! YacStopAll        call yac#stop_all()
 command! -nargs=? YacFileSearch call yac#file_search(<q-args>)
 " Remote editing commands - 简化版本
 command! YacRemoteCleanup  call yac_remote#cleanup()

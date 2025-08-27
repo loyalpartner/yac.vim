@@ -340,101 +340,144 @@ call s:request('hover', {'file': expand('%:p'), 'line': line('.')-1, 'column': c
 - **Rust**: Full support via `rust-analyzer`
 - **Other languages**: Framework exists but not implemented
 
-## SSH Master Architecture
+## Connection Pool Architecture
 
-### SSH Remote Editing Support
+### Multi-Host LSP Support
 
-The project implements SSH Master/ControlPath architecture for simplified remote LSP editing. This design replaces complex socket tunneling with direct SSH connections.
+The project implements a connection pool architecture that supports concurrent local and remote LSP connections. Each unique location (local or remote host) maintains its own independent LSP connection.
 
 #### Architecture Overview
 
-**SSH Master Communication Flow:**
+**Connection Pool Management:**
 ```
-Vim ↔ SSH Master ↔ remote lsp-bridge ↔ rust-analyzer
+Vim Connection Pool:
+├── 'local' → job1 (./target/release/lsp-bridge)
+├── 'user@server1' → job2 (ssh user@server1 ./lsp-bridge)
+└── 'user@server2' → job3 (ssh user@server2 ./lsp-bridge)
+```
+
+**Communication Flow:**
+```
+Buffer → Connection Key → Job Pool → LSP Process
+         (local/host)    (job)      (local/remote)
 ```
 
 **Operation Modes:**
 
-1. **Standard Mode** (local files):
-   - No SSH detection
-   - Direct stdio communication: `Vim ↔ lsp-bridge ↔ rust-analyzer`
+1. **Local Mode** (`key = 'local'`):
+   - Direct stdio: `Vim ↔ lsp-bridge ↔ rust-analyzer`
+   - Command: `['./target/release/lsp-bridge']`
 
-2. **SSH Master Mode** (remote files):
-   - SSH file format detected: `scp://user@host//path/file`
-   - SSH Master connection: `ssh -o ControlPath=... user@host lsp-bridge`
-   - Direct stdio over SSH: `Vim ↔ SSH ↔ remote lsp-bridge ↔ rust-analyzer`
+2. **Remote Mode** (`key = 'user@host'`):
+   - SSH stdio: `Vim ↔ SSH ↔ remote lsp-bridge ↔ rust-analyzer`
+   - Command: `['ssh', '-o', 'ControlPath=...', 'user@host', './lsp-bridge']`
+
+3. **Multi-Host Mode** (mixed editing):
+   - Concurrent connections to multiple hosts
+   - Automatic connection switching based on buffer
 
 #### Key Features
 
-**🔍 Auto SSH Detection:**
-- Automatically detects SSH file formats: `scp://user@host//path/file.rs`
-- Seamlessly switches between local and remote modes
-- No manual configuration required
+**🔄 Automatic Connection Management:**
+- Buffer-based connection detection via `b:yac_ssh_host`
+- Automatic job pool management and lifecycle
+- Zero-configuration multi-host support
 
-**🔄 Path Conversion:**
-- Transparently converts SSH paths to regular paths for LSP operations
-- Example: `scp://user@host//home/user/file.rs` → `/home/user/file.rs`
-- Remote LSP server receives standard Unix paths
+**⚡ Performance Optimizations:**
+- ControlPersist 10m for SSH connection reuse
+- Non-blocking connection establishment
+- Automatic dead connection cleanup (5-minute intervals)
+
+**🔍 Connection Pool Features:**
+- Independent LSP processes per host
+- Concurrent local and remote editing
+- Isolated ControlPath per host: `/tmp/yac-{host}.sock`
 
 **📦 Auto Deployment:**
-- Automatically builds and deploys lsp-bridge binary to remote hosts via `scp`
-- Sets executable permissions and verifies deployment
-- Handles build process if binary doesn't exist locally
+- Builds and deploys lsp-bridge to remote hosts via `scp`
+- Sets executable permissions automatically
+- Handles missing binary scenarios
 
-**🖥️ Remote Server Management:**
-- SSH-based remote lsp-bridge server startup
-- Process management and cleanup
-- Socket existence verification
+**🛠️ Management Commands:**
+- `:YacConnections` - Show all active connections
+- `:YacStopAll` - Stop all connections
+- `:YacCleanupConnections` - Clean up dead connections
+- `:YacDebugStatus` - Show detailed connection status
 
-**🔧 SSH Master Management:**
-- Creates persistent SSH Master connections with ControlPath
-- Automatic SSH Master tunnel creation: `ssh -N -o ControlMaster=yes`
-- Connection reuse for all LSP operations
-- Automatic cleanup on Vim exit
+**🔧 SSH Connection Optimization:**
+- Uses `ControlMaster=auto` and `ControlPersist=10m`
+- Automatic connection reuse without manual Master management
+- Per-host ControlPath isolation: `/tmp/yac-{sanitized_host}.sock`
+- Graceful error handling and connection recovery
 
-**🔄 Connection Simplification:**
-- Single SSH Master connection replaces multiple socket tunnels
-- SSH handles connection resilience and error recovery
-- No complex socket file management required
+**🔄 Simplified Architecture:**
+- No blocking retry loops (eliminated 2-second UI freeze)
+- Connection pool handles all SSH complexity
+- Handlers remain SSH-agnostic using existing extract/restore functions
+- Clean separation: Vim manages connections, Rust handles LSP logic
 
-#### Usage
+#### Usage Examples
 
-**Automatic SSH Mode Activation:**
+**Multi-Host Editing:**
 ```vim
-" Opening SSH files automatically enables remote mode
-:e scp://user@dev-server//home/user/project/src/main.rs
+" Seamless switching between local and remote files
+:e /local/project/main.rs           " Local connection (key: 'local')
+:e scp://server1//app/lib.rs        " Remote connection (key: 'user@server1')
+:e scp://server2//api/mod.rs        " Another remote connection (key: 'user@server2')
 
-" The system automatically:
-" 1. Detects SSH file format
-" 2. Deploys lsp-bridge to remote host (if needed)
-" 3. Creates SSH Master tunnel
-" 4. Uses job_start with SSH ControlPath
-" 5. All LSP operations work transparently
+" All LSP features work on all connections:
+" - goto definition, hover, completion
+" - Each connection is independent
+" - Automatic connection switching based on current buffer
 ```
 
-**Manual SSH Management:**
+**Connection Management:**
 ```vim
-:YacRemoteCleanup               " Clean up SSH Master connections
+:YacConnections                     " Show all active connections
+:YacDebugStatus                     " Detailed connection info
+:YacStopAll                         " Stop all connections
+:YacCleanupConnections             " Clean up dead connections
+:YacRemoteCleanup                  " Legacy remote cleanup
 ```
 
 #### Implementation Details
 
-**SSH Master Tunnel Creation (yac_remote.vim:34-42):**
+**Connection Pool Management (yac.vim):**
 ```vim
-" Step 1: Create SSH Master tunnel 
-let l:control_path = '/tmp/yac-' . substitute(l:user_host, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
-call system(printf('ssh -N -o ControlMaster=yes -o ControlPath=%s %s &', 
-  \ shellescape(l:control_path), shellescape(l:user_host)))
+" Connection pool and key detection
+let s:job_pool = {}  " {'local': job, 'user@host1': job, ...}
+
+function! s:get_connection_key() abort
+  return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
+endfunction
+
+" Job command building
+function! s:build_job_command(key) abort
+  if a:key == 'local'
+    return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
+  else
+    let l:control_path = '/tmp/yac-' . substitute(a:key, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
+    return ['ssh', '-o', 'ControlPath=' . l:control_path,
+          \ '-o', 'ControlMaster=auto', '-o', 'ControlPersist=10m',
+          \ a:key, './lsp-bridge']
+  endif
+endfunction
 ```
 
-**Job Command with ControlPath (yac_remote.vim:104-113):**
+**Simplified SSH Setup (yac_remote.vim):**
 ```vim
-" Step 2: SSH Master job command for lsp-bridge
-function! yac_remote#get_job_command() abort
-  if exists('b:yac_ssh_host') && exists('b:yac_ssh_control_path')
-    return ['ssh', '-o', 'ControlPath=' . b:yac_ssh_control_path, b:yac_ssh_host, 'lsp-bridge']
-  endif
-  return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
+" Simplified SSH mode setup - no blocking loops
+function! s:start_ssh_master_mode(ssh_path) abort
+  let [l:user_host, l:remote_path] = s:parse_ssh_path(a:ssh_path)
+  call s:ensure_remote_binary(l:user_host)
+  
+  " Set buffer variables for connection pool
+  let b:yac_ssh_host = l:user_host
+  let b:yac_real_path_for_lsp = l:remote_path
+  
+  " Connection pool handles SSH automatically
+  call yac#start()
+  call yac#open_file()
 endfunction
 ```
 
