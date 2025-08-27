@@ -82,7 +82,6 @@ impl CallHierarchyInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct CallHierarchyHandler {
     lsp_registry: Arc<LspRegistry>,
 }

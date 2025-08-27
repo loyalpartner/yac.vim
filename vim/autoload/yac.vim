@@ -52,8 +52,9 @@ let s:completion_icons = {
   \ 'Event': '󱐋 '
   \ }
 
-" 简化状态管理
-let s:job = v:null
+" 连接池管理 - 支持多主机并发连接
+let s:job_pool = {}  " {'local': job, 'user@host1': job, 'user@host2': job, ...}
+let s:current_connection_key = 'local'  " 用于调试显示
 let s:log_file = ''
 let s:hover_popup_id = -1
 
@@ -92,43 +93,88 @@ let s:file_search.current_page = 0
 let s:file_search.has_more = v:false
 let s:file_search.total_count = 0
 
-" 启动进程
-function! yac#start() abort
-  if s:job != v:null && job_status(s:job) == 'run'
-    return
+" 获取当前 buffer 应该使用的连接 key
+function! s:get_connection_key() abort
+  if exists('b:yac_ssh_host')
+    return b:yac_ssh_host
+  else
+    return 'local'
   endif
+endfunction
 
-  " 开启 channel 日志来调试（仅第一次）
-  if !exists('s:log_started')
-    " 启用调试模式时开启详细日志
-    if get(g:, 'lsp_bridge_debug', 0)
-      call ch_logfile('/tmp/vim_channel.log', 'w')
-      echom 'YacDebug: Channel logging enabled to /tmp/vim_channel.log'
+" 构建特定连接的 job 命令
+function! s:build_job_command(key) abort
+  if a:key == 'local'
+    return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
+  else
+    " SSH 连接命令，使用 ControlPersist 优化
+    let l:control_path = '/tmp/yac-' . substitute(a:key, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
+    return ['ssh', 
+      \ '-o', 'ControlPath=' . l:control_path,
+      \ '-o', 'ControlMaster=auto',
+      \ '-o', 'ControlPersist=10m',
+      \ a:key, './lsp-bridge']
+  endif
+endfunction
+
+" 确保对应连接的 job 存在并运行
+function! s:ensure_job() abort
+  let l:key = s:get_connection_key()
+  let s:current_connection_key = l:key
+  
+  " 检查连接池中是否有有效的 job
+  if !has_key(s:job_pool, l:key) || job_status(s:job_pool[l:key]) != 'run'
+    " 开启 channel 日志（仅第一次）
+    if !exists('s:log_started')
+      if get(g:, 'lsp_bridge_debug', 0)
+        call ch_logfile('/tmp/vim_channel.log', 'w')
+        echom 'YacDebug: Channel logging enabled to /tmp/vim_channel.log'
+      endif
+      let s:log_started = 1
     endif
-    let s:log_started = 1
+    
+    " 创建新的 job
+    let l:cmd = s:build_job_command(l:key)
+    
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug: Creating new connection [%s]: %s', l:key, string(l:cmd))
+    endif
+    
+    let s:job_pool[l:key] = job_start(l:cmd, {
+      \ 'mode': 'json',
+      \ 'callback': function('s:handle_response'),
+      \ 'err_cb': function('s:handle_error'),
+      \ 'exit_cb': function('s:handle_exit', [l:key])
+      \ })
+    
+    if job_status(s:job_pool[l:key]) != 'run'
+      echoerr printf('Failed to start lsp-bridge for %s', l:key)
+      if has_key(s:job_pool, l:key)
+        unlet s:job_pool[l:key]
+      endif
+      return v:null
+    endif
   endif
+  
+  return s:job_pool[l:key]
+endfunction
 
-  let s:job = job_start(g:yac_bridge_command, {
-    \ 'mode': 'json',
-    \ 'callback': function('s:handle_response'),
-    \ 'err_cb': function('s:handle_error'),
-    \ 'exit_cb': function('s:handle_exit')
-    \ })
-
-  if job_status(s:job) != 'run'
-    echoerr 'Failed to start lsp-bridge'
-  endif
+" 启动进程 - 现在使用连接池
+function! yac#start() abort
+  " 通过 ensure_job 自动管理连接
+  return s:ensure_job() != v:null
 endfunction
 
 " 发送命令（使用 ch_sendexpr 和指定的回调handler）
 function! s:send_command(jsonrpc_msg, callback_func) abort
-  call yac#start()  " 自动启动
-
-  if s:job != v:null && job_status(s:job) == 'run'
+  let l:job = s:ensure_job()
+  
+  if l:job != v:null && job_status(l:job) == 'run'
     " 调试模式：记录发送的命令
     if get(g:, 'lsp_bridge_debug', 0)
       let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('YacDebug[SEND]: %s -> %s:%d:%d',
+      echom printf('YacDebug[SEND][%s]: %s -> %s:%d:%d',
+        \ s:current_connection_key,
         \ a:jsonrpc_msg.method,
         \ fnamemodify(get(params, 'file', ''), ':t'),
         \ get(params, 'line', -1), get(params, 'column', -1))
@@ -136,9 +182,9 @@ function! s:send_command(jsonrpc_msg, callback_func) abort
     endif
 
     " 使用指定的回调函数
-    call ch_sendexpr(s:job, a:jsonrpc_msg, {'callback': a:callback_func})
+    call ch_sendexpr(l:job, a:jsonrpc_msg, {'callback': a:callback_func})
   else
-    echoerr 'lsp-bridge not running'
+    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
 endfunction
 
@@ -150,13 +196,14 @@ function! s:request(method, params, callback_func) abort
     \ 'method': a:method,
     \ 'params': extend(a:params, {'command': a:method})
     \ }
-  
-  call yac#start()  " 自动启动
 
-  if s:job != v:null && job_status(s:job) == 'run'
+  let l:job = s:ensure_job()
+
+  if l:job != v:null && job_status(l:job) == 'run'
     " 调试模式：记录发送的请求
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[SEND]: %s -> %s:%d:%d',
+      echom printf('YacDebug[SEND][%s]: %s -> %s:%d:%d',
+        \ s:current_connection_key,
         \ a:method,
         \ fnamemodify(get(a:params, 'file', ''), ':t'),
         \ get(a:params, 'line', -1), get(a:params, 'column', -1))
@@ -164,25 +211,26 @@ function! s:request(method, params, callback_func) abort
     endif
 
     " 使用指定的回调函数
-    call ch_sendexpr(s:job, jsonrpc_msg, {'callback': a:callback_func})
+    call ch_sendexpr(l:job, jsonrpc_msg, {'callback': a:callback_func})
   else
-    echoerr 'lsp-bridge not running'
+    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
 endfunction
 
-" Notification - fire and forget, clear semantics  
+" Notification - fire and forget, clear semantics
 function! s:notify(method, params) abort
   let jsonrpc_msg = {
     \ 'method': a:method,
     \ 'params': extend(a:params, {'command': a:method})
     \ }
-    
-  call yac#start()  " 自动启动
 
-  if s:job != v:null && job_status(s:job) == 'run'
+  let l:job = s:ensure_job()
+
+  if l:job != v:null && job_status(l:job) == 'run'
     " 调试模式：记录发送的通知
     if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[NOTIFY]: %s -> %s:%d:%d',
+      echom printf('YacDebug[NOTIFY][%s]: %s -> %s:%d:%d',
+        \ s:current_connection_key,
         \ a:method,
         \ fnamemodify(get(a:params, 'file', ''), ':t'),
         \ get(a:params, 'line', -1), get(a:params, 'column', -1))
@@ -190,9 +238,9 @@ function! s:notify(method, params) abort
     endif
 
     " 发送通知（不需要回调）
-    call ch_sendraw(s:job, json_encode([jsonrpc_msg]) . "\n")
+    call ch_sendraw(l:job, json_encode([jsonrpc_msg]) . "\n")
   else
-    echoerr 'lsp-bridge not running'
+    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
 endfunction
 
@@ -237,6 +285,8 @@ function! yac#hover() abort
     \ }, 's:handle_hover_response')
 endfunction
 
+" Helper functions removed - now handled by connection pool architecture
+
 function! yac#open_file() abort
   call s:request('file_open', {
     \   'file': expand('%:p'),
@@ -252,7 +302,7 @@ function! yac#complete() abort
     let line = getline('.')
     let col = col('.') - 1
     let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
-    
+
     let needs_new_request = 0
     for trigger in triggers
       if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
@@ -260,12 +310,12 @@ function! yac#complete() abort
         break
       endif
     endfor
-    
+
     if !needs_new_request
       call s:filter_completions()
       return
     endif
-    
+
     " 关闭现有窗口，将进行新的LSP请求
     call s:close_completion_popup()
   endif
@@ -409,7 +459,7 @@ function! yac#auto_complete_trigger() abort
     let line = getline('.')
     let col = col('.') - 1
     let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
-    
+
     let needs_new_request = 0
     for trigger in triggers
       if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
@@ -417,12 +467,12 @@ function! yac#auto_complete_trigger() abort
         break
       endif
     endfor
-    
+
     if !needs_new_request
       call s:filter_completions()
       return
     endif
-    
+
     " 关闭现有窗口，将进行新的LSP请求
     call s:close_completion_popup()
   endif
@@ -435,7 +485,7 @@ function! yac#auto_complete_trigger() abort
   " 获取当前行和光标位置
   let current_line = getline('.')
   let col = col('.') - 1
-  
+
   " 避免在字符串或注释中触发
   if s:in_string_or_comment()
     return
@@ -443,21 +493,21 @@ function! yac#auto_complete_trigger() abort
 
   " 获取当前词前缀
   let prefix = s:get_current_word_prefix()
-  
+
   " 检查最小字符数要求
   let min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
   if len(prefix) < min_chars
     " 检查是否有触发字符
     let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
     let should_trigger = 0
-    
+
     for trigger in triggers
       if col >= len(trigger) && current_line[col - len(trigger):col - 1] == trigger
         let should_trigger = 1
         break
       endif
     endfor
-    
+
     if !should_trigger
       return
     endif
@@ -510,7 +560,7 @@ endfunction
 function! yac#file_search(...) abort
   " 获取查询字符串（可选参数）
   let query = a:0 > 0 ? a:1 : ''
-  
+
   " 如果没有提供查询字符串，使用交互式输入
   if empty(query)
     call s:start_interactive_file_search()
@@ -533,7 +583,7 @@ function! s:start_interactive_file_search() abort
   let s:file_search.current_page = 0
   let s:file_search.files = []
   let s:file_search.selected = 0
-  
+
   " 显示初始搜索（所有文件）
   call s:request('file_search', {
     \   'query': '',
@@ -571,15 +621,15 @@ function! s:show_interactive_file_search() abort
   " 计算窗口尺寸
   let max_width = min([s:FILE_SEARCH_MAX_WIDTH, &columns - 4])
   let max_height = min([s:FILE_SEARCH_MAX_HEIGHT, &lines - 6])
-  
+
   " 准备显示内容
   let display_lines = []
-  
+
   " 添加搜索提示
   call add(display_lines, 'Type to search files (ESC to cancel, Enter to open):')
   call add(display_lines, 'Query: ' . s:file_search.query . '█')
   call add(display_lines, repeat('─', max_width - 2))
-  
+
   " 添加文件列表
   if empty(s:file_search.files)
     call add(display_lines, 'No files found')
@@ -589,20 +639,20 @@ function! s:show_interactive_file_search() abort
       let file = s:file_search.files[i]
       let marker = (i == s:file_search.selected) ? '▶ ' : '  '
       let relative_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
-      
+
       " 截断过长路径
       if len(relative_path) > max_width - 6
         let relative_path = '...' . relative_path[-(max_width-9):]
       endif
-      
+
       call add(display_lines, marker . relative_path)
     endfor
   endif
-  
+
   " 添加状态信息
   if len(s:file_search.files) > 0
-    let status = printf('Showing %d/%d files', 
-      \ min([len(s:file_search.files), max_height - 6]), 
+    let status = printf('Showing %d/%d files',
+      \ min([len(s:file_search.files), max_height - 6]),
       \ s:file_search.total_count)
     call add(display_lines, repeat('─', max_width - 2))
     call add(display_lines, status)
@@ -612,7 +662,7 @@ function! s:show_interactive_file_search() abort
   if s:file_search.popup_id != -1 && exists('*popup_close')
     call popup_close(s:file_search.popup_id)
   endif
-  
+
   let s:file_search.popup_id = popup_create(display_lines, {
     \ 'title': ' File Search ',
     \ 'line': 3,
@@ -671,7 +721,7 @@ function! s:interactive_file_search_filter(winid, key) abort
     call s:update_file_search_with_query()
     return 1
   endif
-  
+
   return 0
 endfunction
 
@@ -679,7 +729,7 @@ endfunction
 function! s:update_file_search_with_query() abort
   let s:file_search.current_page = 0
   let s:file_search.selected = 0
-  
+
   call s:request('file_search', {
     \   'query': s:file_search.query,
     \   'page': 0,
@@ -726,13 +776,14 @@ endfunction
 
 " 发送通知（无响应）
 function! s:send_notification(jsonrpc_msg) abort
-  call yac#start()  " 自动启动
+  let l:job = s:ensure_job()
 
-  if s:job != v:null && job_status(s:job) == 'run'
+  if l:job != v:null && job_status(l:job) == 'run'
     " 调试模式：记录发送的通知
     if get(g:, 'lsp_bridge_debug', 0)
       let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('YacDebug[NOTIFY]: %s -> %s:%d:%d',
+      echom printf('YacDebug[NOTIFY][%s]: %s -> %s:%d:%d',
+        \ s:current_connection_key,
         \ a:jsonrpc_msg.method,
         \ fnamemodify(get(params, 'file', ''), ':t'),
         \ get(params, 'line', -1), get(params, 'column', -1))
@@ -740,7 +791,7 @@ function! s:send_notification(jsonrpc_msg) abort
     endif
 
     " 发送通知（不需要回调）
-    call ch_sendraw(s:job, json_encode([a:jsonrpc_msg]) . "\n")
+    call ch_sendraw(l:job, json_encode([a:jsonrpc_msg]) . "\n")
   else
     echoerr 'lsp-bridge not running'
   endif
@@ -764,7 +815,7 @@ endfunction
 function! s:in_string_or_comment() abort
   " 获取当前位置的语法高亮组
   let synname = synIDattr(synID(line('.'), col('.'), 1), 'name')
-  
+
   " 检查是否为字符串或注释的语法组
   return synname =~? 'comment\|string\|char'
 endfunction
@@ -929,10 +980,20 @@ function! s:handle_error(channel, msg) abort
   echoerr 'lsp-bridge: ' . a:msg
 endfunction
 
-" 处理进程退出（异步回调）
-function! s:handle_exit(job, status) abort
-  echom 'lsp-bridge exited with status: ' . a:status
-  let s:job = v:null
+" 处理进程退出（异步回调） - 支持连接池
+function! s:handle_exit(key, job, status) abort
+  if a:status != 0
+    echohl ErrorMsg
+    echo printf('LSP connection to %s failed (exit: %d)', a:key, a:status)
+    echohl None
+  else
+    echom printf('LSP connection to %s closed', a:key)
+  endif
+  
+  " 从连接池中移除失败的连接
+  if has_key(s:job_pool, a:key)
+    unlet s:job_pool[a:key]
+  endif
 endfunction
 
 " Channel回调，只处理服务器主动推送的通知
@@ -961,15 +1022,33 @@ function! yac#set_log_file(log_path) abort
   endif
 endfunction
 
-" 停止进程
+" 停止进程 - 支持连接池
 function! yac#stop() abort
-  if s:job != v:null
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom 'YacDebug: Stopping lsp-bridge process'
+  let l:key = s:get_connection_key()
+  
+  if has_key(s:job_pool, l:key)
+    let l:job = s:job_pool[l:key]
+    if job_status(l:job) == 'run'
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom printf('YacDebug: Stopping lsp-bridge process for %s', l:key)
+      endif
+      call job_stop(l:job)
     endif
-    call job_stop(s:job)
-    let s:job = v:null
+    unlet s:job_pool[l:key]
   endif
+endfunction
+
+" 停止所有连接
+function! yac#stop_all() abort
+  for [key, job] in items(s:job_pool)
+    if job_status(job) == 'run'
+      if get(g:, 'lsp_bridge_debug', 0)
+        echom printf('YacDebug: Stopping lsp-bridge process for %s', key)
+      endif
+      call job_stop(job)
+    endif
+  endfor
+  let s:job_pool = {}
 endfunction
 
 " === Debug 功能 ===
@@ -984,11 +1063,11 @@ function! yac#debug_toggle() abort
     echo '  - Channel communication will be logged to /tmp/vim_channel.log'
     echo '  - Use :YacDebugToggle to disable'
 
-    " 如果进程已经运行，重启以启用channel日志
-    if s:job != v:null && job_status(s:job) == 'run'
-      echom 'YacDebug: Restarting process to enable channel logging...'
-      call yac#stop()
-      call yac#start()
+    " 如果有活跃的连接，重启以启用channel日志
+    if !empty(s:job_pool)
+      echom 'YacDebug: Restarting connections to enable channel logging...'
+      call yac#stop_all()
+      " 下次调用 LSP 命令时会自动重新启动
     endif
   else
     echo 'YacDebug: Debug mode DISABLED'
@@ -1000,20 +1079,77 @@ endfunction
 " 显示调试状态
 function! yac#debug_status() abort
   let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
-  let job_running = (s:job != v:null && job_status(s:job) == 'run')
-
+  let active_connections = len(s:job_pool)
+  let current_key = s:get_connection_key()
+  
   echo 'YacDebug Status:'
   echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
-  echo '  LSP Process: ' . (job_running ? 'RUNNING' : 'STOPPED')
+  echo printf('  Active Connections: %d', active_connections)
+  echo printf('  Current Buffer: %s', current_key)
+  
+  if active_connections > 0
+    echo '  Connection Details:'
+    for [key, job] in items(s:job_pool)
+      let status = job_status(job)
+      echo printf('    %s: %s', key, status)
+    endfor
+  endif
+  
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
   echo '  LSP Log: ' . (empty(s:log_file) ? 'Not available' : s:log_file)
   echo ''
   echo 'Commands:'
   echo '  :YacDebugToggle - Toggle debug mode'
   echo '  :YacDebugStatus - Show this status'
+  echo '  :YacConnections - Show connection details'
   echo '  :YacOpenLog     - Open LSP process log'
 endfunction
 
+" 连接管理功能
+function! yac#connections() abort
+  if empty(s:job_pool)
+    echo 'No active LSP connections'
+    return
+  endif
+  
+  echo 'Active LSP Connections:'
+  echo '========================'
+  for [key, job] in items(s:job_pool)
+    let status = job_status(job)
+    let job_info = job_info(job)
+    let pid = has_key(job_info, 'process') ? job_info.process : 'unknown'
+    let is_current = (key == s:get_connection_key()) ? ' (current)' : ''
+    echo printf('  %s: %s (PID: %s)%s', key, status, pid, is_current)
+  endfor
+  
+  echo ''
+  echo printf('Current buffer connection: %s', s:get_connection_key())
+endfunction
+
+" 自动清理死连接
+function! s:cleanup_dead_connections() abort
+  let dead_keys = []
+  for [key, job] in items(s:job_pool)
+    if job_status(job) != 'run'
+      call add(dead_keys, key)
+    endif
+  endfor
+  
+  for key in dead_keys
+    if get(g:, 'lsp_bridge_debug', 0)
+      echom printf('YacDebug: Removing dead connection: %s', key)
+    endif
+    unlet s:job_pool[key]
+  endfor
+  
+  return len(dead_keys)
+endfunction
+
+" 手动清理命令
+function! yac#cleanup_connections() abort
+  let cleaned = s:cleanup_dead_connections()
+  echo printf('Cleaned up %d dead connections', cleaned)
+endfunction
 
 " 显示补全结果
 function! s:show_completions(items) abort
@@ -1114,17 +1250,17 @@ endfunction
 function! s:format_completion_item(item, marker) abort
   " 获取图标
   let icon = get(s:completion_icons, a:item.kind, '󰉿 ')
-  
+
   " 基础显示格式
   let display = a:marker . icon . a:item.label
-  
+
   " 添加类型信息（如果存在）
   if has_key(a:item, 'detail') && !empty(a:item.detail)
     let display .= ' ' . a:item.detail
   else
     let display .= ' (' . a:item.kind . ')'
   endif
-  
+
   return display
 endfunction
 
@@ -1153,20 +1289,20 @@ function! s:fuzzy_match_score(text, pattern) abort
   if empty(a:pattern)
     return 1000  " 空模式匹配所有项目，给高分
   endif
-  
+
   let text = tolower(a:text)
   let pattern = tolower(a:pattern)
-  
+
   " 精确前缀匹配 - 最高优先级
   if text =~# '^' . escape(pattern, '[]^$.*\~')
     return 2000 + (1000 - len(a:text))  " 越短的匹配越好
   endif
-  
+
   " 连续子序列匹配
   let idx = 0
   let match_positions = []
   let last_pos = -1
-  
+
   for char in split(pattern, '\zs')
     let pos = stridx(text, char, idx)
     if pos == -1
@@ -1176,29 +1312,29 @@ function! s:fuzzy_match_score(text, pattern) abort
     let idx = pos + 1
     let last_pos = pos
   endfor
-  
+
   " 计算评分：基于匹配位置和连续性
   let score = 1000
-  
+
   " 首字符匹配加分
   if match_positions[0] == 0
     let score += 500
   endif
-  
+
   " 连续匹配加分
   for i in range(1, len(match_positions) - 1)
     if match_positions[i] == match_positions[i-1] + 1
       let score += 100
     endif
   endfor
-  
+
   " 匹配密度加分（匹配字符占总长度比例）
   let density = len(pattern) * 100 / len(a:text)
   let score += density
-  
+
   " 总长度短的优先（相同匹配情况下）
   let score -= len(a:text)
-  
+
   return score
 endfunction
 
@@ -1218,7 +1354,7 @@ function! s:filter_completions() abort
 
   " 按评分排序（降序）
   call sort(scored_items, {a, b -> b.score - a.score})
-  
+
   " 提取排序后的项目
   let s:completion.items = []
   for scored in scored_items
@@ -1504,16 +1640,19 @@ endfunction
 
 " 简单打开日志文件
 function! yac#open_log() abort
-  " 检查LSP bridge进程是否运行
-  if s:job == v:null || job_status(s:job) != 'run'
-    echo 'lsp-bridge not running'
+  " 检查当前 buffer 的 LSP 连接是否运行
+  let l:key = s:get_connection_key()
+  if !has_key(s:job_pool, l:key) || job_status(s:job_pool[l:key]) != 'run'
+    echo printf('lsp-bridge not running for %s', l:key)
     return
   endif
 
+  let l:job = s:job_pool[l:key]
+  
   " 如果s:log_file未设置，根据进程PID构造日志文件路径
   let log_file = s:log_file
   if empty(log_file)
-    let job_info = job_info(s:job)
+    let job_info = job_info(l:job)
     if has_key(job_info, 'process') && job_info.process > 0
       let log_file = '/tmp/lsp-bridge-' . job_info.process . '.log'
     else
@@ -2163,7 +2302,7 @@ endfunction
 function! s:find_workspace_root() abort
   let project_files = ['Cargo.toml', 'package.json', '.git', 'pyproject.toml', 'go.mod', 'pom.xml', 'build.gradle', 'Makefile', 'CMakeLists.txt']
   let current_dir = expand('%:p:h')
-  
+
   while current_dir != '/' && current_dir != ''
     for project_file in project_files
       if filereadable(current_dir . '/' . project_file) || isdirectory(current_dir . '/' . project_file)
@@ -2172,7 +2311,7 @@ function! s:find_workspace_root() abort
     endfor
     let current_dir = fnamemodify(current_dir, ':h')
   endwhile
-  
+
   " 如果没有找到项目根，使用当前目录
   return expand('%:p:h')
 endfunction
@@ -2184,17 +2323,17 @@ function! s:show_file_search_popup() abort
     call popup_close(s:file_search.popup_id)
     let s:file_search.popup_id = -1
   endif
-  
+
   if s:file_search.input_popup_id != -1 && exists('*popup_close')
     call popup_close(s:file_search.input_popup_id)
     let s:file_search.input_popup_id = -1
   endif
-  
+
   if empty(s:file_search.files)
     echo "No files found"
     return
   endif
-  
+
   " Debug: 打印文件数据结构
   if get(g:, 'lsp_bridge_debug', 0)
     echom printf('YacDebug: Building display for %d files', len(s:file_search.files))
@@ -2202,15 +2341,15 @@ function! s:show_file_search_popup() abort
       echom printf('YacDebug: First file structure: %s', string(s:file_search.files[0]))
     endif
   endif
-  
+
   " 准备显示的文件列表
   let display_lines = []
   let max_width = s:FILE_SEARCH_MAX_WIDTH
-  
+
   for i in range(len(s:file_search.files))
     let file = s:file_search.files[i]
     let marker = (i == s:file_search.selected) ? '▶ ' : '  '
-    
+
     " 显示相对路径，截断过长的路径
     " 安全访问relative_path字段
     if type(file) == type({}) && has_key(file, 'relative_path')
@@ -2223,14 +2362,14 @@ function! s:show_file_search_popup() abort
         let display_path = string(file)
       endif
     endif
-    
+
     if len(display_path) > max_width - 4
       let display_path = '...' . display_path[-(max_width-7):]
     endif
-    
+
     call add(display_lines, marker . display_path)
   endfor
-  
+
   " Debug: 打印display_lines
   if get(g:, 'lsp_bridge_debug', 0)
     echom printf('YacDebug: Built %d display lines', len(display_lines))
@@ -2238,9 +2377,9 @@ function! s:show_file_search_popup() abort
       echom printf('YacDebug: First display line: "%s"', display_lines[0])
     endif
   endif
-  
+
   " 添加状态行
-  let status = printf('Page %d/%d - %d files total', 
+  let status = printf('Page %d/%d - %d files total',
     \ s:file_search.current_page + 1,
     \ (s:file_search.total_count + s:FILE_SEARCH_PAGE_SIZE - 1) / s:FILE_SEARCH_PAGE_SIZE,
     \ s:file_search.total_count)
@@ -2249,18 +2388,18 @@ function! s:show_file_search_popup() abort
   endif
   call add(display_lines, '')
   call add(display_lines, status)
-  
+
   " 确保我们有内容显示
   if empty(display_lines)
     call add(display_lines, "No files to display")
   endif
-  
+
   " 最终调试：显示即将用于popup的完整内容
   if get(g:, 'lsp_bridge_debug', 0)
     echom printf('YacDebug: Final display_lines count: %d', len(display_lines))
     echom printf('YacDebug: Creating popup with content: %s', string(display_lines))
   endif
-  
+
   if exists('*popup_create')
     " 使用 Vim 8.1+ popup
     let s:file_search.popup_id = popup_create(display_lines, {
@@ -2277,15 +2416,15 @@ function! s:show_file_search_popup() abort
       \ 'cursorline': 1,
       \ 'mapping': 0
       \ })
-      
+
     " Debug: 确认popup创建
     if get(g:, 'lsp_bridge_debug', 0)
       echom printf('YacDebug: Popup created with ID: %d', s:file_search.popup_id)
     endif
-    
+
     " 创建输入框
     call s:show_file_search_input()
-    
+
     " 确保主 popup 获得焦点以处理键盘输入
     if exists('*popup_setoptions')
       call popup_setoptions(s:file_search.popup_id, {'cursorline': 1})
@@ -2302,7 +2441,7 @@ function! s:show_file_search_input() abort
   if !exists('*popup_create')
     return
   endif
-  
+
   let s:file_search.input_popup_id = popup_create(['Search: ' . s:file_search.query], {
     \ 'line': 3,
     \ 'col': (&columns - 60) / 2,
@@ -2321,7 +2460,7 @@ function! s:file_search_filter(winid, key) abort
     call s:move_file_search_selection(1)
     return 1
   elseif a:key == "\<Up>" || a:key == "\<C-P>"
-    call s:move_file_search_selection(-1) 
+    call s:move_file_search_selection(-1)
     return 1
   " 回车选择文件
   elseif a:key == "\<CR>"
@@ -2339,7 +2478,7 @@ function! s:file_search_filter(winid, key) abort
   elseif a:key == "\<C-F>" || a:key == "\<PageDown>"
     call s:load_next_file_search_page()
     return 1
-  elseif a:key == "\<C-B>" || a:key == "\<PageUp>" 
+  elseif a:key == "\<C-B>" || a:key == "\<PageUp>"
     call s:load_prev_file_search_page()
     return 1
   " 字母数字键用于搜索
@@ -2357,7 +2496,7 @@ function! s:file_search_filter(winid, key) abort
     call s:update_file_search_query('')
     return 1
   endif
-  
+
   return 0
 endfunction
 
@@ -2366,25 +2505,25 @@ function! s:update_interactive_file_search_display() abort
   if s:file_search.popup_id == -1
     return
   endif
-  
+
   " 计算窗口尺寸
   let max_width = min([s:FILE_SEARCH_MAX_WIDTH, &columns - 4])
   let max_height = min([s:FILE_SEARCH_MAX_HEIGHT, &lines - 6])
-  
+
   " 准备显示内容
   let display_lines = []
-  
+
   " 添加搜索提示
   call add(display_lines, 'Type to search files (ESC to cancel, Enter to open):')
   call add(display_lines, 'Query: ' . s:file_search.query . '█')
   call add(display_lines, repeat('─', max_width - 2))
-  
+
   " Calculate scrolling window parameters first
   let available_lines = max_height - 6  " Reserve space for header, status
   let total_files = len(s:file_search.files)
   let selected_idx = s:file_search.selected
   let scroll_offset = 0
-  
+
   " 添加文件列表 with scrolling support
   if empty(s:file_search.files)
     call add(display_lines, 'No files found')
@@ -2405,41 +2544,41 @@ function! s:update_interactive_file_search_display() abort
         endif
       endif
     endif
-    
+
     " Display files in the visible window
     let end_idx = min([scroll_offset + available_lines, total_files])
     for i in range(scroll_offset, end_idx - 1)
       let file = s:file_search.files[i]
       let marker = (i == s:file_search.selected) ? '▶ ' : '  '
       let relative_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
-      
+
       " 截断过长路径
       if len(relative_path) > max_width - 6
         let relative_path = '...' . relative_path[-(max_width-9):]
       endif
-      
+
       call add(display_lines, marker . relative_path)
     endfor
   endif
-  
+
   " 添加状态信息 with scroll indicator
   if len(s:file_search.files) > 0
     let visible_count = min([len(s:file_search.files), available_lines])
     let status = printf('Showing %d/%d files', visible_count, s:file_search.total_count)
-    
+
     " Add scroll indicators if there are more files
     if total_files > available_lines
       let scroll_info = printf(' [%d-%d]', scroll_offset + 1, min([scroll_offset + available_lines, total_files]))
       let status .= scroll_info
     endif
-    
+
     call add(display_lines, repeat('─', max_width - 2))
     call add(display_lines, status)
   endif
 
   " 更新现有popup的内容，保持filter函数连接
   call popup_settext(s:file_search.popup_id, display_lines)
-  
+
   " Set cursor position to highlight selected item in popup
   if exists('*popup_setoptions') && len(s:file_search.files) > 0
     " Calculate the line number of selected item within the popup content (1-indexed)
@@ -2455,16 +2594,16 @@ endfunction
 " 移动文件搜索选择
 function! s:move_file_search_selection(direction) abort
   let new_selected = s:file_search.selected + a:direction
-  
+
   " 边界检查
   if new_selected < 0
     let new_selected = 0
   elseif new_selected >= len(s:file_search.files)
     let new_selected = len(s:file_search.files) - 1
   endif
-  
+
   let s:file_search.selected = new_selected
-  
+
   " 始终使用交互式显示更新 - 使用settext避免重新创建popup
   " 这样popup窗口位置保持稳定，只更新内容
   call s:update_interactive_file_search_display()
@@ -2475,13 +2614,13 @@ function! s:update_file_search_display() abort
   if s:file_search.popup_id == -1
     return
   endif
-  
+
   " Calculate display window size
   let max_width = s:FILE_SEARCH_MAX_WIDTH
   let max_display_lines = s:FILE_SEARCH_WINDOW_SIZE " Use the configured window size
   let total_files = len(s:file_search.files)
   let selected_idx = s:file_search.selected
-  
+
   " Calculate scroll offset to keep selection visible
   let scroll_offset = 0
   if total_files > max_display_lines
@@ -2495,24 +2634,24 @@ function! s:update_file_search_display() abort
       endif
     endif
   endif
-  
+
   " 重新准备显示行
   let display_lines = []
-  
+
   " Display files in visible window
   let end_idx = min([scroll_offset + max_display_lines, total_files])
   for i in range(scroll_offset, end_idx - 1)
     let file = s:file_search.files[i]
     let marker = (i == s:file_search.selected) ? '▶ ' : '  '
-    
+
     let display_path = has_key(file, 'relative_path') ? file.relative_path : fnamemodify(file.path, ':.')
     if len(display_path) > max_width - 4
       let display_path = '...' . display_path[-(max_width-7):]
     endif
-    
+
     call add(display_lines, marker . display_path)
   endfor
-  
+
   " 状态行 with scroll info
   let status = printf('Page %d/%d - %d files total',
     \ s:file_search.current_page + 1,
@@ -2521,19 +2660,19 @@ function! s:update_file_search_display() abort
   if s:file_search.has_more
     let status .= ' (more available)'
   endif
-  
+
   " Add scroll indicator if scrolling
   if total_files > max_display_lines
     let scroll_info = printf(' [%d-%d]', scroll_offset + 1, min([scroll_offset + max_display_lines, total_files]))
     let status .= scroll_info
   endif
-  
+
   call add(display_lines, '')
   call add(display_lines, status)
-  
+
   " 更新popup内容
   call popup_settext(s:file_search.popup_id, display_lines)
-  
+
   " 更新输入框
   if s:file_search.input_popup_id != -1
     call popup_settext(s:file_search.input_popup_id, ['Search: ' . s:file_search.query])
@@ -2544,7 +2683,7 @@ endfunction
 function! s:update_file_search_query(new_query) abort
   let s:file_search.query = a:new_query
   let s:file_search.current_page = 0
-  
+
   " 发送新的搜索请求
   call s:request('file_search', {
     \   'query': a:new_query,
@@ -2559,7 +2698,7 @@ function! s:load_next_file_search_page() abort
   if !s:file_search.has_more
     return
   endif
-  
+
   let next_page = s:file_search.current_page + 1
   call s:request('file_search', {
     \   'query': s:file_search.query,
@@ -2569,12 +2708,12 @@ function! s:load_next_file_search_page() abort
     \ }, 's:handle_file_search_response')
 endfunction
 
-" 加载上一页文件搜索结果  
+" 加载上一页文件搜索结果
 function! s:load_prev_file_search_page() abort
   if s:file_search.current_page <= 0
     return
   endif
-  
+
   let prev_page = s:file_search.current_page - 1
   call s:request('file_search', {
     \   'query': s:file_search.query,
@@ -2589,11 +2728,11 @@ function! s:open_selected_file() abort
   if empty(s:file_search.files) || s:file_search.selected >= len(s:file_search.files)
     return
   endif
-  
+
   let selected_file = s:file_search.files[s:file_search.selected]
-  
+
   call s:close_file_search_popup()
-  
+
   " 记录选择的文件到历史中（发送到 Rust 后端，同步请求确保完成）
   call s:request('file_search', {
     \ 'selected_file': selected_file.relative_path,
@@ -2601,7 +2740,7 @@ function! s:open_selected_file() abort
     \ 'page': 0,
     \ 'page_size': 1
     \ }, 's:handle_recent_file_response')
-  
+
   " 打开文件
   execute 'edit ' . fnameescape(selected_file.path)
   echo 'Opened: ' . selected_file.relative_path
@@ -2620,12 +2759,12 @@ function! s:close_file_search_popup() abort
     call popup_close(s:file_search.popup_id)
     let s:file_search.popup_id = -1
   endif
-  
+
   if s:file_search.input_popup_id != -1 && exists('*popup_close')
     call popup_close(s:file_search.input_popup_id)
     let s:file_search.input_popup_id = -1
   endif
-  
+
   " 重置状态
   let s:file_search.files = []
   let s:file_search.selected = 0
@@ -2639,13 +2778,13 @@ endfunction
 function! s:file_search_callback(id, result) abort
   " Reset search state without calling popup_close (to avoid recursion)
   let s:file_search.popup_id = -1
-  
+
   " Close input popup if it exists
   if s:file_search.input_popup_id != -1 && exists('*popup_close')
     call popup_close(s:file_search.input_popup_id)
     let s:file_search.input_popup_id = -1
   endif
-  
+
   " Reset state
   let s:file_search.files = []
   let s:file_search.selected = 0
@@ -2659,13 +2798,19 @@ endfunction
 function! s:file_search_command_line_interface() abort
   echo "File search (command line mode):"
   echo "Use :YacFileSearch <pattern> to search files"
-  
+
   for i in range(min([10, len(s:file_search.files)]))
     let file = s:file_search.files[i]
     echo printf("[%d] %s", i+1, file.relative_path)
   endfor
-  
+
   if len(s:file_search.files) > 10
     echo printf("... and %d more files", len(s:file_search.files) - 10)
   endif
 endfunction
+
+" 启动定时清理任务
+if !exists('s:cleanup_timer')
+  " 每5分钟清理一次死连接
+  let s:cleanup_timer = timer_start(300000, {-> s:cleanup_dead_connections()}, {'repeat': -1})
+endif
