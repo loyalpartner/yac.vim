@@ -36,21 +36,22 @@ pub enum VimMessage {
     },
 
     // Vim channel commands (client-to-vim)
-    /// Call vim function with response: ["call", func, args, id]
+    // NOTE: Per Vim channel protocol, client-to-vim commands must use negative IDs
+    /// Call vim function with response: ["call", func, args, id] (id must be negative)
     Call {
         func: String,
         args: Vec<Value>,
-        id: u64,
+        id: i64, // Negative ID for client-to-vim commands
     },
     /// Call vim function without response: ["call", func, args]
     CallAsync {
         func: String,
         args: Vec<Value>,
     },
-    /// Execute vim expression with response: ["expr", expr, id]
+    /// Execute vim expression with response: ["expr", expr, id] (id must be negative)
     Expr {
         expr: String,
-        id: u64,
+        id: i64, // Negative ID for client-to-vim commands
     },
     /// Execute vim expression without response: ["expr", expr]
     ExprAsync {
@@ -126,7 +127,7 @@ impl VimMessage {
                         if arr.len() >= 4 {
                             // ["call", func, args, id] - with response
                             let id = arr[3]
-                                .as_u64()
+                                .as_i64()
                                 .ok_or_else(|| Error::msg("Invalid call id"))?;
                             Ok(VimMessage::Call { func, args, id })
                         } else {
@@ -143,7 +144,7 @@ impl VimMessage {
                         if arr.len() >= 3 {
                             // ["expr", expr, id] - with response
                             let id = arr[2]
-                                .as_u64()
+                                .as_i64()
                                 .ok_or_else(|| Error::msg("Invalid expr id"))?;
                             Ok(VimMessage::Expr { expr, id })
                         } else {
@@ -369,8 +370,8 @@ impl MessageTransport for StdioTransport {
 pub struct Vim {
     transport: Box<dyn MessageTransport>,
     handlers: HashMap<String, std::sync::Arc<dyn HandlerDispatch>>,
-    pending_calls: HashMap<u64, oneshot::Sender<Value>>,
-    next_id: u64,
+    pending_calls: HashMap<i64, oneshot::Sender<Value>>, // Uses negative IDs per Vim protocol
+    next_id: i64, // Generates negative IDs for client-to-vim commands
 }
 
 impl Vim {
@@ -380,7 +381,7 @@ impl Vim {
             transport: Box::new(StdioTransport::new()),
             handlers: HashMap::new(),
             pending_calls: HashMap::new(),
-            next_id: 1,
+            next_id: -1, // Start with -1, decrement for each new call (-1, -2, -3, ...)
         }
     }
 
@@ -390,9 +391,10 @@ impl Vim {
             .insert(method.to_string(), std::sync::Arc::new(handler));
     }
 
-    /// Call vim function - channel command
+    /// Call vim function - channel command  
+    /// Uses negative IDs per Vim channel protocol requirement
     pub async fn call(&mut self, func: &str, args: Vec<Value>) -> Result<Value> {
-        self.next_id += 1;
+        self.next_id -= 1; // Generate negative ID (-1, -2, -3, ...)
         let call_id = self.next_id;
         let (tx, rx) = oneshot::channel();
         self.pending_calls.insert(call_id, tx);
@@ -409,8 +411,9 @@ impl Vim {
     }
 
     /// Execute vim expression with response
+    /// Uses negative IDs per Vim channel protocol requirement  
     pub async fn expr(&mut self, expr: &str) -> Result<Value> {
-        self.next_id += 1;
+        self.next_id -= 1; // Generate negative ID (-1, -2, -3, ...)
         let expr_id = self.next_id;
         let (tx, rx) = oneshot::channel();
         self.pending_calls.insert(expr_id, tx);
@@ -573,7 +576,7 @@ impl Vim {
     /// Handle vim responses - format: [id, result]
     async fn handle_response(&mut self, id: i64, result: Value) -> Result<()> {
         // Find and remove the pending call with matching ID
-        if let Some(sender) = self.pending_calls.remove(&(id as u64)) {
+        if let Some(sender) = self.pending_calls.remove(&id) {
             let _ = sender.send(result);
         }
         Ok(())
@@ -706,14 +709,14 @@ mod tests {
         // Test vim channel command parsing
 
         // Test call with response: ["call", "func", args, id]
-        let json = json!(["call", "test_func", ["arg1", 42], 123]);
+        let json = json!(["call", "test_func", ["arg1", 42], -123]);
         let msg = VimMessage::parse(&json).unwrap();
 
         match msg {
             VimMessage::Call { func, args, id } => {
                 assert_eq!(func, "test_func");
                 assert_eq!(args, vec![json!("arg1"), json!(42)]);
-                assert_eq!(id, 123);
+                assert_eq!(id, -123);
             }
             _ => panic!("Expected Call"),
         }
@@ -731,13 +734,13 @@ mod tests {
         }
 
         // Test expr with response: ["expr", "expression", id]
-        let json = json!(["expr", "line('$')", 456]);
+        let json = json!(["expr", "line('$')", -456]);
         let msg = VimMessage::parse(&json).unwrap();
 
         match msg {
             VimMessage::Expr { expr, id } => {
                 assert_eq!(expr, "line('$')");
-                assert_eq!(id, 456);
+                assert_eq!(id, -456);
             }
             _ => panic!("Expected Expr"),
         }
@@ -832,11 +835,11 @@ mod tests {
         let call_msg = VimMessage::Call {
             func: "test_func".to_string(),
             args: vec![json!("arg1"), json!(42)],
-            id: 123,
+            id: -123,
         };
 
         let encoded = call_msg.encode();
-        let expected = json!(["call", "test_func", [json!("arg1"), json!(42)], 123]);
+        let expected = json!(["call", "test_func", [json!("arg1"), json!(42)], -123]);
         assert_eq!(
             encoded, expected,
             "VimMessage::Call should encode as [\"call\", func, args, id]"
@@ -858,11 +861,11 @@ mod tests {
         // Test expr command: ["expr", expr, id]
         let expr_msg = VimMessage::Expr {
             expr: "line('$')".to_string(),
-            id: 456,
+            id: -456,
         };
 
         let encoded = expr_msg.encode();
-        let expected = json!(["expr", "line('$')", 456]);
+        let expected = json!(["expr", "line('$')", -456]);
         assert_eq!(
             encoded, expected,
             "VimMessage::Expr should encode as [\"expr\", expr, id]"

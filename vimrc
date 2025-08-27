@@ -26,7 +26,7 @@ set runtimepath+=vim
 " yac-bridge 配置
 let g:yac_bridge_command = ['./target/release/lsp-bridge']
 let g:yac_bridge_auto_start = 0
-let g:lsp_bridge_debug = 1
+" let g:lsp_bridge_debug = 1
 
 " 自动补全配置 (可以修改这些值进行测试)
 let g:yac_bridge_auto_complete = 1          " 1=启用, 0=禁用自动补全
