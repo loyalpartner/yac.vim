@@ -320,7 +320,7 @@ impl Handler for FileSearchHandler {
 
     async fn handle(
         &self,
-        _sender: &vim::ChannelCommandSender,
+        _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> anyhow::Result<Option<Self::Output>> {
         debug!(

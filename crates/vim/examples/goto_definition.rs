@@ -11,7 +11,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use vim::{ChannelCommandSender, Handler, Vim};
+use vim::{Handler, VimClient, VimContext};
 
 /// Goto definition handler - demonstrates method with return value pattern
 ///
@@ -69,7 +69,7 @@ impl Handler for GotoDefinitionHandler {
 
     async fn handle(
         &self,
-        _sender: &ChannelCommandSender,
+        _vim: &dyn VimContext,
         params: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Simulate LSP call
@@ -96,7 +96,7 @@ async fn find_definition(file: &str, line: u32, column: u32) -> Option<Location>
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut vim = Vim::new_stdio();
+    let mut vim = VimClient::new_stdio();
     vim.add_handler("goto_definition", GotoDefinitionHandler);
     vim.run().await
 }
@@ -114,8 +114,12 @@ mod tests {
             column: 5,
         };
 
-        let mut vim = Vim::new_stdio();
-        let result = handler.handle(&mut vim, params).await.unwrap();
+        // Create a mock context for testing
+        struct MockVimContext;
+        impl VimContext for MockVimContext {}
+
+        let ctx = MockVimContext;
+        let result = handler.handle(&ctx, params).await.unwrap();
         assert!(result.is_some());
 
         let location = result.unwrap();

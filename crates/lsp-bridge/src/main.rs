@@ -1,6 +1,6 @@
 use lsp_bridge::LspRegistry;
 use tracing::info;
-use vim::Vim;
+use vim::VimClient;
 
 mod handlers;
 use handlers::{
@@ -55,18 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simplified: SSH Master mode uses direct stdio communication
     // No need for complex socket forwarding - SSH handles the transport
     info!("Starting lsp-bridge in stdio mode");
-    let mut vim = Vim::new_stdio();
-
-    // Proactively communicate log file path to Vim via call_async
-    // This implements the hybrid approach suggested by loyalpartner
-    if let Err(e) = vim
-        .call_async("yac#set_log_file", vec![log_path.clone().into()])
-        .await
-    {
-        info!("Failed to set log file path in Vim: {}", e);
-    } else {
-        info!("Successfully communicated log path to Vim: {}", log_path);
-    }
+    let mut vim = VimClient::new_stdio();
 
     // Create dedicated handlers with multi-language registry
     // Core LSP functionality handlers - Linus style: one handler per function

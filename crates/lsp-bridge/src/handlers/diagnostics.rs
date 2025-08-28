@@ -178,7 +178,7 @@ impl Handler for DiagnosticsHandler {
 
     async fn handle(
         &self,
-        _sender: &vim::ChannelCommandSender,
+        _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Note: Diagnostics are typically pushed by the server, not requested by client

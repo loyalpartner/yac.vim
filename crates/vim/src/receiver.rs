@@ -4,14 +4,41 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{debug, error, info};
 
 use crate::protocol::{JsonRpcMessage, VimProtocol};
-use crate::sender::ChannelCommandSender;
+use crate::queue::MessageQueue;
 use crate::transport::MessageTransport;
+
+/// VimContext trait - clean interface for vim operations
+/// Hides implementation details (queue, sender, etc.) from handlers
+#[async_trait]
+pub trait VimContext: Send + Sync {
+    /// Call vim function with response: ["call", func, args, id]
+    async fn call(&self, func: &str, args: Vec<Value>) -> Result<Value>;
+
+    /// Call vim function without response: ["call", func, args]
+    async fn call_async(&self, func: &str, args: Vec<Value>) -> Result<()>;
+
+    /// Execute vim expression with response: ["expr", expr, id]
+    async fn expr(&self, expr: &str) -> Result<Value>;
+
+    /// Execute vim expression without response: ["expr", expr]
+    async fn expr_async(&self, expr: &str) -> Result<()>;
+
+    /// Execute ex command: ["ex", cmd]
+    async fn ex(&self, cmd: &str) -> Result<()>;
+
+    /// Execute normal mode command: ["normal", keys]
+    async fn normal(&self, keys: &str) -> Result<()>;
+
+    /// Redraw vim screen: ["redraw", force?]
+    async fn redraw(&self, force: bool) -> Result<()>;
+}
 
 /// Handler trait - unified interface for request/notification processing
 /// Option<Output> perfectly expresses return semantics: None=notification, Some=response
+/// Uses clean VimContext interface instead of exposing internal queue
 #[async_trait]
 pub trait Handler: Send + Sync {
     type Input: DeserializeOwned;
@@ -19,7 +46,7 @@ pub trait Handler: Send + Sync {
 
     async fn handle(
         &self,
-        sender: &ChannelCommandSender,
+        vim: &dyn VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>>;
 }
@@ -27,20 +54,15 @@ pub trait Handler: Send + Sync {
 /// Type-erased dispatcher - compile-time type safety to runtime dispatch
 #[async_trait]
 trait HandlerDispatch: Send + Sync {
-    async fn dispatch(&self, sender: &ChannelCommandSender, params: Value)
-        -> Result<Option<Value>>;
+    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<Option<Value>>;
 }
 
 /// Auto implementation - converts type-safe Handler to runtime dispatch version
 #[async_trait]
 impl<H: Handler> HandlerDispatch for H {
-    async fn dispatch(
-        &self,
-        sender: &ChannelCommandSender,
-        params: Value,
-    ) -> Result<Option<Value>> {
+    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<Option<Value>> {
         let input: H::Input = serde_json::from_value(params)?;
-        let result = self.handle(sender, input).await?;
+        let result = self.handle(vim, input).await?;
 
         match result {
             Some(output) => Ok(Some(serde_json::to_value(output)?)),
@@ -76,28 +98,102 @@ impl HandlerRegistry {
     pub async fn dispatch(
         &self,
         method: &str,
-        sender: &ChannelCommandSender,
+        vim: &dyn VimContext,
         params: Value,
     ) -> Result<Option<Value>> {
         if let Some(handler) = self.handlers.get(method) {
-            handler.dispatch(sender, params).await
+            handler.dispatch(vim, params).await
         } else {
             Err(Error::msg(format!("Unknown method: {}", method)))
         }
     }
 }
 
-/// Message receiver - handles incoming JSON-RPC messages and responses
-pub struct MessageReceiver {
+/// I/O Loop - pure message transport, no business logic
+/// Separates I/O from handler execution to prevent blocking
+pub struct IoLoop {
     transport: Arc<dyn MessageTransport>,
-    handlers: HandlerRegistry,
+    queue: Arc<MessageQueue>,
 }
 
-impl MessageReceiver {
-    pub fn new(transport: Arc<dyn MessageTransport>) -> Self {
+impl IoLoop {
+    pub fn new(transport: Arc<dyn MessageTransport>, queue: Arc<MessageQueue>) -> Self {
+        Self { transport, queue }
+    }
+
+    /// Pure I/O loop - handles message transport only
+    /// All business logic moved to handler pool to prevent blocking
+    pub async fn run(&mut self) -> Result<()> {
+        info!("Starting I/O loop");
+
+        let mut outgoing_rx = self.queue.outgoing_rx.lock().await;
+
+        loop {
+            tokio::select! {
+                // Receive messages from vim
+                msg_result = self.transport.recv() => {
+                    match msg_result {
+                        Ok(msg) => {
+                            if let Err(e) = self.route_incoming_message(msg).await {
+                                error!("Message routing error: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Transport receive error: {}", e);
+                            break;
+                        }
+                    }
+                }
+                // Send queued messages to vim
+                Some(outgoing) = outgoing_rx.recv() => {
+                    if let Err(e) = self.transport.send(&outgoing).await {
+                        error!("Transport send error: {}", e);
+                    } else {
+                        debug!("Sent message to vim: {:?}", outgoing);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Route incoming messages to appropriate queues - no blocking operations
+    async fn route_incoming_message(&self, msg: VimProtocol) -> Result<()> {
+        match msg {
+            VimProtocol::JsonRpc(rpc_msg) => match rpc_msg {
+                JsonRpcMessage::Request { id, method, params } => {
+                    debug!("Routing request: method={}, id={}", method, id);
+                    self.queue.queue_request(method, params, Some(id)).await
+                }
+                JsonRpcMessage::Response { id, result } => {
+                    debug!("Routing response: id={}", id);
+                    self.queue.handle_response(id, result).await
+                }
+                JsonRpcMessage::Notification { method, params } => {
+                    debug!("Routing notification: method={}", method);
+                    self.queue.queue_request(method, params, None).await
+                }
+            },
+            VimProtocol::Channel(_cmd) => {
+                error!("Warning: Received outgoing channel command, ignoring");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Handler pool - processes business logic in separate tasks
+/// Prevents blocking the I/O loop when handlers call vim functions
+pub struct HandlerPool {
+    handlers: HandlerRegistry,
+    queue: Arc<MessageQueue>,
+}
+
+impl HandlerPool {
+    pub fn new(queue: Arc<MessageQueue>) -> Self {
         Self {
-            transport,
             handlers: HandlerRegistry::new(),
+            queue,
         }
     }
 
@@ -106,88 +202,71 @@ impl MessageReceiver {
         self.handlers.add_handler(method, handler);
     }
 
-    /// Main message processing loop - unified handling for all message types
-    pub async fn run(&mut self, sender: &ChannelCommandSender) -> Result<()> {
+    /// Start processing requests from queue
+    pub async fn run(&self) -> Result<()> {
+        info!("Starting handler pool");
+
         loop {
-            match self.transport.recv().await {
-                Ok(msg) => {
-                    if let Err(e) = self.handle_message(msg, sender).await {
-                        error!("Message handling error: {}", e);
+            let mut rx = self.queue.request_rx.lock().await;
+            if let Some((method, params, id)) = rx.recv().await {
+                // Spawn each handler in separate task to prevent blocking
+                let handlers = self.handlers.handlers.clone();
+                let queue = self.queue.clone();
+
+                tokio::spawn(async move {
+                    Self::handle_request_async(handlers, queue, method, params, id).await;
+                });
+            }
+        }
+    }
+
+    /// Handle request in separate task - can safely call vim without blocking I/O
+    async fn handle_request_async(
+        handlers: HashMap<String, Arc<dyn HandlerDispatch>>,
+        queue: Arc<MessageQueue>,
+        method: String,
+        params: Value,
+        id: Option<u64>,
+    ) {
+        debug!(
+            "Processing request: method={}, has_id={}",
+            method,
+            id.is_some()
+        );
+
+        // Cast queue to VimContext - clean interface for handlers
+        let vim_context: &dyn VimContext = queue.as_ref();
+
+        let result = if let Some(handler) = handlers.get(&method) {
+            handler.dispatch(vim_context, params).await
+        } else {
+            Err(Error::msg(format!("Unknown method: {}", method)))
+        };
+
+        // Send response only if this was a request (has id)
+        if let Some(request_id) = id {
+            let response = match result {
+                Ok(Some(data)) => JsonRpcMessage::Response {
+                    id: request_id as i64,
+                    result: data,
+                },
+                Ok(None) => {
+                    // Handler returned None - this shouldn't happen for requests
+                    JsonRpcMessage::Response {
+                        id: request_id as i64,
+                        result: json!(null),
                     }
                 }
-                Err(e) => {
-                    error!("Transport error: {}", e);
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Unified message handling - no special cases
-    async fn handle_message(&self, msg: VimProtocol, sender: &ChannelCommandSender) -> Result<()> {
-        match msg {
-            VimProtocol::JsonRpc(rpc_msg) => match rpc_msg {
-                JsonRpcMessage::Request { id, method, params } => {
-                    self.handle_request(id, method, params, sender).await
-                }
-                JsonRpcMessage::Response { id, result } => sender.handle_response(id, result).await,
-                JsonRpcMessage::Notification { method, params } => {
-                    self.handle_notification(method, params, sender).await
-                }
-            },
-            VimProtocol::Channel(_cmd) => {
-                // Channel commands are outgoing (client-to-vim), receiving them is unexpected
-                error!("Warning: Received outgoing channel command, ignoring");
-                Ok(())
-            }
-        }
-    }
-
-    /// Handle requests from vim
-    async fn handle_request(
-        &self,
-        id: u64,
-        method: String,
-        params: Value,
-        sender: &ChannelCommandSender,
-    ) -> Result<()> {
-        tracing::debug!("Handling request: method={}, params={}", method, params);
-
-        match self.handlers.dispatch(&method, sender, params).await {
-            Ok(Some(result)) => {
-                // Has return value - send response
-                let response = JsonRpcMessage::Response {
-                    id: id as i64,
-                    result,
-                };
-                self.transport.send(&VimProtocol::JsonRpc(response)).await?;
-            }
-            Ok(None) => {
-                // notification - no reply
-            }
-            Err(e) => {
-                // Unified error handling
-                let response = JsonRpcMessage::Response {
-                    id: id as i64,
+                Err(e) => JsonRpcMessage::Response {
+                    id: request_id as i64,
                     result: json!({"error": e.to_string()}),
-                };
-                self.transport.send(&VimProtocol::JsonRpc(response)).await?;
+                },
+            };
+
+            if let Err(e) = queue.send_to_vim(VimProtocol::JsonRpc(response)).await {
+                error!("Failed to send response: {}", e);
             }
         }
-        Ok(())
-    }
-
-    /// Handle notifications
-    async fn handle_notification(
-        &self,
-        method: String,
-        params: Value,
-        sender: &ChannelCommandSender,
-    ) -> Result<()> {
-        // notification processing same as request - just no response sent
-        let _ = self.handlers.dispatch(&method, sender, params).await;
-        Ok(())
     }
 }
 
@@ -207,7 +286,7 @@ mod tests {
 
         async fn handle(
             &self,
-            _sender: &ChannelCommandSender,
+            _vim: &dyn VimContext,
             input: Self::Input,
         ) -> Result<Option<Self::Output>> {
             Ok(Some(format!("processed: {}", input)))
@@ -224,7 +303,7 @@ mod tests {
 
         async fn handle(
             &self,
-            _sender: &ChannelCommandSender,
+            _vim: &dyn VimContext,
             _input: Self::Input,
         ) -> Result<Option<Self::Output>> {
             Ok(None) // Notification, no response
@@ -236,11 +315,11 @@ mod tests {
         let mut registry = HandlerRegistry::new();
         registry.add_handler("test_method", TestHandler);
 
-        let transport = Arc::new(MockTransport::new());
-        let sender = ChannelCommandSender::new(transport.clone());
+        let queue = MessageQueue::new();
+        let vim_context: &dyn VimContext = &queue;
 
         let result = registry
-            .dispatch("test_method", &sender, json!("test_data"))
+            .dispatch("test_method", vim_context, json!("test_data"))
             .await
             .unwrap();
 
@@ -248,15 +327,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_message_receiver_setup() {
+    async fn test_io_loop_message_routing() {
         let transport = Arc::new(MockTransport::new());
-        let mut receiver = MessageReceiver::new(transport.clone());
+        let queue = Arc::new(MessageQueue::new());
+        let _io_loop = IoLoop::new(transport.clone(), queue.clone());
 
-        receiver.add_handler("test_method", TestHandler);
-        receiver.add_handler("notification", NotificationHandler);
+        // Add a test message to mock transport
+        let test_request = VimProtocol::JsonRpc(JsonRpcMessage::Request {
+            id: 123,
+            method: "test_method".to_string(),
+            params: json!({"test": "data"}),
+        });
+        transport.add_received_message(test_request).await;
+
+        // Verify message gets routed to request queue
+        // This would require running io_loop in background and checking queue
+        // Simplified test for now
+    }
+
+    #[tokio::test]
+    async fn test_handler_pool_setup() {
+        let queue = Arc::new(MessageQueue::new());
+        let mut pool = HandlerPool::new(queue.clone());
+
+        pool.add_handler("test_method", TestHandler);
+        pool.add_handler("notification", NotificationHandler);
 
         // Verify handlers are registered
-        assert!(receiver.handlers.handlers.contains_key("test_method"));
-        assert!(receiver.handlers.handlers.contains_key("notification"));
+        assert!(pool.handlers.handlers.contains_key("test_method"));
+        assert!(pool.handlers.handlers.contains_key("notification"));
     }
 }

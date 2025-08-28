@@ -1,26 +1,26 @@
 use anyhow::{Error, Result};
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use serde_json::Value;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
+use tracing::debug;
 
 use crate::protocol::{ChannelCommand, VimProtocol};
-use crate::transport::MessageTransport;
+use crate::queue::{MessageQueue, ResponseDispatcher};
 
 /// Channel command sender - handles client-to-vim commands with negative IDs
-/// Thread-safe and cloneable for sharing between handlers
+/// Now uses message queue for non-blocking operation
 pub struct ChannelCommandSender {
-    transport: Arc<dyn MessageTransport>,
-    pending_calls: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>, // Uses negative IDs per Vim protocol
+    outgoing_tx: mpsc::UnboundedSender<VimProtocol>,
+    response_dispatcher: Arc<ResponseDispatcher>,
     next_id: AtomicI64, // Generates negative IDs for client-to-vim commands
 }
 
 impl ChannelCommandSender {
-    pub fn new(transport: Arc<dyn MessageTransport>) -> Self {
+    pub fn new(queue: &MessageQueue) -> Self {
         Self {
-            transport,
-            pending_calls: Arc::new(Mutex::new(HashMap::new())),
+            outgoing_tx: queue.outgoing_sender(),
+            response_dispatcher: queue.response_dispatcher(),
             next_id: AtomicI64::new(-1), // Start at -1, decrement for each call
         }
     }
@@ -31,16 +31,13 @@ impl ChannelCommandSender {
     }
 
     /// Call vim function with response: ["call", func, args, id]
-    /// Uses negative IDs per Vim channel protocol requirement
+    /// Now non-blocking - uses queue and response dispatcher
     pub async fn call(&self, func: &str, args: Vec<Value>) -> Result<Value> {
         let call_id = self.next_call_id(); // Generate negative ID (-1, -2, -3, ...)
         let (tx, rx) = oneshot::channel();
 
-        // Register pending call before sending
-        {
-            let mut pending = self.pending_calls.lock().await;
-            pending.insert(call_id, tx);
-        }
+        // Register response handler
+        self.response_dispatcher.register(call_id, tx).await;
 
         let cmd = ChannelCommand::Call {
             func: func.to_string(),
@@ -48,10 +45,14 @@ impl ChannelCommandSender {
             id: call_id,
         };
 
-        // Send command
-        self.transport.send(&VimProtocol::Channel(cmd)).await?;
+        // Send to queue (non-blocking)
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue call command"))?;
 
-        // Wait for response
+        debug!("Queued call: func={}, id={}", func, call_id);
+
+        // Wait for response (doesn't block I/O loop)
         rx.await.map_err(|_| Error::msg("Call timeout"))
     }
 
@@ -62,27 +63,31 @@ impl ChannelCommandSender {
             args,
         };
 
-        self.transport.send(&VimProtocol::Channel(cmd)).await
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue call_async command"))
     }
 
     /// Execute vim expression with response: ["expr", expr, id]
-    /// Uses negative IDs per Vim channel protocol requirement  
+    /// Now non-blocking via queue
     pub async fn expr(&self, expr: &str) -> Result<Value> {
         let expr_id = self.next_call_id(); // Generate negative ID (-1, -2, -3, ...)
         let (tx, rx) = oneshot::channel();
 
-        {
-            let mut pending = self.pending_calls.lock().await;
-            pending.insert(expr_id, tx);
-        }
+        // Register response handler
+        self.response_dispatcher.register(expr_id, tx).await;
 
         let cmd = ChannelCommand::Expr {
             expr: expr.to_string(),
             id: expr_id,
         };
 
-        self.transport.send(&VimProtocol::Channel(cmd)).await?;
-        rx.await.map_err(|_| Error::msg("Expr timeout"))
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue expr command"))?;
+
+        debug!("Queued expr: expr={}, id={}", expr, expr_id);
+        rx.await.map_err(|_| Error::msg("Expression timeout"))
     }
 
     /// Execute vim expression without response: ["expr", expr]
@@ -91,7 +96,9 @@ impl ChannelCommandSender {
             expr: expr.to_string(),
         };
 
-        self.transport.send(&VimProtocol::Channel(cmd)).await
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue expr_async command"))
     }
 
     /// Execute ex command: ["ex", command]
@@ -100,7 +107,9 @@ impl ChannelCommandSender {
             command: command.to_string(),
         };
 
-        self.transport.send(&VimProtocol::Channel(cmd)).await
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue ex command"))
     }
 
     /// Execute normal mode command: ["normal", keys]
@@ -109,42 +118,29 @@ impl ChannelCommandSender {
             keys: keys.to_string(),
         };
 
-        self.transport.send(&VimProtocol::Channel(cmd)).await
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue normal command"))
     }
 
     /// Redraw vim screen: ["redraw", force?]
     pub async fn redraw(&self, force: bool) -> Result<()> {
         let cmd = ChannelCommand::Redraw { force };
-        self.transport.send(&VimProtocol::Channel(cmd)).await
+        self.outgoing_tx
+            .send(VimProtocol::Channel(cmd))
+            .map_err(|_| Error::msg("Failed to queue redraw command"))
     }
 
-    /// Legacy compatibility: Execute vim expression via call
-    pub async fn eval(&self, expr: &str) -> Result<Value> {
-        self.call("eval", vec![json!(expr)]).await
-    }
-
-    /// Legacy compatibility: Execute vim command via call  
-    pub async fn execute(&self, cmd: &str) -> Result<Value> {
-        self.call("execute", vec![json!(cmd)]).await
-    }
-
-    /// Handle response from vim - called by MessageReceiver
-    /// This is internal API used by the message processing system
-    pub(crate) async fn handle_response(&self, id: i64, result: Value) -> Result<()> {
-        let mut pending = self.pending_calls.lock().await;
-        if let Some(sender) = pending.remove(&id) {
-            let _ = sender.send(result); // Ignore send errors (receiver dropped)
-        }
-        Ok(())
-    }
+    // Response handling is now done by ResponseDispatcher in the queue
+    // This method is no longer needed
 }
 
 // Make it cloneable for sharing between handlers
 impl Clone for ChannelCommandSender {
     fn clone(&self) -> Self {
         Self {
-            transport: self.transport.clone(),
-            pending_calls: self.pending_calls.clone(),
+            outgoing_tx: self.outgoing_tx.clone(),
+            response_dispatcher: self.response_dispatcher.clone(),
             next_id: AtomicI64::new(self.next_id.load(Ordering::SeqCst)),
         }
     }
@@ -153,12 +149,14 @@ impl Clone for ChannelCommandSender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::queue::MessageQueue;
+    use serde_json::json;
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
-    async fn test_channel_command_sender() {
-        let transport = Arc::new(MockTransport::new());
-        let sender = ChannelCommandSender::new(transport.clone());
+    async fn test_call_async_queuing() {
+        let queue = MessageQueue::new();
+        let sender = ChannelCommandSender::new(&queue);
 
         // Test async call (no response expected)
         sender
@@ -166,13 +164,16 @@ mod tests {
             .await
             .unwrap();
 
-        let sent_messages = transport.get_sent_messages().await;
-        assert_eq!(sent_messages.len(), 1);
+        // Check message was queued
+        let mut rx = queue.outgoing_rx.lock().await;
+        let message = timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
 
-        // Should be async call format
-        if let VimProtocol::Channel(ChannelCommand::CallAsync { func, args }) = &sent_messages[0] {
+        if let VimProtocol::Channel(ChannelCommand::CallAsync { func, args }) = message {
             assert_eq!(func, "test_func");
-            assert_eq!(args, &vec![json!("arg1")]);
+            assert_eq!(args, vec![json!("arg1")]);
         } else {
             panic!("Expected CallAsync command");
         }
@@ -180,8 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_id_generation() {
-        let transport = Arc::new(MockTransport::new());
-        let sender = ChannelCommandSender::new(transport.clone());
+        let queue = MessageQueue::new();
+        let sender = ChannelCommandSender::new(&queue);
 
         // Generate several IDs
         let id1 = sender.next_call_id();
@@ -198,15 +199,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_cloning() {
-        let transport = Arc::new(MockTransport::new());
-        let sender1 = ChannelCommandSender::new(transport.clone());
+        let queue = MessageQueue::new();
+        let sender1 = ChannelCommandSender::new(&queue);
         let sender2 = sender1.clone();
 
         // Both should work independently
         sender1.ex("echo 'test1'").await.unwrap();
         sender2.ex("echo 'test2'").await.unwrap();
 
-        let sent_messages = transport.get_sent_messages().await;
-        assert_eq!(sent_messages.len(), 2);
+        // Check both messages were queued
+        let mut rx = queue.outgoing_rx.lock().await;
+        let _msg1 = timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let _msg2 = timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_call_with_response() {
+        let queue = MessageQueue::new();
+        let sender = ChannelCommandSender::new(&queue);
+
+        // Start a background task to simulate response
+        let response_dispatcher = queue.response_dispatcher();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            response_dispatcher
+                .dispatch_response(-1, json!("test_response"))
+                .await
+                .unwrap();
+        });
+
+        // This should complete without blocking
+        let result = sender.call("test_func", vec![json!("arg1")]).await.unwrap();
+        assert_eq!(result, json!("test_response"));
     }
 }

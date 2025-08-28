@@ -78,6 +78,13 @@ pub struct MockTransport {
 }
 
 #[cfg(test)]
+impl Default for MockTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl MockTransport {
     pub fn new() -> Self {
         Self {
