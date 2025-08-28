@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use vim::Handler;
 
+use super::common::extract_ssh_path;
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct FileOpenRequest {
@@ -55,11 +57,14 @@ impl Handler for FileOpenHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn vim::VimContext,
+        _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        // Open file in appropriate language server
-        if let Err(e) = self.lsp_registry.open_file(&input.file).await {
+        // Extract real file path from SSH path if needed
+        let (_, real_path) = extract_ssh_path(&input.file);
+
+        // Open file in appropriate language server using real path
+        if let Err(e) = self.lsp_registry.open_file(&real_path).await {
             return Ok(Some(FileOpenResponse::error(format!(
                 "Failed to open file: {}",
                 e

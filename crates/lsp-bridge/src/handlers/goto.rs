@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
 
-use super::common::Location;
+use super::common::{extract_ssh_path, restore_ssh_path, Location};
 
 // Base request structure that Vim sends
 #[derive(Debug, Deserialize)]
@@ -45,7 +45,6 @@ impl GotoType {
 // Linus-style: Location 要么完整存在，要么不存在
 pub type GotoResponse = Option<Location>;
 
-#[derive(Clone)]
 pub struct GotoHandler {
     lsp_registry: Arc<LspRegistry>,
     goto_type: GotoType,
@@ -67,7 +66,7 @@ impl Handler for GotoHandler {
 
     async fn handle(
         &self,
-        ctx: &mut dyn vim::VimContext,
+        vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Detect language
@@ -183,10 +182,13 @@ impl Handler for GotoHandler {
         if let Some(lsp_location) = location_result {
             if let Ok(location) = Location::from_lsp_location(lsp_location) {
                 debug!("location: {:?}", location);
-                ctx.ex(format!("edit {}", location.file).as_str())
-                    .await
-                    .ok();
-                ctx.call_async(
+
+                // SSH path handling: convert LSP response back to proper format for vim
+                let (ssh_host, _) = extract_ssh_path(&input.file);
+                let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
+
+                vim.ex(format!("edit {}", file_path).as_str()).await.ok();
+                vim.call(
                     "cursor",
                     vec![json!(location.line + 1), json!(location.column + 1)],
                 )

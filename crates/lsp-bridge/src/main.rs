@@ -1,6 +1,6 @@
 use lsp_bridge::LspRegistry;
 use tracing::info;
-use vim::Vim;
+use vim::VimClient;
 
 mod handlers;
 use handlers::{
@@ -26,6 +26,9 @@ use handlers::{
     WillSaveHandler,
 };
 
+// Removed: Complex stdio-to-socket forwarder
+// SSH Master mode eliminates need for socket forwarding - direct SSH stdio connection
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs::OpenOptions;
@@ -41,33 +44,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open(&log_path)?;
 
     tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(log_file)
-                .with_ansi(false)
-                .with_file(true)
-                .with_line_number(true),
-        )
+        .with(fmt::layer().with_writer(log_file).with_ansi(false))
         .init();
 
-    info!("lsp-bridge starting with log: {}", log_path);
+    info!("LSP Bridge started with PID: {}", pid);
+    info!("Log file: {}", log_path);
 
-    // Create shared LSP registry for multi-language support
     let lsp_registry = std::sync::Arc::new(LspRegistry::new());
 
-    // Create vim client with handler
-    let mut vim = Vim::new_stdio();
-
-    // Proactively communicate log file path to Vim via call_async
-    // This implements the hybrid approach suggested by loyalpartner
-    if let Err(e) = vim
-        .call_async("yac#set_log_file", vec![log_path.clone().into()])
-        .await
-    {
-        info!("Failed to set log file path in Vim: {}", e);
-    } else {
-        info!("Successfully communicated log path to Vim: {}", log_path);
-    }
+    // Simplified: SSH Master mode uses direct stdio communication
+    // No need for complex socket forwarding - SSH handles the transport
+    info!("Starting lsp-bridge in stdio mode");
+    let mut vim = VimClient::new_stdio();
 
     // Create dedicated handlers with multi-language registry
     // Core LSP functionality handlers - Linus style: one handler per function
@@ -82,57 +70,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         GotoHandler::new(lsp_registry.clone(), "goto_implementation").unwrap();
     let hover_handler = HoverHandler::new(lsp_registry.clone());
     let completion_handler = CompletionHandler::new(lsp_registry.clone());
-    // Updated handlers using LspRegistry
     let references_handler = ReferencesHandler::new(lsp_registry.clone());
     let inlay_hints_handler = InlayHintsHandler::new(lsp_registry.clone());
     let rename_handler = RenameHandler::new(lsp_registry.clone());
-    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
-    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
-    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
     let code_action_handler = CodeActionHandler::new(lsp_registry.clone());
     let execute_command_handler = ExecuteCommandHandler::new(lsp_registry.clone());
+    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
     let call_hierarchy_handler = CallHierarchyHandler::new(lsp_registry.clone());
+    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
+    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
 
-    // Document lifecycle handlers - Updated
-    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
+    // Document lifecycle handlers
     let did_change_handler = DidChangeHandler::new(lsp_registry.clone());
-    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
     let did_close_handler = DidCloseHandler::new(lsp_registry.clone());
+    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
+    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
 
-    // Register handlers for all supported commands
-    // Core LSP functionality - Linus style: type-safe dispatch
+    // Register all handlers using the vim crate API
     vim.add_handler("file_open", file_open_handler);
     vim.add_handler("file_search", file_search_handler);
+    vim.add_handler("goto_definition", definition_handler);
+    vim.add_handler("goto_declaration", declaration_handler);
+    vim.add_handler("goto_type_definition", type_definition_handler);
+    vim.add_handler("goto_implementation", implementation_handler);
     vim.add_handler("hover", hover_handler);
     vim.add_handler("completion", completion_handler);
     vim.add_handler("references", references_handler);
     vim.add_handler("inlay_hints", inlay_hints_handler);
     vim.add_handler("rename", rename_handler);
-    vim.add_handler("document_symbols", document_symbols_handler);
-    vim.add_handler("folding_range", folding_range_handler);
-    vim.add_handler("diagnostics", diagnostics_handler);
     vim.add_handler("code_action", code_action_handler);
     vim.add_handler("execute_command", execute_command_handler);
-    vim.add_handler("call_hierarchy_incoming", call_hierarchy_handler.clone());
-    vim.add_handler("call_hierarchy_outgoing", call_hierarchy_handler);
+    vim.add_handler("document_symbols", document_symbols_handler);
+    vim.add_handler("call_hierarchy", call_hierarchy_handler);
+    vim.add_handler("folding_range", folding_range_handler);
+    vim.add_handler("diagnostics", diagnostics_handler);
 
-    // Notification handlers
-    vim.add_handler("goto_definition", definition_handler);
-    vim.add_handler("goto_declaration", declaration_handler);
-    vim.add_handler("goto_type_definition", type_definition_handler);
-    vim.add_handler("goto_implementation", implementation_handler);
-
-    // Document lifecycle handlers - Updated
-    vim.add_handler("did_save", did_save_handler);
+    // Document lifecycle handlers
     vim.add_handler("did_change", did_change_handler);
-    vim.add_handler("will_save", will_save_handler);
     vim.add_handler("did_close", did_close_handler);
+    vim.add_handler("did_save", did_save_handler);
+    vim.add_handler("will_save", will_save_handler);
 
-    info!("vim client configured, starting message loop...");
-
-    // Run the vim client - this replaces the manual stdin/stdout loop
+    // Start the message processing loop
     vim.run().await?;
 
-    info!("lsp-bridge shutting down...");
     Ok(())
 }

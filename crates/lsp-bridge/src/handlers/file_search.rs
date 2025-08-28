@@ -15,7 +15,7 @@ use std::{
 use tokio::fs;
 use tokio::sync::{Mutex, OnceCell};
 use tracing::{debug, info};
-use vim::{Handler, VimContext};
+use vim::Handler;
 
 // Constants to eliminate magic numbers
 const DEFAULT_PAGE_SIZE: usize = 50;
@@ -65,7 +65,6 @@ pub struct FileItem {
     pub score: f64, // For relevance scoring
 }
 
-#[derive(Clone)]
 pub struct FileSearchHandler {
     _lsp_registry: Arc<LspRegistry>,
     file_cache: Arc<OnceCell<Vec<PathBuf>>>,
@@ -321,7 +320,7 @@ impl Handler for FileSearchHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn VimContext,
+        _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> anyhow::Result<Option<Self::Output>> {
         debug!(

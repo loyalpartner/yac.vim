@@ -44,7 +44,7 @@ impl Handler for WillSaveHandler {
 
     async fn handle(
         &self,
-        _ctx: &mut dyn vim::VimContext,
+        _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
         // Detect language
