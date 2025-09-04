@@ -34,6 +34,13 @@ pub trait VimContext: Send + Sync {
 
     /// Redraw vim screen: ["redraw", force?]
     async fn redraw(&self, force: bool) -> Result<()>;
+
+    /// Get line content at specified line number (1-indexed)
+    async fn get_line_content(&self, line: u32) -> Result<String> {
+        self.call("getline", vec![json!(line)])
+            .await
+            .map(|v| v.as_str().unwrap_or("").to_string())
+    }
 }
 
 /// Handler trait - unified interface for request/notification processing

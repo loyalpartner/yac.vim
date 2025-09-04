@@ -2,7 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tracing::debug;
 use vim::Handler;
 
@@ -15,7 +17,7 @@ pub struct CompletionRequest {
     pub trigger_character: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: Option<String>,
@@ -60,15 +62,75 @@ impl CompletionInfo {
     }
 }
 
+// Cache entry for storing completion results
+#[derive(Debug, Clone)]
+struct CompletionCacheEntry {
+    items: Vec<CompletionItem>,
+    is_incomplete: bool,
+    timestamp: Instant,
+}
+
+// Cache key for unique completion requests
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct CompletionCacheKey {
+    file: String,
+    line: u32,
+    column_prefix: String, // Use prefix instead of exact column for better cache hits
+}
+
+type CompletionCache = Arc<Mutex<HashMap<CompletionCacheKey, CompletionCacheEntry>>>;
+
 pub struct CompletionHandler {
     lsp_registry: Arc<LspRegistry>,
+    cache: CompletionCache,
 }
 
 impl CompletionHandler {
     pub fn new(registry: Arc<LspRegistry>) -> Self {
         Self {
             lsp_registry: registry,
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    // Linus-style: Simple cache cleanup - no complex algorithms
+    fn cleanup_cache(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        let now = Instant::now();
+        let cache_ttl = Duration::from_secs(300); // 5 minutes
+
+        cache.retain(|_, entry| now.duration_since(entry.timestamp) < cache_ttl);
+    }
+
+    // Extract prefix for better cache key generation
+    fn extract_prefix(line_text: &str, column: u32) -> String {
+        let col = column as usize;
+        if col > line_text.len() {
+            return String::new();
+        }
+
+        let before_cursor = &line_text[..col];
+        // Find the start of the current word
+        let word_start = before_cursor
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        before_cursor[word_start..].to_string()
+    }
+
+    // Deduplicate completion items by label
+    fn deduplicate_items(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for item in items {
+            if seen.insert(item.label.clone()) {
+                result.push(item);
+            }
+        }
+
+        result
     }
 
     fn completion_kind_to_string(kind: Option<lsp_types::CompletionItemKind>) -> Option<String> {
@@ -110,9 +172,40 @@ impl Handler for CompletionHandler {
 
     async fn handle(
         &self,
-        _vim: &dyn vim::VimContext,
+        vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
+        // Periodic cache cleanup
+        self.cleanup_cache();
+
+        // Get current line for prefix extraction
+        let line_content = vim.get_line_content(input.line).await.unwrap_or_default();
+        let prefix = Self::extract_prefix(&line_content, input.column);
+
+        // Create cache key
+        let cache_key = CompletionCacheKey {
+            file: input.file.clone(),
+            line: input.line,
+            column_prefix: prefix.clone(),
+        };
+
+        // Check cache first - Linus style: simple and fast
+        {
+            let cache = self.cache.lock().unwrap();
+            if let Some(entry) = cache.get(&cache_key) {
+                let age = entry.timestamp.elapsed();
+                if age < Duration::from_secs(30) {
+                    // 30 second cache TTL
+                    debug!("Cache hit for completion at {}:{}", input.file, input.line);
+                    let deduped_items = Self::deduplicate_items(entry.items.clone());
+                    return Ok(Some(Some(CompletionInfo::new(
+                        deduped_items,
+                        entry.is_incomplete,
+                    ))));
+                }
+            }
+        }
+
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
@@ -181,7 +274,7 @@ impl Handler for CompletionHandler {
         }
 
         // Convert completion items
-        let result_items: Vec<CompletionItem> = items
+        let mut result_items: Vec<CompletionItem> = items
             .into_iter()
             .map(|item| {
                 let documentation = match item.documentation {
@@ -202,6 +295,28 @@ impl Handler for CompletionHandler {
             })
             .collect();
 
+        // Linus-style: Do what's necessary, nothing more
+        result_items = Self::deduplicate_items(result_items);
+
+        // Store in cache for future requests
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.insert(
+                cache_key,
+                CompletionCacheEntry {
+                    items: result_items.clone(),
+                    is_incomplete,
+                    timestamp: Instant::now(),
+                },
+            );
+        }
+
+        debug!(
+            "Cached {} completion items for {}:{}",
+            result_items.len(),
+            input.file,
+            input.line
+        );
         Ok(Some(Some(CompletionInfo::new(result_items, is_incomplete))))
     }
 }

@@ -455,18 +455,10 @@ function! yac#auto_complete_trigger() abort
 
   " 如果补全窗口已打开，检查是否需要新的LSP请求还是只需要过滤
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    " 检查是否刚输入了触发字符，如果是则需要新的LSP请求
+    " 使用增强的触发检测逻辑
     let line = getline('.')
     let col = col('.') - 1
-    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
-
-    let needs_new_request = 0
-    for trigger in triggers
-      if col >= len(trigger) && line[col - len(trigger):col - 1] == trigger
-        let needs_new_request = 1
-        break
-      endif
-    endfor
+    let needs_new_request = s:should_trigger_completion(line, col)
 
     if !needs_new_request
       call s:filter_completions()
@@ -494,23 +486,9 @@ function! yac#auto_complete_trigger() abort
   " 获取当前词前缀
   let prefix = s:get_current_word_prefix()
 
-  " 检查最小字符数要求
-  let min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
-  if len(prefix) < min_chars
-    " 检查是否有触发字符
-    let triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
-    let should_trigger = 0
-
-    for trigger in triggers
-      if col >= len(trigger) && current_line[col - len(trigger):col - 1] == trigger
-        let should_trigger = 1
-        break
-      endif
-    endfor
-
-    if !should_trigger
-      return
-    endif
+  " 使用增强的触发检测 - 统一逻辑
+  if !s:should_trigger_completion(current_line, col)
+    return
   endif
 
   " 设置延迟触发
@@ -1338,17 +1316,85 @@ function! s:fuzzy_match_score(text, pattern) abort
   return score
 endfunction
 
+" Linus-style: Simple type priorities, no complex logic
+function! s:get_type_priority(kind) abort
+  " Priority mapping - higher number = higher priority
+  let priorities = {
+    \ 'Function': 1000,
+    \ 'Method': 1000,
+    \ 'Constructor': 950,
+    \ 'Variable': 900,
+    \ 'Field': 850,
+    \ 'Property': 850,
+    \ 'Class': 800,
+    \ 'Struct': 800,
+    \ 'Interface': 750,
+    \ 'Enum': 700,
+    \ 'Constant': 650,
+    \ 'Module': 600,
+    \ 'Keyword': 500,
+    \ 'Snippet': 400,
+    \ 'Text': 100
+    \ }
+  return get(priorities, a:kind, 300)  " Default priority for unknown types
+endfunction
+
+" Enhanced trigger detection - context-aware
+function! s:should_trigger_completion(line, col) abort
+  let filetype = &filetype
+  
+  " File-type specific triggers
+  let base_triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
+  let ft_triggers = {
+    \ 'rust': ['.', '::', '(', '<'],
+    \ 'javascript': ['.', '['],
+    \ 'python': ['.', '['],
+    \ 'go': ['.', '['],
+    \ 'cpp': ['.', '->', '::', '<'],
+    \ 'c': ['.', '->']
+    \ }
+  
+  let triggers = get(ft_triggers, filetype, base_triggers)
+  
+  " Check for direct trigger characters
+  for trigger in triggers
+    if a:col >= len(trigger) && a:line[a:col - len(trigger):a:col - 1] == trigger
+      return 1
+    endif
+  endfor
+  
+  " Check for word character context (smart triggering)
+  if a:col > 0 && a:line[a:col - 1] =~ '\w'
+    " If we're continuing to type a word, check minimum length
+    let prefix = s:extract_word_prefix(a:line, a:col)
+    let min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
+    return len(prefix) >= min_chars
+  endif
+  
+  return 0
+endfunction
+
+" Extract word prefix for trigger decision
+function! s:extract_word_prefix(line, col) abort
+  let before_cursor = a:line[:a:col - 1]
+  let word_start = match(before_cursor, '\w*$')
+  return word_start >= 0 ? before_cursor[word_start:] : ''
+endfunction
+
 " 智能过滤补全项
 function! s:filter_completions() abort
   let current_prefix = s:get_current_word_prefix()
   let s:completion.prefix = current_prefix
 
-  " 收集匹配项和评分
+  " 收集匹配项和评分 - 结合fuzzy match和类型优先级
   let scored_items = []
   for item in s:completion.original_items
-    let score = s:fuzzy_match_score(item.label, current_prefix)
-    if score > 0
-      call add(scored_items, {'item': item, 'score': score})
+    let fuzzy_score = s:fuzzy_match_score(item.label, current_prefix)
+    if fuzzy_score > 0
+      let type_priority = s:get_type_priority(get(item, 'kind', ''))
+      " 组合评分：fuzzy匹配分数 + 类型优先级
+      let final_score = fuzzy_score + type_priority
+      call add(scored_items, {'item': item, 'score': final_score})
     endif
   endfor
 
