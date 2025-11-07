@@ -26,7 +26,7 @@ command! YacImplementation call yac#goto_implementation()
 command! YacHover          call yac#hover()
 command! YacComplete       call yac#complete()
 command! YacReferences     call yac#references()
-command! YacInlayHints     call yac#inlay_hints()
+command! -range=% YacInlayHints call yac#inlay_hints(<line1>, <line2>)
 command! YacClearInlayHints call yac#clear_inlay_hints()
 command! -nargs=? YacRename call yac#rename(<args>)
 command! YacCallHierarchyIncoming call yac#call_hierarchy_incoming()
@@ -64,6 +64,8 @@ nnoremap <silent> <leader>s :YacDocumentSymbols<CR>
 nnoremap <silent> <leader>f :YacFoldingRange<CR>
 nnoremap <silent> <leader>ca :YacCodeAction<CR>
 nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
+nnoremap <silent> <leader>ih :YacInlayHints<CR>
+nnoremap <silent> <leader>ic :YacClearInlayHints<CR>
 nnoremap <silent> <C-P> :YacFileSearch<CR>
 
 " 简单的文件初始化和生命周期管理

@@ -338,11 +338,17 @@ function! yac#references() abort
     \ }, 's:handle_references_response')
 endfunction
 
-function! yac#inlay_hints() abort
+function! yac#inlay_hints(...) abort
+  " Support range-based inlay hints
+  " Usage: yac#inlay_hints() - whole file
+  "        yac#inlay_hints(start_line, end_line) - specific range
+  let start_line = a:0 >= 1 ? a:1 - 1 : 0
+  let end_line = a:0 >= 2 ? a:2 - 1 : line('$') - 1
+  
   call s:request('inlay_hints', {
     \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0
+    \   'start_line': start_line,
+    \   'end_line': end_line
     \ }, 's:handle_inlay_hints_response')
 endfunction
 
