@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
 
-use super::common;
+use super::common::{with_lsp_context, HasFilePosition};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -16,12 +16,23 @@ pub struct HoverRequest {
     pub column: u32,
 }
 
+impl HasFilePosition for HoverRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+    fn line(&self) -> u32 {
+        self.line
+    }
+    fn column(&self) -> u32 {
+        self.column
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct HoverInfo {
     pub content: String,
 }
 
-// Linus-style: HoverInfo 要么完整存在，要么不存在
 pub type HoverResponse = Option<HoverInfo>;
 
 impl HoverInfo {
@@ -52,75 +63,52 @@ impl Handler for HoverHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(None), // Unsupported file type
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(None);
-        }
-
-        // Convert file path to URI
-        let uri = match common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(None),
-        };
-
-        // Make LSP hover request
-        let params = lsp_types::HoverParams {
-            text_document_position_params: lsp_types::TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier {
-                    uri: lsp_types::Url::parse(&uri)?,
+        with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
+            // Make LSP hover request
+            let params = lsp_types::HoverParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                    position: lsp_types::Position {
+                        line: input.line,
+                        character: input.column,
+                    },
                 },
-                position: lsp_types::Position {
-                    line: input.line,
-                    character: input.column,
-                },
-            },
-            work_done_progress_params: Default::default(),
-        };
+                work_done_progress_params: Default::default(),
+            };
 
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::HoverRequest>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(None),
-        };
+            let response = ctx
+                .registry
+                .request::<lsp_types::request::HoverRequest>(&ctx.language, params)
+                .await
+                .ok()
+                .flatten();
 
-        debug!("hover response: {:?}", response);
+            let hover = match response {
+                Some(hover) => hover,
+                None => return Ok(None),
+            };
 
-        let hover = match response {
-            Some(hover) => hover,
-            None => return Ok(None), // No hover information
-        };
+            debug!("hover response: {:?}", hover);
 
-        // Extract content from hover response
-        let content = match hover.contents {
-            lsp_types::HoverContents::Scalar(marked_string) => match marked_string {
-                lsp_types::MarkedString::String(s) => s,
-                lsp_types::MarkedString::LanguageString(lang_string) => lang_string.value,
-            },
-            lsp_types::HoverContents::Array(marked_strings) => marked_strings
-                .into_iter()
-                .map(|ms| match ms {
+            // Extract content from hover response
+            let content = match hover.contents {
+                lsp_types::HoverContents::Scalar(marked_string) => match marked_string {
                     lsp_types::MarkedString::String(s) => s,
                     lsp_types::MarkedString::LanguageString(lang_string) => lang_string.value,
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            lsp_types::HoverContents::Markup(markup) => markup.value,
-        };
+                },
+                lsp_types::HoverContents::Array(marked_strings) => marked_strings
+                    .into_iter()
+                    .map(|ms| match ms {
+                        lsp_types::MarkedString::String(s) => s,
+                        lsp_types::MarkedString::LanguageString(lang_string) => lang_string.value,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                lsp_types::HoverContents::Markup(markup) => markup.value,
+            };
 
-        Ok(Some(Some(HoverInfo::new(content))))
+            Ok(Some(Some(HoverInfo::new(content))))
+        })
+        .await
     }
 }

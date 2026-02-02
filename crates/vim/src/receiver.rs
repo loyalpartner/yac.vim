@@ -1,14 +1,14 @@
-use anyhow::{Error, Result};
+use crate::protocol::{JsonRpcMessage, VimProtocol};
+use crate::queue::MessageQueue;
+use crate::transport::MessageTransport;
+use crate::VimError;
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info};
-
-use crate::protocol::{JsonRpcMessage, VimProtocol};
-use crate::queue::MessageQueue;
-use crate::transport::MessageTransport;
 
 /// VimContext trait - clean interface for vim operations
 /// Hides implementation details (queue, sender, etc.) from handlers
@@ -104,7 +104,7 @@ impl HandlerRegistry {
         if let Some(handler) = self.handlers.get(method) {
             handler.dispatch(vim, params).await
         } else {
-            Err(Error::msg(format!("Unknown method: {}", method)))
+            Err(VimError::Protocol(format!("Unknown method: {}", method)).into())
         }
     }
 }
@@ -240,7 +240,7 @@ impl HandlerPool {
         let result = if let Some(handler) = handlers.get(&method) {
             handler.dispatch(vim_context, params).await
         } else {
-            Err(Error::msg(format!("Unknown method: {}", method)))
+            Err(VimError::Protocol(format!("Unknown method: {}", method)).into())
         };
 
         // Send response only if this was a request (has id)

@@ -1,12 +1,12 @@
-use anyhow::{Error, Result};
+use crate::protocol::{ChannelCommand, VimProtocol};
+use crate::queue::{MessageQueue, ResponseDispatcher};
+use crate::VimError;
+use anyhow::Result;
 use serde_json::Value;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
-
-use crate::protocol::{ChannelCommand, VimProtocol};
-use crate::queue::{MessageQueue, ResponseDispatcher};
 
 /// Channel command sender - handles client-to-vim commands with negative IDs
 /// Now uses message queue for non-blocking operation
@@ -48,12 +48,12 @@ impl ChannelCommandSender {
         // Send to queue (non-blocking)
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue call command"))?;
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue call command".to_string())))?;
 
         debug!("Queued call: func={}, id={}", func, call_id);
 
         // Wait for response (doesn't block I/O loop)
-        rx.await.map_err(|_| Error::msg("Call timeout"))
+        rx.await.map_err(|_| anyhow::Error::from(VimError::Protocol("Call timeout".to_string())))
     }
 
     /// Call vim function without response: ["call", func, args]
@@ -65,7 +65,7 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue call_async command"))
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue call_async command".to_string())))
     }
 
     /// Execute vim expression with response: ["expr", expr, id]
@@ -84,10 +84,10 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue expr command"))?;
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue expr command".to_string())))?;
 
         debug!("Queued expr: expr={}, id={}", expr, expr_id);
-        rx.await.map_err(|_| Error::msg("Expression timeout"))
+        rx.await.map_err(|_| anyhow::Error::from(VimError::Protocol("Expression timeout".to_string())))
     }
 
     /// Execute vim expression without response: ["expr", expr]
@@ -98,7 +98,7 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue expr_async command"))
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue expr_async command".to_string())))
     }
 
     /// Execute ex command: ["ex", command]
@@ -109,7 +109,7 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue ex command"))
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue ex command".to_string())))
     }
 
     /// Execute normal mode command: ["normal", keys]
@@ -120,7 +120,7 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue normal command"))
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue normal command".to_string())))
     }
 
     /// Redraw vim screen: ["redraw", force?]
@@ -128,7 +128,7 @@ impl ChannelCommandSender {
         let cmd = ChannelCommand::Redraw { force };
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| Error::msg("Failed to queue redraw command"))
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue redraw command".to_string())))
     }
 
     // Response handling is now done by ResponseDispatcher in the queue

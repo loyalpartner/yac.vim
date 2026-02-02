@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::{LspBridgeError, Result};
 use lsp_client::LspClient;
 use lsp_types::{request::Initialize, ClientCapabilities, InitializeParams, WorkspaceFolder};
 use serde::{Deserialize, Serialize};
@@ -167,7 +167,7 @@ impl LspRegistry {
         let config = self
             .configs
             .get(language)
-            .ok_or_else(|| anyhow::anyhow!("Unsupported language: {}", language))?;
+            .ok_or_else(|| LspBridgeError::UnsupportedLanguage(language.to_string()))?;
 
         info!("Creating new {} language server", language);
         let client = self.create_client(config, file_path).await?;
@@ -226,14 +226,14 @@ impl LspRegistry {
     pub async fn open_file(&self, file_path: &str) -> Result<()> {
         let language = self
             .detect_language(file_path)
-            .ok_or_else(|| anyhow::anyhow!("Unsupported file type: {}", file_path))?;
+            .ok_or_else(|| LspBridgeError::UnsupportedFileType(file_path.to_string()))?;
 
         // Ensure client exists
         self.get_client(&language, file_path).await?;
 
         let text = std::fs::read_to_string(file_path)?;
         let uri = lsp_types::Url::from_file_path(file_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path: {}", file_path))?;
+            .map_err(|_| LspBridgeError::InvalidFilePath(file_path.to_string()))?;
 
         let config = self.configs.get(&language).unwrap(); // Safe because we got it from detect_language
 
@@ -262,12 +262,10 @@ impl LspRegistry {
         let clients = self.clients.lock().await;
         let client = clients
             .get(language)
-            .ok_or_else(|| anyhow::anyhow!("No client for language: {}", language))?;
+            .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?;
 
-        client
-            .notify(method, params)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        client.notify(method, params).await?;
+        Ok(())
     }
 
     /// Execute a request with the client for a specific language
@@ -280,12 +278,9 @@ impl LspRegistry {
         let clients = self.clients.lock().await;
         let client = clients
             .get(language)
-            .ok_or_else(|| anyhow::anyhow!("No client for language: {}", language))?;
+            .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?;
 
-        client
-            .request::<R>(params)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+        Ok(client.request::<R>(params).await?)
     }
 
     /// Get client for a specific language (if it exists)

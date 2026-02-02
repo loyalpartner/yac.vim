@@ -8,8 +8,34 @@
 //!
 //! Follows Linus philosophy: eliminate special cases, use data structures to simplify algorithms.
 
-use anyhow::Result;
 use std::sync::Arc;
+
+// ============================================================================
+// Error Types - Linus style: explicit, structured errors
+// ============================================================================
+
+#[derive(Debug, thiserror::Error)]
+pub enum VimError {
+    #[error("EOF reached")]
+    Eof,
+
+    #[error("No messages to receive")]
+    NoMessages,
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("Task join error: {0}")]
+    TaskJoin(#[from] tokio::task::JoinError),
+
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+}
+
+pub type Result<T> = std::result::Result<T, VimError>;
 
 // New modular architecture
 pub mod protocol;
@@ -86,7 +112,7 @@ impl VimClient {
 
     /// Main processing loop - starts I/O and handler pool concurrently
     /// This eliminates the blocking problem by running components in parallel
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         use tracing::info;
 
         info!("Starting VimClient with non-blocking architecture");
@@ -102,14 +128,14 @@ impl VimClient {
                 match io_result {
                     Ok(Ok(())) => info!("I/O loop completed successfully"),
                     Ok(Err(e)) => return Err(e),
-                    Err(e) => return Err(anyhow::Error::new(e)),
+                    Err(e) => return Err(anyhow::Error::from(VimError::TaskJoin(e))),
                 }
             }
             handler_result = handler_handle => {
                 match handler_result {
                     Ok(Ok(())) => info!("Handler pool completed successfully"),
                     Ok(Err(e)) => return Err(e),
-                    Err(e) => return Err(anyhow::Error::new(e)),
+                    Err(e) => return Err(anyhow::Error::from(VimError::TaskJoin(e))),
                 }
             }
         }
@@ -142,7 +168,7 @@ mod tests {
                 &self,
                 _vim: &dyn VimContext,
                 input: Self::Input,
-            ) -> Result<Option<Self::Output>> {
+            ) -> anyhow::Result<Option<Self::Output>> {
                 Ok(Some(format!("handled: {}", input)))
             }
         }

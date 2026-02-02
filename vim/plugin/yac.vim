@@ -46,7 +46,6 @@ command! YacDebugStatus    call yac#debug_status()
 command! YacConnections    call yac#connections()
 command! YacCleanupConnections call yac#cleanup_connections()
 command! YacStopAll        call yac#stop_all()
-command! -nargs=? YacFileSearch call yac#file_search(<q-args>)
 " Remote editing commands - 简化版本
 command! YacRemoteCleanup  call yac_remote#cleanup()
 
@@ -64,7 +63,6 @@ nnoremap <silent> <leader>s :YacDocumentSymbols<CR>
 nnoremap <silent> <leader>f :YacFoldingRange<CR>
 nnoremap <silent> <leader>ca :YacCodeAction<CR>
 nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
-nnoremap <silent> <C-P> :YacFileSearch<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)

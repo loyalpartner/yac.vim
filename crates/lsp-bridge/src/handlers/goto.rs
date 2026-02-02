@@ -7,21 +7,30 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
 
-use super::common::{extract_ssh_path, restore_ssh_path, Location};
+use super::common::{extract_ssh_path, restore_ssh_path, with_lsp_context, HasFilePosition, Location};
 
-// Base request structure that Vim sends
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct GotoRequest {
     pub file: String,
     pub line: u32,
     pub column: u32,
-    // command field is ignored but might be present from vim
     #[serde(default)]
     pub command: Option<String>,
 }
 
-// Linus-style: 简单的字符串，直接对应LSP方法
+impl HasFilePosition for GotoRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+    fn line(&self) -> u32 {
+        self.line
+    }
+    fn column(&self) -> u32 {
+        self.column
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum GotoType {
     Definition,
@@ -42,7 +51,6 @@ impl GotoType {
     }
 }
 
-// Linus-style: Location 要么完整存在，要么不存在
 pub type GotoResponse = Option<Location>;
 
 pub struct GotoHandler {
@@ -69,134 +77,97 @@ impl Handler for GotoHandler {
         vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(None), // Unsupported file type
-        };
+        // Save original file path for SSH path restoration
+        let original_file = input.file.clone();
+        let goto_type = self.goto_type.clone();
 
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(None);
-        }
+        with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
+            let text_document_position = lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                position: lsp_types::Position {
+                    line: input.line,
+                    character: input.column,
+                },
+            };
 
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(None),
-        };
+            let response = match goto_type {
+                GotoType::Definition => {
+                    let params = lsp_types::GotoDefinitionParams {
+                        text_document_position_params: text_document_position,
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    ctx.registry
+                        .request::<lsp_types::request::GotoDefinition>(&ctx.language, params)
+                        .await
+                }
+                GotoType::Declaration => {
+                    let params = lsp_types::GotoDefinitionParams {
+                        text_document_position_params: text_document_position,
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    ctx.registry
+                        .request::<lsp_types::request::GotoDeclaration>(&ctx.language, params)
+                        .await
+                }
+                GotoType::TypeDefinition => {
+                    let params = lsp_types::request::GotoTypeDefinitionParams {
+                        text_document_position_params: text_document_position,
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    ctx.registry
+                        .request::<lsp_types::request::GotoTypeDefinition>(&ctx.language, params)
+                        .await
+                }
+                GotoType::Implementation => {
+                    let params = lsp_types::request::GotoImplementationParams {
+                        text_document_position_params: text_document_position,
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    ctx.registry
+                        .request::<lsp_types::request::GotoImplementation>(&ctx.language, params)
+                        .await
+                }
+            };
 
-        let lsp_uri = lsp_types::Url::parse(&uri)?;
+            let location_result = match response {
+                Ok(Some(response_data)) => match response_data {
+                    lsp_types::GotoDefinitionResponse::Scalar(location) => Some(location),
+                    lsp_types::GotoDefinitionResponse::Array(locations) => locations.first().cloned(),
+                    lsp_types::GotoDefinitionResponse::Link(links) => {
+                        links.first().map(|link| lsp_types::Location {
+                            uri: link.target_uri.clone(),
+                            range: link.target_selection_range,
+                        })
+                    }
+                },
+                _ => None,
+            };
 
-        let text_document_position = lsp_types::TextDocumentPositionParams {
-            text_document: lsp_types::TextDocumentIdentifier { uri: lsp_uri },
-            position: lsp_types::Position {
-                line: input.line,
-                character: input.column,
-            },
-        };
+            debug!("{:?} response: {:?}", goto_type, location_result);
 
-        // Make appropriate LSP request based on handler type
-        let response = match self.goto_type {
-            GotoType::Definition => {
-                let params = lsp_types::GotoDefinitionParams {
-                    text_document_position_params: text_document_position,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                self.lsp_registry
-                    .request::<lsp_types::request::GotoDefinition>(&language, params)
+            if let Some(lsp_location) = location_result {
+                if let Ok(location) = Location::from_lsp_location(lsp_location) {
+                    debug!("location: {:?}", location);
+
+                    let (ssh_host, _) = extract_ssh_path(&original_file);
+                    let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
+
+                    vim.ex(format!("edit {}", file_path).as_str()).await.ok();
+                    vim.call(
+                        "cursor",
+                        vec![json!(location.line + 1), json!(location.column + 1)],
+                    )
                     .await
-            }
-            GotoType::Declaration => {
-                let params = lsp_types::GotoDefinitionParams {
-                    text_document_position_params: text_document_position,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                self.lsp_registry
-                    .request::<lsp_types::request::GotoDeclaration>(&language, params)
-                    .await
-            }
-            GotoType::TypeDefinition => {
-                let params = lsp_types::request::GotoTypeDefinitionParams {
-                    text_document_position_params: text_document_position,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                self.lsp_registry
-                    .request::<lsp_types::request::GotoTypeDefinition>(&language, params)
-                    .await
-            }
-            GotoType::Implementation => {
-                let params = lsp_types::request::GotoImplementationParams {
-                    text_document_position_params: text_document_position,
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-                self.lsp_registry
-                    .request::<lsp_types::request::GotoImplementation>(&language, params)
-                    .await
-            }
-        };
-
-        let location_result = match response {
-            Ok(goto_response) => {
-                // Handle different response types from LSP
-                match goto_response {
-                    Some(response_data) => match response_data {
-                        lsp_types::GotoDefinitionResponse::Scalar(location) => Some(location),
-                        lsp_types::GotoDefinitionResponse::Array(locations) => {
-                            locations.first().cloned()
-                        }
-                        lsp_types::GotoDefinitionResponse::Link(links) => {
-                            links.first().map(|link| lsp_types::Location {
-                                uri: link.target_uri.clone(),
-                                range: link.target_selection_range,
-                            })
-                        }
-                    },
-                    None => None,
+                    .ok();
                 }
             }
-            Err(_) => return Ok(None), // LSP error
-        };
 
-        debug!("{:?} response: {:?}", self.goto_type, location_result);
-
-        // match location_result {
-        //     Some(lsp_location) => {
-        //         match Location::from_lsp_location(lsp_location) {
-        //             Ok(location) => Ok(Some(Some(location))),
-        //             Err(_) => Ok(Some(None)), // 转换失败
-        //         }
-        //     }
-        //     None => Ok(Some(None)), // 没找到位置
-        // }
-
-        if let Some(lsp_location) = location_result {
-            if let Ok(location) = Location::from_lsp_location(lsp_location) {
-                debug!("location: {:?}", location);
-
-                // SSH path handling: convert LSP response back to proper format for vim
-                let (ssh_host, _) = extract_ssh_path(&input.file);
-                let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
-
-                vim.ex(format!("edit {}", file_path).as_str()).await.ok();
-                vim.call(
-                    "cursor",
-                    vec![json!(location.line + 1), json!(location.column + 1)],
-                )
-                .await
-                .ok();
-            }
-        }
-
-        Ok(None)
+            Ok(None)
+        })
+        .await
     }
 }

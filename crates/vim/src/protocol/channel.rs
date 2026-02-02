@@ -1,4 +1,5 @@
-use anyhow::{Error, Result};
+use crate::VimError;
+use anyhow::Result;
 use serde_json::{json, Value};
 
 /// Vim channel commands (client-to-vim)
@@ -32,25 +33,25 @@ impl ChannelCommand {
     /// Parse Vim channel command from JSON array
     pub fn parse(arr: &[Value]) -> Result<Self> {
         if arr.is_empty() {
-            return Err(Error::msg("Empty channel command"));
+            return Err(VimError::Protocol("Empty channel command".to_string()).into());
         }
 
         match &arr[0] {
             Value::String(s) if s == "call" && arr.len() >= 3 => {
                 let func = arr[1]
                     .as_str()
-                    .ok_or_else(|| Error::msg("Invalid call function"))?
+                    .ok_or_else(|| VimError::Protocol("Invalid call function".to_string()))?
                     .to_string();
                 let args = arr[2]
                     .as_array()
-                    .ok_or_else(|| Error::msg("Invalid call args"))?
+                    .ok_or_else(|| VimError::Protocol("Invalid call args".to_string()))?
                     .clone();
 
                 if arr.len() >= 4 {
                     // ["call", func, args, id] - with response
                     let id = arr[3]
                         .as_i64()
-                        .ok_or_else(|| Error::msg("Invalid call id"))?;
+                        .ok_or_else(|| VimError::Protocol("Invalid call id".to_string()))?;
                     Ok(ChannelCommand::Call { func, args, id })
                 } else {
                     // ["call", func, args] - async
@@ -60,14 +61,14 @@ impl ChannelCommand {
             Value::String(s) if s == "expr" && arr.len() >= 2 => {
                 let expr = arr[1]
                     .as_str()
-                    .ok_or_else(|| Error::msg("Invalid expr"))?
+                    .ok_or_else(|| VimError::Protocol("Invalid expr".to_string()))?
                     .to_string();
 
                 if arr.len() >= 3 {
                     // ["expr", expr, id] - with response
                     let id = arr[2]
                         .as_i64()
-                        .ok_or_else(|| Error::msg("Invalid expr id"))?;
+                        .ok_or_else(|| VimError::Protocol("Invalid expr id".to_string()))?;
                     Ok(ChannelCommand::Expr { expr, id })
                 } else {
                     // ["expr", expr] - async
@@ -77,14 +78,14 @@ impl ChannelCommand {
             Value::String(s) if s == "ex" && arr.len() >= 2 => {
                 let command = arr[1]
                     .as_str()
-                    .ok_or_else(|| Error::msg("Invalid ex command"))?
+                    .ok_or_else(|| VimError::Protocol("Invalid ex command".to_string()))?
                     .to_string();
                 Ok(ChannelCommand::Ex { command })
             }
             Value::String(s) if s == "normal" && arr.len() >= 2 => {
                 let keys = arr[1]
                     .as_str()
-                    .ok_or_else(|| Error::msg("Invalid normal keys"))?
+                    .ok_or_else(|| VimError::Protocol("Invalid normal keys".to_string()))?
                     .to_string();
                 Ok(ChannelCommand::Normal { keys })
             }
@@ -92,7 +93,7 @@ impl ChannelCommand {
                 let force = arr.len() >= 2 && arr[1].as_str() == Some("force");
                 Ok(ChannelCommand::Redraw { force })
             }
-            _ => Err(Error::msg("Invalid channel command format")),
+            _ => Err(VimError::Protocol("Invalid channel command format".to_string()).into()),
         }
     }
 
