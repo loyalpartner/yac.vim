@@ -16,7 +16,6 @@ use handlers::{
     DocumentSymbolsHandler,
     ExecuteCommandHandler,
     FileOpenHandler,
-    FileSearchHandler,
     FoldingRangeHandler,
     GotoHandler,
     HoverHandler,
@@ -60,7 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create dedicated handlers with multi-language registry
     // Core LSP functionality handlers - Linus style: one handler per function
     let file_open_handler = FileOpenHandler::new(lsp_registry.clone());
-    let file_search_handler = FileSearchHandler::new(lsp_registry.clone());
     // Linus-style: 一个构造函数，数据驱动
     let definition_handler = GotoHandler::new(lsp_registry.clone(), "goto_definition").unwrap();
     let declaration_handler = GotoHandler::new(lsp_registry.clone(), "goto_declaration").unwrap();
@@ -88,7 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register all handlers using the vim crate API
     vim.add_handler("file_open", file_open_handler);
-    vim.add_handler("file_search", file_search_handler);
     vim.add_handler("goto_definition", definition_handler);
     vim.add_handler("goto_declaration", declaration_handler);
     vim.add_handler("goto_type_definition", type_definition_handler);
