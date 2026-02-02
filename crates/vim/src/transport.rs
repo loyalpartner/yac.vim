@@ -1,11 +1,11 @@
+use crate::protocol::VimProtocol;
+use crate::VimError;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
-
-use crate::protocol::VimProtocol;
 
 #[async_trait]
 pub trait MessageTransport: Send + Sync {
@@ -57,7 +57,7 @@ impl MessageTransport for StdioTransport {
 
             if n == 0 {
                 // EOF reached
-                return Err(anyhow::anyhow!("EOF reached"));
+                return Err(VimError::Eof.into());
             }
 
             let trimmed = line.trim();
@@ -115,7 +115,7 @@ impl MessageTransport for MockTransport {
         if let Some(msg) = messages.pop() {
             Ok(msg)
         } else {
-            Err(anyhow::anyhow!("No messages to receive"))
+            Err(VimError::NoMessages.into())
         }
     }
 }

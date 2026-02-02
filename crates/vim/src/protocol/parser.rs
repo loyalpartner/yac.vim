@@ -1,4 +1,5 @@
-use anyhow::{Error, Result};
+use crate::VimError;
+use anyhow::Result;
 use serde_json::Value;
 
 use super::{ChannelCommand, JsonRpcMessage};
@@ -37,7 +38,7 @@ impl ProtocolParser for JsonRpcParser {
     fn parse(&self, json: &Value) -> Result<VimProtocol> {
         let arr = json
             .as_array()
-            .ok_or_else(|| Error::msg("Expected JSON array for JSON-RPC"))?;
+            .ok_or_else(|| VimError::Protocol("Expected JSON array for JSON-RPC".to_string()))?;
 
         let msg = JsonRpcMessage::parse(arr)?;
         Ok(VimProtocol::JsonRpc(msg))
@@ -68,7 +69,7 @@ impl ProtocolParser for ChannelParser {
     fn parse(&self, json: &Value) -> Result<VimProtocol> {
         let arr = json
             .as_array()
-            .ok_or_else(|| Error::msg("Expected JSON array for channel command"))?;
+            .ok_or_else(|| VimError::Protocol("Expected JSON array for channel command".to_string()))?;
 
         let cmd = ChannelCommand::parse(arr)?;
         Ok(VimProtocol::Channel(cmd))
@@ -100,7 +101,7 @@ impl MessageParser {
                 return parser.parse(json);
             }
         }
-        Err(Error::msg("Unknown message format"))
+        Err(VimError::Protocol("Unknown message format".to_string()).into())
     }
 }
 

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lsp_bridge::LspRegistry;
+use lsp_bridge::{LspBridgeError, LspRegistry};
 use serde::Serialize;
 use std::future::Future;
 use std::path::Path;
@@ -82,7 +82,7 @@ impl Location {
         let file_path = location
             .uri
             .to_file_path()
-            .map_err(|_| anyhow::anyhow!("Invalid file URI"))?;
+            .map_err(|_| LspBridgeError::InvalidFileUri(location.uri.to_string()))?;
 
         Ok(Self::new(
             file_path.to_string_lossy().to_string(),
@@ -130,6 +130,6 @@ pub fn uri_to_file_path(uri: &str) -> Result<String> {
     let lsp_uri = lsp_types::Url::parse(uri)?;
     let file_path = lsp_uri
         .to_file_path()
-        .map_err(|_| anyhow::anyhow!("Invalid file URI"))?;
+        .map_err(|_| LspBridgeError::InvalidFileUri(uri.to_string()))?;
     Ok(file_path.to_string_lossy().to_string())
 }

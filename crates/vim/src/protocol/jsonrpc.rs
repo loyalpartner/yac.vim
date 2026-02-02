@@ -1,4 +1,5 @@
-use anyhow::{Error, Result};
+use crate::VimError;
+use anyhow::Result;
 use serde_json::Value;
 
 /// JSON-RPC messages (vim-to-client and responses)
@@ -24,12 +25,12 @@ impl JsonRpcMessage {
                 // Notification: [{"method": "xxx", "params": ...}]
                 let obj = arr[0]
                     .as_object()
-                    .ok_or_else(|| Error::msg("Invalid notification object"))?;
+                    .ok_or_else(|| VimError::Protocol("Invalid notification object".to_string()))?;
 
                 let method = obj
                     .get("method")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| Error::msg("Missing method in notification"))?
+                    .ok_or_else(|| VimError::Protocol("Missing method in notification".to_string()))?
                     .to_string();
 
                 let params = obj.get("params").cloned().unwrap_or(Value::Null);
@@ -40,16 +41,16 @@ impl JsonRpcMessage {
                 match &arr[0] {
                     Value::Number(n) if n.as_i64().map(|x| x > 0).unwrap_or(false) => {
                         // Request: [positive_id, {"method": "xxx", "params": ...}]
-                        let id = n.as_u64().ok_or_else(|| Error::msg("Invalid request id"))?;
+                        let id = n.as_u64().ok_or_else(|| VimError::Protocol("Invalid request id".to_string()))?;
 
                         let obj = arr[1]
                             .as_object()
-                            .ok_or_else(|| Error::msg("Invalid request object"))?;
+                            .ok_or_else(|| VimError::Protocol("Invalid request object".to_string()))?;
 
                         let method = obj
                             .get("method")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| Error::msg("Missing method in request"))?
+                            .ok_or_else(|| VimError::Protocol("Missing method in request".to_string()))?
                             .to_string();
 
                         let params = obj.get("params").cloned().unwrap_or(Value::Null);
@@ -60,15 +61,15 @@ impl JsonRpcMessage {
                         // Response: [negative_id, result]
                         let id = n
                             .as_i64()
-                            .ok_or_else(|| Error::msg("Invalid response id"))?;
+                            .ok_or_else(|| VimError::Protocol("Invalid response id".to_string()))?;
                         let result = arr[1].clone();
 
                         Ok(JsonRpcMessage::Response { id, result })
                     }
-                    _ => Err(Error::msg("Invalid JSON-RPC message format")),
+                    _ => Err(VimError::Protocol("Invalid JSON-RPC message format".to_string()).into()),
                 }
             }
-            _ => Err(Error::msg("Invalid JSON-RPC message length")),
+            _ => Err(VimError::Protocol("Invalid JSON-RPC message length".to_string()).into()),
         }
     }
 

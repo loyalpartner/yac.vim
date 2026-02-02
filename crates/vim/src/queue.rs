@@ -1,14 +1,14 @@
-use anyhow::{Error, Result};
+use crate::protocol::VimProtocol;
+use crate::receiver::VimContext;
+use crate::sender::ChannelCommandSender;
+use crate::VimError;
+use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error};
-
-use crate::protocol::VimProtocol;
-use crate::receiver::VimContext;
-use crate::sender::ChannelCommandSender;
 
 /// Type alias for request receiver to reduce complexity
 type RequestReceiver = Arc<Mutex<mpsc::UnboundedReceiver<(String, Value, Option<u64>)>>>;
@@ -90,7 +90,7 @@ impl MessageQueue {
     pub async fn send_to_vim(&self, msg: VimProtocol) -> Result<()> {
         self.outgoing_tx
             .send(msg)
-            .map_err(|_| Error::msg("Failed to queue outgoing message"))
+            .map_err(|_| VimError::Protocol("Failed to queue outgoing message".to_string()).into())
     }
 
     /// Queue incoming request for handler processing
@@ -102,7 +102,7 @@ impl MessageQueue {
     ) -> Result<()> {
         self.request_tx
             .send((method, params, id))
-            .map_err(|_| Error::msg("Failed to queue request"))
+            .map_err(|_| VimError::Protocol("Failed to queue request".to_string()).into())
     }
 
     /// Handle response from vim
