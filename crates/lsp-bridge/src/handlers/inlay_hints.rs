@@ -6,12 +6,26 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::Handler;
 
+use super::common::{with_lsp_context, HasFilePosition};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct InlayHintsRequest {
     pub file: String,
     pub start_line: u32,
     pub end_line: u32,
+}
+
+impl HasFilePosition for InlayHintsRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+    fn line(&self) -> u32 {
+        self.start_line
+    }
+    fn column(&self) -> u32 {
+        0
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -28,7 +42,6 @@ pub struct InlayHintsInfo {
     pub hints: Vec<InlayHint>,
 }
 
-// Linus-style: InlayHintsInfo 要么完整存在，要么不存在
 pub type InlayHintsResponse = Option<InlayHintsInfo>;
 
 impl InlayHint {
@@ -65,14 +78,15 @@ impl InlayHintsHandler {
             lsp_registry: registry,
         }
     }
+}
 
-    fn inlay_hint_kind_to_string(kind: Option<lsp_types::InlayHintKind>) -> Option<String> {
-        kind.map(|k| match k {
-            lsp_types::InlayHintKind::TYPE => "Type".to_string(),
-            lsp_types::InlayHintKind::PARAMETER => "Parameter".to_string(),
-            _ => "Unknown".to_string(),
-        })
+fn inlay_hint_kind_to_string(kind: Option<lsp_types::InlayHintKind>) -> Option<String> {
+    kind.map(|k| match k {
+        lsp_types::InlayHintKind::TYPE => "Type",
+        lsp_types::InlayHintKind::PARAMETER => "Parameter",
+        _ => "Unknown",
     }
+    .to_string())
 }
 
 #[async_trait]
@@ -85,94 +99,65 @@ impl Handler for InlayHintsHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<Option<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(Some(None));
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
-        };
-
-        // Make LSP inlay hints request
-        let params = lsp_types::InlayHintParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            range: lsp_types::Range {
-                start: lsp_types::Position {
-                    line: input.start_line,
-                    character: 0,
+        with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::InlayHintParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: input.start_line,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: input.end_line,
+                        character: 0,
+                    },
                 },
-                end: lsp_types::Position {
-                    line: input.end_line,
-                    character: 0,
-                },
-            },
-            work_done_progress_params: Default::default(),
-        };
+                work_done_progress_params: Default::default(),
+            };
 
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::InlayHintRequest>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
-        };
+            let hints = ctx
+                .registry
+                .request::<lsp_types::request::InlayHintRequest>(&ctx.language, params)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
 
-        debug!("inlay hints response: {:?}", response);
+            debug!("inlay hints response: {:?}", hints);
 
-        let hints = match response {
-            Some(hints) => hints,
-            None => return Ok(Some(None)), // 处理了请求，但没有 inlay hints
-        };
+            if hints.is_empty() {
+                return Ok(Some(None));
+            }
 
-        if hints.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有提示
-        }
+            let result_hints: Vec<InlayHint> = hints
+                .into_iter()
+                .map(|hint| {
+                    let label = match hint.label {
+                        lsp_types::InlayHintLabel::String(s) => s,
+                        lsp_types::InlayHintLabel::LabelParts(parts) => parts
+                            .into_iter()
+                            .map(|part| part.value)
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    };
 
-        // Convert inlay hints
-        let result_hints: Vec<InlayHint> = hints
-            .into_iter()
-            .map(|hint| {
-                let label = match hint.label {
-                    lsp_types::InlayHintLabel::String(s) => s,
-                    lsp_types::InlayHintLabel::LabelParts(parts) => parts
-                        .into_iter()
-                        .map(|part| part.value)
-                        .collect::<Vec<_>>()
-                        .join(""),
-                };
+                    let tooltip = hint.tooltip.map(|t| match t {
+                        lsp_types::InlayHintTooltip::String(s) => s,
+                        lsp_types::InlayHintTooltip::MarkupContent(markup) => markup.value,
+                    });
 
-                let tooltip = hint.tooltip.map(|t| match t {
-                    lsp_types::InlayHintTooltip::String(s) => s,
-                    lsp_types::InlayHintTooltip::MarkupContent(markup) => markup.value,
-                });
+                    InlayHint::new(
+                        hint.position.line,
+                        hint.position.character,
+                        label,
+                        inlay_hint_kind_to_string(hint.kind),
+                        tooltip,
+                    )
+                })
+                .collect();
 
-                InlayHint::new(
-                    hint.position.line,
-                    hint.position.character,
-                    label,
-                    Self::inlay_hint_kind_to_string(hint.kind),
-                    tooltip,
-                )
-            })
-            .collect();
-
-        Ok(Some(Some(InlayHintsInfo::new(result_hints))))
+            Ok(Some(Some(InlayHintsInfo::new(result_hints))))
+        })
+        .await
     }
 }
