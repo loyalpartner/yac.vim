@@ -17,6 +17,7 @@ pub struct LspContext<'a> {
 }
 
 /// 通用的位置输入 trait - 大多数 LSP 请求都需要 file/line/column
+#[allow(dead_code)]
 pub trait HasFilePosition {
     fn file(&self) -> &str;
     fn line(&self) -> u32;
