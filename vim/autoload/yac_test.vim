@@ -229,6 +229,25 @@ function! yac_test#wait_completion(timeout_ms) abort
   return yac_test#wait_for({-> pumvisible()}, a:timeout_ms)
 endfunction
 
+" 等待光标位置变化（用于 goto 测试）
+function! yac_test#wait_cursor_move(start_line, start_col, timeout_ms) abort
+  let l:start_line = a:start_line
+  let l:start_col = a:start_col
+  return yac_test#wait_for({-> line('.') != l:start_line || col('.') != l:start_col}, a:timeout_ms)
+endfunction
+
+" 等待行变化
+function! yac_test#wait_line_change(start_line, timeout_ms) abort
+  let l:start_line = a:start_line
+  return yac_test#wait_for({-> line('.') != l:start_line}, a:timeout_ms)
+endfunction
+
+" 等待文件变化（跨文件跳转）
+function! yac_test#wait_file_change(start_file, timeout_ms) abort
+  let l:start_file = a:start_file
+  return yac_test#wait_for({-> expand('%:p') != l:start_file}, a:timeout_ms)
+endfunction
+
 " ----------------------------------------------------------------------------
 " 辅助函数
 " ----------------------------------------------------------------------------
