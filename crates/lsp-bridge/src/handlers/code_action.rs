@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -61,8 +61,7 @@ pub struct CodeActionInfo {
     pub actions: Vec<CodeAction>,
 }
 
-// Linus-style: CodeActionInfo 要么完整存在，要么不存在
-pub type CodeActionResponse = Option<CodeActionInfo>;
+pub type CodeActionResponse = CodeActionInfo;
 
 impl TextEdit {
     pub fn new(
@@ -218,11 +217,11 @@ impl Handler for CodeActionHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -232,13 +231,13 @@ impl Handler for CodeActionHandler {
             .await
             .is_err()
         {
-            return Ok(Some(None));
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Make LSP code action request
@@ -278,18 +277,18 @@ impl Handler for CodeActionHandler {
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         debug!("code action response: {:?}", response);
 
         let actions = match response {
             Some(actions) => actions,
-            None => return Ok(Some(None)), // 处理了请求，但没有代码动作
+            None => return Ok(HandlerResult::Empty),
         };
 
         if actions.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有代码动作
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert code actions
@@ -324,9 +323,9 @@ impl Handler for CodeActionHandler {
             .collect();
 
         if result_actions.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有有效的代码动作
+            return Ok(HandlerResult::Empty);
         }
 
-        Ok(Some(Some(CodeActionInfo::new(result_actions))))
+        Ok(HandlerResult::Data(CodeActionInfo::new(result_actions)))
     }
 }

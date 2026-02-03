@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{extract_ssh_path, restore_ssh_path, with_lsp_context, HasFilePosition, Location};
 
@@ -51,7 +51,7 @@ impl GotoType {
     }
 }
 
-pub type GotoResponse = Option<Location>;
+pub type GotoResponse = Location;
 
 pub struct GotoHandler {
     lsp_registry: Arc<LspRegistry>,
@@ -76,7 +76,7 @@ impl Handler for GotoHandler {
         &self,
         vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Save original file path for SSH path restoration
         let original_file = input.file.clone();
         let goto_type = self.goto_type.clone();
@@ -149,24 +149,36 @@ impl Handler for GotoHandler {
 
             debug!("{:?} response: {:?}", goto_type, location_result);
 
-            if let Some(lsp_location) = location_result {
-                if let Ok(location) = Location::from_lsp_location(lsp_location) {
-                    debug!("location: {:?}", location);
+            let lsp_location = match location_result {
+                Some(loc) => loc,
+                None => return Ok(HandlerResult::Empty),
+            };
 
-                    let (ssh_host, _) = extract_ssh_path(&original_file);
-                    let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
+            let location = match Location::from_lsp_location(lsp_location) {
+                Ok(loc) => loc,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-                    vim.ex(format!("edit {}", file_path).as_str()).await.ok();
-                    vim.call(
-                        "cursor",
-                        vec![json!(location.line + 1), json!(location.column + 1)],
-                    )
-                    .await
-                    .ok();
-                }
-            }
+            debug!("location: {:?}", location);
 
-            Ok(None)
+            let (ssh_host, _) = extract_ssh_path(&original_file);
+            let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
+
+            // Perform the jump via side effect
+            vim.ex(format!("edit {}", file_path).as_str()).await.ok();
+            vim.call(
+                "cursor",
+                vec![json!(location.line + 1), json!(location.column + 1)],
+            )
+            .await
+            .ok();
+
+            // Return the location data as well
+            Ok(HandlerResult::Data(Location::new(
+                file_path,
+                location.line,
+                location.column,
+            )))
         })
         .await
     }

@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -35,8 +35,7 @@ pub struct DocumentSymbolsInfo {
     pub symbols: Vec<Symbol>,
 }
 
-// Linus-style: DocumentSymbolsInfo 要么完整存在，要么不存在
-pub type DocumentSymbolsResponse = Option<DocumentSymbolsInfo>;
+pub type DocumentSymbolsResponse = DocumentSymbolsInfo;
 
 impl Range {
     pub fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
@@ -155,11 +154,11 @@ impl Handler for DocumentSymbolsHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -169,13 +168,13 @@ impl Handler for DocumentSymbolsHandler {
             .await
             .is_err()
         {
-            return Ok(Some(None));
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Make LSP document symbols request
@@ -193,7 +192,7 @@ impl Handler for DocumentSymbolsHandler {
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         debug!("document symbols response: {:?}", response);
@@ -219,13 +218,13 @@ impl Handler for DocumentSymbolsHandler {
                 .into_iter()
                 .map(Self::convert_document_symbol)
                 .collect(),
-            None => return Ok(Some(None)), // 处理了请求，但没有符号
+            None => return Ok(HandlerResult::Empty),
         };
 
         if symbols.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有符号
+            return Ok(HandlerResult::Empty);
         }
 
-        Ok(Some(Some(DocumentSymbolsInfo::new(symbols))))
+        Ok(HandlerResult::Data(DocumentSymbolsInfo::new(symbols)))
     }
 }

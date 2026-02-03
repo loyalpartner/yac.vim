@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -29,8 +29,8 @@ pub struct Range {
     pub end_column: u32,
 }
 
-// Notification pattern - no response data needed
-pub type DidChangeResponse = Option<()>;
+// Notification pattern - unit type for no data
+pub type DidChangeResponse = ();
 
 impl Range {
     pub fn to_lsp_range(&self) -> lsp_types::Range {
@@ -78,11 +78,11 @@ impl Handler for DidChangeHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(None), // Unsupported file type - notification ignores errors
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -92,13 +92,13 @@ impl Handler for DidChangeHandler {
             .await
             .is_err()
         {
-            return Ok(None); // No client available - notification ignores errors
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(None), // URI conversion failed - notification ignores errors
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Convert changes to LSP format
@@ -128,12 +128,11 @@ impl Handler for DidChangeHandler {
                     "DidChange notification sent for: {} (version {})",
                     input.file, input.version
                 );
-                Ok(None) // Notification pattern - no response needed
             }
             Err(e) => {
                 debug!("DidChange notification failed: {:?}", e);
-                Ok(None) // Notification pattern - ignore errors
             }
         }
+        Ok(HandlerResult::Empty)
     }
 }

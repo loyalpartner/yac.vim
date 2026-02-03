@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{with_lsp_context, HasFilePosition, Location};
 
@@ -34,7 +34,7 @@ pub struct ReferencesInfo {
     pub locations: Vec<Location>,
 }
 
-pub type ReferencesResponse = Option<ReferencesInfo>;
+pub type ReferencesResponse = ReferencesInfo;
 
 impl ReferencesInfo {
     pub fn new(locations: Vec<Location>) -> Self {
@@ -63,7 +63,7 @@ impl Handler for ReferencesHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             let params = lsp_types::ReferenceParams {
                 text_document_position: lsp_types::TextDocumentPositionParams {
@@ -91,7 +91,7 @@ impl Handler for ReferencesHandler {
             debug!("references locations: {:?}", locations);
 
             if locations.is_empty() {
-                return Ok(Some(None));
+                return Ok(HandlerResult::Empty);
             }
 
             let result_locations: Vec<Location> = locations
@@ -100,10 +100,10 @@ impl Handler for ReferencesHandler {
                 .collect();
 
             if result_locations.is_empty() {
-                return Ok(Some(None));
+                return Ok(HandlerResult::Empty);
             }
 
-            Ok(Some(Some(ReferencesInfo::new(result_locations))))
+            Ok(HandlerResult::Data(ReferencesInfo::new(result_locations)))
         })
         .await
     }

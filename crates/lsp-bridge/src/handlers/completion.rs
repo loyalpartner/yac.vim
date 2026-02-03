@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{with_lsp_context, HasFilePosition};
 
@@ -44,7 +44,7 @@ pub struct CompletionInfo {
     pub is_incomplete: bool,
 }
 
-pub type CompletionResponse = Option<CompletionInfo>;
+pub type CompletionResponse = CompletionInfo;
 
 impl CompletionItem {
     pub fn new(
@@ -126,7 +126,7 @@ impl Handler for CompletionHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             let mut params = lsp_types::CompletionParams {
                 text_document_position: lsp_types::TextDocumentPositionParams {
@@ -160,11 +160,11 @@ impl Handler for CompletionHandler {
             let (items, is_incomplete) = match response {
                 Some(lsp_types::CompletionResponse::Array(items)) => (items, false),
                 Some(lsp_types::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
-                None => return Ok(None),
+                None => return Ok(HandlerResult::Empty),
             };
 
             if items.is_empty() {
-                return Ok(None);
+                return Ok(HandlerResult::Empty);
             }
 
             let result_items: Vec<CompletionItem> = items
@@ -188,7 +188,7 @@ impl Handler for CompletionHandler {
                 })
                 .collect();
 
-            Ok(Some(Some(CompletionInfo::new(result_items, is_incomplete))))
+            Ok(HandlerResult::Data(CompletionInfo::new(result_items, is_incomplete)))
         })
         .await
     }

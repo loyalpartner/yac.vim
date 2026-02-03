@@ -47,7 +47,7 @@ pub mod transport;
 // Re-export key types
 pub use protocol::{ChannelCommand, JsonRpcMessage, VimProtocol};
 pub use queue::MessageQueue;
-pub use receiver::{Handler, HandlerPool, IoLoop, VimContext};
+pub use receiver::{Handler, HandlerPool, HandlerResult, IoLoop, VimContext};
 pub use sender::ChannelCommandSender;
 pub use transport::{MessageTransport, StdioTransport};
 
@@ -168,8 +168,8 @@ mod tests {
                 &self,
                 _vim: &dyn VimContext,
                 input: Self::Input,
-            ) -> anyhow::Result<Option<Self::Output>> {
-                Ok(Some(format!("handled: {}", input)))
+            ) -> anyhow::Result<HandlerResult<Self::Output>> {
+                Ok(HandlerResult::Data(format!("handled: {}", input)))
             }
         }
 

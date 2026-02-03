@@ -3,6 +3,7 @@ use lsp_bridge::{LspBridgeError, LspRegistry};
 use serde::Serialize;
 use std::future::Future;
 use std::path::Path;
+use vim::HandlerResult;
 
 // ============================================================================
 // LSP Context Middleware - Linus style: eliminate boilerplate
@@ -28,27 +29,27 @@ pub async fn with_lsp_context<'a, I, F, Fut, O>(
     registry: &'a LspRegistry,
     input: I,
     handler: F,
-) -> Result<Option<O>>
+) -> Result<HandlerResult<O>>
 where
     I: HasFilePosition,
     F: FnOnce(LspContext<'a>, I) -> Fut,
-    Fut: Future<Output = Result<Option<O>>>,
+    Fut: Future<Output = Result<HandlerResult<O>>>,
 {
     // 1. 检测语言
     let language = match registry.detect_language(input.file()) {
         Some(lang) => lang,
-        None => return Ok(None),
+        None => return Ok(HandlerResult::Empty),
     };
 
     // 2. 确保客户端存在
     if registry.get_client(&language, input.file()).await.is_err() {
-        return Ok(None);
+        return Ok(HandlerResult::Empty);
     }
 
     // 3. 转换文件路径到 URI
     let uri = match file_path_to_uri(input.file()) {
         Ok(uri_str) => lsp_types::Url::parse(&uri_str)?,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(HandlerResult::Empty),
     };
 
     let ctx = LspContext {

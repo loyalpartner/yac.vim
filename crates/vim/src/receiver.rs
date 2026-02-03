@@ -36,9 +36,17 @@ pub trait VimContext: Send + Sync {
     async fn redraw(&self, force: bool) -> Result<()>;
 }
 
+/// Handler result - clean semantics
+/// Data: has data to return
+/// Empty: operation completed but no data (e.g., goto found nothing)
+#[derive(Debug)]
+pub enum HandlerResult<T> {
+    Data(T),
+    Empty,
+}
+
 /// Handler trait - unified interface for request/notification processing
-/// Option<Output> perfectly expresses return semantics: None=notification, Some=response
-/// Uses clean VimContext interface instead of exposing internal queue
+/// Handler returns result, dispatcher decides whether to send response based on protocol
 #[async_trait]
 pub trait Handler: Send + Sync {
     type Input: DeserializeOwned;
@@ -48,25 +56,33 @@ pub trait Handler: Send + Sync {
         &self,
         vim: &dyn VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>>;
+    ) -> Result<HandlerResult<Self::Output>>;
+}
+
+/// Type-erased dispatch result
+/// Maps HandlerResult<T> to runtime representation
+#[derive(Debug)]
+pub enum DispatchResult {
+    Data(Value),
+    Empty,
 }
 
 /// Type-erased dispatcher - compile-time type safety to runtime dispatch
 #[async_trait]
 trait HandlerDispatch: Send + Sync {
-    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<Option<Value>>;
+    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<DispatchResult>;
 }
 
 /// Auto implementation - converts type-safe Handler to runtime dispatch version
 #[async_trait]
 impl<H: Handler> HandlerDispatch for H {
-    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<Option<Value>> {
+    async fn dispatch(&self, vim: &dyn VimContext, params: Value) -> Result<DispatchResult> {
         let input: H::Input = serde_json::from_value(params)?;
         let result = self.handle(vim, input).await?;
 
         match result {
-            Some(output) => Ok(Some(serde_json::to_value(output)?)),
-            None => Ok(None),
+            HandlerResult::Data(output) => Ok(DispatchResult::Data(serde_json::to_value(output)?)),
+            HandlerResult::Empty => Ok(DispatchResult::Empty),
         }
     }
 }
@@ -100,7 +116,7 @@ impl HandlerRegistry {
         method: &str,
         vim: &dyn VimContext,
         params: Value,
-    ) -> Result<Option<Value>> {
+    ) -> Result<DispatchResult> {
         if let Some(handler) = self.handlers.get(method) {
             handler.dispatch(vim, params).await
         } else {
@@ -244,19 +260,17 @@ impl HandlerPool {
         };
 
         // Send response only if this was a request (has id)
+        // Notification results are discarded per JSON-RPC protocol
         if let Some(request_id) = id {
             let response = match result {
-                Ok(Some(data)) => JsonRpcMessage::Response {
+                Ok(DispatchResult::Data(data)) => JsonRpcMessage::Response {
                     id: request_id as i64,
                     result: data,
                 },
-                Ok(None) => {
-                    // Handler returned None - this shouldn't happen for requests
-                    JsonRpcMessage::Response {
-                        id: request_id as i64,
-                        result: json!(null),
-                    }
-                }
+                Ok(DispatchResult::Empty) => JsonRpcMessage::Response {
+                    id: request_id as i64,
+                    result: json!(null),
+                },
                 Err(e) => JsonRpcMessage::Response {
                     id: request_id as i64,
                     result: json!({"error": e.to_string()}),
@@ -288,16 +302,16 @@ mod tests {
             &self,
             _vim: &dyn VimContext,
             input: Self::Input,
-        ) -> Result<Option<Self::Output>> {
-            Ok(Some(format!("processed: {}", input)))
+        ) -> Result<HandlerResult<Self::Output>> {
+            Ok(HandlerResult::Data(format!("processed: {}", input)))
         }
     }
 
-    // Test notification handler (returns None)
-    struct NotificationHandler;
+    // Test handler that returns empty (e.g., goto found nothing)
+    struct EmptyHandler;
 
     #[async_trait]
-    impl Handler for NotificationHandler {
+    impl Handler for EmptyHandler {
         type Input = Value;
         type Output = String;
 
@@ -305,8 +319,8 @@ mod tests {
             &self,
             _vim: &dyn VimContext,
             _input: Self::Input,
-        ) -> Result<Option<Self::Output>> {
-            Ok(None) // Notification, no response
+        ) -> Result<HandlerResult<Self::Output>> {
+            Ok(HandlerResult::Empty)
         }
     }
 
@@ -323,7 +337,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, Some(json!("processed: \"test_data\"")));
+        match result {
+            DispatchResult::Data(v) => assert_eq!(v, json!("processed: \"test_data\"")),
+            DispatchResult::Empty => panic!("Expected Data, got Empty"),
+        }
     }
 
     #[tokio::test]
@@ -351,10 +368,10 @@ mod tests {
         let mut pool = HandlerPool::new(queue.clone());
 
         pool.add_handler("test_method", TestHandler);
-        pool.add_handler("notification", NotificationHandler);
+        pool.add_handler("empty", EmptyHandler);
 
         // Verify handlers are registered
         assert!(pool.handlers.handlers.contains_key("test_method"));
-        assert!(pool.handlers.handlers.contains_key("notification"));
+        assert!(pool.handlers.handlers.contains_key("empty"));
     }
 }
