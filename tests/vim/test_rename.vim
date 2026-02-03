@@ -2,7 +2,7 @@
 " E2E Test: Rename Symbol
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('rename')
 call yac_test#setup()

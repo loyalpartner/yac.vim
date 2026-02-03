@@ -15,6 +15,13 @@ let s:test_suite = ''
 let s:passed = 0
 let s:failed = 0
 let s:start_time = 0
+let s:output_file = '/tmp/yac_test_output.txt'
+
+" 初始化输出重定向（用于无头模式）
+if $YAC_TEST_OUTPUT != ''
+  let s:output_file = $YAC_TEST_OUTPUT
+endif
+execute 'redir! > ' . s:output_file
 
 " ----------------------------------------------------------------------------
 " 测试生命周期
@@ -54,6 +61,9 @@ function! yac_test#end() abort
         \ }
 
   echo '::YAC_TEST_RESULT::' . json_encode(result)
+
+  " 关闭输出重定向
+  redir END
 
   return s:failed == 0
 endfunction

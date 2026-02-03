@@ -2,7 +2,7 @@
 " E2E Test: File Synchronization (didOpen, didChange, didSave, didClose)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('file_sync')
 call yac_test#setup()

@@ -116,19 +116,25 @@ class VimE2ERunner:
 
         start_time = time.time()
 
-        # 构建 Vim 命令
+        # 输出文件
+        output_file = Path(f"/tmp/yac_test_{test_name}_{os.getpid()}.txt")
+
+        # 构建 Vim 命令（使用 -es 静默模式）
         vimrc = self.project_root / "vimrc"
         cmd = [
             self.vim_cmd,
             "-N",                       # nocompatible
             "-u", str(vimrc),           # 使用项目 vimrc
             "-U", "NONE",               # 无 gvimrc
-            "--not-a-term",             # 非终端模式
+            "-es",                      # 静默 ex 模式
             "-c", "set noswapfile",
             "-c", "set nobackup",
             "-c", f"source {test_file}",
             "-c", "qa!",                # 测试完成后退出
         ]
+
+        env = os.environ.copy()
+        env["YAC_TEST_OUTPUT"] = str(output_file)
 
         if self.verbose:
             print(f"Running: {' '.join(cmd)}")
@@ -139,10 +145,18 @@ class VimE2ERunner:
                 cwd=self.project_root,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                env=env
             )
-            output = result.stdout + result.stderr
+            # 从输出文件读取结果
+            if output_file.exists():
+                output = output_file.read_text()
+                output_file.unlink()  # 清理
+            else:
+                output = result.stdout + result.stderr
         except subprocess.TimeoutExpired:
+            if output_file.exists():
+                output_file.unlink()
             return SuiteResult(
                 suite=test_name,
                 tests=[],
@@ -154,6 +168,8 @@ class VimE2ERunner:
                 output=f"Test timed out after {timeout}s"
             )
         except Exception as e:
+            if output_file.exists():
+                output_file.unlink()
             return SuiteResult(
                 suite=test_name,
                 tests=[],

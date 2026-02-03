@@ -2,7 +2,7 @@
 " E2E Test: Hover Information
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('hover')
 call yac_test#setup()

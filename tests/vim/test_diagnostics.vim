@@ -2,7 +2,7 @@
 " E2E Test: Diagnostics (Errors/Warnings)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('diagnostics')
 call yac_test#setup()

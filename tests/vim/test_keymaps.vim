@@ -2,7 +2,7 @@
 " E2E Test: Key Mappings and User Interaction
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('keymaps')
 call yac_test#setup()

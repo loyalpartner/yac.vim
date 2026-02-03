@@ -2,7 +2,7 @@
 " E2E Test: Call Hierarchy (Incoming/Outgoing Calls)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('call_hierarchy')
 call yac_test#setup()

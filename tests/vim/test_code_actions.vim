@@ -2,7 +2,7 @@
 " E2E Test: Code Actions (Quick Fix, Refactoring)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('code_actions')
 call yac_test#setup()

@@ -2,7 +2,7 @@
 " E2E Test: Folding Range
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('folding')
 call yac_test#setup()

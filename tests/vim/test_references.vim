@@ -2,7 +2,7 @@
 " E2E Test: Find References
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('references')
 call yac_test#setup()

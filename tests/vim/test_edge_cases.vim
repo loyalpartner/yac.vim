@@ -2,7 +2,7 @@
 " E2E Test: Edge Cases and Error Handling
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('edge_cases')
 call yac_test#setup()

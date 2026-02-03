@@ -2,7 +2,7 @@
 " E2E Test: Document Symbols (File Outline)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('document_symbols')
 call yac_test#setup()

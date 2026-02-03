@@ -2,7 +2,7 @@
 " E2E Test: Code Completion
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('completion')
 call yac_test#setup()

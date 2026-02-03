@@ -2,7 +2,7 @@
 " E2E Test: Inlay Hints (Type Annotations)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('inlay_hints')
 call yac_test#setup()

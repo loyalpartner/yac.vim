@@ -2,7 +2,7 @@
 " E2E Test: Multi-Language Support (Python, TypeScript, Go)
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('multi_language')
 call yac_test#setup()

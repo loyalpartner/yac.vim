@@ -2,7 +2,7 @@
 " E2E Test: Goto Definition / Declaration / TypeDefinition / Implementation
 " ============================================================================
 
-source tests/vim/framework.vim
+" Framework loaded via autoload
 
 call yac_test#begin('goto')
 call yac_test#setup()
