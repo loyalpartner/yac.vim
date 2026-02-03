@@ -30,7 +30,9 @@ impl JsonRpcMessage {
                 let method = obj
                     .get("method")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| VimError::Protocol("Missing method in notification".to_string()))?
+                    .ok_or_else(|| {
+                        VimError::Protocol("Missing method in notification".to_string())
+                    })?
                     .to_string();
 
                 let params = obj.get("params").cloned().unwrap_or(Value::Null);
@@ -41,16 +43,20 @@ impl JsonRpcMessage {
                 match &arr[0] {
                     Value::Number(n) if n.as_i64().map(|x| x > 0).unwrap_or(false) => {
                         // Request: [positive_id, {"method": "xxx", "params": ...}]
-                        let id = n.as_u64().ok_or_else(|| VimError::Protocol("Invalid request id".to_string()))?;
+                        let id = n
+                            .as_u64()
+                            .ok_or_else(|| VimError::Protocol("Invalid request id".to_string()))?;
 
-                        let obj = arr[1]
-                            .as_object()
-                            .ok_or_else(|| VimError::Protocol("Invalid request object".to_string()))?;
+                        let obj = arr[1].as_object().ok_or_else(|| {
+                            VimError::Protocol("Invalid request object".to_string())
+                        })?;
 
                         let method = obj
                             .get("method")
                             .and_then(|v| v.as_str())
-                            .ok_or_else(|| VimError::Protocol("Missing method in request".to_string()))?
+                            .ok_or_else(|| {
+                                VimError::Protocol("Missing method in request".to_string())
+                            })?
                             .to_string();
 
                         let params = obj.get("params").cloned().unwrap_or(Value::Null);
@@ -66,7 +72,9 @@ impl JsonRpcMessage {
 
                         Ok(JsonRpcMessage::Response { id, result })
                     }
-                    _ => Err(VimError::Protocol("Invalid JSON-RPC message format".to_string()).into()),
+                    _ => Err(
+                        VimError::Protocol("Invalid JSON-RPC message format".to_string()).into(),
+                    ),
                 }
             }
             _ => Err(VimError::Protocol("Invalid JSON-RPC message length".to_string()).into()),

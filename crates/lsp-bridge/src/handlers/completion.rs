@@ -86,35 +86,37 @@ impl CompletionHandler {
 }
 
 fn completion_kind_to_string(kind: Option<lsp_types::CompletionItemKind>) -> Option<String> {
-    kind.map(|k| match k {
-        lsp_types::CompletionItemKind::TEXT => "Text",
-        lsp_types::CompletionItemKind::METHOD => "Method",
-        lsp_types::CompletionItemKind::FUNCTION => "Function",
-        lsp_types::CompletionItemKind::CONSTRUCTOR => "Constructor",
-        lsp_types::CompletionItemKind::FIELD => "Field",
-        lsp_types::CompletionItemKind::VARIABLE => "Variable",
-        lsp_types::CompletionItemKind::CLASS => "Class",
-        lsp_types::CompletionItemKind::INTERFACE => "Interface",
-        lsp_types::CompletionItemKind::MODULE => "Module",
-        lsp_types::CompletionItemKind::PROPERTY => "Property",
-        lsp_types::CompletionItemKind::UNIT => "Unit",
-        lsp_types::CompletionItemKind::VALUE => "Value",
-        lsp_types::CompletionItemKind::ENUM => "Enum",
-        lsp_types::CompletionItemKind::KEYWORD => "Keyword",
-        lsp_types::CompletionItemKind::SNIPPET => "Snippet",
-        lsp_types::CompletionItemKind::COLOR => "Color",
-        lsp_types::CompletionItemKind::FILE => "File",
-        lsp_types::CompletionItemKind::REFERENCE => "Reference",
-        lsp_types::CompletionItemKind::FOLDER => "Folder",
-        lsp_types::CompletionItemKind::ENUM_MEMBER => "EnumMember",
-        lsp_types::CompletionItemKind::CONSTANT => "Constant",
-        lsp_types::CompletionItemKind::STRUCT => "Struct",
-        lsp_types::CompletionItemKind::EVENT => "Event",
-        lsp_types::CompletionItemKind::OPERATOR => "Operator",
-        lsp_types::CompletionItemKind::TYPE_PARAMETER => "TypeParameter",
-        _ => "Unknown",
-    }
-    .to_string())
+    kind.map(|k| {
+        match k {
+            lsp_types::CompletionItemKind::TEXT => "Text",
+            lsp_types::CompletionItemKind::METHOD => "Method",
+            lsp_types::CompletionItemKind::FUNCTION => "Function",
+            lsp_types::CompletionItemKind::CONSTRUCTOR => "Constructor",
+            lsp_types::CompletionItemKind::FIELD => "Field",
+            lsp_types::CompletionItemKind::VARIABLE => "Variable",
+            lsp_types::CompletionItemKind::CLASS => "Class",
+            lsp_types::CompletionItemKind::INTERFACE => "Interface",
+            lsp_types::CompletionItemKind::MODULE => "Module",
+            lsp_types::CompletionItemKind::PROPERTY => "Property",
+            lsp_types::CompletionItemKind::UNIT => "Unit",
+            lsp_types::CompletionItemKind::VALUE => "Value",
+            lsp_types::CompletionItemKind::ENUM => "Enum",
+            lsp_types::CompletionItemKind::KEYWORD => "Keyword",
+            lsp_types::CompletionItemKind::SNIPPET => "Snippet",
+            lsp_types::CompletionItemKind::COLOR => "Color",
+            lsp_types::CompletionItemKind::FILE => "File",
+            lsp_types::CompletionItemKind::REFERENCE => "Reference",
+            lsp_types::CompletionItemKind::FOLDER => "Folder",
+            lsp_types::CompletionItemKind::ENUM_MEMBER => "EnumMember",
+            lsp_types::CompletionItemKind::CONSTANT => "Constant",
+            lsp_types::CompletionItemKind::STRUCT => "Struct",
+            lsp_types::CompletionItemKind::EVENT => "Event",
+            lsp_types::CompletionItemKind::OPERATOR => "Operator",
+            lsp_types::CompletionItemKind::TYPE_PARAMETER => "TypeParameter",
+            _ => "Unknown",
+        }
+        .to_string()
+    })
 }
 
 #[async_trait]
@@ -188,7 +190,10 @@ impl Handler for CompletionHandler {
                 })
                 .collect();
 
-            Ok(HandlerResult::Data(CompletionInfo::new(result_items, is_incomplete)))
+            Ok(HandlerResult::Data(CompletionInfo::new(
+                result_items,
+                is_incomplete,
+            )))
         })
         .await
     }

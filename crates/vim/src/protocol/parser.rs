@@ -67,9 +67,9 @@ impl ProtocolParser for ChannelParser {
     }
 
     fn parse(&self, json: &Value) -> Result<VimProtocol> {
-        let arr = json
-            .as_array()
-            .ok_or_else(|| VimError::Protocol("Expected JSON array for channel command".to_string()))?;
+        let arr = json.as_array().ok_or_else(|| {
+            VimError::Protocol("Expected JSON array for channel command".to_string())
+        })?;
 
         let cmd = ChannelCommand::parse(arr)?;
         Ok(VimProtocol::Channel(cmd))

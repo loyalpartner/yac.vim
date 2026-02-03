@@ -81,12 +81,14 @@ impl InlayHintsHandler {
 }
 
 fn inlay_hint_kind_to_string(kind: Option<lsp_types::InlayHintKind>) -> Option<String> {
-    kind.map(|k| match k {
-        lsp_types::InlayHintKind::TYPE => "Type",
-        lsp_types::InlayHintKind::PARAMETER => "Parameter",
-        _ => "Unknown",
-    }
-    .to_string())
+    kind.map(|k| {
+        match k {
+            lsp_types::InlayHintKind::TYPE => "Type",
+            lsp_types::InlayHintKind::PARAMETER => "Parameter",
+            _ => "Unknown",
+        }
+        .to_string()
+    })
 }
 
 #[async_trait]

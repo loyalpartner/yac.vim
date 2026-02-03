@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{extract_ssh_path, restore_ssh_path, with_lsp_context, HasFilePosition, Location};
+use super::common::{
+    extract_ssh_path, restore_ssh_path, with_lsp_context, HasFilePosition, Location,
+};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -136,7 +138,9 @@ impl Handler for GotoHandler {
             let location_result = match response {
                 Ok(Some(response_data)) => match response_data {
                     lsp_types::GotoDefinitionResponse::Scalar(location) => Some(location),
-                    lsp_types::GotoDefinitionResponse::Array(locations) => locations.first().cloned(),
+                    lsp_types::GotoDefinitionResponse::Array(locations) => {
+                        locations.first().cloned()
+                    }
                     lsp_types::GotoDefinitionResponse::Link(links) => {
                         links.first().map(|link| lsp_types::Location {
                             uri: link.target_uri.clone(),
