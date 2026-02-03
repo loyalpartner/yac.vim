@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{with_lsp_context, HasFilePosition};
 
@@ -42,7 +42,7 @@ pub struct InlayHintsInfo {
     pub hints: Vec<InlayHint>,
 }
 
-pub type InlayHintsResponse = Option<InlayHintsInfo>;
+pub type InlayHintsResponse = InlayHintsInfo;
 
 impl InlayHint {
     pub fn new(
@@ -81,12 +81,14 @@ impl InlayHintsHandler {
 }
 
 fn inlay_hint_kind_to_string(kind: Option<lsp_types::InlayHintKind>) -> Option<String> {
-    kind.map(|k| match k {
-        lsp_types::InlayHintKind::TYPE => "Type",
-        lsp_types::InlayHintKind::PARAMETER => "Parameter",
-        _ => "Unknown",
-    }
-    .to_string())
+    kind.map(|k| {
+        match k {
+            lsp_types::InlayHintKind::TYPE => "Type",
+            lsp_types::InlayHintKind::PARAMETER => "Parameter",
+            _ => "Unknown",
+        }
+        .to_string()
+    })
 }
 
 #[async_trait]
@@ -98,7 +100,7 @@ impl Handler for InlayHintsHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             let params = lsp_types::InlayHintParams {
                 text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
@@ -126,7 +128,7 @@ impl Handler for InlayHintsHandler {
             debug!("inlay hints response: {:?}", hints);
 
             if hints.is_empty() {
-                return Ok(Some(None));
+                return Ok(HandlerResult::Empty);
             }
 
             let result_hints: Vec<InlayHint> = hints
@@ -156,7 +158,7 @@ impl Handler for InlayHintsHandler {
                 })
                 .collect();
 
-            Ok(Some(Some(InlayHintsInfo::new(result_hints))))
+            Ok(HandlerResult::Data(InlayHintsInfo::new(result_hints)))
         })
         .await
     }

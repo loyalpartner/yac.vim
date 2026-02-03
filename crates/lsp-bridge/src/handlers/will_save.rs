@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -13,8 +13,8 @@ pub struct WillSaveRequest {
     pub reason: String, // "Manual", "AfterDelay", "FocusOut"
 }
 
-// Notification pattern - no response data needed
-pub type WillSaveResponse = Option<()>;
+// Notification pattern - unit type for no data
+pub type WillSaveResponse = ();
 
 pub struct WillSaveHandler {
     lsp_registry: Arc<LspRegistry>,
@@ -46,11 +46,11 @@ impl Handler for WillSaveHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(None), // Unsupported file type - notification ignores errors
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -60,13 +60,13 @@ impl Handler for WillSaveHandler {
             .await
             .is_err()
         {
-            return Ok(None); // No client available - notification ignores errors
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(None), // URI conversion failed - notification ignores errors
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Send LSP willSave notification
@@ -88,12 +88,11 @@ impl Handler for WillSaveHandler {
                     "WillSave notification sent for: {} (reason: {})",
                     input.file, input.reason
                 );
-                Ok(None) // Notification pattern - no response needed
             }
             Err(e) => {
                 debug!("WillSave notification failed: {:?}", e);
-                Ok(None) // Notification pattern - ignore errors
             }
         }
+        Ok(HandlerResult::Empty)
     }
 }

@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -35,8 +35,7 @@ pub struct RenameInfo {
     pub edits: Vec<FileEdit>,
 }
 
-// Linus-style: RenameInfo 要么完整存在，要么不存在
-pub type RenameResponse = Option<RenameInfo>;
+pub type RenameResponse = RenameInfo;
 
 impl TextEdit {
     pub fn new(
@@ -89,11 +88,11 @@ impl Handler for RenameHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -103,13 +102,13 @@ impl Handler for RenameHandler {
             .await
             .is_err()
         {
-            return Ok(Some(None));
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Make LSP rename request
@@ -133,14 +132,14 @@ impl Handler for RenameHandler {
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         debug!("rename response: {:?}", response);
 
         let workspace_edit = match response {
             Some(edit) => edit,
-            None => return Ok(Some(None)), // 处理了请求，但没有重命名操作
+            None => return Ok(HandlerResult::Empty),
         };
 
         let mut file_edits_map: std::collections::HashMap<String, Vec<TextEdit>> =
@@ -151,7 +150,7 @@ impl Handler for RenameHandler {
             for (uri, text_edits) in changes {
                 let file_path = match uri.to_file_path() {
                     Ok(path) => path.to_string_lossy().to_string(),
-                    Err(_) => continue, // 跳过无效的 URI
+                    Err(_) => continue,
                 };
 
                 let edits_for_file = file_edits_map.entry(file_path).or_default();
@@ -180,7 +179,7 @@ impl Handler for RenameHandler {
                         let edits_for_file = file_edits_map.entry(file_path).or_default();
                         for text_edit in edit.edits {
                             let lsp_types::OneOf::Left(text_edit) = text_edit else {
-                                continue; // 跳过复杂的 AnnotatedTextEdit
+                                continue;
                             };
 
                             edits_for_file.push(TextEdit::new(
@@ -194,22 +193,20 @@ impl Handler for RenameHandler {
                     }
                 }
                 lsp_types::DocumentChanges::Operations(_ops) => {
-                    // TODO: 处理文件操作（创建、删除、重命名文件）
-                    // 目前跳过这些复杂操作
+                    // TODO: Handle file operations (create, delete, rename)
                 }
             }
         }
 
         if file_edits_map.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有编辑操作
+            return Ok(HandlerResult::Empty);
         }
 
-        // 转换为 FileEdit 结构
         let result_file_edits: Vec<FileEdit> = file_edits_map
             .into_iter()
             .map(|(file_path, edits)| FileEdit::new(file_path, edits))
             .collect();
 
-        Ok(Some(Some(RenameInfo::new(result_file_edits))))
+        Ok(HandlerResult::Data(RenameInfo::new(result_file_edits)))
     }
 }

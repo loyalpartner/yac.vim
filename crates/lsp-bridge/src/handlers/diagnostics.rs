@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -52,8 +52,7 @@ pub struct DiagnosticsInfo {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-// Linus-style: DiagnosticsInfo 要么完整存在，要么不存在
-pub type DiagnosticsResponse = Option<DiagnosticsInfo>;
+pub type DiagnosticsResponse = DiagnosticsInfo;
 
 impl Range {
     #[allow(dead_code)]
@@ -180,7 +179,7 @@ impl Handler for DiagnosticsHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Note: Diagnostics are typically pushed by the server, not requested by client
         // This handler is for cases where we want to explicitly request diagnostics
         // Most LSP servers publish diagnostics automatically, so this might not be used often
@@ -189,8 +188,6 @@ impl Handler for DiagnosticsHandler {
 
         // In most cases, diagnostics are handled via server notifications
         // For now, return empty response since we handle diagnostics via push notifications
-        // In the vim plugin's s:handle_response function
-
-        Ok(Some(None)) // No diagnostics to return for pull-based requests
+        Ok(HandlerResult::Empty)
     }
 }

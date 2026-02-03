@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{with_lsp_context, HasFilePosition};
 
@@ -44,7 +44,7 @@ pub struct CompletionInfo {
     pub is_incomplete: bool,
 }
 
-pub type CompletionResponse = Option<CompletionInfo>;
+pub type CompletionResponse = CompletionInfo;
 
 impl CompletionItem {
     pub fn new(
@@ -86,35 +86,37 @@ impl CompletionHandler {
 }
 
 fn completion_kind_to_string(kind: Option<lsp_types::CompletionItemKind>) -> Option<String> {
-    kind.map(|k| match k {
-        lsp_types::CompletionItemKind::TEXT => "Text",
-        lsp_types::CompletionItemKind::METHOD => "Method",
-        lsp_types::CompletionItemKind::FUNCTION => "Function",
-        lsp_types::CompletionItemKind::CONSTRUCTOR => "Constructor",
-        lsp_types::CompletionItemKind::FIELD => "Field",
-        lsp_types::CompletionItemKind::VARIABLE => "Variable",
-        lsp_types::CompletionItemKind::CLASS => "Class",
-        lsp_types::CompletionItemKind::INTERFACE => "Interface",
-        lsp_types::CompletionItemKind::MODULE => "Module",
-        lsp_types::CompletionItemKind::PROPERTY => "Property",
-        lsp_types::CompletionItemKind::UNIT => "Unit",
-        lsp_types::CompletionItemKind::VALUE => "Value",
-        lsp_types::CompletionItemKind::ENUM => "Enum",
-        lsp_types::CompletionItemKind::KEYWORD => "Keyword",
-        lsp_types::CompletionItemKind::SNIPPET => "Snippet",
-        lsp_types::CompletionItemKind::COLOR => "Color",
-        lsp_types::CompletionItemKind::FILE => "File",
-        lsp_types::CompletionItemKind::REFERENCE => "Reference",
-        lsp_types::CompletionItemKind::FOLDER => "Folder",
-        lsp_types::CompletionItemKind::ENUM_MEMBER => "EnumMember",
-        lsp_types::CompletionItemKind::CONSTANT => "Constant",
-        lsp_types::CompletionItemKind::STRUCT => "Struct",
-        lsp_types::CompletionItemKind::EVENT => "Event",
-        lsp_types::CompletionItemKind::OPERATOR => "Operator",
-        lsp_types::CompletionItemKind::TYPE_PARAMETER => "TypeParameter",
-        _ => "Unknown",
-    }
-    .to_string())
+    kind.map(|k| {
+        match k {
+            lsp_types::CompletionItemKind::TEXT => "Text",
+            lsp_types::CompletionItemKind::METHOD => "Method",
+            lsp_types::CompletionItemKind::FUNCTION => "Function",
+            lsp_types::CompletionItemKind::CONSTRUCTOR => "Constructor",
+            lsp_types::CompletionItemKind::FIELD => "Field",
+            lsp_types::CompletionItemKind::VARIABLE => "Variable",
+            lsp_types::CompletionItemKind::CLASS => "Class",
+            lsp_types::CompletionItemKind::INTERFACE => "Interface",
+            lsp_types::CompletionItemKind::MODULE => "Module",
+            lsp_types::CompletionItemKind::PROPERTY => "Property",
+            lsp_types::CompletionItemKind::UNIT => "Unit",
+            lsp_types::CompletionItemKind::VALUE => "Value",
+            lsp_types::CompletionItemKind::ENUM => "Enum",
+            lsp_types::CompletionItemKind::KEYWORD => "Keyword",
+            lsp_types::CompletionItemKind::SNIPPET => "Snippet",
+            lsp_types::CompletionItemKind::COLOR => "Color",
+            lsp_types::CompletionItemKind::FILE => "File",
+            lsp_types::CompletionItemKind::REFERENCE => "Reference",
+            lsp_types::CompletionItemKind::FOLDER => "Folder",
+            lsp_types::CompletionItemKind::ENUM_MEMBER => "EnumMember",
+            lsp_types::CompletionItemKind::CONSTANT => "Constant",
+            lsp_types::CompletionItemKind::STRUCT => "Struct",
+            lsp_types::CompletionItemKind::EVENT => "Event",
+            lsp_types::CompletionItemKind::OPERATOR => "Operator",
+            lsp_types::CompletionItemKind::TYPE_PARAMETER => "TypeParameter",
+            _ => "Unknown",
+        }
+        .to_string()
+    })
 }
 
 #[async_trait]
@@ -126,7 +128,7 @@ impl Handler for CompletionHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             let mut params = lsp_types::CompletionParams {
                 text_document_position: lsp_types::TextDocumentPositionParams {
@@ -160,11 +162,11 @@ impl Handler for CompletionHandler {
             let (items, is_incomplete) = match response {
                 Some(lsp_types::CompletionResponse::Array(items)) => (items, false),
                 Some(lsp_types::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
-                None => return Ok(None),
+                None => return Ok(HandlerResult::Empty),
             };
 
             if items.is_empty() {
-                return Ok(None);
+                return Ok(HandlerResult::Empty);
             }
 
             let result_items: Vec<CompletionItem> = items
@@ -188,7 +190,10 @@ impl Handler for CompletionHandler {
                 })
                 .collect();
 
-            Ok(Some(Some(CompletionInfo::new(result_items, is_incomplete))))
+            Ok(HandlerResult::Data(CompletionInfo::new(
+                result_items,
+                is_incomplete,
+            )))
         })
         .await
     }

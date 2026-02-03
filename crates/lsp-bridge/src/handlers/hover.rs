@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::{with_lsp_context, HasFilePosition};
 
@@ -33,7 +33,7 @@ pub struct HoverInfo {
     pub content: String,
 }
 
-pub type HoverResponse = Option<HoverInfo>;
+pub type HoverResponse = HoverInfo;
 
 impl HoverInfo {
     pub fn new(content: String) -> Self {
@@ -62,7 +62,7 @@ impl Handler for HoverHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             // Make LSP hover request
             let params = lsp_types::HoverParams {
@@ -85,7 +85,7 @@ impl Handler for HoverHandler {
 
             let hover = match response {
                 Some(hover) => hover,
-                None => return Ok(None),
+                None => return Ok(HandlerResult::Empty),
             };
 
             debug!("hover response: {:?}", hover);
@@ -107,7 +107,7 @@ impl Handler for HoverHandler {
                 lsp_types::HoverContents::Markup(markup) => markup.value,
             };
 
-            Ok(Some(Some(HoverInfo::new(content))))
+            Ok(HandlerResult::Data(HoverInfo::new(content)))
         })
         .await
     }

@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -19,8 +19,7 @@ pub struct ExecuteCommandResult {
     pub result: Option<serde_json::Value>,
 }
 
-// Linus-style: ExecuteCommandResult 要么完整存在，要么不存在
-pub type ExecuteCommandResponse = Option<ExecuteCommandResult>;
+pub type ExecuteCommandResponse = ExecuteCommandResult;
 
 impl ExecuteCommandResult {
     pub fn new(result: Option<serde_json::Value>) -> Self {
@@ -49,10 +48,10 @@ impl Handler for ExecuteCommandHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Check if the language server exists
         if !self.lsp_registry.get_existing_client(&input.language).await {
-            return Ok(Some(None)); // Language server not available
+            return Ok(HandlerResult::Empty);
         }
 
         // Make LSP execute command request
@@ -70,13 +69,13 @@ impl Handler for ExecuteCommandHandler {
             Ok(response) => response,
             Err(e) => {
                 debug!("Execute command error: {:?}", e);
-                return Ok(Some(None)); // 处理了请求，但命令执行失败
+                return Ok(HandlerResult::Empty);
             }
         };
 
         debug!("execute command response: {:?}", response);
 
         // ExecuteCommand can return any JSON value or None
-        Ok(Some(Some(ExecuteCommandResult::new(response))))
+        Ok(HandlerResult::Data(ExecuteCommandResult::new(response)))
     }
 }

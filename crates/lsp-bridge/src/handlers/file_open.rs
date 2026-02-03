@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 use super::common::extract_ssh_path;
 
@@ -59,18 +59,18 @@ impl Handler for FileOpenHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Extract real file path from SSH path if needed
         let (_, real_path) = extract_ssh_path(&input.file);
 
         // Open file in appropriate language server using real path
         if let Err(e) = self.lsp_registry.open_file(&real_path).await {
-            return Ok(Some(FileOpenResponse::error(format!(
+            return Ok(HandlerResult::Data(FileOpenResponse::error(format!(
                 "Failed to open file: {}",
                 e
             ))));
         }
 
-        Ok(Some(FileOpenResponse::success()))
+        Ok(HandlerResult::Data(FileOpenResponse::success()))
     }
 }

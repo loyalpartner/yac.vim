@@ -48,12 +48,17 @@ impl ChannelCommandSender {
         // Send to queue (non-blocking)
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue call command".to_string())))?;
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue call command".to_string(),
+                ))
+            })?;
 
         debug!("Queued call: func={}, id={}", func, call_id);
 
         // Wait for response (doesn't block I/O loop)
-        rx.await.map_err(|_| anyhow::Error::from(VimError::Protocol("Call timeout".to_string())))
+        rx.await
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Call timeout".to_string())))
     }
 
     /// Call vim function without response: ["call", func, args]
@@ -65,7 +70,11 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue call_async command".to_string())))
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue call_async command".to_string(),
+                ))
+            })
     }
 
     /// Execute vim expression with response: ["expr", expr, id]
@@ -84,10 +93,15 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue expr command".to_string())))?;
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue expr command".to_string(),
+                ))
+            })?;
 
         debug!("Queued expr: expr={}, id={}", expr, expr_id);
-        rx.await.map_err(|_| anyhow::Error::from(VimError::Protocol("Expression timeout".to_string())))
+        rx.await
+            .map_err(|_| anyhow::Error::from(VimError::Protocol("Expression timeout".to_string())))
     }
 
     /// Execute vim expression without response: ["expr", expr]
@@ -98,7 +112,11 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue expr_async command".to_string())))
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue expr_async command".to_string(),
+                ))
+            })
     }
 
     /// Execute ex command: ["ex", command]
@@ -109,7 +127,9 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue ex command".to_string())))
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol("Failed to queue ex command".to_string()))
+            })
     }
 
     /// Execute normal mode command: ["normal", keys]
@@ -120,7 +140,11 @@ impl ChannelCommandSender {
 
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue normal command".to_string())))
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue normal command".to_string(),
+                ))
+            })
     }
 
     /// Redraw vim screen: ["redraw", force?]
@@ -128,7 +152,11 @@ impl ChannelCommandSender {
         let cmd = ChannelCommand::Redraw { force };
         self.outgoing_tx
             .send(VimProtocol::Channel(cmd))
-            .map_err(|_| anyhow::Error::from(VimError::Protocol("Failed to queue redraw command".to_string())))
+            .map_err(|_| {
+                anyhow::Error::from(VimError::Protocol(
+                    "Failed to queue redraw command".to_string(),
+                ))
+            })
     }
 
     // Response handling is now done by ResponseDispatcher in the queue

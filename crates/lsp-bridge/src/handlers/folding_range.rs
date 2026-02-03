@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -26,8 +26,7 @@ pub struct FoldingRangeInfo {
     pub ranges: Vec<FoldingRange>,
 }
 
-// Linus-style: FoldingRangeInfo 要么完整存在，要么不存在
-pub type FoldingRangeResponse = Option<FoldingRangeInfo>;
+pub type FoldingRangeResponse = FoldingRangeInfo;
 
 impl FoldingRange {
     pub fn new(
@@ -90,11 +89,11 @@ impl Handler for FoldingRangeHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -104,13 +103,13 @@ impl Handler for FoldingRangeHandler {
             .await
             .is_err()
         {
-            return Ok(Some(None));
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // Make LSP folding range request
@@ -128,18 +127,18 @@ impl Handler for FoldingRangeHandler {
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         debug!("folding range response: {:?}", response);
 
         let ranges = match response {
             Some(ranges) => ranges,
-            None => return Ok(Some(None)), // 处理了请求，但没有折叠范围
+            None => return Ok(HandlerResult::Empty),
         };
 
         if ranges.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有折叠范围
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert folding ranges
@@ -148,6 +147,6 @@ impl Handler for FoldingRangeHandler {
             .map(FoldingRange::from_lsp_folding_range)
             .collect();
 
-        Ok(Some(Some(FoldingRangeInfo::new(result_ranges))))
+        Ok(HandlerResult::Data(FoldingRangeInfo::new(result_ranges)))
     }
 }

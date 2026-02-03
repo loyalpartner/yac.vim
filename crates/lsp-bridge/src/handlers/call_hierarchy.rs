@@ -4,7 +4,7 @@ use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::debug;
-use vim::Handler;
+use vim::{Handler, HandlerResult};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -30,8 +30,7 @@ pub struct CallHierarchyInfo {
     pub items: Vec<CallHierarchyItem>,
 }
 
-// Linus-style: CallHierarchyInfo 要么完整存在，要么不存在
-pub type CallHierarchyResponse = Option<CallHierarchyInfo>;
+pub type CallHierarchyResponse = CallHierarchyInfo;
 
 impl CallHierarchyItem {
     pub fn new(
@@ -103,11 +102,11 @@ impl Handler for CallHierarchyHandler {
         &self,
         _vim: &dyn vim::VimContext,
         input: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Detect language
         let language = match self.lsp_registry.detect_language(&input.file) {
             Some(lang) => lang,
-            None => return Ok(Some(None)), // Unsupported file type
+            None => return Ok(HandlerResult::Empty),
         };
 
         // Ensure client exists
@@ -117,13 +116,13 @@ impl Handler for CallHierarchyHandler {
             .await
             .is_err()
         {
-            return Ok(Some(None));
+            return Ok(HandlerResult::Empty);
         }
 
         // Convert file path to URI
         let uri = match super::common::file_path_to_uri(&input.file) {
             Ok(uri) => uri,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但转换失败
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         // First, prepare call hierarchy items
@@ -146,16 +145,16 @@ impl Handler for CallHierarchyHandler {
             .await
         {
             Ok(response) => response,
-            Err(_) => return Ok(Some(None)), // 处理了请求，但 LSP 错误
+            Err(_) => return Ok(HandlerResult::Empty),
         };
 
         let items = match prepare_response {
             Some(items) => items,
-            None => return Ok(Some(None)), // 处理了请求，但没有调用层次结构项
+            None => return Ok(HandlerResult::Empty),
         };
 
         if items.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有调用层次结构项
+            return Ok(HandlerResult::Empty);
         }
 
         // Use the first item for incoming/outgoing calls
@@ -202,7 +201,7 @@ impl Handler for CallHierarchyHandler {
             }
             _ => {
                 debug!("Invalid call hierarchy direction: {}", input.direction);
-                return Ok(Some(None)); // 处理了请求，但方向无效
+                return Ok(HandlerResult::Empty);
             }
         };
 
@@ -213,9 +212,9 @@ impl Handler for CallHierarchyHandler {
         );
 
         if items.is_empty() {
-            return Ok(Some(None)); // 处理了请求，但没有调用
+            return Ok(HandlerResult::Empty);
         }
 
-        Ok(Some(Some(CallHierarchyInfo::new(items))))
+        Ok(HandlerResult::Data(CallHierarchyInfo::new(items)))
     }
 }

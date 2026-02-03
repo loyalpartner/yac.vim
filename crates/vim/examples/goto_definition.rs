@@ -1,50 +1,25 @@
 //! Comprehensive Handler trait example
 //!
-//! This example demonstrates all three Handler patterns in the vim crate:
-//! 1. **Method with return value** (main example): `Output = T`, returns `Ok(Some(value))`
-//! 2. **Notification without return**: `Output = ()`, returns `Ok(None)`
-//! 3. **Optional return value**: `Output = T`, returns `Ok(Some(value))` or `Ok(None)`
+//! This example demonstrates Handler patterns in the vim crate:
+//! 1. **Method with return value**: `Output = T`, returns `Ok(HandlerResult::Data(value))`
+//! 2. **Empty result**: returns `Ok(HandlerResult::Empty)` when no data available
 //!
-//! The unified Handler trait uses `Option<Output>` to eliminate method/notification
-//! special cases through better data structures (following Linus philosophy).
+//! The Handler returns result, dispatcher decides whether to send response
+//! based on JSON-RPC protocol (request vs notification).
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use vim::{Handler, VimClient, VimContext};
+use vim::{Handler, HandlerResult, VimClient, VimContext};
 
 /// Goto definition handler - demonstrates method with return value pattern
 ///
-/// This is the most common LSP handler pattern. For other patterns:
+/// This is the most common LSP handler pattern:
+/// - `HandlerResult::Data(value)`: Return data to caller
+/// - `HandlerResult::Empty`: No data available (not an error)
 ///
-/// **Notification pattern** (no return):
-/// ```ignore
-/// impl Handler for NotificationHandler {
-///     type Input = NotificationParams;
-///     type Output = (); // Key: use unit type for notifications
-///
-///     async fn handle(&self, ctx: &mut dyn VimContext, params: Self::Input) -> Result<Option<Self::Output>> {
-///         // Do side effect (e.g., open file, send notification to LSP)
-///         perform_action(params).await?;
-///         Ok(None) // Always return None for notifications
-///     }
-/// }
-/// ```
-///
-/// **Optional return pattern** (may or may not have value):
-/// ```ignore
-/// impl Handler for OptionalHandler {
-///     type Input = QueryParams;
-///     type Output = QueryResult;
-///
-///     async fn handle(&self, ctx: &mut dyn VimContext, params: Self::Input) -> Result<Option<Self::Output>> {
-///         match query_data(params).await {
-///             Some(result) => Ok(Some(result)), // Found data
-///             None => Ok(None), // No data available (not an error)
-///         }
-///     }
-/// }
-/// ```
+/// The dispatcher decides whether to send response based on message type
+/// (request vs notification), not on handler return value.
 pub struct GotoDefinitionHandler;
 
 #[derive(Deserialize)]
@@ -71,11 +46,11 @@ impl Handler for GotoDefinitionHandler {
         &self,
         _vim: &dyn VimContext,
         params: Self::Input,
-    ) -> Result<Option<Self::Output>> {
+    ) -> Result<HandlerResult<Self::Output>> {
         // Simulate LSP call
         match find_definition(&params.file, params.line, params.column).await {
-            Some(location) => Ok(Some(location)),
-            None => Ok(None), // Not finding definition is not an error
+            Some(location) => Ok(HandlerResult::Data(location)),
+            None => Ok(HandlerResult::Empty), // Not finding definition is not an error
         }
     }
 }
@@ -120,10 +95,13 @@ mod tests {
 
         let ctx = MockVimContext;
         let result = handler.handle(&ctx, params).await.unwrap();
-        assert!(result.is_some());
 
-        let location = result.unwrap();
-        assert_eq!(location.file, "src/lib/main.rs");
-        assert_eq!(location.line, 20);
+        match result {
+            HandlerResult::Data(location) => {
+                assert_eq!(location.file, "src/lib/main.rs");
+                assert_eq!(location.line, 20);
+            }
+            HandlerResult::Empty => panic!("Expected Data, got Empty"),
+        }
     }
 }
