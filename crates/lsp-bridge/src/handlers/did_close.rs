@@ -6,13 +6,20 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DidCloseRequest {
     pub file: String,
 }
 
-// Notification pattern - unit type for no data
+impl HasFile for DidCloseRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+}
+
 pub type DidCloseResponse = ();
 
 pub struct DidCloseHandler {
@@ -37,48 +44,20 @@ impl Handler for DidCloseHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Send LSP didClose notification
-        let params = lsp_types::DidCloseTextDocumentParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-        };
-
-        // didClose is a notification, not a request (no response expected)
-        match self
-            .lsp_registry
-            .notify(&language, "textDocument/didClose", params)
-            .await
-        {
-            Ok(_) => {
-                debug!("DidClose notification sent for: {}", input.file);
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::DidCloseTextDocumentParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+            };
+            match ctx
+                .registry
+                .notify(&ctx.language, "textDocument/didClose", params)
+                .await
+            {
+                Ok(_) => debug!("DidClose notification sent for: {}", input.file),
+                Err(e) => debug!("DidClose notification failed: {:?}", e),
             }
-            Err(e) => {
-                debug!("DidClose notification failed: {:?}", e);
-            }
-        }
-        Ok(HandlerResult::Empty)
+            Ok(HandlerResult::Empty)
+        })
+        .await
     }
 }

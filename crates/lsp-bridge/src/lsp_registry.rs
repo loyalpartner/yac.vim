@@ -42,8 +42,18 @@ impl LspServerConfig {
             command: "typescript-language-server".to_string(),
             args: vec!["--stdio".to_string()],
             language_id: "typescript".to_string(),
-            file_patterns: vec!["*.ts".to_string(), "*.js".to_string(), "*.tsx".to_string()],
+            file_patterns: vec!["*.ts".to_string(), "*.tsx".to_string()],
             workspace_patterns: vec!["package.json".to_string(), "tsconfig.json".to_string()],
+        }
+    }
+
+    pub fn javascript_language_server() -> Self {
+        Self {
+            command: "typescript-language-server".to_string(),
+            args: vec!["--stdio".to_string()],
+            language_id: "javascript".to_string(),
+            file_patterns: vec!["*.js".to_string(), "*.jsx".to_string()],
+            workspace_patterns: vec!["package.json".to_string()],
         }
     }
 
@@ -65,8 +75,8 @@ impl LspServerConfig {
             .unwrap_or("");
 
         self.file_patterns.iter().any(|pattern| {
-            // Simple glob matching - could be enhanced with proper glob library
-            if let Some(extension) = pattern.strip_prefix("*.") {
+            if let Some(extension) = pattern.strip_prefix('*') {
+                // extension includes the dot, e.g. ".rs"
                 file_name.ends_with(extension)
             } else {
                 file_name == pattern
@@ -125,7 +135,7 @@ impl LspRegistry {
         );
         configs.insert(
             "javascript".to_string(),
-            LspServerConfig::typescript_language_server(),
+            LspServerConfig::javascript_language_server(),
         );
         configs.insert("go".to_string(), LspServerConfig::gopls());
 
@@ -135,22 +145,12 @@ impl LspRegistry {
         }
     }
 
-    /// Detect language from file path
+    /// Detect language from file path - data-driven via configs
     pub fn detect_language(&self, file_path: &str) -> Option<String> {
-        // Simple extension-based detection
-        if file_path.ends_with(".rs") {
-            Some("rust".to_string())
-        } else if file_path.ends_with(".py") {
-            Some("python".to_string())
-        } else if file_path.ends_with(".ts") {
-            Some("typescript".to_string())
-        } else if file_path.ends_with(".js") {
-            Some("javascript".to_string())
-        } else if file_path.ends_with(".go") {
-            Some("go".to_string())
-        } else {
-            None
-        }
+        self.configs
+            .iter()
+            .find(|(_, config)| config.handles_file(file_path))
+            .map(|(lang, _)| lang.clone())
     }
 
     /// Get or create LSP client for a language

@@ -2,9 +2,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use lsp_bridge::LspRegistry;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
+
+use super::common::{convert_workspace_edit, with_lsp_file, HasFile, HasFilePosition};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -13,6 +16,21 @@ pub struct RenameRequest {
     pub line: u32,
     pub column: u32,
     pub new_name: String,
+}
+
+impl HasFile for RenameRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+}
+
+impl HasFilePosition for RenameRequest {
+    fn line(&self) -> u32 {
+        self.line
+    }
+    fn column(&self) -> u32 {
+        self.column
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -37,36 +55,6 @@ pub struct RenameInfo {
 
 pub type RenameResponse = RenameInfo;
 
-impl TextEdit {
-    pub fn new(
-        start_line: u32,
-        start_column: u32,
-        end_line: u32,
-        end_column: u32,
-        new_text: String,
-    ) -> Self {
-        Self {
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-            new_text,
-        }
-    }
-}
-
-impl FileEdit {
-    pub fn new(file: String, edits: Vec<TextEdit>) -> Self {
-        Self { file, edits }
-    }
-}
-
-impl RenameInfo {
-    pub fn new(edits: Vec<FileEdit>) -> Self {
-        Self { edits }
-    }
-}
-
 pub struct RenameHandler {
     lsp_registry: Arc<LspRegistry>,
 }
@@ -89,124 +77,59 @@ impl Handler for RenameHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Make LSP rename request
-        let params = lsp_types::RenameParams {
-            text_document_position: lsp_types::TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier {
-                    uri: lsp_types::Url::parse(&uri)?,
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::RenameParams {
+                text_document_position: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                    position: lsp_types::Position {
+                        line: input.line,
+                        character: input.column,
+                    },
                 },
-                position: lsp_types::Position {
-                    line: input.line,
-                    character: input.column,
-                },
-            },
-            new_name: input.new_name,
-            work_done_progress_params: Default::default(),
-        };
+                new_name: input.new_name,
+                work_done_progress_params: Default::default(),
+            };
 
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::Rename>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            let response = match ctx
+                .registry
+                .request::<lsp_types::request::Rename>(&ctx.language, params)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-        debug!("rename response: {:?}", response);
+            debug!("rename response: {:?}", response);
 
-        let workspace_edit = match response {
-            Some(edit) => edit,
-            None => return Ok(HandlerResult::Empty),
-        };
+            let workspace_edit = match response {
+                Some(edit) => edit,
+                None => return Ok(HandlerResult::Empty),
+            };
 
-        let mut file_edits_map: std::collections::HashMap<String, Vec<TextEdit>> =
-            std::collections::HashMap::new();
-
-        // Extract changes from workspace edit
-        if let Some(changes) = workspace_edit.changes {
-            for (uri, text_edits) in changes {
-                let file_path = match uri.to_file_path() {
-                    Ok(path) => path.to_string_lossy().to_string(),
-                    Err(_) => continue,
-                };
-
-                let edits_for_file = file_edits_map.entry(file_path).or_default();
-                for text_edit in text_edits {
-                    edits_for_file.push(TextEdit::new(
-                        text_edit.range.start.line,
-                        text_edit.range.start.character,
-                        text_edit.range.end.line,
-                        text_edit.range.end.character,
-                        text_edit.new_text,
-                    ));
-                }
+            let flat_edits = convert_workspace_edit(workspace_edit);
+            if flat_edits.is_empty() {
+                return Ok(HandlerResult::Empty);
             }
-        }
 
-        // Extract document changes (more complex structure)
-        if let Some(document_changes) = workspace_edit.document_changes {
-            match document_changes {
-                lsp_types::DocumentChanges::Edits(edits) => {
-                    for edit in edits {
-                        let file_path = match edit.text_document.uri.to_file_path() {
-                            Ok(path) => path.to_string_lossy().to_string(),
-                            Err(_) => continue,
-                        };
-
-                        let edits_for_file = file_edits_map.entry(file_path).or_default();
-                        for text_edit in edit.edits {
-                            let lsp_types::OneOf::Left(text_edit) = text_edit else {
-                                continue;
-                            };
-
-                            edits_for_file.push(TextEdit::new(
-                                text_edit.range.start.line,
-                                text_edit.range.start.character,
-                                text_edit.range.end.line,
-                                text_edit.range.end.character,
-                                text_edit.new_text,
-                            ));
-                        }
-                    }
-                }
-                lsp_types::DocumentChanges::Operations(_ops) => {
-                    // TODO: Handle file operations (create, delete, rename)
-                }
+            // Group by file for rename response format
+            let mut grouped: HashMap<String, Vec<TextEdit>> = HashMap::new();
+            for e in flat_edits {
+                grouped.entry(e.file).or_default().push(TextEdit {
+                    start_line: e.start_line,
+                    start_column: e.start_column,
+                    end_line: e.end_line,
+                    end_column: e.end_column,
+                    new_text: e.new_text,
+                });
             }
-        }
 
-        if file_edits_map.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
+            let file_edits: Vec<FileEdit> = grouped
+                .into_iter()
+                .map(|(file, edits)| FileEdit { file, edits })
+                .collect();
 
-        let result_file_edits: Vec<FileEdit> = file_edits_map
-            .into_iter()
-            .map(|(file_path, edits)| FileEdit::new(file_path, edits))
-            .collect();
-
-        Ok(HandlerResult::Data(RenameInfo::new(result_file_edits)))
+            Ok(HandlerResult::Data(RenameInfo { edits: file_edits }))
+        })
+        .await
     }
 }

@@ -8,7 +8,7 @@ use tracing::debug;
 use vim::{Handler, HandlerResult};
 
 use super::common::{
-    extract_ssh_path, restore_ssh_path, with_lsp_context, HasFilePosition, Location,
+    extract_ssh_path, restore_ssh_path, with_lsp_context, HasFile, HasFilePosition, Location,
 };
 
 #[derive(Debug, Deserialize)]
@@ -21,10 +21,13 @@ pub struct GotoRequest {
     pub command: Option<String>,
 }
 
-impl HasFilePosition for GotoRequest {
+impl HasFile for GotoRequest {
     fn file(&self) -> &str {
         &self.file
     }
+}
+
+impl HasFilePosition for GotoRequest {
     fn line(&self) -> u32 {
         self.line
     }

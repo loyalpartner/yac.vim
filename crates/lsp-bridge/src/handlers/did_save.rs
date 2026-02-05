@@ -6,14 +6,21 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DidSaveRequest {
     pub file: String,
-    pub text: Option<String>, // Full document text (if server supports it)
+    pub text: Option<String>,
 }
 
-// Notification pattern - unit type for no data
+impl HasFile for DidSaveRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+}
+
 pub type DidSaveResponse = ();
 
 pub struct DidSaveHandler {
@@ -38,49 +45,21 @@ impl Handler for DidSaveHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Send LSP didSave notification
-        let params = lsp_types::DidSaveTextDocumentParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            text: input.text,
-        };
-
-        // didSave is a notification, not a request (no response expected)
-        match self
-            .lsp_registry
-            .notify(&language, "textDocument/didSave", params)
-            .await
-        {
-            Ok(_) => {
-                debug!("DidSave notification sent for: {}", input.file);
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::DidSaveTextDocumentParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                text: input.text,
+            };
+            match ctx
+                .registry
+                .notify(&ctx.language, "textDocument/didSave", params)
+                .await
+            {
+                Ok(_) => debug!("DidSave notification sent for: {}", input.file),
+                Err(e) => debug!("DidSave notification failed: {:?}", e),
             }
-            Err(e) => {
-                debug!("DidSave notification failed: {:?}", e);
-            }
-        }
-        Ok(HandlerResult::Empty)
+            Ok(HandlerResult::Empty)
+        })
+        .await
     }
 }

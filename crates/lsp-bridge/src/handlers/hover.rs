@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{with_lsp_context, HasFilePosition};
+use super::common::{with_lsp_context, HasFile, HasFilePosition};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -16,10 +16,13 @@ pub struct HoverRequest {
     pub column: u32,
 }
 
-impl HasFilePosition for HoverRequest {
+impl HasFile for HoverRequest {
     fn file(&self) -> &str {
         &self.file
     }
+}
+
+impl HasFilePosition for HoverRequest {
     fn line(&self) -> u32 {
         self.line
     }

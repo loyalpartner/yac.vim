@@ -6,13 +6,30 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile, HasFilePosition};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct CallHierarchyRequest {
     pub file: String,
     pub line: u32,
     pub column: u32,
-    pub direction: String, // "incoming" or "outgoing"
+    pub direction: String,
+}
+
+impl HasFile for CallHierarchyRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+}
+
+impl HasFilePosition for CallHierarchyRequest {
+    fn line(&self) -> u32 {
+        self.line
+    }
+    fn column(&self) -> u32 {
+        self.column
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -52,14 +69,7 @@ impl CallHierarchyItem {
     }
 
     pub fn from_lsp_item(item: lsp_types::CallHierarchyItem) -> Result<Self> {
-        let kind = match item.kind {
-            lsp_types::SymbolKind::FUNCTION => "Function".to_string(),
-            lsp_types::SymbolKind::METHOD => "Method".to_string(),
-            lsp_types::SymbolKind::CONSTRUCTOR => "Constructor".to_string(),
-            lsp_types::SymbolKind::CLASS => "Class".to_string(),
-            lsp_types::SymbolKind::MODULE => "Module".to_string(),
-            _ => "Unknown".to_string(),
-        };
+        let kind = super::common::symbol_kind_name(item.kind).to_string();
 
         // Convert URI to file path
         let file_path = super::common::uri_to_file_path(item.uri.as_ref())?;
@@ -103,118 +113,95 @@ impl Handler for CallHierarchyHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // First, prepare call hierarchy items
-        let prepare_params = lsp_types::CallHierarchyPrepareParams {
-            text_document_position_params: lsp_types::TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier {
-                    uri: lsp_types::Url::parse(&uri)?,
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let prepare_params = lsp_types::CallHierarchyPrepareParams {
+                text_document_position_params: lsp_types::TextDocumentPositionParams {
+                    text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                    position: lsp_types::Position {
+                        line: input.line,
+                        character: input.column,
+                    },
                 },
-                position: lsp_types::Position {
-                    line: input.line,
-                    character: input.column,
-                },
-            },
-            work_done_progress_params: Default::default(),
-        };
+                work_done_progress_params: Default::default(),
+            };
 
-        let prepare_response = match self
-            .lsp_registry
-            .request::<lsp_types::request::CallHierarchyPrepare>(&language, prepare_params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            let prepare_response = match ctx
+                .registry
+                .request::<lsp_types::request::CallHierarchyPrepare>(&ctx.language, prepare_params)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-        let items = match prepare_response {
-            Some(items) => items,
-            None => return Ok(HandlerResult::Empty),
-        };
+            let prepared = match prepare_response {
+                Some(items) if !items.is_empty() => items,
+                _ => return Ok(HandlerResult::Empty),
+            };
 
-        if items.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
+            let item = &prepared[0];
 
-        // Use the first item for incoming/outgoing calls
-        let item = &items[0];
-
-        let items = match input.direction.as_str() {
-            "incoming" => {
-                let params = lsp_types::CallHierarchyIncomingCallsParams {
-                    item: item.clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-
-                match self
-                    .lsp_registry
-                    .request::<lsp_types::request::CallHierarchyIncomingCalls>(&language, params)
-                    .await
-                {
-                    Ok(Some(calls)) => calls
-                        .into_iter()
-                        .filter_map(|call| CallHierarchyItem::from_lsp_item(call.from).ok())
-                        .collect(),
-                    _ => Vec::new(),
+            let items = match input.direction.as_str() {
+                "incoming" => {
+                    let params = lsp_types::CallHierarchyIncomingCallsParams {
+                        item: item.clone(),
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    match ctx
+                        .registry
+                        .request::<lsp_types::request::CallHierarchyIncomingCalls>(
+                            &ctx.language,
+                            params,
+                        )
+                        .await
+                    {
+                        Ok(Some(calls)) => calls
+                            .into_iter()
+                            .filter_map(|call| CallHierarchyItem::from_lsp_item(call.from).ok())
+                            .collect(),
+                        _ => Vec::new(),
+                    }
                 }
-            }
-            "outgoing" => {
-                let params = lsp_types::CallHierarchyOutgoingCallsParams {
-                    item: item.clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                };
-
-                match self
-                    .lsp_registry
-                    .request::<lsp_types::request::CallHierarchyOutgoingCalls>(&language, params)
-                    .await
-                {
-                    Ok(Some(calls)) => calls
-                        .into_iter()
-                        .filter_map(|call| CallHierarchyItem::from_lsp_item(call.to).ok())
-                        .collect(),
-                    _ => Vec::new(),
+                "outgoing" => {
+                    let params = lsp_types::CallHierarchyOutgoingCallsParams {
+                        item: item.clone(),
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    match ctx
+                        .registry
+                        .request::<lsp_types::request::CallHierarchyOutgoingCalls>(
+                            &ctx.language,
+                            params,
+                        )
+                        .await
+                    {
+                        Ok(Some(calls)) => calls
+                            .into_iter()
+                            .filter_map(|call| CallHierarchyItem::from_lsp_item(call.to).ok())
+                            .collect(),
+                        _ => Vec::new(),
+                    }
                 }
-            }
-            _ => {
-                debug!("Invalid call hierarchy direction: {}", input.direction);
+                _ => {
+                    debug!("Invalid call hierarchy direction: {}", input.direction);
+                    return Ok(HandlerResult::Empty);
+                }
+            };
+
+            debug!(
+                "{} call hierarchy response: {} items",
+                input.direction,
+                items.len()
+            );
+
+            if items.is_empty() {
                 return Ok(HandlerResult::Empty);
             }
-        };
 
-        debug!(
-            "{} call hierarchy response: {} items",
-            input.direction,
-            items.len()
-        );
-
-        if items.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
-
-        Ok(HandlerResult::Data(CallHierarchyInfo::new(items)))
+            Ok(HandlerResult::Data(CallHierarchyInfo::new(items)))
+        })
+        .await
     }
 }

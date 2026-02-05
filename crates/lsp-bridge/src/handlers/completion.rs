@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{with_lsp_context, HasFilePosition};
+use super::common::{with_lsp_context, HasFile, HasFilePosition};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -17,10 +17,13 @@ pub struct CompletionRequest {
     pub trigger_character: Option<String>,
 }
 
-impl HasFilePosition for CompletionRequest {
+impl HasFile for CompletionRequest {
     fn file(&self) -> &str {
         &self.file
     }
+}
+
+impl HasFilePosition for CompletionRequest {
     fn line(&self) -> u32 {
         self.line
     }

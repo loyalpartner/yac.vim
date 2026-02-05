@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct CodeActionRequest {
@@ -15,6 +17,12 @@ pub struct CodeActionRequest {
     pub end_line: u32,
     pub end_column: u32,
     pub context: Option<CodeActionContext>,
+}
+
+impl HasFile for CodeActionRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,19 +42,11 @@ pub struct CodeAction {
     pub is_preferred: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct WorkspaceEdit {
-    pub edits: Vec<TextEdit>,
-}
+use super::common::{convert_workspace_edit, FileTextEdit};
 
 #[derive(Debug, Serialize)]
-pub struct TextEdit {
-    pub file: String,
-    pub start_line: u32,
-    pub start_column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-    pub new_text: String,
+pub struct WorkspaceEdit {
+    pub edits: Vec<FileTextEdit>,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,28 +63,8 @@ pub struct CodeActionInfo {
 
 pub type CodeActionResponse = CodeActionInfo;
 
-impl TextEdit {
-    pub fn new(
-        file: String,
-        start_line: u32,
-        start_column: u32,
-        end_line: u32,
-        end_column: u32,
-        new_text: String,
-    ) -> Self {
-        Self {
-            file,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-            new_text,
-        }
-    }
-}
-
 impl WorkspaceEdit {
-    pub fn new(edits: Vec<TextEdit>) -> Self {
+    pub fn new(edits: Vec<FileTextEdit>) -> Self {
         Self { edits }
     }
 }
@@ -140,66 +120,12 @@ impl CodeActionHandler {
         kind.map(|k| k.as_str().to_string())
     }
 
-    fn convert_workspace_edit(edit: lsp_types::WorkspaceEdit) -> Option<WorkspaceEdit> {
-        let mut text_edits = Vec::new();
-
-        // Handle changes map
-        if let Some(changes) = edit.changes {
-            for (uri, edits) in changes {
-                let file_path = match uri.to_file_path() {
-                    Ok(path) => path.to_string_lossy().to_string(),
-                    Err(_) => continue,
-                };
-
-                for text_edit in edits {
-                    text_edits.push(TextEdit::new(
-                        file_path.clone(),
-                        text_edit.range.start.line,
-                        text_edit.range.start.character,
-                        text_edit.range.end.line,
-                        text_edit.range.end.character,
-                        text_edit.new_text,
-                    ));
-                }
-            }
-        }
-
-        // Handle document changes
-        if let Some(document_changes) = edit.document_changes {
-            match document_changes {
-                lsp_types::DocumentChanges::Edits(edits) => {
-                    for edit in edits {
-                        let file_path = match edit.text_document.uri.to_file_path() {
-                            Ok(path) => path.to_string_lossy().to_string(),
-                            Err(_) => continue,
-                        };
-
-                        for text_edit in edit.edits {
-                            let lsp_types::OneOf::Left(text_edit) = text_edit else {
-                                continue; // Skip complex AnnotatedTextEdit
-                            };
-
-                            text_edits.push(TextEdit::new(
-                                file_path.clone(),
-                                text_edit.range.start.line,
-                                text_edit.range.start.character,
-                                text_edit.range.end.line,
-                                text_edit.range.end.character,
-                                text_edit.new_text,
-                            ));
-                        }
-                    }
-                }
-                lsp_types::DocumentChanges::Operations(_) => {
-                    // Skip file operations for now
-                }
-            }
-        }
-
-        if text_edits.is_empty() {
+    fn lsp_workspace_edit_to_edit(edit: lsp_types::WorkspaceEdit) -> Option<WorkspaceEdit> {
+        let edits = convert_workspace_edit(edit);
+        if edits.is_empty() {
             None
         } else {
-            Some(WorkspaceEdit::new(text_edits))
+            Some(WorkspaceEdit::new(edits))
         }
     }
 
@@ -218,114 +144,88 @@ impl Handler for CodeActionHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Make LSP code action request
-        let params = lsp_types::CodeActionParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            range: lsp_types::Range {
-                start: lsp_types::Position {
-                    line: input.start_line,
-                    character: input.start_column,
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::CodeActionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: input.start_line,
+                        character: input.start_column,
+                    },
+                    end: lsp_types::Position {
+                        line: input.end_line,
+                        character: input.end_column,
+                    },
                 },
-                end: lsp_types::Position {
-                    line: input.end_line,
-                    character: input.end_column,
+                context: lsp_types::CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: input.context.and_then(|c| {
+                        c.only.map(|kinds| {
+                            kinds
+                                .into_iter()
+                                .map(lsp_types::CodeActionKind::from)
+                                .collect()
+                        })
+                    }),
+                    trigger_kind: None,
                 },
-            },
-            context: lsp_types::CodeActionContext {
-                diagnostics: Vec::new(), // TODO: Convert from input.context.diagnostics
-                only: input.context.and_then(|ctx| {
-                    ctx.only.map(|kinds| {
-                        kinds
-                            .into_iter()
-                            .map(lsp_types::CodeActionKind::from)
-                            .collect()
-                    })
-                }),
-                trigger_kind: None,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
 
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::CodeActionRequest>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            let response = match ctx
+                .registry
+                .request::<lsp_types::request::CodeActionRequest>(&ctx.language, params)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-        debug!("code action response: {:?}", response);
+            debug!("code action response: {:?}", response);
 
-        let actions = match response {
-            Some(actions) => actions,
-            None => return Ok(HandlerResult::Empty),
-        };
+            let actions = match response {
+                Some(actions) if !actions.is_empty() => actions,
+                _ => return Ok(HandlerResult::Empty),
+            };
 
-        if actions.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
+            let result_actions: Vec<CodeAction> = actions
+                .into_iter()
+                .map(|action| match action {
+                    lsp_types::CodeActionOrCommand::CodeAction(action) => {
+                        let edit =
+                            action.edit.and_then(CodeActionHandler::lsp_workspace_edit_to_edit);
+                        let command = action.command.map(CodeActionHandler::convert_command);
 
-        // Convert code actions
-        let result_actions: Vec<CodeAction> = actions
-            .into_iter()
-            .map(|action| match action {
-                lsp_types::CodeActionOrCommand::CodeAction(action) => {
-                    let edit = action.edit.and_then(Self::convert_workspace_edit);
-                    let command = action.command.map(Self::convert_command);
+                        CodeAction::new(
+                            action.title,
+                            CodeActionHandler::code_action_kind_to_string(action.kind),
+                            None,
+                            edit,
+                            command,
+                            action.is_preferred,
+                        )
+                    }
+                    lsp_types::CodeActionOrCommand::Command(command) => {
+                        let cmd = CodeActionHandler::convert_command(command);
+                        CodeAction::new(
+                            cmd.title.clone(),
+                            Some("command".to_string()),
+                            None,
+                            None,
+                            Some(cmd),
+                            None,
+                        )
+                    }
+                })
+                .collect();
 
-                    CodeAction::new(
-                        action.title,
-                        Self::code_action_kind_to_string(action.kind),
-                        None, // TODO: Convert diagnostics
-                        edit,
-                        command,
-                        action.is_preferred,
-                    )
-                }
-                lsp_types::CodeActionOrCommand::Command(command) => {
-                    let cmd = Self::convert_command(command);
-                    CodeAction::new(
-                        cmd.title.clone(),
-                        Some("command".to_string()),
-                        None,
-                        None,
-                        Some(cmd),
-                        None,
-                    )
-                }
-            })
-            .collect();
+            if result_actions.is_empty() {
+                return Ok(HandlerResult::Empty);
+            }
 
-        if result_actions.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
-
-        Ok(HandlerResult::Data(CodeActionInfo::new(result_actions)))
+            Ok(HandlerResult::Data(CodeActionInfo::new(result_actions)))
+        })
+        .await
     }
 }

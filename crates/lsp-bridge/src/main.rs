@@ -3,27 +3,14 @@ use tracing::info;
 use vim::VimClient;
 
 mod handlers;
-use handlers::{
-    // Core LSP functionality handlers - Linus style: simple and clear
-    CallHierarchyHandler,
-    CodeActionHandler,
-    CompletionHandler,
-    DiagnosticsHandler,
-    // Document lifecycle handlers
-    DidChangeHandler,
-    DidCloseHandler,
-    DidSaveHandler,
-    DocumentSymbolsHandler,
-    ExecuteCommandHandler,
-    FileOpenHandler,
-    FoldingRangeHandler,
-    GotoHandler,
-    HoverHandler,
-    InlayHintsHandler,
-    ReferencesHandler,
-    RenameHandler,
-    WillSaveHandler,
-};
+use handlers::*;
+
+/// Register a handler: construct with registry and add to vim client
+macro_rules! register {
+    ($vim:expr, $reg:expr, $($name:expr => $handler:ty),+ $(,)?) => {
+        $( $vim.add_handler($name, <$handler>::new($reg.clone())); )+
+    };
+}
 
 // Removed: Complex stdio-to-socket forwarder
 // SSH Master mode eliminates need for socket forwarding - direct SSH stdio connection
@@ -56,57 +43,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting lsp-bridge in stdio mode");
     let mut vim = VimClient::new_stdio();
 
-    // Create dedicated handlers with multi-language registry
-    // Core LSP functionality handlers - Linus style: one handler per function
-    let file_open_handler = FileOpenHandler::new(lsp_registry.clone());
-    // Linus-style: 一个构造函数，数据驱动
-    let definition_handler = GotoHandler::new(lsp_registry.clone(), "goto_definition").unwrap();
-    let declaration_handler = GotoHandler::new(lsp_registry.clone(), "goto_declaration").unwrap();
-    let type_definition_handler =
-        GotoHandler::new(lsp_registry.clone(), "goto_type_definition").unwrap();
-    let implementation_handler =
-        GotoHandler::new(lsp_registry.clone(), "goto_implementation").unwrap();
-    let hover_handler = HoverHandler::new(lsp_registry.clone());
-    let completion_handler = CompletionHandler::new(lsp_registry.clone());
-    let references_handler = ReferencesHandler::new(lsp_registry.clone());
-    let inlay_hints_handler = InlayHintsHandler::new(lsp_registry.clone());
-    let rename_handler = RenameHandler::new(lsp_registry.clone());
-    let code_action_handler = CodeActionHandler::new(lsp_registry.clone());
-    let execute_command_handler = ExecuteCommandHandler::new(lsp_registry.clone());
-    let document_symbols_handler = DocumentSymbolsHandler::new(lsp_registry.clone());
-    let call_hierarchy_handler = CallHierarchyHandler::new(lsp_registry.clone());
-    let folding_range_handler = FoldingRangeHandler::new(lsp_registry.clone());
-    let diagnostics_handler = DiagnosticsHandler::new(lsp_registry.clone());
+    // Register handlers - data-driven goto uses its own constructor
+    for method in [
+        "goto_definition",
+        "goto_declaration",
+        "goto_type_definition",
+        "goto_implementation",
+    ] {
+        vim.add_handler(
+            method,
+            GotoHandler::new(lsp_registry.clone(), method).unwrap(),
+        );
+    }
 
-    // Document lifecycle handlers
-    let did_change_handler = DidChangeHandler::new(lsp_registry.clone());
-    let did_close_handler = DidCloseHandler::new(lsp_registry.clone());
-    let did_save_handler = DidSaveHandler::new(lsp_registry.clone());
-    let will_save_handler = WillSaveHandler::new(lsp_registry.clone());
-
-    // Register all handlers using the vim crate API
-    vim.add_handler("file_open", file_open_handler);
-    vim.add_handler("goto_definition", definition_handler);
-    vim.add_handler("goto_declaration", declaration_handler);
-    vim.add_handler("goto_type_definition", type_definition_handler);
-    vim.add_handler("goto_implementation", implementation_handler);
-    vim.add_handler("hover", hover_handler);
-    vim.add_handler("completion", completion_handler);
-    vim.add_handler("references", references_handler);
-    vim.add_handler("inlay_hints", inlay_hints_handler);
-    vim.add_handler("rename", rename_handler);
-    vim.add_handler("code_action", code_action_handler);
-    vim.add_handler("execute_command", execute_command_handler);
-    vim.add_handler("document_symbols", document_symbols_handler);
-    vim.add_handler("call_hierarchy", call_hierarchy_handler);
-    vim.add_handler("folding_range", folding_range_handler);
-    vim.add_handler("diagnostics", diagnostics_handler);
-
-    // Document lifecycle handlers
-    vim.add_handler("did_change", did_change_handler);
-    vim.add_handler("did_close", did_close_handler);
-    vim.add_handler("did_save", did_save_handler);
-    vim.add_handler("will_save", will_save_handler);
+    register!(vim, lsp_registry,
+        "file_open"        => FileOpenHandler,
+        "hover"            => HoverHandler,
+        "completion"       => CompletionHandler,
+        "references"       => ReferencesHandler,
+        "inlay_hints"      => InlayHintsHandler,
+        "rename"           => RenameHandler,
+        "code_action"      => CodeActionHandler,
+        "execute_command"   => ExecuteCommandHandler,
+        "document_symbols" => DocumentSymbolsHandler,
+        "call_hierarchy"   => CallHierarchyHandler,
+        "folding_range"    => FoldingRangeHandler,
+        "diagnostics"      => DiagnosticsHandler,
+        "did_change"       => DidChangeHandler,
+        "did_close"        => DidCloseHandler,
+        "did_save"         => DidSaveHandler,
+        "will_save"        => WillSaveHandler,
+    );
 
     // Start the message processing loop
     vim.run().await?;
