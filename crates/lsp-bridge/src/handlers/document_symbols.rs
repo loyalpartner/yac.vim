@@ -6,10 +6,18 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{symbol_kind_name, with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DocumentSymbolsRequest {
     pub file: String,
+}
+
+impl HasFile for DocumentSymbolsRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -95,35 +103,7 @@ impl DocumentSymbolsHandler {
     }
 
     fn symbol_kind_to_string(kind: lsp_types::SymbolKind) -> String {
-        match kind {
-            lsp_types::SymbolKind::FILE => "File".to_string(),
-            lsp_types::SymbolKind::MODULE => "Module".to_string(),
-            lsp_types::SymbolKind::NAMESPACE => "Namespace".to_string(),
-            lsp_types::SymbolKind::PACKAGE => "Package".to_string(),
-            lsp_types::SymbolKind::CLASS => "Class".to_string(),
-            lsp_types::SymbolKind::METHOD => "Method".to_string(),
-            lsp_types::SymbolKind::PROPERTY => "Property".to_string(),
-            lsp_types::SymbolKind::FIELD => "Field".to_string(),
-            lsp_types::SymbolKind::CONSTRUCTOR => "Constructor".to_string(),
-            lsp_types::SymbolKind::ENUM => "Enum".to_string(),
-            lsp_types::SymbolKind::INTERFACE => "Interface".to_string(),
-            lsp_types::SymbolKind::FUNCTION => "Function".to_string(),
-            lsp_types::SymbolKind::VARIABLE => "Variable".to_string(),
-            lsp_types::SymbolKind::CONSTANT => "Constant".to_string(),
-            lsp_types::SymbolKind::STRING => "String".to_string(),
-            lsp_types::SymbolKind::NUMBER => "Number".to_string(),
-            lsp_types::SymbolKind::BOOLEAN => "Boolean".to_string(),
-            lsp_types::SymbolKind::ARRAY => "Array".to_string(),
-            lsp_types::SymbolKind::OBJECT => "Object".to_string(),
-            lsp_types::SymbolKind::KEY => "Key".to_string(),
-            lsp_types::SymbolKind::NULL => "Null".to_string(),
-            lsp_types::SymbolKind::ENUM_MEMBER => "EnumMember".to_string(),
-            lsp_types::SymbolKind::STRUCT => "Struct".to_string(),
-            lsp_types::SymbolKind::EVENT => "Event".to_string(),
-            lsp_types::SymbolKind::OPERATOR => "Operator".to_string(),
-            lsp_types::SymbolKind::TYPE_PARAMETER => "TypeParameter".to_string(),
-            _ => "Unknown".to_string(),
-        }
+        symbol_kind_name(kind).to_string()
     }
 
     fn convert_document_symbol(symbol: lsp_types::DocumentSymbol) -> Symbol {
@@ -155,76 +135,53 @@ impl Handler for DocumentSymbolsHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
+        with_lsp_file(&self.lsp_registry, input, |ctx, _input| async move {
+            let params = lsp_types::DocumentSymbolParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
 
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
+            let response = match ctx
+                .registry
+                .request::<lsp_types::request::DocumentSymbolRequest>(&ctx.language, params)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            debug!("document symbols response: {:?}", response);
 
-        // Make LSP document symbols request
-        let params = lsp_types::DocumentSymbolParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::DocumentSymbolRequest>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        debug!("document symbols response: {:?}", response);
-
-        let symbols: Vec<Symbol> = match response {
-            Some(lsp_types::DocumentSymbolResponse::Flat(symbol_infos)) => {
-                // Convert SymbolInformation to simplified Symbol format
-                symbol_infos
+            let symbols: Vec<Symbol> = match response {
+                Some(lsp_types::DocumentSymbolResponse::Flat(symbol_infos)) => symbol_infos
                     .into_iter()
                     .map(|info| {
                         Symbol::new(
                             info.name,
-                            Self::symbol_kind_to_string(info.kind),
+                            DocumentSymbolsHandler::symbol_kind_to_string(info.kind),
                             Range::from_lsp_range(info.location.range),
-                            Range::from_lsp_range(info.location.range), // Use same range for selection
-                            None, // SymbolInformation doesn't have detail
-                            None, // Flat format doesn't have children
+                            Range::from_lsp_range(info.location.range),
+                            None,
+                            None,
                         )
                     })
-                    .collect()
+                    .collect(),
+                Some(lsp_types::DocumentSymbolResponse::Nested(document_symbols)) => {
+                    document_symbols
+                        .into_iter()
+                        .map(DocumentSymbolsHandler::convert_document_symbol)
+                        .collect()
+                }
+                None => return Ok(HandlerResult::Empty),
+            };
+
+            if symbols.is_empty() {
+                return Ok(HandlerResult::Empty);
             }
-            Some(lsp_types::DocumentSymbolResponse::Nested(document_symbols)) => document_symbols
-                .into_iter()
-                .map(Self::convert_document_symbol)
-                .collect(),
-            None => return Ok(HandlerResult::Empty),
-        };
 
-        if symbols.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
-
-        Ok(HandlerResult::Data(DocumentSymbolsInfo::new(symbols)))
+            Ok(HandlerResult::Data(DocumentSymbolsInfo::new(symbols)))
+        })
+        .await
     }
 }

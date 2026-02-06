@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{with_lsp_context, HasFilePosition, Location};
+use super::common::{with_lsp_context, HasFile, HasFilePosition, Location};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -17,10 +17,13 @@ pub struct ReferencesRequest {
     pub include_declaration: Option<bool>,
 }
 
-impl HasFilePosition for ReferencesRequest {
+impl HasFile for ReferencesRequest {
     fn file(&self) -> &str {
         &self.file
     }
+}
+
+impl HasFilePosition for ReferencesRequest {
     fn line(&self) -> u32 {
         self.line
     }

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use vim::{Handler, HandlerResult};
 
-use super::common::extract_ssh_path;
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -60,11 +59,8 @@ impl Handler for FileOpenHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Extract real file path from SSH path if needed
-        let (_, real_path) = extract_ssh_path(&input.file);
-
-        // Open file in appropriate language server using real path
-        if let Err(e) = self.lsp_registry.open_file(&real_path).await {
+        // Open file in appropriate language server (handles SSH paths internally)
+        if let Err(e) = self.lsp_registry.open_file(&input.file).await {
             return Ok(HandlerResult::Data(FileOpenResponse::error(format!(
                 "Failed to open file: {}",
                 e

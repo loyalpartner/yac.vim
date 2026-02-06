@@ -6,12 +6,20 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DidChangeRequest {
     pub file: String,
     pub version: u32,
     pub changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+impl HasFile for DidChangeRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +37,6 @@ pub struct Range {
     pub end_column: u32,
 }
 
-// Notification pattern - unit type for no data
 pub type DidChangeResponse = ();
 
 impl Range {
@@ -79,60 +86,34 @@ impl Handler for DidChangeHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let content_changes: Vec<lsp_types::TextDocumentContentChangeEvent> = input
+                .changes
+                .into_iter()
+                .map(|change| change.to_lsp_change_event())
+                .collect();
 
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
+            let params = lsp_types::DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier {
+                    uri: ctx.uri,
+                    version: input.version as i32,
+                },
+                content_changes,
+            };
 
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Convert changes to LSP format
-        let content_changes: Vec<lsp_types::TextDocumentContentChangeEvent> = input
-            .changes
-            .into_iter()
-            .map(|change| change.to_lsp_change_event())
-            .collect();
-
-        // Send LSP didChange notification
-        let params = lsp_types::DidChangeTextDocumentParams {
-            text_document: lsp_types::VersionedTextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-                version: input.version as i32,
-            },
-            content_changes,
-        };
-
-        // didChange is a notification, not a request (no response expected)
-        match self
-            .lsp_registry
-            .notify(&language, "textDocument/didChange", params)
-            .await
-        {
-            Ok(_) => {
-                debug!(
+            match ctx
+                .registry
+                .notify(&ctx.language, "textDocument/didChange", params)
+                .await
+            {
+                Ok(_) => debug!(
                     "DidChange notification sent for: {} (version {})",
                     input.file, input.version
-                );
+                ),
+                Err(e) => debug!("DidChange notification failed: {:?}", e),
             }
-            Err(e) => {
-                debug!("DidChange notification failed: {:?}", e);
-            }
-        }
-        Ok(HandlerResult::Empty)
+            Ok(HandlerResult::Empty)
+        })
+        .await
     }
 }

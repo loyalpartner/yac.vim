@@ -6,10 +6,18 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct FoldingRangeRequest {
     pub file: String,
+}
+
+impl HasFile for FoldingRangeRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -90,63 +98,36 @@ impl Handler for FoldingRangeHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
+        with_lsp_file(&self.lsp_registry, input, |ctx, _input| async move {
+            let params = lsp_types::FoldingRangeParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
 
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
+            let response = match ctx
+                .registry
+                .request::<lsp_types::request::FoldingRangeRequest>(&ctx.language, params)
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Ok(HandlerResult::Empty),
+            };
 
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            debug!("folding range response: {:?}", response);
 
-        // Make LSP folding range request
-        let params = lsp_types::FoldingRangeParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
+            let ranges = match response {
+                Some(ranges) if !ranges.is_empty() => ranges,
+                _ => return Ok(HandlerResult::Empty),
+            };
 
-        let response = match self
-            .lsp_registry
-            .request::<lsp_types::request::FoldingRangeRequest>(&language, params)
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
+            let result_ranges: Vec<FoldingRange> = ranges
+                .into_iter()
+                .map(FoldingRange::from_lsp_folding_range)
+                .collect();
 
-        debug!("folding range response: {:?}", response);
-
-        let ranges = match response {
-            Some(ranges) => ranges,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        if ranges.is_empty() {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert folding ranges
-        let result_ranges: Vec<FoldingRange> = ranges
-            .into_iter()
-            .map(FoldingRange::from_lsp_folding_range)
-            .collect();
-
-        Ok(HandlerResult::Data(FoldingRangeInfo::new(result_ranges)))
+            Ok(HandlerResult::Data(FoldingRangeInfo::new(result_ranges)))
+        })
+        .await
     }
 }

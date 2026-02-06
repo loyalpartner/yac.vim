@@ -6,14 +6,21 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
+use super::common::{with_lsp_file, HasFile};
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct WillSaveRequest {
     pub file: String,
-    pub reason: String, // "Manual", "AfterDelay", "FocusOut"
+    pub reason: String,
 }
 
-// Notification pattern - unit type for no data
+impl HasFile for WillSaveRequest {
+    fn file(&self) -> &str {
+        &self.file
+    }
+}
+
 pub type WillSaveResponse = ();
 
 pub struct WillSaveHandler {
@@ -27,7 +34,7 @@ impl WillSaveHandler {
         }
     }
 
-    fn reason_to_lsp(&self, reason: &str) -> lsp_types::TextDocumentSaveReason {
+    fn reason_to_lsp(reason: &str) -> lsp_types::TextDocumentSaveReason {
         match reason {
             "Manual" => lsp_types::TextDocumentSaveReason::MANUAL,
             "AfterDelay" => lsp_types::TextDocumentSaveReason::AFTER_DELAY,
@@ -47,52 +54,24 @@ impl Handler for WillSaveHandler {
         _vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Detect language
-        let language = match self.lsp_registry.detect_language(&input.file) {
-            Some(lang) => lang,
-            None => return Ok(HandlerResult::Empty),
-        };
-
-        // Ensure client exists
-        if self
-            .lsp_registry
-            .get_client(&language, &input.file)
-            .await
-            .is_err()
-        {
-            return Ok(HandlerResult::Empty);
-        }
-
-        // Convert file path to URI
-        let uri = match super::common::file_path_to_uri(&input.file) {
-            Ok(uri) => uri,
-            Err(_) => return Ok(HandlerResult::Empty),
-        };
-
-        // Send LSP willSave notification
-        let params = lsp_types::WillSaveTextDocumentParams {
-            text_document: lsp_types::TextDocumentIdentifier {
-                uri: lsp_types::Url::parse(&uri)?,
-            },
-            reason: self.reason_to_lsp(&input.reason),
-        };
-
-        // willSave is a notification, not a request (no response expected)
-        match self
-            .lsp_registry
-            .notify(&language, "textDocument/willSave", params)
-            .await
-        {
-            Ok(_) => {
-                debug!(
+        with_lsp_file(&self.lsp_registry, input, |ctx, input| async move {
+            let params = lsp_types::WillSaveTextDocumentParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                reason: Self::reason_to_lsp(&input.reason),
+            };
+            match ctx
+                .registry
+                .notify(&ctx.language, "textDocument/willSave", params)
+                .await
+            {
+                Ok(_) => debug!(
                     "WillSave notification sent for: {} (reason: {})",
                     input.file, input.reason
-                );
+                ),
+                Err(e) => debug!("WillSave notification failed: {:?}", e),
             }
-            Err(e) => {
-                debug!("WillSave notification failed: {:?}", e);
-            }
-        }
-        Ok(HandlerResult::Empty)
+            Ok(HandlerResult::Empty)
+        })
+        .await
     }
 }

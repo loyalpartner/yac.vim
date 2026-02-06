@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{with_lsp_context, HasFilePosition};
+use super::common::{with_lsp_context, HasFile, HasFilePosition};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -16,10 +16,13 @@ pub struct InlayHintsRequest {
     pub end_line: u32,
 }
 
-impl HasFilePosition for InlayHintsRequest {
+impl HasFile for InlayHintsRequest {
     fn file(&self) -> &str {
         &self.file
     }
+}
+
+impl HasFilePosition for InlayHintsRequest {
     fn line(&self) -> u32 {
         self.start_line
     }
