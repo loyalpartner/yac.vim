@@ -1,6 +1,6 @@
 use crate::{LspBridgeError, Result};
 use lsp_client::LspClient;
-use lsp_types::{request::Initialize, ClientCapabilities, InitializeParams, WorkspaceFolder};
+use lsp_types::{request::Initialize, InitializeParams, WorkspaceFolder};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, sync::Arc};
 use tokio::sync::Mutex;
@@ -110,8 +110,8 @@ impl LspServerConfig {
 /// Multi-language LSP client registry
 /// Linus style: "good taste" - let data structures eliminate complexity
 pub struct LspRegistry {
-    // Map of language -> LSP client
-    clients: Arc<Mutex<HashMap<String, LspClient>>>,
+    // Map of language -> LSP client (Arc allows clone-and-release to avoid holding lock during requests)
+    clients: Arc<Mutex<HashMap<String, Arc<LspClient>>>>,
     // Available server configurations
     configs: HashMap<String, LspServerConfig>,
 }
@@ -124,9 +124,23 @@ impl Default for LspRegistry {
 
 impl LspRegistry {
     pub fn new() -> Self {
-        let mut configs = HashMap::new();
+        let mut configs = Self::builtin_configs();
 
-        // Register built-in language servers
+        // User config overrides builtins
+        if let Some(user_configs) = Self::load_user_configs() {
+            for (lang, config) in user_configs {
+                configs.insert(lang, config);
+            }
+        }
+
+        Self {
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            configs,
+        }
+    }
+
+    fn builtin_configs() -> HashMap<String, LspServerConfig> {
+        let mut configs = HashMap::new();
         configs.insert("rust".to_string(), LspServerConfig::rust_analyzer());
         configs.insert("python".to_string(), LspServerConfig::pyright());
         configs.insert(
@@ -138,10 +152,23 @@ impl LspRegistry {
             LspServerConfig::javascript_language_server(),
         );
         configs.insert("go".to_string(), LspServerConfig::gopls());
+        configs
+    }
 
-        Self {
-            clients: Arc::new(Mutex::new(HashMap::new())),
-            configs,
+    /// Load user configs from ~/.config/yac/servers.json
+    fn load_user_configs() -> Option<HashMap<String, LspServerConfig>> {
+        let home = std::env::var("HOME").ok()?;
+        let config_path = Path::new(&home).join(".config/yac/servers.json");
+        let content = std::fs::read_to_string(&config_path).ok()?;
+        match serde_json::from_str(&content) {
+            Ok(configs) => {
+                info!("Loaded user config from {}", config_path.display());
+                Some(configs)
+            }
+            Err(e) => {
+                warn!("Failed to parse {}: {}", config_path.display(), e);
+                None
+            }
         }
     }
 
@@ -153,27 +180,121 @@ impl LspRegistry {
             .map(|(lang, _)| lang.clone())
     }
 
-    /// Get or create LSP client for a language
-    pub async fn get_client(&self, language: &str, file_path: &str) -> Result<()> {
-        let mut clients = self.clients.lock().await;
-
-        if clients.contains_key(language) {
-            // Client already exists
-            debug!("Using existing {} language server", language);
-            return Ok(());
+    /// Get or create LSP client for a language, returns Arc for lock-free usage
+    pub async fn get_client(&self, language: &str, file_path: &str) -> Result<Arc<LspClient>> {
+        // Fast path: client already exists, clone Arc and release lock immediately
+        {
+            let clients = self.clients.lock().await;
+            if let Some(client) = clients.get(language) {
+                debug!("Using existing {} language server", language);
+                return Ok(client.clone());
+            }
         }
 
-        // Create new client
+        // Slow path: create new client (lock released during LSP server startup)
         let config = self
             .configs
             .get(language)
             .ok_or_else(|| LspBridgeError::UnsupportedLanguage(language.to_string()))?;
 
         info!("Creating new {} language server", language);
-        let client = self.create_client(config, file_path).await?;
-        clients.insert(language.to_string(), client);
+        let client = Arc::new(self.create_client(config, file_path).await?);
 
-        Ok(())
+        let mut clients = self.clients.lock().await;
+        clients.insert(language.to_string(), client.clone());
+        Ok(client)
+    }
+
+    /// Build client capabilities matching the features we actually implement
+    fn client_capabilities() -> lsp_types::ClientCapabilities {
+        use lsp_types::*;
+
+        ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                completion: Some(CompletionClientCapabilities {
+                    completion_item: Some(CompletionItemCapability {
+                        documentation_format: Some(vec![
+                            MarkupKind::Markdown,
+                            MarkupKind::PlainText,
+                        ]),
+                        snippet_support: Some(false),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                hover: Some(HoverClientCapabilities {
+                    content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                    ..Default::default()
+                }),
+                definition: Some(GotoCapability {
+                    link_support: Some(false),
+                    ..Default::default()
+                }),
+                declaration: Some(GotoCapability {
+                    link_support: Some(false),
+                    ..Default::default()
+                }),
+                type_definition: Some(GotoCapability {
+                    link_support: Some(false),
+                    ..Default::default()
+                }),
+                implementation: Some(GotoCapability {
+                    link_support: Some(false),
+                    ..Default::default()
+                }),
+                references: Some(DynamicRegistrationClientCapabilities {
+                    dynamic_registration: Some(false),
+                }),
+                rename: Some(RenameClientCapabilities {
+                    prepare_support: Some(false),
+                    ..Default::default()
+                }),
+                code_action: Some(CodeActionClientCapabilities {
+                    code_action_literal_support: Some(CodeActionLiteralSupport {
+                        code_action_kind: CodeActionKindLiteralSupport {
+                            value_set: vec![
+                                CodeActionKind::QUICKFIX.as_str().to_string(),
+                                CodeActionKind::REFACTOR.as_str().to_string(),
+                                CodeActionKind::SOURCE.as_str().to_string(),
+                            ],
+                        },
+                    }),
+                    ..Default::default()
+                }),
+                document_symbol: Some(DocumentSymbolClientCapabilities {
+                    hierarchical_document_symbol_support: Some(true),
+                    ..Default::default()
+                }),
+                publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
+                    related_information: Some(true),
+                    ..Default::default()
+                }),
+                synchronization: Some(TextDocumentSyncClientCapabilities {
+                    did_save: Some(true),
+                    will_save: Some(true),
+                    ..Default::default()
+                }),
+                inlay_hint: Some(InlayHintClientCapabilities {
+                    ..Default::default()
+                }),
+                call_hierarchy: Some(CallHierarchyClientCapabilities {
+                    ..Default::default()
+                }),
+                folding_range: Some(FoldingRangeClientCapabilities {
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            workspace: Some(WorkspaceClientCapabilities {
+                apply_edit: Some(true),
+                workspace_edit: Some(WorkspaceEditClientCapabilities {
+                    document_changes: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
     }
 
     /// Create a new LSP client for the given configuration
@@ -193,7 +314,7 @@ impl LspRegistry {
             root_path: None,
             root_uri: workspace_root.clone(),
             initialization_options: None,
-            capabilities: ClientCapabilities::default(),
+            capabilities: Self::client_capabilities(),
             trace: None,
             workspace_folders: workspace_root.map(|uri| {
                 vec![WorkspaceFolder {
@@ -206,7 +327,10 @@ impl LspRegistry {
                         .to_string(),
                 }]
             }),
-            client_info: None,
+            client_info: Some(lsp_types::ClientInfo {
+                name: "yac.vim".to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            }),
             locale: None,
         };
 
@@ -223,19 +347,24 @@ impl LspRegistry {
     }
 
     /// Open a file in the appropriate language server
+    /// Handles SSH paths (scp://host//path) transparently
     pub async fn open_file(&self, file_path: &str) -> Result<()> {
+        let real_path = Self::extract_real_path(file_path);
+
         let language = self
-            .detect_language(file_path)
+            .detect_language(&real_path)
             .ok_or_else(|| LspBridgeError::UnsupportedFileType(file_path.to_string()))?;
 
-        // Ensure client exists
-        self.get_client(&language, file_path).await?;
+        let client = self.get_client(&language, &real_path).await?;
 
-        let text = std::fs::read_to_string(file_path)?;
-        let uri = lsp_types::Url::from_file_path(file_path)
+        let text = tokio::fs::read_to_string(&real_path).await?;
+        let uri = lsp_types::Url::from_file_path(&real_path)
             .map_err(|_| LspBridgeError::InvalidFilePath(file_path.to_string()))?;
 
-        let config = self.configs.get(&language).unwrap(); // Safe because we got it from detect_language
+        let config = self
+            .configs
+            .get(&language)
+            .ok_or_else(|| LspBridgeError::UnsupportedLanguage(language.to_string()))?;
 
         let params = lsp_types::DidOpenTextDocumentParams {
             text_document: lsp_types::TextDocumentItem {
@@ -246,40 +375,56 @@ impl LspRegistry {
             },
         };
 
-        // Execute the notification through the registry
-        self.notify(&language, "textDocument/didOpen", params)
-            .await?;
+        client
+            .notify("textDocument/didOpen", params)
+            .await
+            .map_err(LspBridgeError::LspClient)?;
 
-        debug!("Opened {} in {} language server", file_path, language);
+        debug!("Opened {} in {} language server", real_path, language);
         Ok(())
     }
 
-    /// Execute a notification with the client for a specific language
+    /// Extract real filesystem path from potentially SSH-prefixed path
+    /// scp://user@host//path/file -> /path/file
+    fn extract_real_path(file_path: &str) -> String {
+        if let Some(rest) = file_path.strip_prefix("scp://") {
+            if let Some(pos) = rest.find("//") {
+                return rest[pos + 1..].to_string();
+            }
+        }
+        file_path.to_string()
+    }
+
+    /// Execute a notification — clone Arc and release lock before sending
     pub async fn notify<T>(&self, language: &str, method: &str, params: T) -> Result<()>
     where
         T: serde::Serialize,
     {
-        let clients = self.clients.lock().await;
-        let client = clients
-            .get(language)
-            .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?;
-
+        let client = {
+            let clients = self.clients.lock().await;
+            clients
+                .get(language)
+                .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?
+                .clone()
+        };
         client.notify(method, params).await?;
         Ok(())
     }
 
-    /// Execute a request with the client for a specific language
+    /// Execute a request — clone Arc and release lock before waiting for response
     pub async fn request<R>(&self, language: &str, params: R::Params) -> Result<R::Result>
     where
         R: lsp_types::request::Request,
         R::Params: serde::Serialize + Send + 'static,
         R::Result: serde::de::DeserializeOwned,
     {
-        let clients = self.clients.lock().await;
-        let client = clients
-            .get(language)
-            .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?;
-
+        let client = {
+            let clients = self.clients.lock().await;
+            clients
+                .get(language)
+                .ok_or_else(|| LspBridgeError::NoClientForLanguage(language.to_string()))?
+                .clone()
+        };
         Ok(client.request::<R>(params).await?)
     }
 
@@ -291,12 +436,13 @@ impl LspRegistry {
 
     /// Shutdown a language server
     pub async fn shutdown_language(&self, language: &str) -> Result<()> {
-        let mut clients = self.clients.lock().await;
-        if let Some(client) = clients.remove(language) {
-            // Send shutdown request
+        let client = {
+            let mut clients = self.clients.lock().await;
+            clients.remove(language)
+        };
+        if let Some(client) = client {
             match client.request::<lsp_types::request::Shutdown>(()).await {
                 Ok(_) => {
-                    // Send exit notification
                     client.notify("exit", ()).await.ok();
                     info!("Shut down {} language server", language);
                 }

@@ -76,7 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Start the message processing loop
+    let shutdown_registry = lsp_registry.clone();
     vim.run().await?;
+
+    // Graceful shutdown: stop all LSP servers
+    info!("Shutting down LSP servers");
+    shutdown_registry.shutdown_all().await.ok();
 
     Ok(())
 }

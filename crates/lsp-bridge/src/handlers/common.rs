@@ -14,6 +14,15 @@ pub struct LspContext<'a> {
     pub language: String,
     pub uri: lsp_types::Url,
     pub registry: &'a LspRegistry,
+    /// SSH host from scp:// path, if any
+    pub ssh_host: Option<String>,
+}
+
+impl LspContext<'_> {
+    /// Restore SSH path prefix if the original request came via SSH
+    pub fn restore_ssh_path(&self, path: &str) -> String {
+        restore_ssh_path(path, self.ssh_host.as_deref())
+    }
 }
 
 /// Minimal trait - input has a file path
@@ -30,6 +39,7 @@ pub trait HasFilePosition: HasFile {
 }
 
 /// Core middleware: detect language, ensure client, resolve URI
+/// Handles SSH path extraction centrally — handlers get real paths + ssh_host in context
 pub async fn with_lsp_file<'a, I, F, Fut, O>(
     registry: &'a LspRegistry,
     input: I,
@@ -40,21 +50,24 @@ where
     F: FnOnce(LspContext<'a>, I) -> Fut,
     Fut: Future<Output = Result<HandlerResult<O>>>,
 {
-    let language = match registry.detect_language(input.file()) {
+    // Centralized SSH path extraction — handlers never need to deal with scp:// paths
+    let (ssh_host, real_path) = extract_ssh_path(input.file());
+
+    let language = match registry.detect_language(&real_path) {
         Some(lang) => lang,
         None => return Ok(HandlerResult::Empty),
     };
 
-    if registry.get_client(&language, input.file()).await.is_err() {
+    if registry.get_client(&language, &real_path).await.is_err() {
         return Ok(HandlerResult::Empty);
     }
 
-    let uri = match file_path_to_uri(input.file()) {
+    let uri = match file_path_to_uri(&real_path) {
         Ok(uri_str) => lsp_types::Url::parse(&uri_str)?,
         Err(_) => return Ok(HandlerResult::Empty),
     };
 
-    handler(LspContext { language, uri, registry }, input).await
+    handler(LspContext { language, uri, registry, ssh_host }, input).await
 }
 
 /// Convenience alias for handlers that need file + position

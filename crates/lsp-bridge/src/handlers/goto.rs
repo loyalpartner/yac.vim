@@ -7,9 +7,7 @@ use std::sync::Arc;
 use tracing::debug;
 use vim::{Handler, HandlerResult};
 
-use super::common::{
-    extract_ssh_path, restore_ssh_path, with_lsp_context, HasFile, HasFilePosition, Location,
-};
+use super::common::{with_lsp_context, HasFile, HasFilePosition, Location};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -82,13 +80,11 @@ impl Handler for GotoHandler {
         vim: &dyn vim::VimContext,
         input: Self::Input,
     ) -> Result<HandlerResult<Self::Output>> {
-        // Save original file path for SSH path restoration
-        let original_file = input.file.clone();
         let goto_type = self.goto_type.clone();
 
         with_lsp_context(&self.lsp_registry, input, |ctx, input| async move {
             let text_document_position = lsp_types::TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri },
+                text_document: lsp_types::TextDocumentIdentifier { uri: ctx.uri.clone() },
                 position: lsp_types::Position {
                     line: input.line,
                     character: input.column,
@@ -168,8 +164,7 @@ impl Handler for GotoHandler {
 
             debug!("location: {:?}", location);
 
-            let (ssh_host, _) = extract_ssh_path(&original_file);
-            let file_path = restore_ssh_path(&location.file, ssh_host.as_deref());
+            let file_path = ctx.restore_ssh_path(&location.file);
 
             // Perform the jump via side effect
             vim.ex(format!("edit {}", file_path).as_str()).await.ok();
