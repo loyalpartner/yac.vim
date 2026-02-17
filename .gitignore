@@ -8,6 +8,10 @@ Cargo.lock
 /release/
 /debug/
 
+# Zig
+.zig-cache/
+zig-out/
+
 # IDE files
 .vscode/
 .idea/
