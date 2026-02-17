@@ -10,7 +10,8 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 3000)
+call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+sleep 3
 
 " ============================================================================
 " Test 1: Enable inlay hints
@@ -41,7 +42,7 @@ call yac_test#log('INFO', 'Test 2: Type hints for let bindings')
 " test_data/src/lib.rs 中的 create_user_map 有：
 " let users = HashMap::new();  -> 应该显示 HashMap<i32, User>
 
-call cursor(31, 9)  " let users
+call cursor(31, 13)  " let users
 call yac_test#log('INFO', 'Checking type hint for "users" variable')
 
 " 刷新 inlay hints

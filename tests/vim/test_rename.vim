@@ -10,7 +10,8 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 3000)
+call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+sleep 3
 
 " 保存原始内容以便恢复
 let s:original_content = getline(1, '$')
@@ -21,7 +22,7 @@ let s:original_content = getline(1, '$')
 call yac_test#log('INFO', 'Test 1: Rename local variable')
 
 " 定位到 create_user_map 函数中的 users 变量
-call cursor(31, 9)
+call cursor(31, 13)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
@@ -108,7 +109,7 @@ call yac_test#log('INFO', 'Struct rename would affect multiple locations')
 call yac_test#log('INFO', 'Test 4: Rename preview')
 
 if exists(':YacPrepareRename')
-  call cursor(31, 9)
+  call cursor(31, 13)
   YacPrepareRename
   sleep 2
   call yac_test#log('INFO', 'PrepareRename completed')

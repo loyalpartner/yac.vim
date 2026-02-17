@@ -315,5 +315,9 @@ endfunction
 " 打开测试文件并等待 LSP
 function! yac_test#open_test_file(file, wait_ms) abort
   execute 'edit ' . a:file
+  " 发送 file_open 触发 LSP 初始化
+  if exists('*yac#open_file')
+    call yac#open_file()
+  endif
   call yac_test#wait_lsp_ready(a:wait_ms)
 endfunction

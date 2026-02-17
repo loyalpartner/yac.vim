@@ -24,14 +24,14 @@ filetype plugin indent on
 set runtimepath+=vim
 
 " yac-bridge 配置
-let g:yac_bridge_command = ['./target/release/lsp-bridge']
-let g:yac_bridge_auto_start = 0
+let g:lsp_bridge_command = ['./zig-out/bin/lsp-bridge']
+let g:lsp_bridge_auto_start = 0
 let g:lsp_bridge_debug = 1
 
 " 自动补全配置 (可以修改这些值进行测试)
-let g:yac_bridge_auto_complete = 1          " 1=启用, 0=禁用自动补全
-let g:yac_bridge_auto_complete_delay = 200  " 延迟毫秒数 (200ms)
-let g:yac_bridge_auto_complete_min_chars = 1 " 最少触发字符数
+let g:yac_auto_complete = 1             " 1=启用, 0=禁用自动补全
+let g:yac_auto_complete_delay = 200     " 延迟毫秒数 (200ms)
+let g:yac_auto_complete_min_chars = 1   " 最少触发字符数
 
 " 状态行显示
 set laststatus=2
@@ -45,9 +45,8 @@ nnoremap <silent> <leader>lq :YacStop<CR>
 
 " 调试信息
 function! YacBridgeStatus()
-  echo "yac-bridge command: " . string(g:yac_bridge_command)
-  echo "yac-bridge binary exists: " . (executable('./target/release/lsp-bridge') ? 'YES' : 'NO')
+  echo "yac-bridge command: " . string(g:lsp_bridge_command)
+  echo "yac-bridge binary exists: " . (executable('./zig-out/bin/lsp-bridge') ? 'YES' : 'NO')
 endfunction
 
 command! YacStatus call YacBridgeStatus()
-

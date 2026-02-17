@@ -10,7 +10,8 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 3000)
+call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+sleep 3
 
 " ============================================================================
 " Test 1: Hover on struct
@@ -78,7 +79,7 @@ call popup_clear()
 call yac_test#log('INFO', 'Test 3: Hover on variable')
 
 " 定位到 users 变量
-call cursor(31, 9)
+call cursor(31, 13)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
