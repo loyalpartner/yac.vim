@@ -37,7 +37,7 @@ Install with:
 ## Development Setup
 
 1. Clone the repository.
-2. Install Zig 0.12+.
+2. Install Zig 0.14+.
 3. Build the project:
    ```bash
    zig build -Doptimize=ReleaseFast
