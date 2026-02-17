@@ -38,6 +38,10 @@ const EventLoop = struct {
     pending_requests: std.AutoHashMap(u32, PendingLspRequest),
     /// Read buffer for stdin
     stdin_buf: std.ArrayList(u8),
+    /// Number of active LSP $/progress operations (indexing, etc.)
+    indexing_count: u32,
+    /// Vim requests deferred while LSP is indexing, replayed when ready
+    deferred_requests: std.ArrayList([]u8),
 
     fn init(allocator: Allocator) EventLoop {
         return .{
@@ -46,6 +50,8 @@ const EventLoop = struct {
             .vim_stdout = std.io.getStdOut(),
             .pending_requests = std.AutoHashMap(u32, PendingLspRequest).init(allocator),
             .stdin_buf = std.ArrayList(u8).init(allocator),
+            .indexing_count = 0,
+            .deferred_requests = std.ArrayList([]u8).init(allocator),
         };
     }
 
@@ -58,6 +64,8 @@ const EventLoop = struct {
         self.registry.deinit();
         self.pending_requests.deinit();
         self.stdin_buf.deinit();
+        for (self.deferred_requests.items) |req| self.allocator.free(req);
+        self.deferred_requests.deinit();
     }
 
     /// Main event loop using poll().
@@ -176,11 +184,11 @@ const EventLoop = struct {
         switch (msg) {
             .request => |r| {
                 log.debug("Vim request [{d}]: {s}", .{ r.id, r.method });
-                self.handleVimRequest(alloc, r.id, r.method, r.params);
+                self.handleVimRequest(alloc, r.id, r.method, r.params, trimmed);
             },
             .notification => |n| {
                 log.debug("Vim notification: {s}", .{n.method});
-                self.handleVimRequest(alloc, null, n.method, n.params);
+                self.handleVimRequest(alloc, null, n.method, n.params, trimmed);
             },
             .response => |r| {
                 log.debug("Vim response [{d}]", .{r.id});
@@ -190,7 +198,22 @@ const EventLoop = struct {
     }
 
     /// Handle a Vim request or notification.
-    fn handleVimRequest(self: *EventLoop, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value) void {
+    fn handleVimRequest(self: *EventLoop, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8) void {
+        // Defer query methods while LSP servers are indexing
+        if (vim_id != null and self.indexing_count > 0 and isQueryMethod(method)) {
+            const duped = self.allocator.dupe(u8, raw_line) catch |e| {
+                log.err("Failed to defer request: {any}", .{e});
+                return;
+            };
+            self.deferred_requests.append(duped) catch |e| {
+                self.allocator.free(duped);
+                log.err("Failed to defer request: {any}", .{e});
+                return;
+            };
+            log.info("Deferred {s} request (LSP indexing in progress)", .{method});
+            return;
+        }
+
         var ctx = handlers_mod.HandlerContext{
             .allocator = alloc,
             .registry = &self.registry,
@@ -326,6 +349,9 @@ const EventLoop = struct {
                 .notification => |notif| {
                     self.handleLspNotification(client_key, notif.method, notif.params);
                 },
+                .server_request => |req| {
+                    self.handleLspServerRequest(client_key, req.id, req.method, req.params);
+                },
             }
         }
     }
@@ -343,9 +369,14 @@ const EventLoop = struct {
         return result;
     }
 
-    /// Handle LSP server notifications (e.g., diagnostics).
+    /// Handle LSP server notifications (e.g., diagnostics, progress).
     fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
         _ = client_key;
+
+        if (std.mem.eql(u8, method, "$/progress")) {
+            self.handleProgress(params);
+            return;
+        }
 
         if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
             // Forward diagnostics to Vim
@@ -357,6 +388,67 @@ const EventLoop = struct {
             self.vim_stdout.writer().print("{s}\n", .{encoded}) catch return;
         } else {
             log.debug("LSP notification: {s}", .{method});
+        }
+    }
+
+    /// Handle $/progress notifications to track LSP indexing state.
+    fn handleProgress(self: *EventLoop, params: Value) void {
+        const params_obj = switch (params) {
+            .object => |o| o,
+            else => return,
+        };
+        const value_obj = json_utils.getObject(params_obj, "value") orelse return;
+        const kind = json_utils.getString(value_obj, "kind") orelse return;
+
+        if (std.mem.eql(u8, kind, "begin")) {
+            self.indexing_count += 1;
+            log.info("LSP progress begin (active={d})", .{self.indexing_count});
+        } else if (std.mem.eql(u8, kind, "end")) {
+            if (self.indexing_count > 0) {
+                self.indexing_count -= 1;
+            }
+            log.info("LSP progress end (active={d})", .{self.indexing_count});
+            if (self.indexing_count == 0) {
+                self.flushDeferredRequests();
+            }
+        }
+    }
+
+    /// Handle server-to-client requests (e.g., window/workDoneProgress/create).
+    fn handleLspServerRequest(self: *EventLoop, client_key: []const u8, id: i64, method: []const u8, params: Value) void {
+        _ = params;
+        const client = self.registry.getClient(client_key) orelse return;
+
+        if (std.mem.eql(u8, method, "window/workDoneProgress/create")) {
+            // Acknowledge progress token creation
+            client.sendResponse(id, .null) catch |e| {
+                log.err("Failed to respond to workDoneProgress/create: {any}", .{e});
+            };
+            log.debug("Acknowledged progress token creation", .{});
+        } else {
+            log.debug("Unhandled server request: {s}", .{method});
+            // Respond with null for unhandled server requests
+            client.sendResponse(id, .null) catch {};
+        }
+    }
+
+    /// Flush deferred requests after LSP indexing completes.
+    fn flushDeferredRequests(self: *EventLoop) void {
+        const count = self.deferred_requests.items.len;
+        if (count == 0) return;
+
+        log.info("Flushing {d} deferred requests", .{count});
+
+        // Move items out so handleVimLine doesn't re-defer during replay
+        var requests = self.deferred_requests;
+        self.deferred_requests = std.ArrayList([]u8).init(self.allocator);
+        defer {
+            for (requests.items) |req| self.allocator.free(req);
+            requests.deinit();
+        }
+
+        for (requests.items) |raw_line| {
+            self.handleVimLine(raw_line);
         }
     }
 
@@ -382,6 +474,29 @@ const EventLoop = struct {
         }
     }
 };
+
+/// Check if a Vim method is a query that should be deferred during LSP indexing.
+pub fn isQueryMethod(method: []const u8) bool {
+    const query_methods = [_][]const u8{
+        "goto_definition",
+        "goto_declaration",
+        "goto_type_definition",
+        "goto_implementation",
+        "hover",
+        "completion",
+        "references",
+        "rename",
+        "code_action",
+        "document_symbols",
+        "inlay_hints",
+        "folding_range",
+        "call_hierarchy",
+    };
+    for (query_methods) |m| {
+        if (std.mem.eql(u8, method, m)) return true;
+    }
+    return false;
+}
 
 /// Transform a goto LSP response into a Location for Vim.
 fn transformGotoResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
@@ -466,4 +581,32 @@ test {
     _ = @import("vim_protocol.zig");
     _ = @import("lsp_protocol.zig");
     _ = @import("lsp_registry.zig");
+    _ = @import("lsp_client.zig");
+}
+
+test "isQueryMethod - query methods return true" {
+    try std.testing.expect(isQueryMethod("goto_definition"));
+    try std.testing.expect(isQueryMethod("goto_declaration"));
+    try std.testing.expect(isQueryMethod("goto_type_definition"));
+    try std.testing.expect(isQueryMethod("goto_implementation"));
+    try std.testing.expect(isQueryMethod("hover"));
+    try std.testing.expect(isQueryMethod("completion"));
+    try std.testing.expect(isQueryMethod("references"));
+    try std.testing.expect(isQueryMethod("rename"));
+    try std.testing.expect(isQueryMethod("code_action"));
+    try std.testing.expect(isQueryMethod("document_symbols"));
+    try std.testing.expect(isQueryMethod("inlay_hints"));
+    try std.testing.expect(isQueryMethod("folding_range"));
+    try std.testing.expect(isQueryMethod("call_hierarchy"));
+}
+
+test "isQueryMethod - non-query methods return false" {
+    try std.testing.expect(!isQueryMethod("file_open"));
+    try std.testing.expect(!isQueryMethod("did_change"));
+    try std.testing.expect(!isQueryMethod("did_save"));
+    try std.testing.expect(!isQueryMethod("did_close"));
+    try std.testing.expect(!isQueryMethod("will_save"));
+    try std.testing.expect(!isQueryMethod("diagnostics"));
+    try std.testing.expect(!isQueryMethod("execute_command"));
+    try std.testing.expect(!isQueryMethod("unknown_method"));
 }
