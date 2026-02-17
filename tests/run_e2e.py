@@ -71,24 +71,11 @@ class VimE2ERunner:
 
     def _check_prerequisites(self) -> bool:
         """检查测试先决条件"""
-        # 检查 rust-analyzer
-        try:
-            subprocess.run(
-                ["rust-analyzer", "--version"],
-                capture_output=True,
-                timeout=5
-            )
-        except (subprocess.SubprocessError, FileNotFoundError):
-            print("WARNING: rust-analyzer not found, some tests may fail")
-            return False
-
-        # 检查 lsp-bridge 是否已编译
-        bridge_path = self.project_root / "target" / "release" / "lsp-bridge"
+        # 检查 lsp-bridge 是否已编译（Zig 主路径）
+        bridge_path = self.project_root / "zig-out" / "bin" / "lsp-bridge"
         if not bridge_path.exists():
-            bridge_path = self.project_root / "target" / "debug" / "lsp-bridge"
-            if not bridge_path.exists():
-                print("WARNING: lsp-bridge not built, run 'cargo build' first")
-                return False
+            print("WARNING: lsp-bridge not built, run 'zig build' first")
+            return False
 
         return True
 
