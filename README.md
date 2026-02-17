@@ -192,15 +192,13 @@ zig build -Doptimize=Debug
 # Run Zig unit tests
 zig build test
 
+# Run E2E tests (requires uv)
+uv run pytest            # all tests
+uv run pytest -k goto    # single suite
+uv run pytest -v         # verbose
+
 # Manual testing with development vimrc
 vim -u vimrc test_data/src/lib.rs
-
-# Test goto definition manually:
-# 1. Open test_data/src/lib.rs in Vim
-# 2. Navigate to a symbol (e.g., User::new usage on line ~31)
-# 3. Press 'gd' to jump to definition  
-# 4. Press 'gD' to jump to declaration
-# 5. Should jump to the struct definition
 ```
 
 ### CI Checks
@@ -276,7 +274,6 @@ tail -f /tmp/lsp-bridge.log
 - Follow Zig idioms and best practices
 - Maintain the ~800 line code limit
 - Add tests for new functionality
-- Update CLAUDE.md documentation
 - Install pre-commit hooks to automatically check code quality
 - All code must pass `zig build test` and `zig fmt` checks
 
@@ -291,7 +288,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔗 Links
 
-- [Development Documentation](CLAUDE.md)
 - [Issue Tracker](https://github.com/loyalpartner/yac.vim/issues)
 - [LSP Specification](https://microsoft.github.io/language-server-protocol/)
 
