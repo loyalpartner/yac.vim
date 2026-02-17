@@ -33,13 +33,15 @@ call setline(1, lines)
 call yac_test#log('INFO', 'Created file with ' . line('$') . ' lines')
 
 " 等待 LSP 处理
-sleep 5
+sleep 2
 
 " 测试在大文件中的 goto definition
 call cursor(line('$') - 25, 20)  " 某个 func_X 调用
+let start_line = line('.')
+let start_col = col('.')
 let start_time = localtime()
 YacDefinition
-sleep 2
+call yac_test#wait_cursor_move(start_line, start_col, 5000)
 let elapsed = localtime() - start_time
 
 call yac_test#log('INFO', 'Goto definition took ' . elapsed . 's')
@@ -51,7 +53,7 @@ normal! O
 execute "normal! i    func_"
 let start_time = localtime()
 YacComplete
-sleep 3
+call yac_test#wait_completion(5000)
 let elapsed = localtime() - start_time
 
 call yac_test#log('INFO', 'Completion took ' . elapsed . 's')
@@ -64,14 +66,13 @@ bdelete!
 call yac_test#log('INFO', 'Test 2: Rapid successive requests')
 
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " 快速连续发送多个请求
 call cursor(14, 12)
 for i in range(1, 5)
   YacHover
 endfor
-sleep 2
+call yac_test#wait_popup(3000)
 
 " 应该不会崩溃，最后一个请求应该正常完成
 let popups = popup_list()
@@ -95,7 +96,7 @@ let word = expand('<cword>')
 
 if word == 'unsaved_func'
   YacHover
-  sleep 2
+  call yac_test#wait_popup(3000)
   call yac_test#log('INFO', 'Hover on unsaved code attempted')
 endif
 
@@ -112,9 +113,11 @@ call yac_test#log('INFO', 'Test 4: Cross-file navigation')
 call cursor(2, 24)  " HashMap
 let start_buf = bufnr('%')
 let start_file = expand('%:t')
+let start_line = line('.')
+let start_col = col('.')
 
 YacDefinition
-sleep 3
+call yac_test#wait_cursor_move(start_line, start_col, 5000)
 
 let end_buf = bufnr('%')
 let end_file = expand('%:t')
@@ -126,7 +129,7 @@ if end_buf != start_buf
 
   " 测试返回
   execute "normal! \<C-o>"
-  sleep 1
+  sleep 500m
   let return_buf = bufnr('%')
   call yac_test#assert_eq(return_buf, start_buf, 'Should return to original buffer')
 endif
@@ -142,20 +145,20 @@ call yac_test#log('INFO', 'Test 5: Operations on invalid positions')
 " 在空行上操作
 call cursor(3, 1)  " 假设是空行
 YacHover
-sleep 1
+sleep 500m
 call yac_test#log('INFO', 'Hover on empty line: no crash')
 
 " 在注释中操作
 call cursor(1, 5)
 YacDefinition
-sleep 1
+sleep 500m
 call yac_test#log('INFO', 'Goto in comment: no crash')
 
 " 在字符串中操作
 " 找一个字符串
 call search('"')
 YacDefinition
-sleep 1
+sleep 500m
 call yac_test#log('INFO', 'Goto in string: no crash')
 
 " ============================================================================
@@ -166,7 +169,7 @@ call yac_test#log('INFO', 'Test 6: Multiple buffers with LSP')
 " 打开第一个文件
 edit test_data/src/lib.rs
 let buf1 = bufnr('%')
-sleep 1
+sleep 500m
 
 " 打开第二个 Rust 文件（创建临时）
 new
@@ -174,12 +177,14 @@ setlocal buftype=nofile
 set filetype=rust
 call setline(1, ['fn helper() -> i32 { 42 }', '', 'fn use_helper() { let _ = helper(); }'])
 let buf2 = bufnr('%')
-sleep 2
+sleep 1
 
 " 在新 buffer 中测试
 call cursor(3, 30)  " helper() 调用
+let start_line = line('.')
+let start_col = col('.')
 YacDefinition
-sleep 2
+call yac_test#wait_cursor_move(start_line, start_col, 3000)
 
 let jumped_line = line('.')
 call yac_test#log('INFO', 'Jumped to line ' . jumped_line . ' in temp buffer')
@@ -188,7 +193,7 @@ call yac_test#log('INFO', 'Jumped to line ' . jumped_line . ' in temp buffer')
 execute 'buffer ' . buf1
 call cursor(14, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 
 call yac_test#log('INFO', 'Multi-buffer operations completed')
 
@@ -207,11 +212,11 @@ set filetype=text
 call setline(1, ['This is a plain text file', 'No LSP support expected'])
 
 YacHover
-sleep 1
+sleep 500m
 call yac_test#log('INFO', 'Hover on non-Rust file: handled gracefully')
 
 YacDefinition
-sleep 1
+sleep 500m
 call yac_test#log('INFO', 'Goto on non-Rust file: handled gracefully')
 
 bdelete!
@@ -226,28 +231,28 @@ edit test_data/src/lib.rs
 " 记录当前状态
 call cursor(14, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 let had_hover_before = !empty(popup_list())
 call popup_clear()
 
 " 停止 YAC
 if exists(':YacStop')
   YacStop
-  sleep 1
+  sleep 500m
   call yac_test#log('INFO', 'YAC stopped')
 endif
 
 " 重新启动
 if exists(':YacStart')
   YacStart
-  sleep 3
+  sleep 2
   call yac_test#log('INFO', 'YAC restarted')
 endif
 
 " 验证功能恢复
 call cursor(14, 12)
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 let has_hover_after = !empty(popup_list())
 
 call yac_test#log('INFO', 'Hover before stop: ' . had_hover_before . ', after restart: ' . has_hover_after)
@@ -269,12 +274,12 @@ execute "normal! i/// Emoji: 🦀 Rust"
 normal! o
 execute "normal! ipub fn unicode_test() -> &'static str { \"你好世界\" }"
 
-sleep 2
+sleep 1
 
 " 在 Unicode 函数上测试
 call cursor(line('$'), 8)
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#log('INFO', 'Hover with Unicode: ' . len(popups) . ' popups')
