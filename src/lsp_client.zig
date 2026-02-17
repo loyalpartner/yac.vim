@@ -31,12 +31,12 @@ pub const LspClient = struct {
     child: std.process.Child,
     framer: lsp.MessageFramer,
     state: LspState,
-    next_id: u32,
+    next_id: *u32,
     pending_requests: std.AutoHashMap(u32, PendingRequest),
     /// Buffer for reading from child stdout
     read_buf: [4096]u8,
 
-    pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8) !*LspClient {
+    pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, next_id: *u32) !*LspClient {
         var argv = std.ArrayList([]const u8).init(allocator);
         defer argv.deinit();
         try argv.append(command);
@@ -55,7 +55,7 @@ pub const LspClient = struct {
             .child = child,
             .framer = lsp.MessageFramer.init(allocator),
             .state = .uninitialized,
-            .next_id = 1,
+            .next_id = next_id,
             .pending_requests = std.AutoHashMap(u32, PendingRequest).init(allocator),
             .read_buf = undefined,
         };
@@ -78,8 +78,8 @@ pub const LspClient = struct {
 
     /// Send a JSON-RPC request and return the request ID.
     pub fn sendRequest(self: *LspClient, method: []const u8, params: Value) !u32 {
-        const id = self.next_id;
-        self.next_id += 1;
+        const id = self.next_id.*;
+        self.next_id.* += 1;
 
         const content = try lsp.buildLspRequest(self.allocator, id, method, params);
         defer self.allocator.free(content);
