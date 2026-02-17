@@ -86,7 +86,7 @@ endfunction
 " 构建特定连接的 job 命令
 function! s:build_job_command(key) abort
   if a:key == 'local'
-    return get(g:, 'yac_bridge_command', ['./target/release/lsp-bridge'])
+    return get(g:, 'yac_bridge_command', ['./zig-out/bin/lsp-bridge'])
   else
     " SSH 连接命令，使用 ControlPersist 优化
     let l:control_path = '/tmp/yac-' . substitute(a:key, '[^a-zA-Z0-9]', '_', 'g') . '.sock'

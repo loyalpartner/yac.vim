@@ -1,13 +1,13 @@
 # yac.vim - Yet Another Code completion for Vim
 
-A minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Another Code completion), this is specifically a lightweight LSP bridge, not a completion system.
+A minimal LSP bridge for Vim, centered on a Zig runtime path. Despite the name "YAC" (Yet Another Code completion), this is specifically a lightweight LSP bridge, not a completion system.
 
 ## 🚀 Features
 
 - **Minimal & Fast**: ~800 lines total core codebase
 - **Simple Architecture**: Direct stdin/stdout communication between Vim and LSP servers
 - **SSH Remote Editing**: Full SSH tunnel infrastructure for remote LSP operations
-- **Memory Safe**: Rust compile-time guarantees prevent crashes and memory leaks  
+- **Memory Safe**: Strongly-typed implementation with predictable runtime behavior  
 - **Auto-initialization**: LSP servers start automatically when files are opened
 - **Silent Error Handling**: Gracefully handles "No definition found" scenarios
 - **Popup Support**: Modern floating popups for Vim 8.1+
@@ -16,16 +16,16 @@ A minimal LSP bridge for Vim written in Rust. Despite the name "YAC" (Yet Anothe
 
 ### Prerequisites
 
-- Rust 1.70+
+- Zig 0.12+
 - Vim 8.1+ (Neovim not supported)  
-- LSP servers (currently supports rust-analyzer)
+- Installed LSP servers for the languages you use
 
 ### Building from Source
 
 ```bash
 git clone https://github.com/loyalpartner/yac.vim.git
 cd yac.vim
-cargo build --release
+zig build -Doptimize=ReleaseFast
 ```
 
 ### Vim Plugin Installation
@@ -46,7 +46,7 @@ Add to your `.vimrc`:
 
 ```vim
 " Specify path to lsp-bridge binary
-let g:lsp_bridge_command = ['./target/release/lsp-bridge']
+let g:yac_bridge_command = ['./zig-out/bin/lsp-bridge']
 
 " Auto-start LSP bridge (default: 1)
 let g:lsp_bridge_auto_start = 1
@@ -116,7 +116,7 @@ Vim → local lsp-bridge (forwarder) → SSH tunnel → remote lsp-bridge → ru
 
 ### Process Model
 
-- Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'raw'`
+- Vim launches `lsp-bridge` as a child process using `job_start()` with `'mode': 'json'`
 - Each Vim instance has its own `lsp-bridge` process (no shared server)
 - Communication is purely stdin/stdout with line-delimited JSON
 - Process terminates when Vim closes or `:LspStop` is called
@@ -149,7 +149,7 @@ The system uses a simplified Command-Action protocol:
 
 The codebase follows strict simplicity constraints:
 
-- **Code limit**: Target ~800 lines total (currently ~760: 380 Rust + 380 VimScript)
+- **Code limit**: Keep the core bridge minimal; Zig implementation is the primary runtime path
 - **No over-engineering**: "Make it work, make it right, make it fast"
 - **Unix philosophy**: Do one thing (LSP bridging) and do it well
 - **Linus-style**: Eliminate special cases, prefer direct solutions
@@ -171,8 +171,8 @@ git config core.hooksPath scripts
 ```
 
 The hooks will automatically run before each commit:
-- `cargo fmt --check` - Check code formatting
-- `cargo clippy` - Check for common mistakes and style issues
+- `zig fmt --check src/**/*.zig` - Check Zig formatting
+- `zig fmt src/**/*.zig` - Keep Zig sources formatted
 
 To temporarily skip hooks, use: `git commit --no-verify`
 
@@ -180,17 +180,17 @@ To temporarily skip hooks, use: `git commit --no-verify`
 
 ```bash
 # Build release version
-cargo build --release
+zig build -Doptimize=ReleaseFast
 
 # Build debug version  
-cargo build
+zig build -Doptimize=Debug
 ```
 
 ### Testing
 
 ```bash
-# Run Rust unit/integration tests
-cargo test
+# Run Zig unit tests
+zig build test
 
 # Manual testing with development vimrc
 vim -u vimrc test_data/src/lib.rs
@@ -205,19 +205,18 @@ vim -u vimrc test_data/src/lib.rs
 
 ### CI Checks
 
-![Rust CI](https://github.com/loyalpartner/yac.vim/workflows/Rust%20CI/badge.svg)
+![CI](https://github.com/loyalpartner/yac.vim/workflows/CI/badge.svg)
 
 All commits and PRs are automatically checked by GitHub Actions for:
-- Code formatting (`cargo fmt`)
-- Linting (`cargo clippy`) 
+- Code formatting (`zig fmt`)
 - Build and tests
 
 ### Running in Development
 
 ```bash
 # Build and run with debug logging
-cargo build --release
-RUST_LOG=debug ./target/release/lsp-bridge
+zig build -Doptimize=ReleaseFast
+YAC_LOG=debug ./zig-out/bin/lsp-bridge
 
 # Check logs
 tail -f /tmp/lsp-bridge.log
@@ -228,8 +227,8 @@ tail -f /tmp/lsp-bridge.log
 
 ## 📋 Supported LSP Servers
 
-- **rust-analyzer** (Rust) - Fully supported
-- **Other languages**: Framework exists but not implemented
+- Multi-language support is configured in bridge registry
+- Actual availability depends on installed language servers
 
 ## 🐛 Troubleshooting
 
@@ -238,10 +237,10 @@ tail -f /tmp/lsp-bridge.log
 1. **"lsp-bridge not running"**
    ```bash
    # Check if binary exists and is executable
-   ls -la ./target/release/lsp-bridge
+   ls -la ./zig-out/bin/lsp-bridge
    
    # Test binary manually (it waits for JSON input)
-   echo '{"command":"goto_definition","file":"/path/to/file.rs","line":0,"column":0}' | ./target/release/lsp-bridge
+   echo '[0,{"method":"goto_definition","params":{"file":"/path/to/file.rs","line":0,"column":0}}]' | ./zig-out/bin/lsp-bridge
    ```
 
 2. **No response from LSP**
@@ -249,8 +248,8 @@ tail -f /tmp/lsp-bridge.log
    # Check LSP bridge logs for errors
    tail -f /tmp/lsp-bridge.log
    
-   # Verify rust-analyzer is installed
-   which rust-analyzer
+   # Verify your target language server is installed
+   which <your-language-server>
    ```
 
 3. **No definition found**
