@@ -69,18 +69,30 @@ pub const builtin_configs = [_]LspServerConfig{
 // LSP Registry - manages language server lifecycles
 // ============================================================================
 
+pub const PendingOpen = struct {
+    uri: []const u8,
+    language_id: []const u8,
+    content: []const u8,
+};
+
 pub const LspRegistry = struct {
     allocator: Allocator,
     /// client_key -> LspClient (key = "language\x00workspace_uri")
     clients: std.StringHashMap(*LspClient),
     /// Requests waiting for initialization to complete: client_key -> init request ID
     pending_init: std.StringHashMap(u32),
+    /// Global request ID counter (shared across all clients to avoid collisions)
+    next_id: u32,
+    /// Files opened during initialization, replayed after initialized
+    pending_opens: std.StringHashMap(std.ArrayList(PendingOpen)),
 
     pub fn init(allocator: Allocator) LspRegistry {
         return .{
             .allocator = allocator,
             .clients = std.StringHashMap(*LspClient).init(allocator),
             .pending_init = std.StringHashMap(u32).init(allocator),
+            .next_id = 1,
+            .pending_opens = std.StringHashMap(std.ArrayList(PendingOpen)).init(allocator),
         };
     }
 
@@ -92,6 +104,8 @@ pub const LspRegistry = struct {
         }
         self.clients.deinit();
         self.pending_init.deinit();
+        self.freePendingOpens();
+        self.pending_opens.deinit();
     }
 
     /// Detect language from file path extension.
@@ -129,6 +143,7 @@ pub const LspRegistry = struct {
     pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {
         const config = getConfig(language) orelse return error.UnsupportedLanguage;
         const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
+        defer if (workspace_uri) |uri| self.allocator.free(uri);
 
         // Build lookup key on stack
         var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
@@ -142,7 +157,7 @@ pub const LspRegistry = struct {
         }
 
         log.info("Starting {s} for {s} (workspace: {s})", .{ config.command, language, workspace_uri orelse "(none)" });
-        const client = try LspClient.spawn(self.allocator, config.command, config.args);
+        const client = try LspClient.spawn(self.allocator, config.command, config.args, &self.next_id);
         const key = try self.allocator.dupe(u8, lookup_key);
 
         const init_id = try client.initialize(workspace_uri);
@@ -153,13 +168,61 @@ pub const LspRegistry = struct {
         return .{ .client = client, .client_key = key };
     }
 
-    /// Handle an initialize response by sending 'initialized'.
+    /// Handle an initialize response: send 'initialized', then replay queued didOpens.
     pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8) !void {
         _ = self.pending_init.remove(client_key);
-        if (self.clients.get(client_key)) |client| {
-            try client.sendInitialized();
-            log.info("LSP initialized: {s}", .{client_key});
+        const client = self.clients.get(client_key) orelse return;
+
+        try client.sendInitialized();
+        log.info("LSP initialized: {s}", .{client_key});
+
+        // Replay files that were opened during initialization
+        if (self.pending_opens.getPtr(client_key)) |opens| {
+            for (opens.items) |open| {
+                self.sendDidOpen(client, open) catch |e| {
+                    log.err("Failed to replay didOpen for {s}: {any}", .{ open.uri, e });
+                };
+                self.allocator.free(open.uri);
+                self.allocator.free(open.language_id);
+                self.allocator.free(open.content);
+            }
+            opens.deinit();
+            _ = self.pending_opens.remove(client_key);
         }
+    }
+
+    /// Queue a didOpen for replay after initialization completes.
+    pub fn queuePendingOpen(self: *LspRegistry, client_key: []const u8, uri: []const u8, language_id: []const u8, content: []const u8) !void {
+        const open = PendingOpen{
+            .uri = try self.allocator.dupe(u8, uri),
+            .language_id = try self.allocator.dupe(u8, language_id),
+            .content = try self.allocator.dupe(u8, content),
+        };
+
+        if (self.pending_opens.getPtr(client_key)) |list| {
+            try list.append(open);
+        } else {
+            var list = std.ArrayList(PendingOpen).init(self.allocator);
+            try list.append(open);
+            try self.pending_opens.put(client_key, list);
+        }
+    }
+
+    fn sendDidOpen(self: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var td_item = ObjectMap.init(alloc);
+        try td_item.put("uri", json.jsonString(open.uri));
+        try td_item.put("languageId", json.jsonString(open.language_id));
+        try td_item.put("version", json.jsonInteger(1));
+        try td_item.put("text", json.jsonString(open.content));
+
+        var params = ObjectMap.init(alloc);
+        try params.put("textDocument", .{ .object = td_item });
+
+        try client.sendNotification("textDocument/didOpen", .{ .object = params });
     }
 
     /// Check if a client is still initializing.
@@ -183,6 +246,20 @@ pub const LspRegistry = struct {
         }
         self.clients.clearAndFree();
         self.pending_init.clearAndFree();
+        self.freePendingOpens();
+        self.pending_opens.clearAndFree();
+    }
+
+    fn freePendingOpens(self: *LspRegistry) void {
+        var it = self.pending_opens.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.items) |open| {
+                self.allocator.free(open.uri);
+                self.allocator.free(open.language_id);
+                self.allocator.free(open.content);
+            }
+            entry.value_ptr.deinit();
+        }
     }
 
     /// Collect all stdout fds for polling.
