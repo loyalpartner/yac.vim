@@ -175,7 +175,7 @@ endfunction
 function! s:request(method, params, callback_func) abort
   let jsonrpc_msg = {
     \ 'method': a:method,
-    \ 'params': extend(a:params, {'command': a:method})
+    \ 'params': a:params
     \ }
 
   let l:job = s:ensure_job()
@@ -202,7 +202,7 @@ endfunction
 function! s:notify(method, params) abort
   let jsonrpc_msg = {
     \ 'method': a:method,
-    \ 'params': extend(a:params, {'command': a:method})
+    \ 'params': a:params
     \ }
 
   let l:job = s:ensure_job()
@@ -227,35 +227,35 @@ endfunction
 
 " LSP 方法
 function! yac#goto_definition() abort
-  call s:notify('goto_definition', {
+  call s:request('goto_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ })
+    \ }, 's:handle_goto_response')
 endfunction
 
 function! yac#goto_declaration() abort
-  call s:notify('goto_declaration', {
+  call s:request('goto_declaration', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ })
+    \ }, 's:handle_goto_response')
 endfunction
 
 function! yac#goto_type_definition() abort
-  call s:notify('goto_type_definition', {
+  call s:request('goto_type_definition', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ })
+    \ }, 's:handle_goto_response')
 endfunction
 
 function! yac#goto_implementation() abort
-  call s:notify('goto_implementation', {
+  call s:request('goto_implementation', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ })
+    \ }, 's:handle_goto_response')
 endfunction
 
 function! yac#hover() abort
@@ -585,6 +585,29 @@ function! s:in_string_or_comment() abort
 endfunction
 
 " hover 响应处理器 - 简化：有 content 就显示
+" goto 响应处理器 - 跳转到定义/声明/类型定义/实现
+function! s:handle_goto_response(channel, response) abort
+  if get(g:, 'lsp_bridge_debug', 0)
+    echom printf('YacDebug[RECV]: goto response: %s', string(a:response))
+  endif
+
+  if empty(a:response) || !has_key(a:response, 'file')
+    return
+  endif
+
+  let l:file = a:response.file
+  let l:line = get(a:response, 'line', 0) + 1
+  let l:col = get(a:response, 'column', 0) + 1
+
+  " Save current position to jumplist
+  normal! m'
+
+  if l:file != expand('%:p')
+    execute 'edit ' . fnameescape(l:file)
+  endif
+  call cursor(l:line, l:col)
+endfunction
+
 function! s:handle_hover_response(channel, response) abort
   if get(g:, 'lsp_bridge_debug', 0)
     echom printf('YacDebug[RECV]: hover response: %s', string(a:response))
