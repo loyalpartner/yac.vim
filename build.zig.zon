@@ -1,0 +1,11 @@
+.{
+    .name = .yac_lsp_bridge,
+    .version = "0.1.0",
+    .fingerprint = 0x51ef1c1f165459a7,
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
