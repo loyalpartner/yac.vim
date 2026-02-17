@@ -45,6 +45,7 @@ Install with:
 4. Run tests:
    ```bash
    zig build test
+   uv run pytest
    ```
 
 ## Submitting Changes
