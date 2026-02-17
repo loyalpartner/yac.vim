@@ -1,24 +1,21 @@
 #!/bin/sh
 # Pre-commit hook for yac.vim
-# Ensures code quality by running cargo fmt and cargo clippy
+# Ensures code quality by running Zig checks
 
 set -e
 
 echo "🔍 Running pre-commit checks..."
 
-# Check formatting
-echo "  Checking code formatting..."
-if ! cargo fmt -- --check; then
+echo "  Checking Zig formatting..."
+if ! zig fmt --check src/*.zig; then
     echo "❌ Format check failed!"
-    echo "   Run 'cargo fmt' to fix formatting issues."
+    echo "   Run 'zig fmt src/*.zig' to fix formatting issues."
     exit 1
 fi
 
-# Run clippy
-echo "  Running clippy lints..."
-if ! cargo clippy -- -D warnings; then
-    echo "❌ Clippy warnings found!"
-    echo "   Please fix the warnings before committing."
+echo "  Running Zig tests..."
+if ! zig build test; then
+    echo "❌ Zig tests failed!"
     exit 1
 fi
 

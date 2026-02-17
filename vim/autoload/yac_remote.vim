@@ -74,14 +74,14 @@ function! s:ensure_remote_binary(user_host) abort
   endif
 
   " Build if needed
-  if !filereadable('./target/release/lsp-bridge')
+  if !filereadable('./zig-out/bin/lsp-bridge')
     echo "Building lsp-bridge..."
-    call system('cargo build --release')
+    call system('zig build -Doptimize=ReleaseFast')
   endif
 
   " Deploy
   echo "Deploying to " . a:user_host . "..."
-  call system(printf('scp ./target/release/lsp-bridge %s:lsp-bridge', shellescape(a:user_host)))
+  call system(printf('scp ./zig-out/bin/lsp-bridge %s:lsp-bridge', shellescape(a:user_host)))
   call system(printf('ssh %s "chmod +x lsp-bridge"', shellescape(a:user_host)))
 
   return 1

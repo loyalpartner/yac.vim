@@ -1,91 +1,56 @@
 # Contributing to yac.vim
 
-Thank you for your interest in contributing to yac.vim! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing to yac.vim.
 
 ## Code Quality Requirements
 
-Before submitting a pull request, please ensure your code meets our quality standards:
+Before submitting a pull request, make sure all Zig checks pass:
 
-### Rust Code Standards
-
-1. **Formatting**: All Rust code must be formatted with `cargo fmt`
+1. **Formatting**
    ```bash
-   cargo fmt --all
+   zig fmt src/*.zig
    ```
 
-2. **Linting**: All code must pass `cargo clippy` without warnings
+2. **Tests**
    ```bash
-   cargo clippy --all-targets --all-features -- -D warnings
+   zig build test
    ```
 
-3. **Testing**: All tests must pass
+3. **Build**
    ```bash
-   cargo test --verbose
+   zig build -Doptimize=ReleaseFast
    ```
 
-4. **Building**: The project must build successfully
-   ```bash
-   cargo build --verbose
-   ```
+## Pre-commit Checks
 
-### Pre-commit Checks
+The repository provides `scripts/pre-commit`, which runs:
 
-Before committing, run these commands to ensure your code meets our standards:
+- `zig fmt --check src/*.zig`
+- `zig build test`
+
+Install with:
 
 ```bash
-# Format code
-cargo fmt --all
-
-# Check for linting issues
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Run tests
-cargo test --verbose
-
-# Build project
-cargo build --verbose
+./scripts/setup-hooks.sh
 ```
-
-### Continuous Integration
-
-Our CI pipeline automatically runs these checks on all pull requests:
-- Code formatting verification (`cargo fmt --check`)
-- Linting with clippy (`cargo clippy`)
-- Build verification
-- Test execution
-
-**Important**: Pull requests that fail any of these checks cannot be merged to the main branch.
 
 ## Development Setup
 
-1. Clone the repository
-2. Install Rust toolchain with required components:
-   ```bash
-   rustup component add rustfmt clippy
-   ```
+1. Clone the repository.
+2. Install Zig 0.12+.
 3. Build the project:
    ```bash
-   cargo build
+   zig build -Doptimize=ReleaseFast
    ```
 4. Run tests:
    ```bash
-   cargo test
+   zig build test
    ```
 
 ## Submitting Changes
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Ensure all quality checks pass (see above)
-5. Submit a pull request
-
-Pull requests must:
-- Pass all CI checks
-- Include tests for new functionality
-- Follow existing code style and conventions
-- Include clear commit messages
-
-## Questions?
-
-If you have questions about contributing, please open an issue for discussion.
+1. Fork the repository.
+2. Create a feature branch.
+3. Make your changes.
+4. Ensure all checks pass.
+5. Submit a pull request with a clear description.
