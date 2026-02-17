@@ -130,7 +130,7 @@ endif
 call yac_test#log('INFO', 'Test 5: Call hierarchy on non-function')
 
 " 回到测试文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 " 定位到 User struct（不是函数）

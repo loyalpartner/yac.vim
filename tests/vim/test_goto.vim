@@ -52,7 +52,7 @@ endif
 call yac_test#log('INFO', 'Test 2: Goto Definition - User struct')
 
 " 重新打开文件确保干净状态
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 " 定位到 process_user 函数参数中的 User (line 44)
@@ -79,7 +79,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: Goto Definition - get_name method')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 " 定位到 process_user 中的 get_name 调用 (line 45)
@@ -106,7 +106,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Goto Declaration')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 call cursor(34, 5)
@@ -129,7 +129,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 5: Goto Type Definition')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 " 定位到 users 变量 (line 31)
@@ -155,7 +155,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 6: Goto Implementation')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 1
 
 " 定位到 User struct 定义 (line 6)

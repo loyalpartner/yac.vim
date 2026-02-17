@@ -45,7 +45,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: gD mapping (Goto Declaration)')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 let gD_map = maparg('gD', 'n')
 call yac_test#log('INFO', 'gD mapping: ' . gD_map)
 
@@ -68,7 +68,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: K mapping (Hover)')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 let K_map = maparg('K', 'n')
 call yac_test#log('INFO', 'K mapping: ' . K_map)
 
@@ -165,7 +165,7 @@ if pumvisible() || !empty(popup_list())
   call yac_test#log('INFO', 'Testing completion confirm')
 
   " 尝试 Tab
-  execute "normal! \<Tab>"
+  call feedkeys("\<Tab>", 'x')
   sleep 500m
 
   let line_content = getline('.')
@@ -235,7 +235,7 @@ call yac_test#log('INFO', 'Colon insert map: ' . (empty(colon_imap) ? 'none' : '
 " ============================================================================
 call yac_test#log('INFO', 'Test 11: Popup window keys')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 call cursor(6, 12)
 
 YacHover

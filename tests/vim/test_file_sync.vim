@@ -13,7 +13,7 @@ call yac_test#setup()
 call yac_test#log('INFO', 'Test 1: File open (didOpen)')
 
 " 打开测试文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 3
 
 " LSP 应该已经初始化
@@ -137,7 +137,7 @@ bdelete!
 call yac_test#log('INFO', 'Buffer closed, didClose should be sent')
 
 " 确保不影响其他 buffer
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 call cursor(6, 12)
 YacHover
 sleep 1
@@ -187,7 +187,7 @@ call yac_test#log('INFO', 'After undo: ' . len(popups) . ' popups')
 call popup_clear()
 
 " 重做
-normal!
+execute "normal! \<C-r>"
 sleep 1
 
 call yac_test#log('INFO', 'After redo: LSP should sync')
@@ -202,7 +202,7 @@ call setline(1, original)
 call yac_test#log('INFO', 'Test 9: Multiple file modifications')
 
 " 打开两个 Rust 文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 let buf1 = bufnr('%')
 let orig1 = getline(1, '$')
 

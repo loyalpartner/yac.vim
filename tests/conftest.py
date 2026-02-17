@@ -112,6 +112,75 @@ class VimRunner:
         duration = time.time() - start_time
         return self._parse_output(test_name, output, duration)
 
+    def run_all_tests(self, timeout: int = 300) -> dict[str, SuiteResult]:
+        """Run all tests in a single Vim session (shared LSP)."""
+        start_time = time.time()
+        output_file = Path(f"/tmp/yac_test_batch_{os.getpid()}.txt")
+        run_all = self.test_dir / "run_all.vim"
+
+        vimrc = self.project_root / "vimrc"
+        cmd = [
+            self.vim_cmd,
+            "-N",
+            "-u", str(vimrc),
+            "-U", "NONE",
+            "-es",
+            "-c", "set noswapfile",
+            "-c", "set nobackup",
+            "-c", f"source {run_all}",
+            "-c", "qa!",
+        ]
+
+        env = os.environ.copy()
+        env["YAC_TEST_OUTPUT"] = str(output_file)
+
+        try:
+            subprocess.run(
+                cmd,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+            if output_file.exists():
+                output = output_file.read_text()
+                output_file.unlink()
+            else:
+                output = ""
+        except subprocess.TimeoutExpired:
+            if output_file.exists():
+                output = output_file.read_text()
+                output_file.unlink()
+            else:
+                output = ""
+
+        return self._parse_batch_output(output, time.time() - start_time)
+
+    def _parse_batch_output(
+        self, output: str, total_duration: float
+    ) -> dict[str, SuiteResult]:
+        """Parse output containing multiple ::YAC_TEST_RESULT:: lines."""
+        results = {}
+        for match in re.finditer(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE):
+            try:
+                data = json.loads(match.group(1))
+                suite = data.get("suite", "unknown")
+                # Normalize to match vim_tests keys (test_<name>)
+                key = suite if suite.startswith("test_") else f"test_{suite}"
+                results[key] = SuiteResult(
+                    suite=suite,
+                    tests=data.get("tests", []),
+                    passed=data.get("passed", 0),
+                    failed=data.get("failed", 0),
+                    duration=data.get("duration", 0),
+                    success=data.get("success", False),
+                    output=output,
+                )
+            except json.JSONDecodeError:
+                continue
+        return results
+
     def _parse_output(self, suite: str, output: str, duration: float) -> SuiteResult:
         match = re.search(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE)
         if match:
@@ -155,3 +224,9 @@ def check_bridge():
     bridge = PROJECT_ROOT / "zig-out" / "bin" / "lsp-bridge"
     if not bridge.exists():
         pytest.skip("lsp-bridge not built, run 'zig build' first")
+
+
+@pytest.fixture(scope="session")
+def batch_results(vim_runner, check_bridge):
+    """Run all tests in one Vim session, return per-suite results."""
+    return vim_runner.run_all_tests(timeout=300)

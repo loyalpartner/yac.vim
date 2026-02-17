@@ -135,7 +135,7 @@ if end_buf != start_buf
 endif
 
 " 确保回到测试文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 
 " ============================================================================
 " Test 5: Invalid positions
@@ -167,7 +167,7 @@ call yac_test#log('INFO', 'Goto in string: no crash')
 call yac_test#log('INFO', 'Test 6: Multiple buffers with LSP')
 
 " 打开第一个文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 let buf1 = bufnr('%')
 sleep 500m
 
@@ -226,7 +226,7 @@ bdelete!
 " ============================================================================
 call yac_test#log('INFO', 'Test 8: LSP connection recovery')
 
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 
 " 记录当前状态
 call cursor(14, 12)
@@ -238,6 +238,7 @@ call popup_clear()
 " 停止 YAC
 if exists(':YacStop')
   YacStop
+  call yac_test#reset_lsp_ready()
   sleep 500m
   call yac_test#log('INFO', 'YAC stopped')
 endif
@@ -245,7 +246,7 @@ endif
 " 重新启动
 if exists(':YacStart')
   YacStart
-  sleep 2
+  call yac_test#open_test_file('test_data/src/lib.rs', 8000)
   call yac_test#log('INFO', 'YAC restarted')
 endif
 
