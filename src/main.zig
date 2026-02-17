@@ -22,6 +22,12 @@ const PendingLspRequest = struct {
     method: []const u8,
     ssh_host: ?[]const u8,
     file: ?[]const u8,
+
+    fn deinit(self: PendingLspRequest, allocator: Allocator) void {
+        allocator.free(self.method);
+        if (self.ssh_host) |ssh_host| allocator.free(ssh_host);
+        if (self.file) |file| allocator.free(file);
+    }
 };
 
 const EventLoop = struct {
@@ -44,6 +50,10 @@ const EventLoop = struct {
     }
 
     fn deinit(self: *EventLoop) void {
+        var it = self.pending_requests.valueIterator();
+        while (it.next()) |pending| {
+            pending.deinit(self.allocator);
+        }
         self.registry.shutdownAll();
         self.registry.deinit();
         self.pending_requests.deinit();
@@ -222,12 +232,39 @@ const EventLoop = struct {
                     break :blk json_utils.getString(obj, "file");
                 };
 
+                const method_owned = self.allocator.dupe(u8, method) catch |e| {
+                    log.err("Failed to duplicate pending method: {any}", .{e});
+                    return;
+                };
+
+                const ssh_host_owned = if (ssh_host) |h|
+                    self.allocator.dupe(u8, h) catch |e| {
+                        self.allocator.free(method_owned);
+                        log.err("Failed to duplicate pending ssh host: {any}", .{e});
+                        return;
+                    }
+                else
+                    null;
+
+                const file_owned = if (file) |f|
+                    self.allocator.dupe(u8, f) catch |e| {
+                        self.allocator.free(method_owned);
+                        if (ssh_host_owned) |h| self.allocator.free(h);
+                        log.err("Failed to duplicate pending file: {any}", .{e});
+                        return;
+                    }
+                else
+                    null;
+
                 self.pending_requests.put(pending.lsp_request_id, .{
                     .vim_request_id = vim_id,
-                    .method = method,
-                    .ssh_host = ssh_host,
-                    .file = file,
+                    .method = method_owned,
+                    .ssh_host = ssh_host_owned,
+                    .file = file_owned,
                 }) catch |e| {
+                    self.allocator.free(method_owned);
+                    if (ssh_host_owned) |h| self.allocator.free(h);
+                    if (file_owned) |f| self.allocator.free(f);
                     log.err("Failed to track pending request: {any}", .{e});
                 };
             },
@@ -261,7 +298,10 @@ const EventLoop = struct {
                     }
 
                     // Route to pending Vim request
-                    if (self.pending_requests.get(resp.id)) |pending| {
+                    if (self.pending_requests.fetchRemove(resp.id)) |entry| {
+                        const pending = entry.value;
+                        defer pending.deinit(self.allocator);
+
                         var arena = std.heap.ArenaAllocator.init(self.allocator);
                         defer arena.deinit();
 
@@ -279,7 +319,6 @@ const EventLoop = struct {
                             self.sendVimResponse(arena.allocator(), pending.vim_request_id, transformed);
                         }
 
-                        _ = self.pending_requests.remove(resp.id);
                     } else {
                         log.debug("Unmatched LSP response id={d}", .{resp.id});
                     }
