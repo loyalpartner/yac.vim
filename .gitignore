@@ -92,13 +92,14 @@ config/local.toml
 .cache/
 node_modules/
 
-# Python cache (if used for tooling)
+# Python / uv
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 .pytest_cache/
+.venv/
 
 # Development and debugging
 *.orig
