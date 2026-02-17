@@ -349,9 +349,6 @@ const EventLoop = struct {
                 .notification => |notif| {
                     self.handleLspNotification(client_key, notif.method, notif.params);
                 },
-                .server_request => |req| {
-                    self.handleLspServerRequest(client_key, req.id, req.method, req.params);
-                },
             }
         }
     }
@@ -369,66 +366,31 @@ const EventLoop = struct {
         return result;
     }
 
-    /// Handle LSP server notifications (e.g., diagnostics, progress).
+    /// Handle LSP server notifications.
     fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
         _ = client_key;
 
         if (std.mem.eql(u8, method, "$/progress")) {
-            self.handleProgress(params);
-            return;
-        }
+            const params_obj = switch (params) {
+                .object => |o| o,
+                else => return,
+            };
+            const value_obj = json_utils.getObject(params_obj, "value") orelse return;
+            const kind = json_utils.getString(value_obj, "kind") orelse return;
 
-        if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
-            // Forward diagnostics to Vim
+            if (std.mem.eql(u8, kind, "begin")) {
+                self.indexing_count += 1;
+            } else if (std.mem.eql(u8, kind, "end")) {
+                if (self.indexing_count > 0) self.indexing_count -= 1;
+                if (self.indexing_count == 0) self.flushDeferredRequests();
+            }
+        } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
-            const alloc = arena.allocator();
-
-            const encoded = vim.encodeJsonRpcNotification(alloc, "diagnostics", params) catch return;
+            const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "diagnostics", params) catch return;
             self.vim_stdout.writer().print("{s}\n", .{encoded}) catch return;
         } else {
             log.debug("LSP notification: {s}", .{method});
-        }
-    }
-
-    /// Handle $/progress notifications to track LSP indexing state.
-    fn handleProgress(self: *EventLoop, params: Value) void {
-        const params_obj = switch (params) {
-            .object => |o| o,
-            else => return,
-        };
-        const value_obj = json_utils.getObject(params_obj, "value") orelse return;
-        const kind = json_utils.getString(value_obj, "kind") orelse return;
-
-        if (std.mem.eql(u8, kind, "begin")) {
-            self.indexing_count += 1;
-            log.info("LSP progress begin (active={d})", .{self.indexing_count});
-        } else if (std.mem.eql(u8, kind, "end")) {
-            if (self.indexing_count > 0) {
-                self.indexing_count -= 1;
-            }
-            log.info("LSP progress end (active={d})", .{self.indexing_count});
-            if (self.indexing_count == 0) {
-                self.flushDeferredRequests();
-            }
-        }
-    }
-
-    /// Handle server-to-client requests (e.g., window/workDoneProgress/create).
-    fn handleLspServerRequest(self: *EventLoop, client_key: []const u8, id: i64, method: []const u8, params: Value) void {
-        _ = params;
-        const client = self.registry.getClient(client_key) orelse return;
-
-        if (std.mem.eql(u8, method, "window/workDoneProgress/create")) {
-            // Acknowledge progress token creation
-            client.sendResponse(id, .null) catch |e| {
-                log.err("Failed to respond to workDoneProgress/create: {any}", .{e});
-            };
-            log.debug("Acknowledged progress token creation", .{});
-        } else {
-            log.debug("Unhandled server request: {s}", .{method});
-            // Respond with null for unhandled server requests
-            client.sendResponse(id, .null) catch {};
         }
     }
 

@@ -159,42 +159,29 @@ pub const LspClient = struct {
                 },
             };
 
-            // Classify: check method first to distinguish server requests from responses.
-            // Server request: has both "method" and "id" (e.g. window/workDoneProgress/create)
-            // Notification: has "method" but no "id"
-            // Response: has "id" but no "method"
+            // Classify: method → notification (or server request), id only → response
             if (json.getString(obj, "method")) |method| {
                 const params = obj.get("params") orelse .null;
 
+                // Server-to-client request (has both method and id) — auto-respond
                 if (obj.get("id")) |id_val| {
-                    // Server-to-client request (has both method and id)
                     const id: i64 = switch (id_val) {
                         .integer => |i| i,
-                        else => {
-                            parsed.deinit();
-                            continue;
-                        },
+                        else => 0,
                     };
-                    try messages.append(.{
-                        .parsed = parsed,
-                        .kind = .{ .server_request = .{
-                            .id = id,
-                            .method = method,
-                            .params = params,
-                        } },
-                    });
-                } else {
-                    // Notification (no id)
-                    try messages.append(.{
-                        .parsed = parsed,
-                        .kind = .{ .notification = .{
-                            .method = method,
-                            .params = params,
-                        } },
-                    });
+                    self.sendResponse(id, .null) catch {};
                 }
+
+                // Treat as notification either way
+                try messages.append(.{
+                    .parsed = parsed,
+                    .kind = .{ .notification = .{
+                        .method = method,
+                        .params = params,
+                    } },
+                });
             } else if (obj.get("id")) |id_val| {
-                // Response (no method, has id)
+                // Response
                 const id: u32 = switch (id_val) {
                     .integer => |i| @intCast(i),
                     else => {
@@ -345,12 +332,6 @@ pub const LspMessage = struct {
             err: ?Value,
         },
         notification: struct {
-            method: []const u8,
-            params: Value,
-        },
-        /// Server-to-client request (has both id and method, e.g. window/workDoneProgress/create)
-        server_request: struct {
-            id: i64,
             method: []const u8,
             params: Value,
         },
