@@ -61,8 +61,8 @@ const EventLoop = struct {
             // Build poll fd list: stdin + all LSP stdout fds
             var poll_fds = std.ArrayList(std.posix.pollfd).init(self.allocator);
             defer poll_fds.deinit();
-            var poll_languages = std.ArrayList([]const u8).init(self.allocator);
-            defer poll_languages.deinit();
+            var poll_client_keys = std.ArrayList([]const u8).init(self.allocator);
+            defer poll_client_keys.deinit();
 
             // fd[0] = stdin (from Vim)
             try poll_fds.append(.{
@@ -72,7 +72,7 @@ const EventLoop = struct {
             });
 
             // fd[1..] = LSP server stdouts
-            try self.registry.collectFds(&poll_fds, &poll_languages);
+            try self.registry.collectFds(&poll_fds, &poll_client_keys);
 
             // Poll with 100ms timeout (allows periodic housekeeping)
             const ready = std.posix.poll(poll_fds.items, 100) catch |e| {
@@ -105,8 +105,8 @@ const EventLoop = struct {
             // Check LSP server stdouts
             for (poll_fds.items[1..], 0..) |pfd, i| {
                 if (pfd.revents & std.posix.POLL.IN != 0) {
-                    const language = poll_languages.items[i];
-                    self.processLspOutput(language);
+                    const client_key = poll_client_keys.items[i];
+                    self.processLspOutput(client_key);
                 }
             }
         }
@@ -235,11 +235,11 @@ const EventLoop = struct {
     }
 
     /// Process output from an LSP server.
-    fn processLspOutput(self: *EventLoop, language: []const u8) void {
-        const client = self.registry.getClient(language) orelse return;
+    fn processLspOutput(self: *EventLoop, client_key: []const u8) void {
+        const client = self.registry.getClient(client_key) orelse return;
 
         var messages = client.readMessages() catch |e| {
-            log.err("LSP read error for {s}: {any}", .{ language, e });
+            log.err("LSP read error: {any}", .{e});
             return;
         };
         defer {
@@ -251,10 +251,10 @@ const EventLoop = struct {
             switch (msg.kind) {
                 .response => |resp| {
                     // Check if this is an initialize response
-                    if (self.registry.getInitRequestId(language)) |init_id| {
+                    if (self.registry.getInitRequestId(client_key)) |init_id| {
                         if (resp.id == init_id) {
-                            self.registry.handleInitializeResponse(language) catch |e| {
-                                log.err("Failed to handle init response for {s}: {any}", .{ language, e });
+                            self.registry.handleInitializeResponse(client_key) catch |e| {
+                                log.err("Failed to handle init response: {any}", .{e});
                             };
                             continue;
                         }
@@ -285,7 +285,7 @@ const EventLoop = struct {
                     }
                 },
                 .notification => |notif| {
-                    self.handleLspNotification(language, notif.method, notif.params);
+                    self.handleLspNotification(client_key, notif.method, notif.params);
                 },
             }
         }
@@ -305,8 +305,8 @@ const EventLoop = struct {
     }
 
     /// Handle LSP server notifications (e.g., diagnostics).
-    fn handleLspNotification(self: *EventLoop, language: []const u8, method: []const u8, params: Value) void {
-        _ = language;
+    fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
+        _ = client_key;
 
         if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
             // Forward diagnostics to Vim
