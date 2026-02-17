@@ -111,11 +111,6 @@ fn getLspContext(ctx: *HandlerContext, params: Value) !?LspContext {
         return null;
     };
 
-    // If the client is still initializing, we can't send requests yet
-    if (result.is_new) {
-        log.debug("LSP client for {s} is initializing", .{language});
-    }
-
     const uri = try registry_mod.filePathToUri(ctx.allocator, real_path);
 
     return .{
