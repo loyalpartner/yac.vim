@@ -96,6 +96,20 @@ pub const LspClient = struct {
         return id;
     }
 
+    /// Send a JSON-RPC response to the LSP server (for server-to-client requests).
+    pub fn sendResponse(self: *LspClient, id: i64, result: Value) !void {
+        const content = try lsp.buildLspResponse(self.allocator, id, result);
+        defer self.allocator.free(content);
+
+        const framed = try self.framer.frameMessage(self.allocator, content);
+        defer self.allocator.free(framed);
+
+        const stdin = self.child.stdin orelse return error.StdinClosed;
+        try stdin.writeAll(framed);
+
+        log.debug("LSP response [{d}]", .{id});
+    }
+
     /// Send a JSON-RPC notification (no response expected).
     pub fn sendNotification(self: *LspClient, method: []const u8, params: Value) !void {
         const content = try lsp.buildLspNotification(self.allocator, method, params);
@@ -145,8 +159,42 @@ pub const LspClient = struct {
                 },
             };
 
-            // Classify: response has "id" + ("result" or "error"), notification has "method"
-            if (obj.get("id")) |id_val| {
+            // Classify: check method first to distinguish server requests from responses.
+            // Server request: has both "method" and "id" (e.g. window/workDoneProgress/create)
+            // Notification: has "method" but no "id"
+            // Response: has "id" but no "method"
+            if (json.getString(obj, "method")) |method| {
+                const params = obj.get("params") orelse .null;
+
+                if (obj.get("id")) |id_val| {
+                    // Server-to-client request (has both method and id)
+                    const id: i64 = switch (id_val) {
+                        .integer => |i| i,
+                        else => {
+                            parsed.deinit();
+                            continue;
+                        },
+                    };
+                    try messages.append(.{
+                        .parsed = parsed,
+                        .kind = .{ .server_request = .{
+                            .id = id,
+                            .method = method,
+                            .params = params,
+                        } },
+                    });
+                } else {
+                    // Notification (no id)
+                    try messages.append(.{
+                        .parsed = parsed,
+                        .kind = .{ .notification = .{
+                            .method = method,
+                            .params = params,
+                        } },
+                    });
+                }
+            } else if (obj.get("id")) |id_val| {
+                // Response (no method, has id)
                 const id: u32 = switch (id_val) {
                     .integer => |i| @intCast(i),
                     else => {
@@ -155,7 +203,6 @@ pub const LspClient = struct {
                     },
                 };
 
-                // It's a response
                 const result = obj.get("result") orelse .null;
                 const err_val = obj.get("error");
 
@@ -167,16 +214,6 @@ pub const LspClient = struct {
                         .id = id,
                         .result = result,
                         .err = err_val,
-                    } },
-                });
-            } else if (json.getString(obj, "method")) |method| {
-                // It's a notification from server
-                const params = obj.get("params") orelse .null;
-                try messages.append(.{
-                    .parsed = parsed,
-                    .kind = .{ .notification = .{
-                        .method = method,
-                        .params = params,
                     } },
                 });
             } else {
@@ -308,6 +345,12 @@ pub const LspMessage = struct {
             err: ?Value,
         },
         notification: struct {
+            method: []const u8,
+            params: Value,
+        },
+        /// Server-to-client request (has both id and method, e.g. window/workDoneProgress/create)
+        server_request: struct {
+            id: i64,
             method: []const u8,
             params: Value,
         },

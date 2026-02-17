@@ -134,6 +134,20 @@ pub fn buildLspNotification(allocator: Allocator, method: []const u8, params: Va
     return buf.toOwnedSlice();
 }
 
+/// Build a JSON-RPC response for LSP (responding to server requests).
+pub fn buildLspResponse(allocator: Allocator, id: i64, result: Value) ![]const u8 {
+    var buf = ArrayList(u8).init(allocator);
+    const writer = buf.writer();
+
+    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+    try std.fmt.formatInt(id, 10, .lower, .{}, writer);
+    try writer.writeAll(",\"result\":");
+    try std.json.stringify(result, .{}, writer);
+    try writer.writeByte('}');
+
+    return buf.toOwnedSlice();
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -199,5 +213,15 @@ test "build LSP request" {
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":null}",
         request,
+    );
+}
+
+test "build LSP response" {
+    const allocator = std.testing.allocator;
+    const response = try buildLspResponse(allocator, 42, .null);
+    defer allocator.free(response);
+    try std.testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":null}",
+        response,
     );
 }
