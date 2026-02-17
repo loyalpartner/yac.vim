@@ -260,7 +260,7 @@ tail -f /tmp/lsp-bridge.log
 ### Debug Information
 
 - LSP bridge logs: `/tmp/lsp-bridge.log`
-- Enable debug with `RUST_LOG=debug`
+- Enable debug with `YAC_LOG=debug`
 - Use `:LspOpenLog` to view logs in Vim
 
 ## 🤝 Contributing
@@ -273,12 +273,12 @@ tail -f /tmp/lsp-bridge.log
 
 ### Development Guidelines
 
-- Follow Rust idioms and best practices
+- Follow Zig idioms and best practices
 - Maintain the ~800 line code limit
 - Add tests for new functionality
 - Update CLAUDE.md documentation
 - Install pre-commit hooks to automatically check code quality
-- All code must pass `cargo clippy` and `cargo fmt` checks
+- All code must pass `zig build test` and `zig fmt` checks
 
 ## 📄 License
 
@@ -287,7 +287,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Inspired by the original [lsp-bridge](https://github.com/manateelazycat/lsp-bridge) project
-- Thanks to the Rust and Vim communities for their excellent tools and libraries
+- Thanks to the Zig and Vim communities for their excellent tools and libraries
 
 ## 🔗 Links
 
