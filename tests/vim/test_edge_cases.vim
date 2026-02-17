@@ -63,7 +63,8 @@ bdelete!
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: Rapid successive requests')
 
-call yac_test#open_test_file('test_data/src/lib.rs', 2000)
+call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+sleep 3
 
 " 快速连续发送多个请求
 call cursor(14, 12)

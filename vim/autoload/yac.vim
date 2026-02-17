@@ -591,13 +591,35 @@ function! s:handle_goto_response(channel, response) abort
     echom printf('YacDebug[RECV]: goto response: %s', string(a:response))
   endif
 
-  if empty(a:response) || !has_key(a:response, 'file')
+  let l:loc = a:response
+
+  " 处理 raw LSP Location 数组格式 (fallback)
+  if type(l:loc) == v:t_list
+    if empty(l:loc)
+      return
+    endif
+    let l:loc = l:loc[0]
+  endif
+
+  if type(l:loc) != v:t_dict || empty(l:loc)
     return
   endif
 
-  let l:file = a:response.file
-  let l:line = get(a:response, 'line', 0) + 1
-  let l:col = get(a:response, 'column', 0) + 1
+  " 支持两种格式：bridge 转换后的 {file, line, column} 和 raw LSP {uri, range}
+  if has_key(l:loc, 'file')
+    let l:file = l:loc.file
+    let l:line = get(l:loc, 'line', 0) + 1
+    let l:col = get(l:loc, 'column', 0) + 1
+  elseif has_key(l:loc, 'uri')
+    let l:uri = l:loc.uri
+    let l:file = substitute(l:uri, '^file://', '', '')
+    let l:range = get(l:loc, 'range', {})
+    let l:start = get(l:range, 'start', {})
+    let l:line = get(l:start, 'line', 0) + 1
+    let l:col = get(l:start, 'character', 0) + 1
+  else
+    return
+  endif
 
   " Save current position to jumplist
   normal! m'

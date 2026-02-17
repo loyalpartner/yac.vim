@@ -10,7 +10,8 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 3000)
+call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+sleep 3
 
 " 保存原始内容
 let s:original_content = getline(1, '$')
