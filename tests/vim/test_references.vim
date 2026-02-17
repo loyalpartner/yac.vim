@@ -112,7 +112,7 @@ endif
 call yac_test#log('INFO', 'Test 5: Item with limited references')
 
 " 回到文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 
 " 测试 HashMap 导入（可能只有一个引用）
 call cursor(2, 24)

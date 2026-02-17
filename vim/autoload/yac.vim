@@ -635,7 +635,7 @@ function! s:handle_hover_response(channel, response) abort
     echom printf('YacDebug[RECV]: hover response: %s', string(a:response))
   endif
 
-  if has_key(a:response, 'content') && !empty(a:response.content)
+  if type(a:response) == v:t_dict && has_key(a:response, 'content') && !empty(a:response.content)
     call s:show_hover_popup(a:response.content)
   endif
 endfunction
@@ -646,7 +646,7 @@ function! s:handle_completion_response(channel, response) abort
     echom printf('YacDebug[RECV]: completion response: %s', string(a:response))
   endif
 
-  if has_key(a:response, 'items') && !empty(a:response.items)
+  if type(a:response) == v:t_dict && has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completions(a:response.items)
   else
     " Close completion popup when no completions available
@@ -660,7 +660,7 @@ function! s:handle_references_response(channel, response) abort
     echom printf('YacDebug[RECV]: references response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'locations')
+  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call s:show_references(a:response.locations)
   endif
 endfunction
@@ -671,7 +671,7 @@ function! s:handle_inlay_hints_response(channel, response) abort
     echom printf('YacDebug[RECV]: inlay_hints response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'hints')
+  if type(a:response) == v:t_dict && has_key(a:response, 'hints')
     call s:show_inlay_hints(a:response.hints)
   endif
 endfunction
@@ -682,7 +682,7 @@ function! s:handle_rename_response(channel, response) abort
     echom printf('YacDebug[RECV]: rename response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'edits')
+  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_workspace_edit(a:response.edits)
   endif
 endfunction
@@ -693,7 +693,7 @@ function! s:handle_call_hierarchy_response(channel, response) abort
     echom printf('YacDebug[RECV]: call_hierarchy response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'items')
+  if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:show_call_hierarchy(a:response.items)
   endif
 endfunction
@@ -704,7 +704,7 @@ function! s:handle_document_symbols_response(channel, response) abort
     echom printf('YacDebug[RECV]: document_symbols response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'symbols')
+  if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
     call s:show_document_symbols(a:response.symbols)
   endif
 endfunction
@@ -715,7 +715,7 @@ function! s:handle_folding_range_response(channel, response) abort
     echom printf('YacDebug[RECV]: folding_range response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'ranges')
+  if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
   endif
 endfunction
@@ -726,7 +726,7 @@ function! s:handle_code_action_response(channel, response) abort
     echom printf('YacDebug[RECV]: code_action response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'actions')
+  if type(a:response) == v:t_dict && has_key(a:response, 'actions')
     call s:show_code_actions(a:response.actions)
   endif
 endfunction
@@ -737,7 +737,7 @@ function! s:handle_execute_command_response(channel, response) abort
     echom printf('YacDebug[RECV]: execute_command response: %s', string(a:response))
   endif
 
-  if !empty(a:response) && has_key(a:response, 'edits')
+  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_workspace_edit(a:response.edits)
   endif
 endfunction
@@ -748,7 +748,7 @@ function! s:handle_file_open_response(channel, response) abort
     echom printf('YacDebug[RECV]: file_open response: %s', string(a:response))
   endif
 
-  if has_key(a:response, 'log_file')
+  if type(a:response) == v:t_dict && has_key(a:response, 'log_file')
     let s:log_file = a:response.log_file
     echo 'lsp-bridge initialized with log: ' . s:log_file
   endif
@@ -761,7 +761,7 @@ function! s:handle_will_save_wait_until_response(channel, response) abort
   endif
 
   " 可能返回文本编辑
-  if has_key(a:response, 'edits')
+  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     " 应用编辑
   endif
 endfunction
@@ -794,7 +794,7 @@ function! s:handle_response(channel, msg) abort
     let content = a:msg[1]
 
     " 只处理服务器主动发送的通知（如诊断）
-    if has_key(content, 'action')
+    if type(content) == v:t_dict && has_key(content, 'action')
       if content.action == 'diagnostics'
         if get(g:, 'lsp_bridge_debug', 0)
           echom "DEBUG: Received diagnostics action with " . len(content.diagnostics) . " items"

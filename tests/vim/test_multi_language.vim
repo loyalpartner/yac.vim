@@ -247,7 +247,7 @@ endif
 call yac_test#log('INFO', 'Test 4: Switch between languages')
 
 " 打开 Rust 文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 sleep 2
 
 call cursor(6, 12)
@@ -262,7 +262,7 @@ call popup_clear()
 call yac_test#log('INFO', 'Test 5: Multiple language buffers simultaneously')
 
 " Rust buffer
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 let rust_buf = bufnr('%')
 
 " Python buffer (if available)
@@ -316,6 +316,6 @@ bdelete!
 " ============================================================================
 " Cleanup
 " ============================================================================
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 call yac_test#teardown()
 call yac_test#end()

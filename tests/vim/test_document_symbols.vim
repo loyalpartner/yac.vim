@@ -176,7 +176,7 @@ call yac_test#log('INFO', 'Empty file symbols: ' . len(qflist))
 bdelete!
 
 " 回到测试文件
-edit test_data/src/lib.rs
+edit! test_data/src/lib.rs
 
 " ============================================================================
 " Cleanup

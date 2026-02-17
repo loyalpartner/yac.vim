@@ -16,12 +16,18 @@ let s:passed = 0
 let s:failed = 0
 let s:start_time = 0
 let s:output_file = '/tmp/yac_test_output.txt'
+let s:batch_mode = 0
+let s:redir_active = 0
+let s:lsp_ready = 0
 
 " 初始化输出重定向（用于无头模式）
 if $YAC_TEST_OUTPUT != ''
   let s:output_file = $YAC_TEST_OUTPUT
 endif
-execute 'redir! > ' . s:output_file
+if !s:redir_active
+  execute 'redir! > ' . s:output_file
+  let s:redir_active = 1
+endif
 
 " ----------------------------------------------------------------------------
 " 测试生命周期
@@ -62,8 +68,11 @@ function! yac_test#end() abort
 
   echo '::YAC_TEST_RESULT::' . json_encode(result)
 
-  " 关闭输出重定向
-  redir END
+  " 批量模式下不关闭重定向，由 finish() 负责
+  if !s:batch_mode
+    redir END
+    let s:redir_active = 0
+  endif
 
   return s:failed == 0
 endfunction
@@ -209,11 +218,16 @@ endfunction
 
 " 等待 LSP 就绪
 function! yac_test#wait_lsp_ready(timeout_ms) abort
-  call s:log('INFO', 'Waiting for LSP to be ready...')
+  if s:lsp_ready
+    " LSP 已在本 session 中初始化过，跳过等待
+    call s:log('INFO', 'LSP already ready, skipping wait')
+    return 1
+  endif
 
-  " 简单策略：等待固定时间让 rust-analyzer 初始化
+  call s:log('INFO', 'Waiting for LSP to be ready...')
   let wait_seconds = a:timeout_ms / 1000
   execute 'sleep ' . wait_seconds
+  let s:lsp_ready = 1
 
   call s:log('INFO', 'LSP ready (waited ' . wait_seconds . 's)')
   return 1
@@ -288,14 +302,19 @@ endfunction
 " 测试装置 (Fixtures)
 " ----------------------------------------------------------------------------
 
+" 启用批量模式：所有测试共享一个 Vim session + LSP
+function! yac_test#set_batch_mode() abort
+  let s:batch_mode = 1
+endfunction
+
 " 设置测试环境
 function! yac_test#setup() abort
-  " 禁用 swap 和 backup
   set noswapfile
   set nobackup
   set nowritebackup
+  set hidden
 
-  " 启动 YAC
+  " 启动 YAC（ensure_job 内部是幂等的）
   if exists(':YacStart')
     YacStart
   endif
@@ -306,15 +325,31 @@ function! yac_test#teardown() abort
   " 关闭所有 popup
   call popup_clear()
 
-  " 停止 YAC
-  if exists(':YacStop')
+  " 批量模式下不停止 YAC，由 finish() 负责
+  if !s:batch_mode && exists(':YacStop')
     silent! YacStop
   endif
 endfunction
 
+" 批量模式结束：停止 YAC + 关闭输出重定向
+function! yac_test#finish() abort
+  if exists(':YacStop')
+    silent! YacStop
+  endif
+  if s:redir_active
+    redir END
+    let s:redir_active = 0
+  endif
+endfunction
+
+" 重置 LSP 就绪标志（用于 YacStop/YacStart 测试场景）
+function! yac_test#reset_lsp_ready() abort
+  let s:lsp_ready = 0
+endfunction
+
 " 打开测试文件并等待 LSP
 function! yac_test#open_test_file(file, wait_ms) abort
-  execute 'edit ' . a:file
+  execute 'edit! ' . a:file
   " 发送 file_open 触发 LSP 初始化
   if exists('*yac#open_file')
     call yac#open_file()
