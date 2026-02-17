@@ -29,7 +29,7 @@ pub const DispatchResult = union(enum) {
     /// Handler sent an LSP request and is waiting for a response.
     /// The event loop should match this LSP request ID to the Vim request ID.
     pending_lsp: struct {
-        language: []const u8,
+        client_key: []const u8,
         lsp_request_id: u32,
     },
 };
@@ -84,6 +84,7 @@ pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !Dispat
 
 const LspContext = struct {
     language: []const u8,
+    client_key: []const u8,
     uri: []const u8,
     client: *LspClient,
     ssh_host: ?[]const u8,
@@ -119,6 +120,7 @@ fn getLspContext(ctx: *HandlerContext, params: Value) !?LspContext {
 
     return .{
         .language = language,
+        .client_key = result.client_key,
         .uri = uri,
         .client = result.client,
         .ssh_host = ssh_host,
@@ -189,7 +191,7 @@ fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     // If the client is still initializing, we queue this.
     // Otherwise, send didOpen.
-    if (!ctx.registry.isInitializing(lsp_ctx.language)) {
+    if (!ctx.registry.isInitializing(lsp_ctx.client_key)) {
         // Build didOpen params
         var td_item = ObjectMap.init(ctx.allocator);
         try td_item.put("uri", json.jsonString(lsp_ctx.uri));
@@ -216,7 +218,7 @@ fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleGoto(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) {
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) {
         log.debug("LSP {s} still initializing, can't handle goto", .{lsp_ctx.language});
         return .{ .empty = {} };
     }
@@ -233,7 +235,7 @@ fn handleGoto(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !Disp
     const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -257,7 +259,7 @@ fn handleGotoImplementation(ctx: *HandlerContext, params: Value) !DispatchResult
 fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -271,7 +273,7 @@ fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/hover", lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -279,7 +281,7 @@ fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -293,7 +295,7 @@ fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -301,7 +303,7 @@ fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -324,7 +326,7 @@ fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/references", .{ .object = lsp_params_obj });
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -332,7 +334,7 @@ fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -352,7 +354,7 @@ fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/rename", .{ .object = lsp_params_obj });
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -360,7 +362,7 @@ fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -399,7 +401,7 @@ fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/codeAction", .{ .object = lsp_params });
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -407,13 +409,13 @@ fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleDocumentSymbols(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/documentSymbol", lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -426,7 +428,7 @@ fn handleDiagnostics(_: *HandlerContext, _: Value) !DispatchResult {
 fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -458,7 +460,7 @@ fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/inlayHint", .{ .object = lsp_params });
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -466,13 +468,13 @@ fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/foldingRange", lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -480,7 +482,7 @@ fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -494,7 +496,7 @@ fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("textDocument/prepareCallHierarchy", lsp_params);
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -502,7 +504,7 @@ fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -520,7 +522,7 @@ fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
     const request_id = try lsp_ctx.client.sendRequest("workspace/executeCommand", .{ .object = lsp_params });
 
     return .{ .pending_lsp = .{
-        .language = lsp_ctx.language,
+        .client_key = lsp_ctx.client_key,
         .lsp_request_id = request_id,
     } };
 }
@@ -532,7 +534,7 @@ fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -569,7 +571,7 @@ fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
@@ -587,7 +589,7 @@ fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
@@ -601,7 +603,7 @@ fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
 fn handleWillSave(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
 
-    if (ctx.registry.isInitializing(lsp_ctx.language)) return .{ .empty = {} };
+    if (ctx.registry.isInitializing(lsp_ctx.client_key)) return .{ .empty = {} };
 
     var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
