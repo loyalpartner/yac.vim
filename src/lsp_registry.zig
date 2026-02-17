@@ -91,24 +91,7 @@ pub const LspRegistry = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.clients.deinit();
-        // pending_init keys are shared with clients, already freed above
         self.pending_init.deinit();
-    }
-
-    /// Build a composite client key: "language\x00workspace_uri".
-    /// Uses a stack buffer for temporary lookups.
-    fn formatClientKey(buf: []u8, language: []const u8, workspace_uri: ?[]const u8) ?[]const u8 {
-        if (workspace_uri) |uri| {
-            return std.fmt.bufPrint(buf, "{s}\x00{s}", .{ language, uri }) catch null;
-        }
-        return std.fmt.bufPrint(buf, "{s}", .{language}) catch null;
-    }
-
-    /// Allocate a durable copy of a client key.
-    fn dupeClientKey(self: *LspRegistry, language: []const u8, workspace_uri: ?[]const u8) ![]const u8 {
-        var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
-        const key = formatClientKey(&buf, language, workspace_uri) orelse return error.KeyTooLong;
-        return self.allocator.dupe(u8, key);
     }
 
     /// Detect language from file path extension.
@@ -142,42 +125,32 @@ pub const LspRegistry = struct {
     }
 
     /// Get or create a client for a language + file path.
-    /// The workspace root is detected from file_path, and the composite key
-    /// (language + workspace_root) determines which LSP client to use.
-    pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, is_new: bool, client_key: []const u8 } {
+    /// Workspace root is detected from file_path; (language + workspace_root) determines client.
+    pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {
         const config = getConfig(language) orelse return error.UnsupportedLanguage;
-
-        // Find workspace root first — this determines the client key
         const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
 
         // Build lookup key on stack
         var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
-        const lookup_key = formatClientKey(&key_buf, language, workspace_uri) orelse return error.KeyTooLong;
+        const lookup_key = if (workspace_uri) |uri|
+            std.fmt.bufPrint(&key_buf, "{s}\x00{s}", .{ language, uri }) catch return error.KeyTooLong
+        else
+            std.fmt.bufPrint(&key_buf, "{s}", .{language}) catch return error.KeyTooLong;
 
         if (self.clients.get(lookup_key)) |client| {
-            // Return the stored key pointer (stable, heap-allocated)
-            const stored_key = self.clients.getKey(lookup_key).?;
-            return .{ .client = client, .is_new = false, .client_key = stored_key };
+            return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
         }
 
-        log.info("Starting {s} for {s} (workspace: {s})", .{
-            config.command,
-            language,
-            workspace_uri orelse "(none)",
-        });
-
+        log.info("Starting {s} for {s} (workspace: {s})", .{ config.command, language, workspace_uri orelse "(none)" });
         const client = try LspClient.spawn(self.allocator, config.command, config.args);
+        const key = try self.allocator.dupe(u8, lookup_key);
 
-        // Allocate durable key for storage (shared between clients and pending_init)
-        const key = try self.dupeClientKey(language, workspace_uri);
-
-        // Send initialize request
         const init_id = try client.initialize(workspace_uri);
         try self.pending_init.put(key, init_id);
         try self.clients.put(key, client);
 
         log.info("LSP client created for {s}, init request id={d}", .{ language, init_id });
-        return .{ .client = client, .is_new = true, .client_key = key };
+        return .{ .client = client, .client_key = key };
     }
 
     /// Handle an initialize response by sending 'initialized'.
