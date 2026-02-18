@@ -635,8 +635,25 @@ function! s:handle_hover_response(channel, response) abort
     echom printf('YacDebug[RECV]: hover response: %s', string(a:response))
   endif
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'content') && !empty(a:response.content)
-    call s:show_hover_popup(a:response.content)
+  if type(a:response) != v:t_dict
+    return
+  endif
+
+  " Support both 'content' (string) and 'contents' (MarkupContent / string)
+  let l:text = ''
+  if has_key(a:response, 'content') && !empty(a:response.content)
+    let l:text = a:response.content
+  elseif has_key(a:response, 'contents')
+    let l:c = a:response.contents
+    if type(l:c) == v:t_string
+      let l:text = l:c
+    elseif type(l:c) == v:t_dict && has_key(l:c, 'value')
+      let l:text = l:c.value
+    endif
+  endif
+
+  if !empty(l:text)
+    call s:show_hover_popup(l:text)
   endif
 endfunction
 
@@ -662,6 +679,20 @@ function! s:handle_references_response(channel, response) abort
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call s:show_references(a:response.locations)
+  elseif type(a:response) == v:t_list && !empty(a:response)
+    " Raw LSP Location[] — convert uri+range to file+line+column
+    let l:locs = []
+    for l:item in a:response
+      if type(l:item) == v:t_dict && has_key(l:item, 'uri')
+        let l:file = substitute(l:item.uri, '^file://', '', '')
+        let l:line = get(get(get(l:item, 'range', {}), 'start', {}), 'line', 0)
+        let l:col  = get(get(get(l:item, 'range', {}), 'start', {}), 'character', 0)
+        call add(l:locs, {'file': l:file, 'line': l:line, 'column': l:col})
+      endif
+    endfor
+    if !empty(l:locs)
+      call s:show_references(l:locs)
+    endif
   endif
 endfunction
 
@@ -728,6 +759,9 @@ function! s:handle_code_action_response(channel, response) abort
 
   if type(a:response) == v:t_dict && has_key(a:response, 'actions')
     call s:show_code_actions(a:response.actions)
+  elseif type(a:response) == v:t_list && !empty(a:response)
+    " Raw LSP CodeAction[] — pass through (title/kind keys match)
+    call s:show_code_actions(a:response)
   endif
 endfunction
 
@@ -1723,35 +1757,53 @@ function! s:show_code_actions(actions) abort
     return
   endif
 
-  echo "Available code actions:"
-  let index = 1
+  " 存储当前 actions 以供回调使用
+  let s:pending_code_actions = a:actions
+
+  " 构建显示列表
+  let lines = []
   for action in a:actions
-    let display = printf("[%d] %s", index, action.title)
+    let display = action.title
     if has_key(action, 'kind') && !empty(action.kind)
       let display .= " (" . action.kind . ")"
     endif
-    if has_key(action, 'is_preferred') && action.is_preferred
-      let display .= " ⭐"
-    endif
-    echo display
-    let index += 1
+    call add(lines, display)
   endfor
 
-  " 获取用户选择
-  let choice = input("Select action (1-" . len(a:actions) . ", or <Enter> to cancel): ")
-  if empty(choice)
-    echo "\nAction cancelled"
+  if exists('*popup_menu')
+    " 使用 popup_menu 显示代码操作选择器
+    call popup_menu(lines, {
+          \ 'title': ' Code Actions ',
+          \ 'callback': function('s:code_action_callback'),
+          \ 'border': [],
+          \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+          \ })
+  else
+    " 降级到 input() 选择
+    echo "Available code actions:"
+    let index = 1
+    for line in lines
+      echo printf("[%d] %s", index, line)
+      let index += 1
+    endfor
+
+    let choice = input("Select action (1-" . len(a:actions) . ", or <Enter> to cancel): ")
+    if empty(choice) | return | endif
+    let choice_num = str2nr(choice)
+    if choice_num >= 1 && choice_num <= len(a:actions)
+      call s:execute_code_action(a:actions[choice_num - 1])
+    endif
+  endif
+endfunction
+
+" popup_menu 回调
+function! s:code_action_callback(id, result) abort
+  if a:result <= 0 || !exists('s:pending_code_actions')
     return
   endif
-
-  let choice_num = str2nr(choice)
-  if choice_num < 1 || choice_num > len(a:actions)
-    echo "\nInvalid selection"
-    return
+  if a:result <= len(s:pending_code_actions)
+    call s:execute_code_action(s:pending_code_actions[a:result - 1])
   endif
-
-  let selected_action = a:actions[choice_num - 1]
-  call s:execute_code_action(selected_action)
 endfunction
 
 " 执行选定的代码操作
