@@ -68,7 +68,7 @@ nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 if get(g:, 'lsp_bridge_auto_start', 1)
   augroup lsp_bridge_auto
     autocmd!
-    let s:lsp_filetypes = '*.rs,*.py,*.ts,*.tsx,*.js,*.jsx,*.go,*.zig'
+    let s:lsp_filetypes = '*.rs,*.py,*.ts,*.tsx,*.js,*.jsx,*.go,*.zig,*.c,*.h,*.cpp,*.hpp,*.cc,*.cxx,*.hxx'
     execute 'autocmd BufReadPost,BufNewFile ' . s:lsp_filetypes . ' call yac_remote#enhanced_lsp_start()'
     execute 'autocmd BufWritePre ' . s:lsp_filetypes . ' call yac#will_save(1)'
     execute 'autocmd BufWritePost ' . s:lsp_filetypes . ' call yac#did_save()'
