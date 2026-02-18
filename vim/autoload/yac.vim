@@ -66,8 +66,8 @@ let s:completion_icons = {
   \ 'Event': '󱐋 '
   \ }
 
-" 连接池管理 - 支持多主机并发连接
-let s:job_pool = {}  " {'local': job, 'user@host1': job, 'user@host2': job, ...}
+" 连接池管理 - daemon socket mode
+let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
 let s:log_file = ''
 let s:debug_log_file = '/tmp/yac-vim-debug.log'
@@ -92,11 +92,7 @@ let s:diagnostic_virtual_text.storage = {}  " buffer_id -> diagnostics
 
 " 获取当前 buffer 应该使用的连接 key
 function! s:get_connection_key() abort
-  if exists('b:yac_ssh_host')
-    return b:yac_ssh_host
-  else
-    return 'local'
-  endif
+  return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
 endfunction
 
 " Debug 日志写入文件，不干扰 Vim 命令行
@@ -108,65 +104,90 @@ function! s:debug_log(msg) abort
   call writefile([line], s:debug_log_file, 'a')
 endfunction
 
-" 构建特定连接的 job 命令
-function! s:build_job_command(key) abort
-  if a:key == 'local'
-    return get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
+" 获取 daemon socket 路径
+function! s:get_socket_path() abort
+  if !empty($XDG_RUNTIME_DIR)
+    return $XDG_RUNTIME_DIR . '/yac-lsp-bridge.sock'
+  elseif !empty($USER)
+    return '/tmp/yac-lsp-bridge-' . $USER . '.sock'
   else
-    " SSH 连接命令，使用 ControlPersist 优化
-    let l:control_path = '/tmp/yac-' . substitute(a:key, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
-    return ['ssh', 
-      \ '-o', 'ControlPath=' . l:control_path,
-      \ '-o', 'ControlMaster=auto',
-      \ '-o', 'ControlPersist=10m',
-      \ a:key, './lsp-bridge']
+    return '/tmp/yac-lsp-bridge.sock'
   endif
 endfunction
 
-" 确保对应连接的 job 存在并运行
-function! s:ensure_job() abort
-  let l:key = s:get_connection_key()
-  let s:current_connection_key = l:key
-  
-  " 检查连接池中是否有有效的 job
-  if !has_key(s:job_pool, l:key) || job_status(s:job_pool[l:key]) != 'run'
-    " 开启 channel 日志（仅第一次）
-    if !exists('s:log_started')
-      if get(g:, 'lsp_bridge_debug', 0)
-        call ch_logfile('/tmp/vim_channel.log', 'w')
-        call s:debug_log('Channel logging enabled to /tmp/vim_channel.log')
-      endif
-      let s:log_started = 1
-    endif
-    
-    " 创建新的 job
-    let l:cmd = s:build_job_command(l:key)
-    
-    call s:debug_log(printf('Creating new connection [%s]: %s', l:key, string(l:cmd)))
-    
-    let s:job_pool[l:key] = job_start(l:cmd, {
+" 尝试连接到 daemon socket
+function! s:try_connect(sock_path) abort
+  try
+    let l:ch = ch_open('unix:' . a:sock_path, {
       \ 'mode': 'json',
       \ 'callback': function('s:handle_response'),
-      \ 'err_cb': function('s:handle_error'),
-      \ 'exit_cb': function('s:handle_exit', [l:key])
+      \ 'close_cb': function('s:handle_close'),
       \ })
-    
-    if job_status(s:job_pool[l:key]) != 'run'
-      echoerr printf('Failed to start lsp-bridge for %s', l:key)
-      if has_key(s:job_pool, l:key)
-        unlet s:job_pool[l:key]
-      endif
-      return v:null
+    if ch_status(l:ch) == 'open'
+      return l:ch
     endif
-  endif
-  
-  return s:job_pool[l:key]
+  catch
+  endtry
+  return v:null
 endfunction
 
-" 启动进程 - 现在使用连接池
+" 启动 daemon 进程（fire-and-forget）
+function! s:start_daemon() abort
+  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
+  " stoponexit='' means don't kill on VimLeave
+  call job_start(l:cmd, {'stoponexit': ''})
+  call s:debug_log('Started lsp-bridge daemon')
+endfunction
+
+" 确保连接到 daemon
+function! s:ensure_connection() abort
+  let l:key = s:get_connection_key()
+  let s:current_connection_key = l:key
+
+  " 复用已有 open channel
+  if has_key(s:channel_pool, l:key) && ch_status(s:channel_pool[l:key]) == 'open'
+    return s:channel_pool[l:key]
+  endif
+  silent! unlet s:channel_pool[l:key]
+
+  " 开启 channel 日志（仅第一次）
+  if !exists('s:log_started')
+    if get(g:, 'lsp_bridge_debug', 0)
+      call ch_logfile('/tmp/vim_channel.log', 'w')
+      call s:debug_log('Channel logging enabled to /tmp/vim_channel.log')
+    endif
+    let s:log_started = 1
+  endif
+
+  let l:sock = s:get_socket_path()
+
+  " 尝试连接到已有 daemon
+  let l:ch = s:try_connect(l:sock)
+  if l:ch isnot v:null
+    let s:channel_pool[l:key] = l:ch
+    call s:debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
+    return l:ch
+  endif
+
+  " 启动 daemon 并重试
+  call s:start_daemon()
+  for i in range(20)
+    sleep 100m
+    let l:ch = s:try_connect(l:sock)
+    if l:ch isnot v:null
+      let s:channel_pool[l:key] = l:ch
+      call s:debug_log(printf('Connected to daemon [%s] after start', l:key))
+      return l:ch
+    endif
+  endfor
+
+  echoerr 'Failed to connect to lsp-bridge daemon'
+  return v:null
+endfunction
+
+" 启动/连接 daemon
 function! yac#start() abort
-  " 通过 ensure_job 自动管理连接
-  return s:ensure_job() != v:null
+  return s:ensure_connection() isnot v:null
 endfunction
 
 function! s:request(method, params, callback_func) abort
@@ -175,9 +196,9 @@ function! s:request(method, params, callback_func) abort
     \ 'params': a:params
     \ }
 
-  let l:job = s:ensure_job()
+  let l:ch = s:ensure_connection()
 
-  if l:job != v:null && job_status(l:job) == 'run'
+  if l:ch isnot v:null && ch_status(l:ch) == 'open'
     call s:debug_log(printf('[SEND][%s]: %s -> %s:%d:%d',
       \ s:current_connection_key,
       \ a:method,
@@ -186,7 +207,7 @@ function! s:request(method, params, callback_func) abort
     call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 使用指定的回调函数
-    call ch_sendexpr(l:job, jsonrpc_msg, {'callback': a:callback_func})
+    call ch_sendexpr(l:ch, jsonrpc_msg, {'callback': a:callback_func})
   else
     echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
@@ -199,9 +220,9 @@ function! s:notify(method, params) abort
     \ 'params': a:params
     \ }
 
-  let l:job = s:ensure_job()
+  let l:ch = s:ensure_connection()
 
-  if l:job != v:null && job_status(l:job) == 'run'
+  if l:ch isnot v:null && ch_status(l:ch) == 'open'
     call s:debug_log(printf('[NOTIFY][%s]: %s -> %s:%d:%d',
       \ s:current_connection_key,
       \ a:method,
@@ -210,7 +231,7 @@ function! s:notify(method, params) abort
     call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 发送通知（不需要回调）
-    call ch_sendraw(l:job, json_encode([jsonrpc_msg]) . "\n")
+    call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
   else
     echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
@@ -256,8 +277,6 @@ function! yac#hover() abort
     \   'column': col('.') - 1
     \ }, 's:handle_hover_response')
 endfunction
-
-" Helper functions removed - now handled by connection pool architecture
 
 function! yac#open_file() abort
   call s:request('file_open', {
@@ -708,25 +727,9 @@ function! s:handle_will_save_wait_until_response(channel, response) abort
   endif
 endfunction
 
-" 处理错误（异步回调）
-function! s:handle_error(channel, msg) abort
-  echoerr 'lsp-bridge: ' . a:msg
-endfunction
-
-" 处理进程退出（异步回调） - 支持连接池
-function! s:handle_exit(key, job, status) abort
-  if a:status != 0
-    echohl ErrorMsg
-    echo printf('LSP connection to %s failed (exit: %d)', a:key, a:status)
-    echohl None
-  else
-    call s:debug_log(printf('LSP connection to %s closed', a:key))
-  endif
-  
-  " 从连接池中移除失败的连接
-  if has_key(s:job_pool, a:key)
-    unlet s:job_pool[a:key]
-  endif
+" 处理 channel 关闭回调
+function! s:handle_close(channel) abort
+  call s:cleanup_dead_connections()
 endfunction
 
 " Channel回调，只处理服务器主动推送的通知
@@ -745,35 +748,46 @@ function! s:handle_response(channel, msg) abort
   endif
 endfunction
 
-" VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
+" VimScript函数：接收daemon设置的日志文件路径（通过call_async调用）
 function! yac#set_log_file(log_path) abort
   let s:log_file = a:log_path
   call s:debug_log('Log file path set to: ' . a:log_path)
 endfunction
 
-" 停止进程 - 支持连接池
+" 关闭当前连接的 channel
 function! yac#stop() abort
   let l:key = s:get_connection_key()
-  
-  if has_key(s:job_pool, l:key)
-    let l:job = s:job_pool[l:key]
-    if job_status(l:job) == 'run'
-      call s:debug_log(printf('Stopping lsp-bridge process for %s', l:key))
-      call job_stop(l:job)
+
+  if has_key(s:channel_pool, l:key)
+    let l:ch = s:channel_pool[l:key]
+    if ch_status(l:ch) == 'open'
+      call s:debug_log(printf('Closing channel for %s', l:key))
+      call ch_close(l:ch)
     endif
-    unlet s:job_pool[l:key]
+    unlet s:channel_pool[l:key]
   endif
 endfunction
 
-" 停止所有连接
+" 关闭所有 channel 连接
 function! yac#stop_all() abort
-  for [key, job] in items(s:job_pool)
-    if job_status(job) == 'run'
-      call s:debug_log(printf('Stopping lsp-bridge process for %s', key))
-      call job_stop(job)
+  for [key, ch] in items(s:channel_pool)
+    if ch_status(ch) == 'open'
+      call s:debug_log(printf('Closing channel for %s', key))
+      call ch_close(ch)
     endif
   endfor
-  let s:job_pool = {}
+  let s:channel_pool = {}
+endfunction
+
+" 停止 daemon 进程（通过删除 socket 文件触发）
+function! yac#daemon_stop() abort
+  call yac#stop_all()
+  let l:sock = s:get_socket_path()
+  if filereadable(l:sock) || getftype(l:sock) == 'socket'
+    call delete(l:sock)
+    echo 'Daemon socket removed: ' . l:sock
+  endif
+  echo 'Daemon will exit after idle timeout (or immediately if no clients)'
 endfunction
 
 " === Debug 功能 ===
@@ -788,11 +802,11 @@ function! yac#debug_toggle() abort
     echo '  - Channel communication will be logged to /tmp/vim_channel.log'
     echo '  - Use :YacDebugToggle to disable'
 
-    " 如果有活跃的连接，重启以启用channel日志
-    if !empty(s:job_pool)
-      call s:debug_log('Restarting connections to enable channel logging...')
+    " 如果有活跃的连接，断开以启用channel日志
+    if !empty(s:channel_pool)
+      call s:debug_log('Reconnecting to enable channel logging...')
       call yac#stop_all()
-      " 下次调用 LSP 命令时会自动重新启动
+      " 下次调用 LSP 命令时会自动重新连接
     endif
   else
     echo 'YacDebug: Debug mode DISABLED'
@@ -804,22 +818,23 @@ endfunction
 " 显示调试状态
 function! yac#debug_status() abort
   let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
-  let active_connections = len(s:job_pool)
+  let active_connections = len(s:channel_pool)
   let current_key = s:get_connection_key()
-  
+
   echo 'YacDebug Status:'
   echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
   echo printf('  Active Connections: %d', active_connections)
   echo printf('  Current Buffer: %s', current_key)
-  
+  echo printf('  Socket: %s', s:get_socket_path())
+
   if active_connections > 0
     echo '  Connection Details:'
-    for [key, job] in items(s:job_pool)
-      let status = job_status(job)
+    for [key, ch] in items(s:channel_pool)
+      let status = ch_status(ch)
       echo printf('    %s: %s', key, status)
     endfor
   endif
-  
+
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
   echo '  LSP Log: ' . (empty(s:log_file) ? 'Not available' : s:log_file)
   echo ''
@@ -828,25 +843,26 @@ function! yac#debug_status() abort
   echo '  :YacDebugStatus - Show this status'
   echo '  :YacConnections - Show connection details'
   echo '  :YacOpenLog     - Open LSP process log'
+  echo '  :YacDaemonStop  - Stop the daemon'
 endfunction
 
 " 连接管理功能
 function! yac#connections() abort
-  if empty(s:job_pool)
+  if empty(s:channel_pool)
     echo 'No active LSP connections'
     return
   endif
-  
-  echo 'Active LSP Connections:'
-  echo '========================'
-  for [key, job] in items(s:job_pool)
-    let status = job_status(job)
-    let job_info = job_info(job)
-    let pid = has_key(job_info, 'process') ? job_info.process : 'unknown'
+
+  echo 'Active LSP Connections (daemon mode):'
+  echo '======================================='
+  echo printf('  Socket: %s', s:get_socket_path())
+  echo ''
+  for [key, ch] in items(s:channel_pool)
+    let status = ch_status(ch)
     let is_current = (key == s:get_connection_key()) ? ' (current)' : ''
-    echo printf('  %s: %s (PID: %s)%s', key, status, pid, is_current)
+    echo printf('  %s: %s%s', key, status, is_current)
   endfor
-  
+
   echo ''
   echo printf('Current buffer connection: %s', s:get_connection_key())
 endfunction
@@ -854,17 +870,17 @@ endfunction
 " 自动清理死连接
 function! s:cleanup_dead_connections() abort
   let dead_keys = []
-  for [key, job] in items(s:job_pool)
-    if job_status(job) != 'run'
+  for [key, ch] in items(s:channel_pool)
+    if ch_status(ch) != 'open'
       call add(dead_keys, key)
     endif
   endfor
-  
+
   for key in dead_keys
     call s:debug_log(printf('Removing dead connection: %s', key))
-    unlet s:job_pool[key]
+    unlet s:channel_pool[key]
   endfor
-  
+
   return len(dead_keys)
 endfunction
 
@@ -1559,36 +1575,16 @@ endfunction
 
 " 简单打开日志文件
 function! yac#open_log() abort
-  " 检查当前 buffer 的 LSP 连接是否运行
-  let l:key = s:get_connection_key()
-  if !has_key(s:job_pool, l:key) || job_status(s:job_pool[l:key]) != 'run'
-    echo printf('lsp-bridge not running for %s', l:key)
+  " Log path mirrors socket path convention (.sock -> .log)
+  let l:log_file = substitute(s:get_socket_path(), '\.sock$', '.log', '')
+
+  if !filereadable(l:log_file)
+    echo 'Log file does not exist: ' . l:log_file
     return
   endif
 
-  let l:job = s:job_pool[l:key]
-  
-  " 如果s:log_file未设置，根据进程PID构造日志文件路径
-  let log_file = s:log_file
-  if empty(log_file)
-    let job_info = job_info(l:job)
-    if has_key(job_info, 'process') && job_info.process > 0
-      let log_file = '/tmp/lsp-bridge-' . job_info.process . '.log'
-    else
-      echo 'Unable to determine log file path'
-      return
-    endif
-  endif
-
-  " 检查日志文件是否存在
-  if !filereadable(log_file)
-    echo 'Log file does not exist: ' . log_file
-    return
-  endif
-
-  " Use a safer approach to open the log file
   split
-  execute 'edit ' . fnameescape(log_file)
+  execute 'edit ' . fnameescape(l:log_file)
   setlocal filetype=log
   setlocal nomodeline
 endfunction
