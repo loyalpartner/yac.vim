@@ -1,13 +1,12 @@
 " lsp-bridge Vim plugin entry point
 " Minimal LSP integration for Vim
 
-" 兼容性检查 - 只支持 Vim 8.0+
-if !has('job')
+" 兼容性检查 - 需要 channel + Unix socket 支持
+if !has('channel') || !has('job')
   finish
 endif
 
 " 配置选项
-let g:lsp_bridge_command = get(g:, 'lsp_bridge_command', ['lsp-bridge'])
 let g:lsp_bridge_diagnostic_virtual_text = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
 
 " 自动补全配置选项
@@ -35,8 +34,6 @@ command! YacDocumentSymbols call yac#document_symbols()
 command! YacFoldingRange   call yac#folding_range()
 command! YacCodeAction    call yac#code_action()
 command! -nargs=+ YacExecuteCommand call yac#execute_command(<f-args>)
-" Manual lifecycle commands removed - handled automatically via autocmds
-" Keep YacWillSaveWaitUntil for advanced use cases
 command! -nargs=? YacWillSaveWaitUntil call yac#will_save_wait_until(<args>)
 command! YacOpenLog        call yac#open_log()
 command! YacToggleDiagnosticVirtualText call yac#toggle_diagnostic_virtual_text()
@@ -46,7 +43,7 @@ command! YacDebugStatus    call yac#debug_status()
 command! YacConnections    call yac#connections()
 command! YacCleanupConnections call yac#cleanup_connections()
 command! YacStopAll        call yac#stop_all()
-" Remote editing commands - 简化版本
+command! YacDaemonStop     call yac#daemon_stop()
 command! YacRemoteCleanup  call yac_remote#cleanup()
 
 " 默认快捷键

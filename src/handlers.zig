@@ -17,7 +17,7 @@ const LspRegistry = registry_mod.LspRegistry;
 pub const HandlerContext = struct {
     allocator: Allocator,
     registry: *LspRegistry,
-    vim_stdout: std.fs.File,
+    client_stream: std.net.Stream,
 };
 
 /// Result of dispatching a handler.
@@ -180,8 +180,8 @@ fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
 fn vimEx(ctx: *HandlerContext, command: []const u8) !void {
     const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .ex = .{ .command = command } });
     defer ctx.allocator.free(encoded);
-    try ctx.vim_stdout.writeAll(encoded);
-    try ctx.vim_stdout.writeAll("\n");
+    try ctx.client_stream.writeAll(encoded);
+    try ctx.client_stream.writeAll("\n");
 }
 
 /// Send a Vim call_async command.
@@ -191,8 +191,8 @@ fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
         .args = args,
     } });
     defer ctx.allocator.free(encoded);
-    try ctx.vim_stdout.writeAll(encoded);
-    try ctx.vim_stdout.writeAll("\n");
+    try ctx.client_stream.writeAll(encoded);
+    try ctx.client_stream.writeAll("\n");
 }
 
 // ============================================================================
@@ -281,7 +281,7 @@ fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -302,7 +302,7 @@ fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -323,7 +323,7 @@ fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -353,7 +353,7 @@ fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -380,7 +380,7 @@ fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -405,8 +405,7 @@ const obj = switch (params) {
     try range.put("end", .{ .object = end });
 
     var context_obj = ObjectMap.init(ctx.allocator);
-    var diag_array = std.json.Array.init(ctx.allocator);
-    _ = &diag_array;
+    const diag_array = std.json.Array.init(ctx.allocator);
     try context_obj.put("diagnostics", .{ .array = diag_array });
 
     var lsp_params = ObjectMap.init(ctx.allocator);
@@ -426,7 +425,7 @@ fn handleDocumentSymbols(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
+    const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/documentSymbol", lsp_params);
 
     return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
@@ -444,7 +443,7 @@ fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -483,7 +482,7 @@ fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
+    const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/foldingRange", lsp_params);
 
     return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
@@ -496,7 +495,7 @@ fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -517,7 +516,7 @@ fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -545,7 +544,7 @@ fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-const obj = switch (params) {
+    const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
@@ -583,7 +582,7 @@ fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-var td = ObjectMap.init(ctx.allocator);
+    var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
 
     var lsp_params = ObjectMap.init(ctx.allocator);
@@ -602,7 +601,7 @@ fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
+    const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
     lsp_ctx.client.sendNotification("textDocument/didClose", lsp_params) catch |e| {
         log.err("Failed to send didClose: {any}", .{e});
@@ -617,7 +616,7 @@ fn handleWillSave(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-var td = ObjectMap.init(ctx.allocator);
+    var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
 
     var lsp_params = ObjectMap.init(ctx.allocator);
