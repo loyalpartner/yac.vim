@@ -85,6 +85,8 @@ pub const LspRegistry = struct {
     next_id: u32,
     /// Files opened during initialization, replayed after initialized
     pending_opens: std.StringHashMap(std.ArrayList(PendingOpen)),
+    /// Languages where LSP server spawn has failed (to avoid repeat notifications)
+    failed_spawns: std.StringHashMap(void),
 
     pub fn init(allocator: Allocator) LspRegistry {
         return .{
@@ -93,6 +95,7 @@ pub const LspRegistry = struct {
             .pending_init = std.StringHashMap(u32).init(allocator),
             .next_id = 1,
             .pending_opens = std.StringHashMap(std.ArrayList(PendingOpen)).init(allocator),
+            .failed_spawns = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -106,6 +109,7 @@ pub const LspRegistry = struct {
         self.pending_init.deinit();
         self.freePendingOpens();
         self.pending_opens.deinit();
+        self.failed_spawns.deinit();
     }
 
     /// Detect language from file path extension.
@@ -131,6 +135,19 @@ pub const LspRegistry = struct {
             }
         }
         return null;
+    }
+
+    /// Check if a language has already had a spawn failure reported.
+    pub fn hasSpawnFailed(self: *LspRegistry, language: []const u8) bool {
+        return self.failed_spawns.contains(language);
+    }
+
+    /// Mark a language as having a spawn failure.
+    pub fn markSpawnFailed(self: *LspRegistry, language: []const u8) void {
+        const key = self.allocator.dupe(u8, language) catch return;
+        self.failed_spawns.put(key, {}) catch {
+            self.allocator.free(key);
+        };
     }
 
     /// Get an existing client by client key.
