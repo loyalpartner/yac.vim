@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Find references to User struct
@@ -25,7 +24,7 @@ call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 " 执行查找引用
 YacReferences
-sleep 3
+call yac_test#wait_qflist(3000)
 
 " 检查 quickfix 列表
 let qflist = getqflist()
@@ -55,7 +54,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
 
 YacReferences
-sleep 3
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to get_name')
@@ -77,7 +76,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacReferences
-sleep 3
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to users')
@@ -119,7 +118,7 @@ call cursor(2, 24)
 let word = expand('<cword>')
 
 YacReferences
-sleep 2
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 call yac_test#log('INFO', 'HashMap references: ' . len(qflist))

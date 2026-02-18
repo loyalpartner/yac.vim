@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " 保存原始内容
 let s:original_content = getline(1, '$')
@@ -28,7 +27,7 @@ execute "normal! ifn test_unused() {\<CR>    let unused_var = 42;\<CR>}"
 
 " 保存触发诊断
 silent write
-sleep 3
+call yac_test#wait_signs(3000)
 
 " 定位到 unused_var
 call cursor(line('$') - 1, 9)
@@ -37,7 +36,7 @@ call yac_test#assert_eq(word, 'unused_var', 'Cursor should be on unused_var')
 
 " 执行 code action
 YacCodeAction
-sleep 2
+call yac_test#wait_popup(3000)
 
 " 检查是否有 code action 弹出（通常是添加 _ 前缀）
 let popups = popup_list()
@@ -63,7 +62,7 @@ normal! o
 execute "normal! ifn test_import() -> Vec<String> {\<CR>    vec![]\<CR>}"
 
 silent write
-sleep 3
+call yac_test#wait_signs(3000)
 
 " Vec 和 String 是 prelude，尝试其他类型
 " 添加使用 BTreeMap 的代码（需要导入）
@@ -72,7 +71,7 @@ normal! o
 execute "normal! ifn test_btree() {\<CR>    let _map: BTreeMap<i32, i32> = BTreeMap::new();\<CR>}"
 
 silent write
-sleep 3
+call yac_test#wait_signs(3000)
 
 " 定位到 BTreeMap
 call cursor(line('$') - 1, 15)
@@ -80,7 +79,7 @@ let word = expand('<cword>')
 
 if word == 'BTreeMap'
   YacCodeAction
-  sleep 2
+  call yac_test#wait_popup(3000)
 
   let popups = popup_list()
   if !empty(popups)
@@ -103,13 +102,13 @@ normal! o
 execute "normal! ifn test_type_error() {\<CR>    let x: i32 = \"hello\";\<CR>}"
 
 silent write
-sleep 3
+call yac_test#wait_signs(3000)
 
 " 定位到错误位置
 call cursor(line('$') - 1, 18)
 
 YacCodeAction
-sleep 2
+call yac_test#wait_popup(3000)
 
 " rust-analyzer 可能提供类型转换建议
 let popups = popup_list()
@@ -128,7 +127,7 @@ call setline(1, s:original_content)
 call cursor(34, 20)  " User::new 调用
 
 YacCodeAction
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
@@ -147,7 +146,7 @@ normal! j
 
 " 在选择上执行 code action
 YacCodeAction
-sleep 2
+call yac_test#wait_popup(3000)
 
 execute "normal! \<Esc>"
 

@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: gd - Goto Definition mapping
@@ -32,7 +31,7 @@ if !empty(gd_map)
 
   " 使用映射
   normal gd
-  sleep 2
+  call yac_test#wait_line_change(start_line, 3000)
 
   let end_line = line('.')
   call yac_test#log('INFO', 'gd jumped from ' . start_line . ' to ' . end_line)
@@ -55,7 +54,7 @@ if !empty(gD_map)
   let start_line = line('.')
 
   normal gD
-  sleep 2
+  call yac_test#wait_line_change(start_line, 3000)
 
   let end_line = line('.')
   call yac_test#log('INFO', 'gD jumped from ' . start_line . ' to ' . end_line)
@@ -77,7 +76,7 @@ if !empty(K_map) && match(K_map, '[Yy]ac\|[Hh]over') >= 0
   call popup_clear()
 
   normal K
-  sleep 2
+  call yac_test#wait_popup(3000)
 
   let popups = popup_list()
   call yac_test#log('INFO', 'K produced ' . len(popups) . ' popups')
@@ -99,7 +98,7 @@ if !empty(gr_map)
   call setqflist([])
 
   normal gr
-  sleep 3
+  call yac_test#wait_qflist(3000)
 
   let qflist = getqflist()
   call yac_test#log('INFO', 'gr found ' . len(qflist) . ' references')
@@ -117,7 +116,7 @@ normal! G
 normal! o
 execute "normal! iUser::"
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 " 测试 Ctrl-N (下一项)
 if pumvisible() || !empty(popup_list())
@@ -125,17 +124,14 @@ if pumvisible() || !empty(popup_list())
 
   " Ctrl-N 选择下一项
   execute "normal! \<C-n>"
-  sleep 500m
   call yac_test#log('INFO', 'Ctrl-N pressed')
 
   " Ctrl-P 选择上一项
   execute "normal! \<C-p>"
-  sleep 500m
   call yac_test#log('INFO', 'Ctrl-P pressed')
 
   " Escape 取消
   execute "normal! \<Esc>"
-  sleep 500m
 
   let popups_after = popup_list()
   call yac_test#log('INFO', 'After Esc: ' . len(popups_after) . ' popups')
@@ -157,7 +153,7 @@ normal! G
 normal! o
 execute "normal! ilet user = User::n"
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 if pumvisible() || !empty(popup_list())
   " Tab 或 Enter 确认选择
@@ -166,7 +162,6 @@ if pumvisible() || !empty(popup_list())
 
   " 尝试 Tab
   call feedkeys("\<Tab>", 'x')
-  sleep 500m
 
   let line_content = getline('.')
   call yac_test#log('INFO', 'After Tab: ' . line_content)
@@ -239,14 +234,14 @@ edit! test_data/src/lib.rs
 call cursor(6, 12)
 
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
   " 测试关闭 popup
   " 通常 Esc 或移动光标会关闭
   execute "normal! j"
-  sleep 500m
+  call yac_test#wait_for({-> empty(popup_list())}, 3000)
 
   let popups_after_move = popup_list()
   call yac_test#log('INFO', 'Popups after cursor move: ' . len(popups_after_move))

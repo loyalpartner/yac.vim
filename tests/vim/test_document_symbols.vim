@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Get document symbols
@@ -20,7 +19,7 @@ call yac_test#log('INFO', 'Test 1: Get document symbols')
 
 " 执行文档符号命令
 YacDocumentSymbols
-sleep 2
+call yac_test#wait_qflist(3000)
 
 " 检查 quickfix 或 location list
 let qflist = getqflist()
@@ -112,7 +111,7 @@ call yac_test#log('INFO', 'Test 4: Nested symbols (impl methods)')
 " 这取决于 LSP 返回的符号结构
 
 YacDocumentSymbols
-sleep 1
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 if !empty(qflist)
@@ -138,11 +137,10 @@ let original_content = getline(1, '$')
 normal! G
 normal! o
 execute "normal! ipub fn new_test_function() -> i32 { 42 }"
-sleep 2
 
 " 重新获取符号
 YacDocumentSymbols
-sleep 2
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 if !empty(qflist)
@@ -167,7 +165,7 @@ call setline(1, ['// empty rust file', ''])
 set filetype=rust
 
 YacDocumentSymbols
-sleep 1
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 call yac_test#log('INFO', 'Empty file symbols: ' . len(qflist))

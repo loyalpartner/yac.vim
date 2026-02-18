@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Incoming calls to User::new
@@ -25,7 +24,7 @@ call yac_test#assert_eq(word, 'new', 'Cursor should be on "new"')
 
 " 查找调用者（谁调用了这个函数）
 YacCallHierarchyIncoming
-sleep 3
+call yac_test#wait_qflist(3000)
 
 " 检查结果
 let qflist = getqflist()
@@ -63,7 +62,7 @@ call yac_test#assert_eq(word, 'create_user_map', 'Cursor should be on create_use
 
 " 查找被调用的函数
 YacCallHierarchyOutgoing
-sleep 3
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 if !empty(qflist)
@@ -92,7 +91,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'get_name', 'Cursor should be on get_name')
 
 YacCallHierarchyIncoming
-sleep 3
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 if !empty(qflist)
@@ -131,7 +130,6 @@ call yac_test#log('INFO', 'Test 5: Call hierarchy on non-function')
 
 " 回到测试文件
 edit! test_data/src/lib.rs
-sleep 1
 
 " 定位到 User struct（不是函数）
 call cursor(6, 12)
@@ -139,7 +137,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on User struct')
 
 YacCallHierarchyIncoming
-sleep 2
+call yac_test#wait_qflist(3000)
 
 " struct 通常没有调用层次
 let qflist = getqflist()
@@ -156,7 +154,7 @@ call yac_test#log('INFO', 'Test 6: Call hierarchy depth')
 
 call cursor(44, 8)  " process_user
 YacCallHierarchyIncoming
-sleep 2
+call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
 call yac_test#log('INFO', 'process_user callers: ' . len(qflist))

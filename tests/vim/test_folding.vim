@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Get folding ranges
@@ -20,7 +19,7 @@ call yac_test#log('INFO', 'Test 1: Get folding ranges')
 
 " 执行 folding range 命令
 YacFoldingRange
-sleep 2
+call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
 
 " 检查 fold 是否被设置
 let fold_method = &foldmethod
@@ -87,7 +86,6 @@ call yac_test#log('INFO', 'Test 5: Fold all')
 
 " 关闭所有 fold
 normal! zM
-sleep 500m
 
 " 统计可见行数
 let visible_lines = 0
@@ -101,7 +99,6 @@ call yac_test#log('INFO', 'Visible lines after fold all: ' . visible_lines)
 
 " 打开所有 fold
 normal! zR
-sleep 500m
 
 call yac_test#log('INFO', 'All folds opened')
 
@@ -130,7 +127,7 @@ let original = getline(1, '$')
 
 " 获取初始 fold
 YacFoldingRange
-sleep 1
+call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
 
 " 修改文件
 normal! G
@@ -143,7 +140,7 @@ execute "normal! i}"
 
 " 重新获取 fold
 YacFoldingRange
-sleep 2
+call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
 
 " 新函数应该也能 fold
 call cursor(line('$') - 1, 1)
@@ -191,7 +188,7 @@ call yac_test#log('INFO', 'Fold column enabled')
 
 " 刷新 folds
 YacFoldingRange
-sleep 1
+call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
 
 " 检查是否正确显示
 call yac_test#log('INFO', 'Fold column should show fold markers')

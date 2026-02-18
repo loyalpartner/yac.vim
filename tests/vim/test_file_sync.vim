@@ -14,13 +14,12 @@ call yac_test#log('INFO', 'Test 1: File open (didOpen)')
 
 " 打开测试文件
 edit! test_data/src/lib.rs
-sleep 3
 
 " LSP 应该已经初始化
 " 验证通过尝试 hover
 call cursor(6, 12)
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#assert_true(!empty(popups), 'LSP should be active after file open')
@@ -40,7 +39,6 @@ normal! o
 execute "normal! ifn new_function() -> i32 { 42 }"
 
 " 等待 didChange 发送
-sleep 2
 
 " 新函数应该能被 LSP 识别
 call cursor(line('$'), 5)
@@ -48,7 +46,7 @@ let word = expand('<cword>')
 
 if word == 'new_function'
   YacHover
-  sleep 2
+  call yac_test#wait_popup(3000)
 
   let popups = popup_list()
   if !empty(popups)
@@ -66,13 +64,12 @@ call yac_test#log('INFO', 'Test 3: Incremental changes')
 " 多次小修改
 for i in range(1, 5)
   execute "normal! Go// comment " . i
-  sleep 500m
 endfor
 
 " LSP 应该仍然工作
 call cursor(6, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#log('INFO', 'After incremental changes: ' . len(popups) . ' popups')
@@ -94,7 +91,6 @@ execute "normal! i// test comment for save"
 
 " 保存
 silent write
-sleep 2
 
 call yac_test#log('INFO', 'File saved, didSave should be sent')
 
@@ -111,7 +107,6 @@ call yac_test#log('INFO', 'Test 5: willSaveWaitUntil')
 if exists(':YacWillSaveWaitUntil')
   " 测试保存前处理（如格式化）
   YacWillSaveWaitUntil
-  sleep 1
   call yac_test#log('INFO', 'willSaveWaitUntil executed')
 else
   call yac_test#skip('willSaveWaitUntil', 'Command not available')
@@ -129,8 +124,6 @@ set filetype=rust
 call setline(1, ['fn temp() {}'])
 let temp_buf = bufnr('%')
 
-sleep 2
-
 " 关闭 buffer
 bdelete!
 
@@ -140,7 +133,7 @@ call yac_test#log('INFO', 'Buffer closed, didClose should be sent')
 edit! test_data/src/lib.rs
 call cursor(6, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#assert_true(!empty(popups), 'LSP should still work after buffer close')
@@ -156,7 +149,6 @@ call yac_test#log('INFO', 'Test 7: External file modification')
 
 " 使用 :checktime 触发外部修改检查
 checktime
-sleep 1
 
 call yac_test#log('INFO', 'External modification check completed')
 
@@ -171,16 +163,14 @@ let original = getline(1, '$')
 normal! G
 normal! o
 execute "normal! ifn undo_test() {}"
-sleep 1
 
 " 撤销
 normal! u
-sleep 1
 
 " LSP 应该同步撤销后的状态
 call cursor(6, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#log('INFO', 'After undo: ' . len(popups) . ' popups')
@@ -188,7 +178,6 @@ call popup_clear()
 
 " 重做
 execute "normal! \<C-r>"
-sleep 1
 
 call yac_test#log('INFO', 'After redo: LSP should sync')
 
@@ -217,30 +206,27 @@ let buf2 = bufnr('%')
 execute 'buffer ' . buf1
 normal! Go
 execute "normal! i// mod in file 1"
-sleep 500m
 
 execute 'buffer ' . buf2
 normal! Go
 execute "normal! i// mod in file 2"
-sleep 500m
 
 execute 'buffer ' . buf1
 normal! Go
 execute "normal! i// another mod"
-sleep 500m
 
 " 两个文件的 LSP 都应该工作
 execute 'buffer ' . buf1
 call cursor(6, 12)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'File 1 LSP works')
 call popup_clear()
 
 execute 'buffer ' . buf2
 call cursor(1, 5)
 YacHover
-sleep 1
+call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'File 2 LSP works')
 call popup_clear()
 
@@ -265,12 +251,11 @@ endfor
 
 normal! G
 call append('.', new_lines)
-sleep 3
 
 " LSP 应该处理大量修改
 call cursor(line('$') - 25, 5)
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 call yac_test#log('INFO', 'After large batch: ' . len(popups) . ' popups')

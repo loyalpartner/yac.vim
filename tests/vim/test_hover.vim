@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Hover on struct
@@ -25,7 +24,7 @@ call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 " 触发 hover
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 " 检查是否有 popup 出现
 let popups = popup_list()
@@ -57,7 +56,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
 
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
@@ -84,7 +83,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
@@ -111,7 +110,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'create_user_map', 'Cursor should be on "create_user_map"')
 
 YacHover
-sleep 2
+call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
@@ -135,7 +134,7 @@ call yac_test#log('INFO', 'Test 5: Hover on empty space')
 call cursor(3, 1)
 
 YacHover
-sleep 1
+call yac_test#wait_no_popup(3000)
 
 " 空白处不应该有 hover
 let popups = popup_list()
