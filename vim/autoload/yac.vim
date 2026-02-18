@@ -56,6 +56,7 @@ let s:completion_icons = {
 let s:job_pool = {}  " {'local': job, 'user@host1': job, 'user@host2': job, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
 let s:log_file = ''
+let s:debug_log_file = '/tmp/yac-vim-debug.log'
 let s:hover_popup_id = -1
 
 " 补全状态 - 分离数据和显示
@@ -81,6 +82,15 @@ function! s:get_connection_key() abort
   else
     return 'local'
   endif
+endfunction
+
+" Debug 日志写入文件，不干扰 Vim 命令行
+function! s:debug_log(msg) abort
+  if !get(g:, 'lsp_bridge_debug', 0)
+    return
+  endif
+  let line = printf('[%s] %s', strftime('%H:%M:%S'), a:msg)
+  call writefile([line], s:debug_log_file, 'a')
 endfunction
 
 " 构建特定连接的 job 命令
@@ -109,7 +119,7 @@ function! s:ensure_job() abort
     if !exists('s:log_started')
       if get(g:, 'lsp_bridge_debug', 0)
         call ch_logfile('/tmp/vim_channel.log', 'w')
-        echom 'YacDebug: Channel logging enabled to /tmp/vim_channel.log'
+        call s:debug_log('Channel logging enabled to /tmp/vim_channel.log')
       endif
       let s:log_started = 1
     endif
@@ -117,9 +127,7 @@ function! s:ensure_job() abort
     " 创建新的 job
     let l:cmd = s:build_job_command(l:key)
     
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug: Creating new connection [%s]: %s', l:key, string(l:cmd))
-    endif
+    call s:debug_log(printf('Creating new connection [%s]: %s', l:key, string(l:cmd)))
     
     let s:job_pool[l:key] = job_start(l:cmd, {
       \ 'mode': 'json',
@@ -146,32 +154,6 @@ function! yac#start() abort
   return s:ensure_job() != v:null
 endfunction
 
-" 发送命令（使用 ch_sendexpr 和指定的回调handler）
-function! s:send_command(jsonrpc_msg, callback_func) abort
-  let l:job = s:ensure_job()
-  
-  if l:job != v:null && job_status(l:job) == 'run'
-    " 调试模式：记录发送的命令
-    if get(g:, 'lsp_bridge_debug', 0)
-      let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('YacDebug[SEND][%s]: %s -> %s:%d:%d',
-        \ s:current_connection_key,
-        \ a:jsonrpc_msg.method,
-        \ fnamemodify(get(params, 'file', ''), ':t'),
-        \ get(params, 'line', -1), get(params, 'column', -1))
-      echom printf('YacDebug[JSON]: %s', string(a:jsonrpc_msg))
-    endif
-
-    " 使用指定的回调函数
-    call ch_sendexpr(l:job, a:jsonrpc_msg, {'callback': a:callback_func})
-  else
-    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
-  endif
-endfunction
-
-" === New Linus-style API ===
-
-" Request with response - clear semantics
 function! s:request(method, params, callback_func) abort
   let jsonrpc_msg = {
     \ 'method': a:method,
@@ -181,15 +163,12 @@ function! s:request(method, params, callback_func) abort
   let l:job = s:ensure_job()
 
   if l:job != v:null && job_status(l:job) == 'run'
-    " 调试模式：记录发送的请求
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[SEND][%s]: %s -> %s:%d:%d',
-        \ s:current_connection_key,
-        \ a:method,
-        \ fnamemodify(get(a:params, 'file', ''), ':t'),
-        \ get(a:params, 'line', -1), get(a:params, 'column', -1))
-      echom printf('YacDebug[JSON]: %s', string(jsonrpc_msg))
-    endif
+    call s:debug_log(printf('[SEND][%s]: %s -> %s:%d:%d',
+      \ s:current_connection_key,
+      \ a:method,
+      \ fnamemodify(get(a:params, 'file', ''), ':t'),
+      \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
+    call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 使用指定的回调函数
     call ch_sendexpr(l:job, jsonrpc_msg, {'callback': a:callback_func})
@@ -208,15 +187,12 @@ function! s:notify(method, params) abort
   let l:job = s:ensure_job()
 
   if l:job != v:null && job_status(l:job) == 'run'
-    " 调试模式：记录发送的通知
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug[NOTIFY][%s]: %s -> %s:%d:%d',
-        \ s:current_connection_key,
-        \ a:method,
-        \ fnamemodify(get(a:params, 'file', ''), ':t'),
-        \ get(a:params, 'line', -1), get(a:params, 'column', -1))
-      echom printf('YacDebug[JSON]: %s', string(jsonrpc_msg))
-    endif
+    call s:debug_log(printf('[NOTIFY][%s]: %s -> %s:%d:%d',
+      \ s:current_connection_key,
+      \ a:method,
+      \ fnamemodify(get(a:params, 'file', ''), ':t'),
+      \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
+    call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 发送通知（不需要回调）
     call ch_sendraw(l:job, json_encode([jsonrpc_msg]) . "\n")
@@ -538,29 +514,6 @@ function! yac#did_close() abort
     \ })
 endfunction
 
-" 发送通知（无响应）
-function! s:send_notification(jsonrpc_msg) abort
-  let l:job = s:ensure_job()
-
-  if l:job != v:null && job_status(l:job) == 'run'
-    " 调试模式：记录发送的通知
-    if get(g:, 'lsp_bridge_debug', 0)
-      let params = get(a:jsonrpc_msg, 'params', {})
-      echom printf('YacDebug[NOTIFY][%s]: %s -> %s:%d:%d',
-        \ s:current_connection_key,
-        \ a:jsonrpc_msg.method,
-        \ fnamemodify(get(params, 'file', ''), ':t'),
-        \ get(params, 'line', -1), get(params, 'column', -1))
-      echom printf('YacDebug[JSON]: %s', string(a:jsonrpc_msg))
-    endif
-
-    " 发送通知（不需要回调）
-    call ch_sendraw(l:job, json_encode([a:jsonrpc_msg]) . "\n")
-  else
-    echoerr 'lsp-bridge not running'
-  endif
-endfunction
-
 " 获取当前光标位置的词前缀
 function! s:get_current_word_prefix() abort
   let line = getline('.')
@@ -587,9 +540,7 @@ endfunction
 " hover 响应处理器 - 简化：有 content 就显示
 " goto 响应处理器 - 跳转到定义/声明/类型定义/实现
 function! s:handle_goto_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: goto response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: goto response: %s', string(a:response)))
 
   let l:loc = a:response
 
@@ -635,9 +586,7 @@ function! s:handle_goto_response(channel, response) abort
 endfunction
 
 function! s:handle_hover_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: hover response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: hover response: %s', string(a:response)))
 
   if type(a:response) != v:t_dict
     return
@@ -663,9 +612,7 @@ endfunction
 
 " completion 响应处理器 - 简化：有 items 就显示
 function! s:handle_completion_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: completion response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: completion response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completions(a:response.items)
@@ -677,9 +624,7 @@ endfunction
 
 " references 响应处理器
 function! s:handle_references_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: references response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: references response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call s:show_references(a:response.locations)
@@ -702,9 +647,7 @@ endfunction
 
 " inlay_hints 响应处理器
 function! s:handle_inlay_hints_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: inlay_hints response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'hints')
     call s:show_inlay_hints(a:response.hints)
@@ -713,9 +656,7 @@ endfunction
 
 " rename 响应处理器
 function! s:handle_rename_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: rename response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: rename response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_workspace_edit(a:response.edits)
@@ -724,9 +665,7 @@ endfunction
 
 " call_hierarchy 响应处理器（同时处理incoming和outgoing）
 function! s:handle_call_hierarchy_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: call_hierarchy response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: call_hierarchy response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:show_call_hierarchy(a:response.items)
@@ -735,9 +674,7 @@ endfunction
 
 " document_symbols 响应处理器
 function! s:handle_document_symbols_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: document_symbols response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: document_symbols response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
     call s:show_document_symbols(a:response.symbols)
@@ -746,9 +683,7 @@ endfunction
 
 " folding_range 响应处理器
 function! s:handle_folding_range_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: folding_range response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: folding_range response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
@@ -757,9 +692,7 @@ endfunction
 
 " code_action 响应处理器
 function! s:handle_code_action_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: code_action response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: code_action response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'actions')
     call s:show_code_actions(a:response.actions)
@@ -771,9 +704,7 @@ endfunction
 
 " execute_command 响应处理器
 function! s:handle_execute_command_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: execute_command response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: execute_command response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_workspace_edit(a:response.edits)
@@ -782,25 +713,20 @@ endfunction
 
 " file_open 响应处理器
 function! s:handle_file_open_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: file_open response: %s', string(a:response))
-  endif
+  call s:debug_log(printf('[RECV]: file_open response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'log_file')
     let s:log_file = a:response.log_file
-    echo 'lsp-bridge initialized with log: ' . s:log_file
+    " Silent init - log file path available via :YacDebugStatus
+    call s:debug_log('lsp-bridge initialized with log: ' . s:log_file)
   endif
 endfunction
 
 " will_save_wait_until 响应处理器
 function! s:handle_will_save_wait_until_response(channel, response) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom printf('YacDebug[RECV]: will_save_wait_until response: %s', string(a:response))
-  endif
-
-  " 可能返回文本编辑
+  call s:debug_log(printf('[RECV]: will_save_wait_until response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    " 应用编辑
+    call s:apply_workspace_edit(a:response.edits)
   endif
 endfunction
 
@@ -816,7 +742,7 @@ function! s:handle_exit(key, job, status) abort
     echo printf('LSP connection to %s failed (exit: %d)', a:key, a:status)
     echohl None
   else
-    echom printf('LSP connection to %s closed', a:key)
+    call s:debug_log(printf('LSP connection to %s closed', a:key))
   endif
   
   " 从连接池中移除失败的连接
@@ -834,9 +760,7 @@ function! s:handle_response(channel, msg) abort
     " 只处理服务器主动发送的通知（如诊断）
     if type(content) == v:t_dict && has_key(content, 'action')
       if content.action == 'diagnostics'
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: Received diagnostics action with " . len(content.diagnostics) . " items"
-        endif
+        call s:debug_log("Received diagnostics action with " . len(content.diagnostics) . " items")
         call s:show_diagnostics(content.diagnostics)
       endif
     endif
@@ -846,9 +770,7 @@ endfunction
 " VimScript函数：接收Rust进程设置的日志文件路径（通过call_async调用）
 function! yac#set_log_file(log_path) abort
   let s:log_file = a:log_path
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom 'YacDebug: Log file path set to: ' . a:log_path
-  endif
+  call s:debug_log('Log file path set to: ' . a:log_path)
 endfunction
 
 " 停止进程 - 支持连接池
@@ -858,9 +780,7 @@ function! yac#stop() abort
   if has_key(s:job_pool, l:key)
     let l:job = s:job_pool[l:key]
     if job_status(l:job) == 'run'
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom printf('YacDebug: Stopping lsp-bridge process for %s', l:key)
-      endif
+      call s:debug_log(printf('Stopping lsp-bridge process for %s', l:key))
       call job_stop(l:job)
     endif
     unlet s:job_pool[l:key]
@@ -871,9 +791,7 @@ endfunction
 function! yac#stop_all() abort
   for [key, job] in items(s:job_pool)
     if job_status(job) == 'run'
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom printf('YacDebug: Stopping lsp-bridge process for %s', key)
-      endif
+      call s:debug_log(printf('Stopping lsp-bridge process for %s', key))
       call job_stop(job)
     endif
   endfor
@@ -894,7 +812,7 @@ function! yac#debug_toggle() abort
 
     " 如果有活跃的连接，重启以启用channel日志
     if !empty(s:job_pool)
-      echom 'YacDebug: Restarting connections to enable channel logging...'
+      call s:debug_log('Restarting connections to enable channel logging...')
       call yac#stop_all()
       " 下次调用 LSP 命令时会自动重新启动
     endif
@@ -965,9 +883,7 @@ function! s:cleanup_dead_connections() abort
   endfor
   
   for key in dead_keys
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom printf('YacDebug: Removing dead connection: %s', key)
-    endif
+    call s:debug_log(printf('Removing dead connection: %s', key))
     unlet s:job_pool[key]
   endfor
   
@@ -1833,11 +1749,8 @@ function! s:execute_code_action(action) abort
 endfunction
 
 function! s:show_diagnostics(diagnostics) abort
-  " Only show debug info if explicitly enabled
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom "DEBUG: s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics"
-    echom "DEBUG: virtual text enabled = " . s:diagnostic_virtual_text.enabled
-  endif
+  call s:debug_log("s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics")
+  call s:debug_log("virtual text enabled = " . s:diagnostic_virtual_text.enabled)
 
   if empty(a:diagnostics)
     " Clear virtual text when no diagnostics
@@ -1849,8 +1762,8 @@ function! s:show_diagnostics(diagnostics) abort
   endif
 
   " Debug: show first diagnostic structure (only if debug enabled)
-  if get(g:, 'lsp_bridge_debug', 0) && len(a:diagnostics) > 0
-    echom "DEBUG: First diagnostic: " . string(a:diagnostics[0])
+  if len(a:diagnostics) > 0
+    call s:debug_log("First diagnostic: " . string(a:diagnostics[0]))
   endif
 
   let qf_list = []
@@ -1889,11 +1802,9 @@ function! s:show_diagnostics(diagnostics) abort
   " Update virtual text if enabled
   if s:diagnostic_virtual_text.enabled
     call s:update_diagnostic_virtual_text(a:diagnostics)
-    echo 'Found ' . len(a:diagnostics) . ' diagnostics (virtual text enabled)'
   else
     " Only show quickfix if virtual text is disabled
     copen
-    echo 'Found ' . len(a:diagnostics) . ' diagnostics'
   endif
 endfunction
 
@@ -1920,9 +1831,7 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     " 清除当前缓冲区的虚拟文本（而不是所有缓冲区）
     let current_bufnr = bufnr('%')
     call s:clear_diagnostic_virtual_text(current_bufnr)
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom "DEBUG: Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics"
-    endif
+    call s:debug_log("Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics")
     return
   endif
 
@@ -1963,9 +1872,7 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
 
     " 只有当文件在缓冲区中时才处理
     if bufnr != -1
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom "DEBUG: update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics"
-      endif
+      call s:debug_log("update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics")
 
       " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
       if exists('*prop_remove')
@@ -1984,39 +1891,29 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
       " 渲染虚拟文本
       call s:render_diagnostic_virtual_text(bufnr)
     else
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom "DEBUG: file " . file_path . " not loaded in buffer, skipping virtual text"
-      endif
+      call s:debug_log("file " . file_path . " not loaded in buffer, skipping virtual text")
     endif
   endfor
 endfunction
 
 " 渲染诊断虚拟文本到buffer
 function! s:render_diagnostic_virtual_text(bufnr) abort
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom "DEBUG: render_diagnostic_virtual_text called for buffer " . a:bufnr
-  endif
+  call s:debug_log("render_diagnostic_virtual_text called for buffer " . a:bufnr)
 
   if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom "DEBUG: No diagnostics stored for buffer " . a:bufnr
-    endif
+    call s:debug_log("No diagnostics stored for buffer " . a:bufnr)
     return
   endif
 
   let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
-  if get(g:, 'lsp_bridge_debug', 0)
-    echom "DEBUG: Found " . len(diagnostics) . " diagnostics to render"
-  endif
+  call s:debug_log("Found " . len(diagnostics) . " diagnostics to render")
 
   " 为每个诊断添加virtual text
   for diag in diagnostics
     let line_num = diag.line + 1  " Convert to 1-based
     let col_num = diag.column + 1
     let text = ' ' . diag.severity . ': ' . diag.message  " 前缀空格用于视觉分离
-    if get(g:, 'lsp_bridge_debug', 0)
-      echom "DEBUG: Processing diagnostic at line " . line_num . ": " . text
-    endif
+    call s:debug_log("Processing diagnostic at line " . line_num . ": " . text)
 
     " 根据严重程度选择高亮组
     let hl_group = 'DiagnosticHint'
@@ -2030,21 +1927,15 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
 
     " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
     if exists('*prop_type_add')
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom "DEBUG: Using text properties for virtual text"
-      endif
+      call s:debug_log("Using text properties for virtual text")
       " 确保属性类型存在
       let prop_type = 'diagnostic_' . tolower(diag.severity)
       try
         call prop_type_add(prop_type, {'highlight': hl_group})
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: Added prop type " . prop_type
-        endif
+        call s:debug_log("Added prop type " . prop_type)
       catch /E969/
         " 属性类型已存在，忽略错误
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: Prop type " . prop_type . " already exists"
-        endif
+        call s:debug_log("Prop type " . prop_type . " already exists")
       endtry
 
       " 在行尾添加虚拟文本
@@ -2055,13 +1946,9 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
           \ 'text_align': 'after',
           \ 'bufnr': a:bufnr
           \ })
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: Successfully added virtual text at line " . line_num
-        endif
+        call s:debug_log("Successfully added virtual text at line " . line_num)
       catch
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: text_align failed, trying fallback: " . v:exception
-        endif
+        call s:debug_log("text_align failed, trying fallback: " . v:exception)
         " 添加失败，可能是位置无效或Vim版本不支持text_align
         " 尝试简化版本
         try
@@ -2072,20 +1959,14 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
             \ 'text': text,
             \ 'bufnr': a:bufnr
             \ })
-          if get(g:, 'lsp_bridge_debug', 0)
-            echom "DEBUG: Successfully added virtual text with fallback at line " . line_num
-          endif
+          call s:debug_log("Successfully added virtual text with fallback at line " . line_num)
         catch
-          if get(g:, 'lsp_bridge_debug', 0)
-            echom "DEBUG: Virtual text completely failed: " . v:exception
-          endif
+          call s:debug_log("Virtual text completely failed: " . v:exception)
           " 完全失败，跳过这个诊断
         endtry
       endtry
     else
-      if get(g:, 'lsp_bridge_debug', 0)
-        echom "DEBUG: Text properties not available, using echo fallback"
-      endif
+      call s:debug_log("Text properties not available, using echo fallback")
       " 降级：至少在状态行显示诊断信息
       echo "Diagnostic at line " . line_num . ": " . text
     endif
@@ -2100,14 +1981,10 @@ function! s:clear_diagnostic_virtual_text(bufnr) abort
     for severity in ['error', 'warning', 'info', 'hint']
       try
         call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': a:bufnr, 'all': 1})
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: Cleared diagnostic_" . severity . " from buffer " . a:bufnr
-        endif
+        call s:debug_log("Cleared diagnostic_" . severity . " from buffer " . a:bufnr)
       catch
         " 如果属性类型不存在，忽略错误
-        if get(g:, 'lsp_bridge_debug', 0)
-          echom "DEBUG: No diagnostic_" . severity . " properties found in buffer " . a:bufnr
-        endif
+        call s:debug_log("No diagnostic_" . severity . " properties found in buffer " . a:bufnr)
       endtry
     endfor
   endif

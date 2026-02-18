@@ -25,7 +25,7 @@ set runtimepath+=vim
 
 " yac-bridge 配置
 let g:lsp_bridge_command = ['./zig-out/bin/lsp-bridge']
-let g:lsp_bridge_auto_start = 0
+let g:lsp_bridge_auto_start = 1
 let g:lsp_bridge_debug = 1
 
 " 自动补全配置 (可以修改这些值进行测试)
