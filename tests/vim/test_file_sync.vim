@@ -13,7 +13,7 @@ call yac_test#setup()
 call yac_test#log('INFO', 'Test 1: File open (didOpen)')
 
 " 打开测试文件
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " LSP 应该已经初始化
 " 验证通过尝试 hover
@@ -36,7 +36,7 @@ let original = getline(1, '$')
 " 修改 buffer
 normal! G
 normal! o
-execute "normal! ifn new_function() -> i32 { 42 }"
+execute "normal! ifn newFunction() i32 { return 42; }"
 
 " 等待 didChange 发送
 
@@ -44,7 +44,7 @@ execute "normal! ifn new_function() -> i32 { 42 }"
 call cursor(line('$'), 5)
 let word = expand('<cword>')
 
-if word == 'new_function'
+if word == 'newFunction'
   YacHover
   call yac_test#wait_popup(3000)
 
@@ -120,8 +120,8 @@ call yac_test#log('INFO', 'Test 6: Buffer close (didClose)')
 " 打开新文件
 new
 setlocal buftype=nofile
-set filetype=rust
-call setline(1, ['fn temp() {}'])
+set filetype=zig
+call setline(1, ['fn temp() void {}'])
 let temp_buf = bufnr('%')
 
 " 关闭 buffer
@@ -130,7 +130,7 @@ bdelete!
 call yac_test#log('INFO', 'Buffer closed, didClose should be sent')
 
 " 确保不影响其他 buffer
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 call cursor(6, 12)
 YacHover
 call yac_test#wait_popup(3000)
@@ -162,7 +162,7 @@ let original = getline(1, '$')
 " 做一些修改
 normal! G
 normal! o
-execute "normal! ifn undo_test() {}"
+execute "normal! ifn undoTest() void {}"
 
 " 撤销
 normal! u
@@ -191,15 +191,15 @@ call setline(1, original)
 call yac_test#log('INFO', 'Test 9: Multiple file modifications')
 
 " 打开两个 Rust 文件
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 let buf1 = bufnr('%')
 let orig1 = getline(1, '$')
 
 " 创建第二个文件
 new
 setlocal buftype=nofile
-set filetype=rust
-call setline(1, ['fn helper() -> i32 { 1 }'])
+set filetype=zig
+call setline(1, ['fn helper() i32 { return 1; }'])
 let buf2 = bufnr('%')
 
 " 在两个文件中交替修改
@@ -246,7 +246,7 @@ let original = getline(1, '$')
 " 一次性添加大量代码
 let new_lines = []
 for i in range(1, 50)
-  call add(new_lines, 'fn batch_func_' . i . '() -> i32 { ' . i . ' }')
+  call add(new_lines, 'fn batchFunc' . i . '() i32 { return ' . i . '; }')
 endfor
 
 normal! G

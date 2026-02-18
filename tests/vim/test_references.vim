@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: Find references to User struct
@@ -40,30 +40,30 @@ endfor
 
 " 关闭 quickfix 窗口，回到原文件
 silent! cclose
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " ============================================================================
-" Test 2: Find references to get_name method
+" Test 2: Find references to getName method
 " ============================================================================
-call yac_test#log('INFO', 'Test 2: Find references to get_name method')
+call yac_test#log('INFO', 'Test 2: Find references to getName method')
 
-" 定位到 get_name 方法定义
+" 定位到 getName 方法定义
 call cursor(19, 12)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
+call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 YacReferences
 call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
-call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to get_name')
+call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to getName')
 
-" get_name 应该有至少 2 个引用
-call yac_test#assert_true(len(qflist) >= 2, 'get_name should have at least 2 references')
+" getName 应该有至少 2 个引用
+call yac_test#assert_true(len(qflist) >= 2, 'getName should have at least 2 references')
 
 " 关闭 quickfix 窗口，回到原文件
 silent! cclose
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " ============================================================================
 " Test 3: Find references to local variable
@@ -86,7 +86,7 @@ call yac_test#assert_true(len(qflist) >= 3, 'users should have at least 3 refere
 
 " 关闭 quickfix 窗口，回到原文件
 silent! cclose
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " ============================================================================
 " Test 4: Navigate through references
@@ -123,17 +123,17 @@ silent! cclose
 call yac_test#log('INFO', 'Test 5: Item with limited references')
 
 " 回到文件
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
-" 测试 HashMap 导入（可能只有一个引用）
-call cursor(2, 24)
+" 测试 Allocator 导入（可能只有一个引用）
+call cursor(2, 7)
 let word = expand('<cword>')
 
 YacReferences
 call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
-call yac_test#log('INFO', 'HashMap references: ' . len(qflist))
+call yac_test#log('INFO', 'Allocator references: ' . len(qflist))
 
 " ============================================================================
 " Cleanup

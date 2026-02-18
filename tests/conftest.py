@@ -3,7 +3,9 @@
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,24 @@ class VimRunner:
                 continue
         pytest.skip("vim not found")
 
+    def _make_workspace(self) -> Path:
+        """Copy test data template into a temp workspace."""
+        tmpdir = Path(tempfile.mkdtemp(prefix="yac_test_"))
+
+        # Copy template directory as test_data/ (path referenced by Vim scripts)
+        shutil.copytree(
+            self.project_root / "tests" / "data_tmpl",
+            tmpdir / "test_data",
+        )
+
+        # Symlink read-only directories needed by the plugin at runtime
+        (tmpdir / "vim").symlink_to(self.project_root / "vim")
+        (tmpdir / "vimrc").symlink_to(self.project_root / "vimrc")
+        (tmpdir / "zig-out").symlink_to(self.project_root / "zig-out")
+        (tmpdir / "tests").symlink_to(self.project_root / "tests")
+
+        return tmpdir
+
     def run_test(self, test_name: str, timeout: int = 60) -> SuiteResult:
         test_file = self.test_dir / f"{test_name}.vim"
         if not test_file.exists():
@@ -57,10 +77,12 @@ class VimRunner:
                 output=f"Test file not found: {test_file}",
             )
 
+        workspace = self._make_workspace()
+
         start_time = time.time()
         output_file = Path(f"/tmp/yac_test_{test_name}_{os.getpid()}.txt")
 
-        vimrc = self.project_root / "vimrc"
+        vimrc = workspace / "vimrc"
         cmd = [
             self.vim_cmd,
             "-N",
@@ -79,7 +101,7 @@ class VimRunner:
         try:
             result = subprocess.run(
                 cmd,
-                cwd=self.project_root,
+                cwd=workspace,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -108,78 +130,11 @@ class VimRunner:
                 duration=time.time() - start_time,
                 output=str(e),
             )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
         duration = time.time() - start_time
         return self._parse_output(test_name, output, duration)
-
-    def run_all_tests(self, timeout: int = 300) -> dict[str, SuiteResult]:
-        """Run all tests in a single Vim session (shared LSP)."""
-        start_time = time.time()
-        output_file = Path(f"/tmp/yac_test_batch_{os.getpid()}.txt")
-        run_all = self.test_dir / "run_all.vim"
-
-        vimrc = self.project_root / "vimrc"
-        cmd = [
-            self.vim_cmd,
-            "-N",
-            "-u", str(vimrc),
-            "-U", "NONE",
-            "-es",
-            "-c", "set noswapfile",
-            "-c", "set nobackup",
-            "-c", f"source {run_all}",
-            "-c", "qa!",
-        ]
-
-        env = os.environ.copy()
-        env["YAC_TEST_OUTPUT"] = str(output_file)
-
-        try:
-            subprocess.run(
-                cmd,
-                cwd=self.project_root,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-            )
-            if output_file.exists():
-                output = output_file.read_text()
-                output_file.unlink()
-            else:
-                output = ""
-        except subprocess.TimeoutExpired:
-            if output_file.exists():
-                output = output_file.read_text()
-                output_file.unlink()
-            else:
-                output = ""
-
-        return self._parse_batch_output(output, time.time() - start_time)
-
-    def _parse_batch_output(
-        self, output: str, total_duration: float
-    ) -> dict[str, SuiteResult]:
-        """Parse output containing multiple ::YAC_TEST_RESULT:: lines."""
-        results = {}
-        for match in re.finditer(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE):
-            try:
-                data = json.loads(match.group(1))
-                suite = data.get("suite", "unknown")
-                # Normalize to match vim_tests keys (test_<name>)
-                key = suite if suite.startswith("test_") else f"test_{suite}"
-                results[key] = SuiteResult(
-                    suite=suite,
-                    tests=data.get("tests", []),
-                    passed=data.get("passed", 0),
-                    failed=data.get("failed", 0),
-                    duration=data.get("duration", 0),
-                    success=data.get("success", False),
-                    output=output,
-                )
-            except json.JSONDecodeError:
-                continue
-        return results
 
     def _parse_output(self, suite: str, output: str, duration: float) -> SuiteResult:
         match = re.search(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE)
@@ -214,7 +169,7 @@ class VimRunner:
         return sorted(f.stem for f in self.test_dir.glob("test_*.vim"))
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def vim_runner():
     return VimRunner(PROJECT_ROOT)
 
@@ -224,9 +179,3 @@ def check_bridge():
     bridge = PROJECT_ROOT / "zig-out" / "bin" / "lsp-bridge"
     if not bridge.exists():
         pytest.skip("lsp-bridge not built, run 'zig build' first")
-
-
-@pytest.fixture(scope="session")
-def batch_results(vim_runner, check_bridge):
-    """Run all tests in one Vim session, return per-suite results."""
-    return vim_runner.run_all_tests(timeout=600)

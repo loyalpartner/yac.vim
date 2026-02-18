@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: Hover on struct
@@ -48,19 +48,19 @@ call popup_clear()
 " ============================================================================
 " Test 2: Hover on function
 " ============================================================================
-call yac_test#log('INFO', 'Test 2: Hover on get_name function')
+call yac_test#log('INFO', 'Test 2: Hover on getName function')
 
-" 定位到 get_name 方法
+" 定位到 getName 方法
 call cursor(19, 12)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
+call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 YacHover
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()
 if !empty(popups)
-  call yac_test#log('INFO', 'Popup appeared for get_name')
+  call yac_test#log('INFO', 'Popup appeared for getName')
   let popup_id = popups[0]
   let bufnr = winbufnr(popup_id)
   if bufnr > 0
@@ -92,8 +92,8 @@ if !empty(popups)
   let bufnr = winbufnr(popup_id)
   if bufnr > 0
     let content = join(getbufline(bufnr, 1, '$'), "\n")
-    " 应该显示 HashMap 类型
-    call yac_test#assert_contains(content, 'HashMap', 'Hover should show HashMap type')
+    " 应该显示 AutoHashMap 类型
+    call yac_test#assert_contains(content, 'AutoHashMap', 'Hover should show AutoHashMap type')
   endif
 endif
 
@@ -104,10 +104,10 @@ call popup_clear()
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Hover on documented item')
 
-" 定位到 create_user_map 函数（有文档注释）
+" 定位到 createUserMap 函数（有文档注释）
 call cursor(30, 8)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'create_user_map', 'Cursor should be on "create_user_map"')
+call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
 YacHover
 call yac_test#wait_popup(3000)

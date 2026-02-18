@@ -10,21 +10,21 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
-" Test 1: Incoming calls to User::new
+" Test 1: Incoming calls to User.init
 " ============================================================================
-call yac_test#log('INFO', 'Test 1: Incoming calls to User::new')
+call yac_test#log('INFO', 'Test 1: Incoming calls to User.init')
 
-" 定位到 User::new 方法定义
+" 定位到 User.init 方法定义
 call cursor(14, 12)  " pub fn new
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'new', 'Cursor should be on "new"')
+call yac_test#assert_eq(word, 'init', 'Cursor should be on "init"')
 
 " 查找调用者（谁调用了这个函数）
 YacCallHierarchyIncoming
-call yac_test#wait_qflist(3000)
+call yac_test#wait_qflist(500)
 
 " 检查结果
 let qflist = getqflist()
@@ -33,9 +33,9 @@ let popups = popup_list()
 
 if !empty(qflist)
   call yac_test#log('INFO', 'Incoming calls in quickfix: ' . len(qflist))
-  call yac_test#assert_true(len(qflist) >= 1, 'User::new should have at least 1 caller')
+  call yac_test#assert_true(len(qflist) >= 1, 'User.init should have at least 1 caller')
 
-  " create_user_map 调用了 User::new
+  " createUserMap 调用了 User.init
   let callers = join(map(copy(qflist), 'v:val.text'), ' ')
   call yac_test#log('INFO', 'Callers: ' . callers)
 
@@ -51,27 +51,27 @@ else
 endif
 
 " ============================================================================
-" Test 2: Outgoing calls from create_user_map
+" Test 2: Outgoing calls from createUserMap
 " ============================================================================
-call yac_test#log('INFO', 'Test 2: Outgoing calls from create_user_map')
+call yac_test#log('INFO', 'Test 2: Outgoing calls from createUserMap')
 
-" 定位到 create_user_map 函数
+" 定位到 createUserMap 函数
 call cursor(30, 8)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'create_user_map', 'Cursor should be on create_user_map')
+call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on createUserMap')
 
 " 查找被调用的函数
 YacCallHierarchyOutgoing
-call yac_test#wait_qflist(3000)
+call yac_test#wait_qflist(500)
 
 let qflist = getqflist()
 if !empty(qflist)
   call yac_test#log('INFO', 'Outgoing calls: ' . len(qflist))
 
-  " create_user_map 调用了：
-  " - HashMap::new
-  " - User::new (多次)
-  " - HashMap::insert
+  " createUserMap 调用了：
+  " - AutoHashMap.init
+  " - User.init (多次)
+  " - users.put
   call yac_test#assert_true(len(qflist) >= 2, 'Should have multiple outgoing calls')
 
   let callees = join(map(copy(qflist), 'v:val.text'), ' ')
@@ -81,22 +81,22 @@ else
 endif
 
 " ============================================================================
-" Test 3: Incoming calls to get_name
+" Test 3: Incoming calls to getName
 " ============================================================================
-call yac_test#log('INFO', 'Test 3: Incoming calls to get_name method')
+call yac_test#log('INFO', 'Test 3: Incoming calls to getName method')
 
-" 定位到 get_name 方法
+" 定位到 getName 方法
 call cursor(19, 12)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'get_name', 'Cursor should be on get_name')
+call yac_test#assert_eq(word, 'getName', 'Cursor should be on getName')
 
 YacCallHierarchyIncoming
-call yac_test#wait_qflist(3000)
+call yac_test#wait_qflist(500)
 
 let qflist = getqflist()
 if !empty(qflist)
-  call yac_test#log('INFO', 'get_name callers: ' . len(qflist))
-  " process_user 和测试函数调用了 get_name
+  call yac_test#log('INFO', 'getName callers: ' . len(qflist))
+  " processUser 和测试函数调用了 getName
 endif
 
 " ============================================================================
@@ -129,7 +129,7 @@ endif
 call yac_test#log('INFO', 'Test 5: Call hierarchy on non-function')
 
 " 回到测试文件
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " 定位到 User struct（不是函数）
 call cursor(6, 12)
@@ -137,7 +137,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on User struct')
 
 YacCallHierarchyIncoming
-call yac_test#wait_qflist(3000)
+call yac_test#wait_qflist(500)
 
 " struct 通常没有调用层次
 let qflist = getqflist()
@@ -149,15 +149,15 @@ call yac_test#log('INFO', 'Struct call hierarchy results: ' . len(qflist))
 call yac_test#log('INFO', 'Test 6: Call hierarchy depth')
 
 " 测试多层调用关系
-" process_user -> get_name
-" test_user_creation -> User::new, get_name
+" processUser -> getName
+" test_user_creation -> User.init, getName
 
-call cursor(44, 8)  " process_user
+call cursor(44, 8)  " processUser
 YacCallHierarchyIncoming
-call yac_test#wait_qflist(3000)
+call yac_test#wait_qflist(500)
 
 let qflist = getqflist()
-call yac_test#log('INFO', 'process_user callers: ' . len(qflist))
+call yac_test#log('INFO', 'processUser callers: ' . len(qflist))
 
 " ============================================================================
 " Cleanup

@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: Get folding ranges
@@ -58,15 +58,15 @@ if struct_fold > 0
 endif
 
 " ============================================================================
-" Test 3: Fold impl block
+" Test 3: Fold struct body
 " ============================================================================
-call yac_test#log('INFO', 'Test 3: Fold impl block')
+call yac_test#log('INFO', 'Test 3: Fold struct body')
 
-" 定位到 impl User
-call cursor(12, 1)
-let impl_fold = foldlevel('.')
+" 定位到 User struct body
+call cursor(6, 1)
+let struct_fold_inner = foldlevel('.')
 
-call yac_test#log('INFO', 'Impl block fold level: ' . impl_fold)
+call yac_test#log('INFO', 'Struct body fold level: ' . struct_fold_inner)
 
 " ============================================================================
 " Test 4: Fold function
@@ -105,15 +105,15 @@ call yac_test#log('INFO', 'All folds opened')
 " ============================================================================
 " Test 6: Nested folds
 " ============================================================================
-call yac_test#log('INFO', 'Test 6: Nested folds (method inside impl)')
+call yac_test#log('INFO', 'Test 6: Nested folds (method inside struct)')
 
 " impl 块内的方法应该有嵌套 fold
-call cursor(14, 1)  " pub fn new 在 impl 内
+call cursor(14, 1)  " pub fn init inside struct
 let method_fold = foldlevel('.')
 
 call yac_test#log('INFO', 'Method fold level (inside impl): ' . method_fold)
 
-" 如果 impl 是 level 1，method 应该是 level 2
+" 如果 struct 是 level 1，method 应该是 level 2
 if method_fold > 0
   call yac_test#log('INFO', 'Nested folding detected')
 endif
@@ -132,9 +132,9 @@ call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldcl
 " 修改文件
 normal! G
 normal! o
-execute "normal! ifn new_fold_test() {"
+execute "normal! ifn newFoldTest() void {"
 normal! o
-execute "normal! i    let x = 1;"
+execute "normal! i    const x: i32 = 1;"
 normal! o
 execute "normal! i}"
 
@@ -159,7 +159,7 @@ call yac_test#log('INFO', 'Test 8: Fold with doc comments')
 
 " 带有文档注释的函数
 " 检查 create_user_map (有 /// 注释)
-call cursor(27, 1)  " 文档注释开始
+call cursor(29, 1)  " doc comment for createUserMap
 let doc_fold = foldlevel('.')
 
 call yac_test#log('INFO', 'Doc comment fold level: ' . doc_fold)
@@ -169,8 +169,8 @@ call yac_test#log('INFO', 'Doc comment fold level: ' . doc_fold)
 " ============================================================================
 call yac_test#log('INFO', 'Test 9: Module folds')
 
-" tests 模块
-call search('#\[cfg(test)\]')
+" test blocks
+call search('test "')
 if line('.') > 0
   let test_mod_line = line('.')
   let mod_fold = foldlevel(test_mod_line)

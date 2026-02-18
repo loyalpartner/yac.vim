@@ -191,6 +191,19 @@ pub const LspRegistry = struct {
             return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
         }
 
+        // Reuse any existing client for this language rather than spawning a new
+        // LSP instance.  This prevents slow re-indexing when goto-definition
+        // jumps into stdlib/toolchain files that live under a different workspace
+        // root (e.g. Cargo.toml inside the Rust toolchain source tree).
+        {
+            var it = self.clients.iterator();
+            while (it.next()) |entry| {
+                if (std.mem.startsWith(u8, entry.key_ptr.*, language)) {
+                    return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
+                }
+            }
+        }
+
         log.info("Starting {s} for {s} (workspace: {s})", .{ config.command, language, workspace_uri orelse "(none)" });
         const client = try LspClient.spawn(self.allocator, config.command, config.args, &self.next_id);
         const key = try self.allocator.dupe(u8, lookup_key);
@@ -383,9 +396,10 @@ fn findWorkspaceUri(allocator: Allocator, config: *const LspServerConfig, file_p
         dir_path = std.fs.path.dirname(dir_path) orelse break;
     }
 
-    // Fallback to file's parent directory
-    const parent = std.fs.path.dirname(real_path) orelse return null;
-    return std.fmt.allocPrint(allocator, "file://{s}", .{parent}) catch null;
+    // No workspace marker found — return null so the file is handled by
+    // an existing client for this language (keyed by language alone).
+    // This prevents spawning new LSP instances for stdlib / toolchain files.
+    return null;
 }
 
 // ============================================================================
