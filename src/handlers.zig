@@ -17,7 +17,7 @@ const LspRegistry = registry_mod.LspRegistry;
 pub const HandlerContext = struct {
     allocator: Allocator,
     registry: *LspRegistry,
-    vim_writer: std.fs.File.Writer,
+    vim_stdout: std.fs.File,
 };
 
 /// Result of dispatching a handler.
@@ -180,7 +180,8 @@ fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
 fn vimEx(ctx: *HandlerContext, command: []const u8) !void {
     const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .ex = .{ .command = command } });
     defer ctx.allocator.free(encoded);
-    try ctx.vim_writer.print("{s}\n", .{encoded});
+    try ctx.vim_stdout.writeAll(encoded);
+    try ctx.vim_stdout.writeAll("\n");
 }
 
 /// Send a Vim call_async command.
@@ -190,7 +191,8 @@ fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
         .args = args,
     } });
     defer ctx.allocator.free(encoded);
-    try ctx.vim_writer.print("{s}\n", .{encoded});
+    try ctx.vim_stdout.writeAll(encoded);
+    try ctx.vim_stdout.writeAll("\n");
 }
 
 // ============================================================================

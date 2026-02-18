@@ -37,10 +37,10 @@ pub const LspClient = struct {
     read_buf: [4096]u8,
 
     pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, next_id: *u32) !*LspClient {
-        var argv = std.ArrayList([]const u8).init(allocator);
-        defer argv.deinit();
-        try argv.append(command);
-        try argv.appendSlice(args);
+        var argv: std.ArrayList([]const u8) = .{};
+        defer argv.deinit(allocator);
+        try argv.append(allocator, command);
+        try argv.appendSlice(allocator, args);
 
         var child = std.process.Child.init(argv.items, allocator);
         child.stdin_behavior = .Pipe;
@@ -130,7 +130,7 @@ pub const LspClient = struct {
         const stdout = self.child.stdout orelse return error.StdoutClosed;
         const n = stdout.read(&self.read_buf) catch |err| {
             if (err == error.WouldBlock) {
-                return std.ArrayList(LspMessage).init(self.allocator);
+                return .{};
             }
             return err;
         };
@@ -140,13 +140,13 @@ pub const LspClient = struct {
         var raw_messages = try self.framer.feedData(self.allocator, self.read_buf[0..n]);
         defer {
             for (raw_messages.items) |msg| self.allocator.free(msg);
-            raw_messages.deinit();
+            raw_messages.deinit(self.allocator);
         }
 
-        var messages = std.ArrayList(LspMessage).init(self.allocator);
+        var messages: std.ArrayList(LspMessage) = .{};
         errdefer {
             for (messages.items) |*msg| msg.deinit();
-            messages.deinit();
+            messages.deinit(self.allocator);
         }
 
         for (raw_messages.items) |raw_msg| {
@@ -173,7 +173,7 @@ pub const LspClient = struct {
                 }
 
                 // Treat as notification either way
-                try messages.append(.{
+                try messages.append(self.allocator, .{
                     .parsed = parsed,
                     .kind = .{ .notification = .{
                         .method = method,
@@ -195,7 +195,7 @@ pub const LspClient = struct {
 
                 _ = self.pending_requests.remove(id);
 
-                try messages.append(.{
+                try messages.append(self.allocator, .{
                     .parsed = parsed,
                     .kind = .{ .response = .{
                         .id = id,
@@ -275,6 +275,11 @@ pub const LspClient = struct {
         var workspace = ObjectMap.init(self.allocator);
         try workspace.put("applyEdit", json.jsonBool(true));
         try capabilities.put("workspace", .{ .object = workspace });
+
+        // window capabilities — advertise progress support
+        var window = ObjectMap.init(self.allocator);
+        try window.put("workDoneProgress", json.jsonBool(true));
+        try capabilities.put("window", .{ .object = window });
 
         try params.put("capabilities", .{ .object = capabilities });
 

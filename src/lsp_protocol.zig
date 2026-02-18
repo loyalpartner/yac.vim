@@ -3,7 +3,7 @@ const json = @import("json_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
-const ArrayList = std.ArrayList;
+const Writer = std.io.Writer;
 
 const CONTENT_LENGTH_HEADER = "Content-Length: ";
 const HEADER_DELIMITER = "\r\n\r\n";
@@ -17,43 +17,47 @@ const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 // ============================================================================
 
 pub const MessageFramer = struct {
-    buffer: ArrayList(u8),
+    allocator: Allocator,
+    buffer: std.ArrayList(u8),
 
     pub fn init(allocator: Allocator) MessageFramer {
         return .{
-            .buffer = ArrayList(u8).init(allocator),
+            .allocator = allocator,
+            .buffer = .{},
         };
     }
 
     pub fn deinit(self: *MessageFramer) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Frame a message with Content-Length header. Returns owned slice.
     pub fn frameMessage(self: *MessageFramer, allocator: Allocator, content: []const u8) ![]const u8 {
         _ = self;
-        var buf = ArrayList(u8).init(allocator);
-        const writer = buf.writer();
-        try writer.writeAll(CONTENT_LENGTH_HEADER);
-        try std.fmt.formatInt(content.len, 10, .lower, .{}, writer);
-        try writer.writeAll("\r\n\r\n");
-        try writer.writeAll(content);
-        return buf.toOwnedSlice();
+        var aw: Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+
+        try w.writeAll(CONTENT_LENGTH_HEADER);
+        try w.print("{d}", .{content.len});
+        try w.writeAll("\r\n\r\n");
+        try w.writeAll(content);
+        return aw.toOwnedSlice();
     }
 
     /// Feed data into the buffer and extract complete messages.
     /// Returns a list of message body strings. Caller must free each.
-    pub fn feedData(self: *MessageFramer, allocator: Allocator, data: []const u8) !ArrayList([]const u8) {
+    pub fn feedData(self: *MessageFramer, allocator: Allocator, data: []const u8) !std.ArrayList([]const u8) {
         if (self.buffer.items.len + data.len > MAX_BUFFER_SIZE) {
             return error.BufferOverflow;
         }
 
-        try self.buffer.appendSlice(data);
+        try self.buffer.appendSlice(self.allocator, data);
 
-        var messages = ArrayList([]const u8).init(allocator);
+        var messages: std.ArrayList([]const u8) = .{};
         errdefer {
             for (messages.items) |msg| allocator.free(msg);
-            messages.deinit();
+            messages.deinit(allocator);
         }
 
         while (self.buffer.items.len > 0) {
@@ -66,7 +70,7 @@ pub const MessageFramer = struct {
 
             // Copy message body
             const msg = try allocator.dupe(u8, self.buffer.items[message_start..message_end]);
-            try messages.append(msg);
+            try messages.append(allocator, msg);
 
             // Remove consumed bytes: shift remaining data to front
             const remaining = self.buffer.items.len - message_end;
@@ -106,46 +110,45 @@ pub const MessageFramer = struct {
 
 /// Build a JSON-RPC request for LSP.
 pub fn buildLspRequest(allocator: Allocator, id: u32, method: []const u8, params: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    try std.fmt.formatInt(id, 10, .lower, .{}, writer);
-    try writer.writeAll(",\"method\":");
-    try std.json.stringify(json.jsonString(method), .{}, writer);
-    try writer.writeAll(",\"params\":");
-    try std.json.stringify(params, .{}, writer);
-    try writer.writeByte('}');
+    try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":", .{id});
+    try json.stringifyToWriter(json.jsonString(method), w);
+    try w.writeAll(",\"params\":");
+    try json.stringifyToWriter(params, w);
+    try w.writeByte('}');
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 /// Build a JSON-RPC notification for LSP.
 pub fn buildLspNotification(allocator: Allocator, method: []const u8, params: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":");
-    try std.json.stringify(json.jsonString(method), .{}, writer);
-    try writer.writeAll(",\"params\":");
-    try std.json.stringify(params, .{}, writer);
-    try writer.writeByte('}');
+    try w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":");
+    try json.stringifyToWriter(json.jsonString(method), w);
+    try w.writeAll(",\"params\":");
+    try json.stringifyToWriter(params, w);
+    try w.writeByte('}');
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 /// Build a JSON-RPC response for LSP (responding to server requests).
 pub fn buildLspResponse(allocator: Allocator, id: i64, result: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    try std.fmt.formatInt(id, 10, .lower, .{}, writer);
-    try writer.writeAll(",\"result\":");
-    try std.json.stringify(result, .{}, writer);
-    try writer.writeByte('}');
+    try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":", .{id});
+    try json.stringifyToWriter(result, w);
+    try w.writeByte('}');
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 // ============================================================================
@@ -176,7 +179,7 @@ test "parse single message" {
     var messages = try framer.feedData(allocator, raw);
     defer {
         for (messages.items) |msg| allocator.free(msg);
-        messages.deinit();
+        messages.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 1), messages.items.len);
@@ -192,7 +195,7 @@ test "parse partial message" {
     var messages1 = try framer.feedData(allocator, "Content-Length: 5\r\n\r\n");
     defer {
         for (messages1.items) |msg| allocator.free(msg);
-        messages1.deinit();
+        messages1.deinit(allocator);
     }
     try std.testing.expectEqual(@as(usize, 0), messages1.items.len);
 
@@ -200,7 +203,7 @@ test "parse partial message" {
     var messages2 = try framer.feedData(allocator, "hello");
     defer {
         for (messages2.items) |msg| allocator.free(msg);
-        messages2.deinit();
+        messages2.deinit(allocator);
     }
     try std.testing.expectEqual(@as(usize, 1), messages2.items.len);
     try std.testing.expectEqualStrings("hello", messages2.items[0]);

@@ -21,10 +21,12 @@ pub fn deinit() void {
 
 fn writeLog(level: []const u8, comptime fmt: []const u8, args: anytype) void {
     const f = log_file orelse return;
-    const writer = f.writer();
-    writer.print("[{s}] ", .{level}) catch return;
-    writer.print(fmt, args) catch return;
-    writer.writeByte('\n') catch return;
+    var buf: [4096]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&buf, "[{s}] ", .{level}) catch return;
+    f.writeAll(prefix) catch return;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    f.writeAll(msg) catch return;
+    f.writeAll("\n") catch return;
 }
 
 pub fn info(comptime fmt: []const u8, args: anytype) void {
