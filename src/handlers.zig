@@ -30,6 +30,8 @@ pub const DispatchResult = union(enum) {
     pending_lsp: struct {
         lsp_request_id: u32,
     },
+    /// LSP client is still initializing; caller should defer and retry.
+    initializing: void,
 };
 
 // ============================================================================
@@ -89,44 +91,54 @@ const LspContext = struct {
     real_path: []const u8,
 };
 
-/// Get LSP context for a request. Returns null if the client is still initializing.
-fn getLspContext(ctx: *HandlerContext, params: Value) !?LspContext {
+/// Result of trying to get LSP context.
+const LspContextResult = union(enum) {
+    /// Context is ready.
+    ready: LspContext,
+    /// Client is still initializing (caller should defer).
+    initializing: void,
+    /// No context available (unsupported language, bad params, etc.).
+    not_available: void,
+};
+
+/// Get LSP context for a request.
+fn getLspContext(ctx: *HandlerContext, params: Value) !LspContextResult {
     return getLspContextEx(ctx, params, true);
 }
 
 /// Get LSP context, optionally allowing initializing clients (for handleFileOpen).
-fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool) !?LspContext {
+fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool) !LspContextResult {
     const obj = switch (params) {
         .object => |o| o,
-        else => return null,
+        else => return .{ .not_available = {} },
     };
 
-    const file = json.getString(obj, "file") orelse return null;
+    const file = json.getString(obj, "file") orelse return .{ .not_available = {} };
     const real_path = registry_mod.extractRealPath(file);
     const ssh_host = registry_mod.extractSshHost(file);
 
     const language = LspRegistry.detectLanguage(real_path) orelse {
         log.debug("No language detected for {s}", .{real_path});
-        return null;
+        return .{ .not_available = {} };
     };
 
     const result = ctx.registry.getOrCreateClient(language, real_path) catch |e| {
         log.err("Failed to get LSP client for {s}: {any}", .{ language, e });
-        return null;
+        return .{ .not_available = {} };
     };
 
-    if (require_ready and ctx.registry.isInitializing(result.client_key)) return null;
+    if (require_ready and ctx.registry.isInitializing(result.client_key)) return .{ .initializing = {} };
 
     const uri = try registry_mod.filePathToUri(ctx.allocator, real_path);
 
-    return .{
+    return .{ .ready = .{
         .language = language,
         .client_key = result.client_key,
         .uri = uri,
         .client = result.client,
         .ssh_host = ssh_host,
         .real_path = real_path,
-    };
+    } };
 }
 
 /// Build textDocument/position params for LSP.
@@ -176,7 +188,10 @@ fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
 // ============================================================================
 
 fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContextEx(ctx, params, false) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContextEx(ctx, params, false)) {
+        .ready => |c| c,
+        .initializing, .not_available => return .{ .empty = {} },
+    };
 
     // Read file content
     const content = std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
@@ -211,7 +226,11 @@ fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 }
 
 fn handleGoto(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
     const obj = switch (params) {
         .object => |o| o,
@@ -244,7 +263,11 @@ fn handleGotoImplementation(ctx: *HandlerContext, params: Value) !DispatchResult
 }
 
 fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -261,7 +284,11 @@ const obj = switch (params) {
 }
 
 fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -278,7 +305,11 @@ const obj = switch (params) {
 }
 
 fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -304,7 +335,11 @@ const obj = switch (params) {
 }
 
 fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -327,7 +362,11 @@ const obj = switch (params) {
 }
 
 fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -369,7 +408,11 @@ const obj = switch (params) {
 }
 
 fn handleDocumentSymbols(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/documentSymbol", lsp_params);
@@ -383,7 +426,11 @@ fn handleDiagnostics(_: *HandlerContext, _: Value) !DispatchResult {
 }
 
 fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -418,7 +465,11 @@ const obj = switch (params) {
 }
 
 fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/foldingRange", lsp_params);
@@ -427,7 +478,11 @@ const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 }
 
 fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -444,7 +499,11 @@ const obj = switch (params) {
 }
 
 fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -469,7 +528,10 @@ const obj = switch (params) {
 // ============================================================================
 
 fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing, .not_available => return .{ .empty = {} },
+    };
 
 const obj = switch (params) {
         .object => |o| o,
@@ -504,7 +566,10 @@ const obj = switch (params) {
 }
 
 fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing, .not_available => return .{ .empty = {} },
+    };
 
 var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
@@ -520,7 +585,10 @@ var td = ObjectMap.init(ctx.allocator);
 }
 
 fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing, .not_available => return .{ .empty = {} },
+    };
 
 const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
@@ -532,7 +600,10 @@ const lsp_params = try buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 }
 
 fn handleWillSave(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = try getLspContext(ctx, params) orelse return .{ .empty = {} };
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing, .not_available => return .{ .empty = {} },
+    };
 
 var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
