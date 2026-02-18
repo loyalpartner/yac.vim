@@ -42,16 +42,19 @@ const EventLoop = struct {
     indexing_count: u32,
     /// Vim requests deferred while LSP is indexing, replayed when ready
     deferred_requests: std.ArrayList([]u8),
+    /// Maps progress token -> title (from $/progress begin, used for report events)
+    progress_titles: std.StringHashMap([]const u8),
 
     fn init(allocator: Allocator) EventLoop {
         return .{
             .allocator = allocator,
             .registry = lsp_registry_mod.LspRegistry.init(allocator),
-            .vim_stdout = std.io.getStdOut(),
+            .vim_stdout = std.fs.File.stdout(),
             .pending_requests = std.AutoHashMap(u32, PendingLspRequest).init(allocator),
-            .stdin_buf = std.ArrayList(u8).init(allocator),
+            .stdin_buf = .{},
             .indexing_count = 0,
-            .deferred_requests = std.ArrayList([]u8).init(allocator),
+            .deferred_requests = .{},
+            .progress_titles = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -63,27 +66,35 @@ const EventLoop = struct {
         self.registry.shutdownAll();
         self.registry.deinit();
         self.pending_requests.deinit();
-        self.stdin_buf.deinit();
+        self.stdin_buf.deinit(self.allocator);
         for (self.deferred_requests.items) |req| self.allocator.free(req);
-        self.deferred_requests.deinit();
+        self.deferred_requests.deinit(self.allocator);
+        {
+            var pit = self.progress_titles.iterator();
+            while (pit.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            self.progress_titles.deinit();
+        }
     }
 
     /// Main event loop using poll().
     fn run(self: *EventLoop) !void {
-        const stdin_fd = std.io.getStdIn().handle;
+        const stdin_fd = std.fs.File.stdin().handle;
         var buf: [8192]u8 = undefined;
 
         log.info("Entering event loop", .{});
 
         while (true) {
             // Build poll fd list: stdin + all LSP stdout fds
-            var poll_fds = std.ArrayList(std.posix.pollfd).init(self.allocator);
-            defer poll_fds.deinit();
-            var poll_client_keys = std.ArrayList([]const u8).init(self.allocator);
-            defer poll_client_keys.deinit();
+            var poll_fds: std.ArrayList(std.posix.pollfd) = .{};
+            defer poll_fds.deinit(self.allocator);
+            var poll_client_keys: std.ArrayList([]const u8) = .{};
+            defer poll_client_keys.deinit(self.allocator);
 
             // fd[0] = stdin (from Vim)
-            try poll_fds.append(.{
+            try poll_fds.append(self.allocator, .{
                 .fd = stdin_fd,
                 .events = std.posix.POLL.IN,
                 .revents = 0,
@@ -110,7 +121,7 @@ const EventLoop = struct {
                     log.info("stdin EOF, shutting down", .{});
                     break;
                 }
-                try self.stdin_buf.appendSlice(buf[0..n]);
+                try self.stdin_buf.appendSlice(self.allocator, buf[0..n]);
                 self.processVimInput();
             }
 
@@ -125,6 +136,10 @@ const EventLoop = struct {
                 if (pfd.revents & std.posix.POLL.IN != 0) {
                     const client_key = poll_client_keys.items[i];
                     self.processLspOutput(client_key);
+                }
+                if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                    const dead_key = poll_client_keys.items[i];
+                    self.handleLspDeath(dead_key);
                 }
             }
         }
@@ -205,7 +220,7 @@ const EventLoop = struct {
                 log.err("Failed to defer request: {any}", .{e});
                 return;
             };
-            self.deferred_requests.append(duped) catch |e| {
+            self.deferred_requests.append(self.allocator, duped) catch |e| {
                 self.allocator.free(duped);
                 log.err("Failed to defer request: {any}", .{e});
                 return;
@@ -218,7 +233,7 @@ const EventLoop = struct {
         var ctx = handlers_mod.HandlerContext{
             .allocator = alloc,
             .registry = &self.registry,
-            .vim_writer = self.vim_stdout.writer(),
+            .vim_stdout = self.vim_stdout,
         };
 
         const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {
@@ -244,7 +259,7 @@ const EventLoop = struct {
                         self.sendVimResponse(alloc, vim_id, .null);
                         return;
                     };
-                    self.deferred_requests.append(duped) catch |e| {
+                    self.deferred_requests.append(self.allocator, duped) catch |e| {
                         self.allocator.free(duped);
                         log.err("Failed to defer initializing request: {any}", .{e});
                         self.sendVimResponse(alloc, vim_id, .null);
@@ -319,12 +334,12 @@ const EventLoop = struct {
         const client = self.registry.getClient(client_key) orelse return;
 
         var messages = client.readMessages() catch |e| {
-            log.err("LSP read error: {any}", .{e});
+            log.err("LSP read error for {s}: {any}", .{ client_key, e });
             return;
         };
         defer {
             for (messages.items) |*msg| msg.deinit();
-            messages.deinit();
+            messages.deinit(self.allocator);
         }
 
         for (messages.items) |*msg| {
@@ -377,6 +392,40 @@ const EventLoop = struct {
         }
     }
 
+    /// Handle an LSP server that has died (HUP/ERR on its stdout fd).
+    fn handleLspDeath(self: *EventLoop, client_key: []const u8) void {
+        log.err("LSP server died: {s}", .{client_key});
+
+        // Read stderr for diagnostics
+        if (self.registry.getClient(client_key)) |client| {
+            if (client.child.stderr) |stderr_file| {
+                var stderr_buf: [4096]u8 = undefined;
+                const stderr_n = stderr_file.read(&stderr_buf) catch 0;
+                if (stderr_n > 0) {
+                    const stderr_msg = stderr_buf[0..stderr_n];
+                    log.err("LSP stderr: {s}", .{stderr_msg});
+
+                    // Notify user via Vim echo
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    const alloc = arena.allocator();
+
+                    // Truncate for echo display
+                    const max_echo = @min(stderr_n, 200);
+                    const echo_msg = std.fmt.allocPrint(alloc, "echohl ErrorMsg | echo '[yac] LSP server crashed: {s}' | echohl None", .{stderr_buf[0..max_echo]}) catch return;
+                    self.sendVimEx(alloc, echo_msg);
+                } else {
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    self.sendVimEx(arena.allocator(), "echohl ErrorMsg | echo '[yac] LSP server crashed (no stderr output)' | echohl None");
+                }
+            }
+        }
+
+        // Remove the dead client so we stop polling it
+        self.registry.removeClient(client_key);
+    }
+
     /// Transform an LSP response into the format Vim expects.
     fn transformLspResult(self: *EventLoop, alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
         _ = self;
@@ -402,17 +451,72 @@ const EventLoop = struct {
             const value_obj = json_utils.getObject(params_obj, "value") orelse return;
             const kind = json_utils.getString(value_obj, "kind") orelse return;
 
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+
+            // Extract token as string key for title tracking
+            const token_key: ?[]const u8 = blk: {
+                const token_val = params_obj.get("token") orelse break :blk null;
+                switch (token_val) {
+                    .string => |s| break :blk s,
+                    .integer => |i| break :blk std.fmt.allocPrint(alloc, "{d}", .{i}) catch null,
+                    else => break :blk null,
+                }
+            };
+
             if (std.mem.eql(u8, kind, "begin")) {
                 self.indexing_count += 1;
+                const title = json_utils.getString(value_obj, "title");
+                // Store title for later report/end events
+                if (token_key) |tk| {
+                    if (title) |t| {
+                        const key_owned = self.allocator.dupe(u8, tk) catch null;
+                        const title_owned = self.allocator.dupe(u8, t) catch null;
+                        if (key_owned != null and title_owned != null) {
+                            self.progress_titles.put(key_owned.?, title_owned.?) catch {
+                                self.allocator.free(key_owned.?);
+                                self.allocator.free(title_owned.?);
+                            };
+                        } else {
+                            if (key_owned) |k| self.allocator.free(k);
+                            if (title_owned) |tt| self.allocator.free(tt);
+                        }
+                    }
+                }
+                const message = json_utils.getString(value_obj, "message");
+                const percentage = json_utils.getInteger(value_obj, "percentage");
+                if (formatProgressEcho(alloc, title, message, percentage)) |echo_cmd| {
+                    self.sendVimEx(alloc, echo_cmd);
+                }
+            } else if (std.mem.eql(u8, kind, "report")) {
+                // report events don't carry title — look it up from begin
+                const title = if (token_key) |tk| self.progress_titles.get(tk) else null;
+                const message = json_utils.getString(value_obj, "message");
+                const percentage = json_utils.getInteger(value_obj, "percentage");
+                if (formatProgressEcho(alloc, title, message, percentage)) |echo_cmd| {
+                    self.sendVimEx(alloc, echo_cmd);
+                }
             } else if (std.mem.eql(u8, kind, "end")) {
+                // Clean up stored title
+                if (token_key) |tk| {
+                    if (self.progress_titles.fetchRemove(tk)) |entry| {
+                        self.allocator.free(entry.key);
+                        self.allocator.free(entry.value);
+                    }
+                }
                 if (self.indexing_count > 0) self.indexing_count -= 1;
-                if (self.indexing_count == 0) self.flushDeferredRequests();
+                if (self.indexing_count == 0) {
+                    self.sendVimEx(alloc, "echo '[yac] Indexing complete'");
+                    self.flushDeferredRequests();
+                }
             }
         } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "diagnostics", params) catch return;
-            self.vim_stdout.writer().print("{s}\n", .{encoded}) catch return;
+            self.vim_stdout.writeAll(encoded) catch return;
+            self.vim_stdout.writeAll("\n") catch return;
         } else {
             log.debug("LSP notification: {s}", .{method});
         }
@@ -427,10 +531,10 @@ const EventLoop = struct {
 
         // Move items out so handleVimLine doesn't re-defer during replay
         var requests = self.deferred_requests;
-        self.deferred_requests = std.ArrayList([]u8).init(self.allocator);
+        self.deferred_requests = .{};
         defer {
             for (requests.items) |req| self.allocator.free(req);
-            requests.deinit();
+            requests.deinit(self.allocator);
         }
 
         for (requests.items) |raw_line| {
@@ -445,8 +549,12 @@ const EventLoop = struct {
                 log.err("Failed to encode response: {any}", .{e});
                 return;
             };
-            self.vim_stdout.writer().print("{s}\n", .{encoded}) catch |e| {
+            self.vim_stdout.writeAll(encoded) catch |e| {
                 log.err("Failed to write response: {any}", .{e});
+                return;
+            };
+            self.vim_stdout.writeAll("\n") catch |e| {
+                log.err("Failed to write response newline: {any}", .{e});
             };
         }
     }
@@ -455,7 +563,8 @@ const EventLoop = struct {
     fn sendVimEx(self: *EventLoop, alloc: Allocator, command: []const u8) void {
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
         defer alloc.free(encoded);
-        self.vim_stdout.writer().print("{s}\n", .{encoded}) catch return;
+        self.vim_stdout.writeAll(encoded) catch return;
+        self.vim_stdout.writeAll("\n") catch return;
     }
 
     /// Send an error response to Vim.
@@ -489,6 +598,58 @@ pub fn isQueryMethod(method: []const u8) bool {
         if (std.mem.eql(u8, method, m)) return true;
     }
     return false;
+}
+
+/// Format a progress echo command for Vim.
+/// Returns null if no title is available (nothing useful to show).
+fn formatProgressEcho(alloc: Allocator, title: ?[]const u8, message: ?[]const u8, percentage: ?i64) ?[]const u8 {
+    const t = title orelse return null;
+
+    // Escape single quotes for Vim's echo '...' syntax
+    const escaped_title = escapeVimString(alloc, t) catch return null;
+    const escaped_message = if (message) |m| (escapeVimString(alloc, m) catch null) else null;
+
+    // Build: [yac] Title (N%): Message
+    if (percentage) |pct| {
+        if (escaped_message) |msg| {
+            return std.fmt.allocPrint(alloc, "echo '[yac] {s} ({d}%): {s}'", .{ escaped_title, pct, msg }) catch null;
+        }
+        return std.fmt.allocPrint(alloc, "echo '[yac] {s} ({d}%)'", .{ escaped_title, pct }) catch null;
+    }
+
+    if (escaped_message) |msg| {
+        return std.fmt.allocPrint(alloc, "echo '[yac] {s}: {s}'", .{ escaped_title, msg }) catch null;
+    }
+
+    return std.fmt.allocPrint(alloc, "echo '[yac] {s}'", .{escaped_title}) catch null;
+}
+
+/// Escape single quotes in a string for use in Vim's echo '...' syntax.
+/// In Vim, single-quoted strings have no escape sequences, so we close the
+/// single-quote, insert an escaped single-quote, and re-open: 'it''s' -> it's
+fn escapeVimString(alloc: Allocator, input: []const u8) ![]const u8 {
+    // Count single quotes
+    var count: usize = 0;
+    for (input) |c| {
+        if (c == '\'') count += 1;
+    }
+    if (count == 0) return input;
+
+    // Each ' becomes '' (Vim single-quote doubling)
+    var result = try alloc.alloc(u8, input.len + count);
+    var i: usize = 0;
+    for (input) |c| {
+        if (c == '\'') {
+            result[i] = '\'';
+            i += 1;
+            result[i] = '\'';
+            i += 1;
+        } else {
+            result[i] = c;
+            i += 1;
+        }
+    }
+    return result;
 }
 
 /// Transform a goto LSP response into a Location for Vim.

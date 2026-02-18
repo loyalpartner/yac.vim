@@ -155,6 +155,24 @@ pub const LspRegistry = struct {
         return self.clients.get(client_key);
     }
 
+    /// Remove a dead client and free its resources.
+    pub fn removeClient(self: *LspRegistry, client_key: []const u8) void {
+        if (self.clients.fetchRemove(client_key)) |entry| {
+            entry.value.deinit();
+            self.allocator.free(entry.key);
+        }
+        _ = self.pending_init.remove(client_key);
+        if (self.pending_opens.fetchRemove(client_key)) |entry| {
+            for (entry.value.items) |open| {
+                self.allocator.free(open.uri);
+                self.allocator.free(open.language_id);
+                self.allocator.free(open.content);
+            }
+            var list = entry.value;
+            list.deinit(self.allocator);
+        }
+    }
+
     /// Get or create a client for a language + file path.
     /// Workspace root is detected from file_path; (language + workspace_root) determines client.
     pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {
@@ -203,7 +221,7 @@ pub const LspRegistry = struct {
                 self.allocator.free(open.language_id);
                 self.allocator.free(open.content);
             }
-            opens.deinit();
+            opens.deinit(self.allocator);
             _ = self.pending_opens.remove(client_key);
         }
     }
@@ -217,10 +235,10 @@ pub const LspRegistry = struct {
         };
 
         if (self.pending_opens.getPtr(client_key)) |list| {
-            try list.append(open);
+            try list.append(self.allocator, open);
         } else {
-            var list = std.ArrayList(PendingOpen).init(self.allocator);
-            try list.append(open);
+            var list: std.ArrayList(PendingOpen) = .{};
+            try list.append(self.allocator, open);
             try self.pending_opens.put(client_key, list);
         }
     }
@@ -275,7 +293,7 @@ pub const LspRegistry = struct {
                 self.allocator.free(open.language_id);
                 self.allocator.free(open.content);
             }
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
     }
 
@@ -284,12 +302,12 @@ pub const LspRegistry = struct {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             const fd = entry.value_ptr.*.stdoutFd();
-            try fds.append(.{
+            try fds.append(self.allocator, .{
                 .fd = fd,
                 .events = std.posix.POLL.IN,
                 .revents = 0,
             });
-            try client_keys.append(entry.key_ptr.*);
+            try client_keys.append(self.allocator, entry.key_ptr.*);
         }
     }
 };
