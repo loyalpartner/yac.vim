@@ -15,6 +15,15 @@ call yac_test#open_test_file('test_data/src/lib.rs', 8000)
 " 保存原始内容以便恢复
 let s:original_content = getline(1, '$')
 
+" 辅助函数：确保回到可编辑的测试文件
+function! s:ensure_in_test_file() abort
+  silent! cclose
+  call popup_clear()
+  if &buftype !=# '' || !&modifiable
+    edit! test_data/src/lib.rs
+  endif
+endfunction
+
 " ============================================================================
 " Test 1: Rename local variable
 " ============================================================================
@@ -51,6 +60,7 @@ else
 endif
 
 " 恢复文件
+call s:ensure_in_test_file()
 silent! %d
 call setline(1, s:original_content)
 
@@ -59,17 +69,14 @@ call setline(1, s:original_content)
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: Rename function')
 
-" 定位到 get_name 方法
 call cursor(19, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
 
-" 检查 get_name 出现次数
 let get_name_count = count(join(getline(1, '$'), "\n"), 'get_name')
 call yac_test#log('INFO', 'Function "get_name" appears ' . get_name_count . ' times')
 
 if exists(':YacRename')
-  " 尝试重命名
   call feedkeys(":YacRename fetch_name\<CR>", 'n')
   call yac_test#wait_for({-> count(join(getline(1, '$'), "\n"), 'fetch_name') > 0}, 3000)
 
@@ -82,6 +89,7 @@ else
 endif
 
 " 恢复文件
+call s:ensure_in_test_file()
 silent! %d
 call setline(1, s:original_content)
 
@@ -90,16 +98,13 @@ call setline(1, s:original_content)
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: Rename struct')
 
-" 定位到 User struct
 call cursor(6, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
-" 检查 User 出现次数
 let user_count = count(join(getline(1, '$'), "\n"), 'User')
 call yac_test#log('INFO', 'Struct "User" appears ' . user_count . ' times')
 
-" struct 重命名会影响很多地方
 call yac_test#log('INFO', 'Struct rename would affect multiple locations')
 
 " ============================================================================
@@ -121,6 +126,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Cleanup: Restoring original file')
 
+call s:ensure_in_test_file()
 silent! %d
 call setline(1, s:original_content)
 silent write

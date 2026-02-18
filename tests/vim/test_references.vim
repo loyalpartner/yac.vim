@@ -31,17 +31,16 @@ let qflist = getqflist()
 call yac_test#log('INFO', 'Found ' . len(qflist) . ' references')
 
 " User 应该有多个引用
-" - struct 定义
-" - impl User
-" - create_user_map 中的 User::new
-" - process_user 参数
-" - tests 模块中
 call yac_test#assert_true(len(qflist) >= 3, 'User should have at least 3 references')
 
 " 验证引用内容
 for ref in qflist[:2]
-  call yac_test#log('INFO', 'Reference: ' . ref.filename . ':' . ref.lnum)
+  call yac_test#log('INFO', 'Reference: ' . bufname(ref.bufnr) . ':' . ref.lnum)
 endfor
+
+" 关闭 quickfix 窗口，回到原文件
+silent! cclose
+edit! test_data/src/lib.rs
 
 " ============================================================================
 " Test 2: Find references to get_name method
@@ -60,10 +59,11 @@ let qflist = getqflist()
 call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to get_name')
 
 " get_name 应该有至少 2 个引用
-" - 定义
-" - process_user 中的调用
-" - test_user_creation 中的调用
 call yac_test#assert_true(len(qflist) >= 2, 'get_name should have at least 2 references')
+
+" 关闭 quickfix 窗口，回到原文件
+silent! cclose
+edit! test_data/src/lib.rs
 
 " ============================================================================
 " Test 3: Find references to local variable
@@ -84,10 +84,19 @@ call yac_test#log('INFO', 'Found ' . len(qflist) . ' references to users')
 " users 变量在函数内多次使用
 call yac_test#assert_true(len(qflist) >= 3, 'users should have at least 3 references')
 
+" 关闭 quickfix 窗口，回到原文件
+silent! cclose
+edit! test_data/src/lib.rs
+
 " ============================================================================
 " Test 4: Navigate through references
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Navigate through references')
+
+" 先查询一次引用
+call cursor(6, 12)
+YacReferences
+call yac_test#wait_qflist(3000)
 
 " 确保有引用结果
 if !empty(getqflist())
@@ -104,6 +113,9 @@ if !empty(getqflist())
     call yac_test#assert_neq(first_line, second_line, 'Should navigate to different lines')
   endif
 endif
+
+" 关闭 quickfix 窗口
+silent! cclose
 
 " ============================================================================
 " Test 5: References for item with no references
@@ -128,6 +140,7 @@ call yac_test#log('INFO', 'HashMap references: ' . len(qflist))
 " ============================================================================
 " 清空 quickfix
 call setqflist([])
+silent! cclose
 
 call yac_test#teardown()
 call yac_test#end()

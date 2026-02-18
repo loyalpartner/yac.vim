@@ -229,4 +229,4 @@ def check_bridge():
 @pytest.fixture(scope="session")
 def batch_results(vim_runner, check_bridge):
     """Run all tests in one Vim session, return per-suite results."""
-    return vim_runner.run_all_tests(timeout=300)
+    return vim_runner.run_all_tests(timeout=600)

@@ -106,6 +106,11 @@ else
   call yac_test#skip('gr mapping', 'Not configured')
 endif
 
+" 关闭 quickfix 窗口，回到测试文件
+silent! cclose
+call setqflist([])
+edit! test_data/src/lib.rs
+
 " ============================================================================
 " Test 5: Completion key navigation
 " ============================================================================

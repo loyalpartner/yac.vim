@@ -30,7 +30,7 @@ silent write
 call yac_test#wait_signs(3000)
 
 " 定位到 unused_var
-call cursor(line('$') - 1, 9)
+call search('unused_var', 'w')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'unused_var', 'Cursor should be on unused_var')
 
