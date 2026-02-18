@@ -211,6 +211,7 @@ const EventLoop = struct {
                 return;
             };
             log.info("Deferred {s} request (LSP indexing in progress)", .{method});
+            self.sendVimEx(alloc, "echo '[yac] LSP indexing, request queued...'");
             return;
         }
 
@@ -250,6 +251,8 @@ const EventLoop = struct {
                         return;
                     };
                     log.info("Deferred {s} request (LSP initializing)", .{method});
+                    // Notify user that the request is queued (ex command, not a response)
+                    self.sendVimEx(alloc, "echo '[yac] LSP initializing, request queued...'");
                 }
             },
             .pending_lsp => |pending| {
@@ -446,6 +449,13 @@ const EventLoop = struct {
                 log.err("Failed to write response: {any}", .{e});
             };
         }
+    }
+
+    /// Send a Vim ex command (e.g., echo notification).
+    fn sendVimEx(self: *EventLoop, alloc: Allocator, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        self.vim_stdout.writer().print("{s}\n", .{encoded}) catch return;
     }
 
     /// Send an error response to Vim.
