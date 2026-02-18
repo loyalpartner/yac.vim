@@ -603,9 +603,7 @@ function! s:handle_goto_response(channel, response) abort
   endif
 
   if type(l:loc) != v:t_dict || empty(l:loc)
-    if l:loc is v:null
-      echo 'LSP not ready (initializing...)'
-    else
+    if l:loc isnot v:null
       echo 'No definition found'
     endif
     return
