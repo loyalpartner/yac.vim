@@ -12,9 +12,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
 
-" 额外等待 rust-analyzer 完成索引
-" 第一个 LSP 请求前需要更多时间让服务器完全准备好
-sleep 3
+" LSP ready wait is handled inside open_test_file via wait_lsp_ready
 
 " ============================================================================
 " Test 1: Goto Definition - 跳转到函数定义
@@ -34,7 +32,7 @@ call yac_test#log('INFO', 'Start: line=' . start_line . ', col=' . start_col . '
 YacDefinition
 
 " 等待光标移动（最多 5 秒）
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -53,7 +51,6 @@ call yac_test#log('INFO', 'Test 2: Goto Definition - User struct')
 
 " 重新打开文件确保干净状态
 edit! test_data/src/lib.rs
-sleep 1
 
 " 定位到 process_user 函数参数中的 User (line 44)
 call cursor(44, 21)
@@ -63,7 +60,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 YacDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -80,7 +77,6 @@ endif
 call yac_test#log('INFO', 'Test 3: Goto Definition - get_name method')
 
 edit! test_data/src/lib.rs
-sleep 1
 
 " 定位到 process_user 中的 get_name 调用 (line 45)
 call cursor(45, 35)
@@ -90,7 +86,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
 
 YacDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -107,14 +103,13 @@ endif
 call yac_test#log('INFO', 'Test 4: Goto Declaration')
 
 edit! test_data/src/lib.rs
-sleep 1
 
 call cursor(34, 5)
 call search('new', 'c', line('.'))
 let start_line = line('.')
 
 YacDeclaration
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -130,7 +125,6 @@ endif
 call yac_test#log('INFO', 'Test 5: Goto Type Definition')
 
 edit! test_data/src/lib.rs
-sleep 1
 
 " 定位到 users 变量 (line 31)
 call cursor(31, 13)
@@ -140,7 +134,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacTypeDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -156,7 +150,6 @@ endif
 call yac_test#log('INFO', 'Test 6: Goto Implementation')
 
 edit! test_data/src/lib.rs
-sleep 1
 
 " 定位到 User struct 定义 (line 6)
 call cursor(6, 12)
@@ -166,7 +159,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User" struct')
 
 YacImplementation
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')

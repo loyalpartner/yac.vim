@@ -32,16 +32,13 @@ call add(lines, '}')
 call setline(1, lines)
 call yac_test#log('INFO', 'Created file with ' . line('$') . ' lines')
 
-" 等待 LSP 处理
-sleep 2
-
 " 测试在大文件中的 goto definition
 call cursor(line('$') - 25, 20)  " 某个 func_X 调用
 let start_line = line('.')
 let start_col = col('.')
 let start_time = localtime()
 YacDefinition
-call yac_test#wait_cursor_move(start_line, start_col, 5000)
+call yac_test#wait_cursor_move(start_line, start_col, 3000)
 let elapsed = localtime() - start_time
 
 call yac_test#log('INFO', 'Goto definition took ' . elapsed . 's')
@@ -53,7 +50,7 @@ normal! O
 execute "normal! i    func_"
 let start_time = localtime()
 YacComplete
-call yac_test#wait_completion(5000)
+call yac_test#wait_completion(3000)
 let elapsed = localtime() - start_time
 
 call yac_test#log('INFO', 'Completion took ' . elapsed . 's')
@@ -117,7 +114,7 @@ let start_line = line('.')
 let start_col = col('.')
 
 YacDefinition
-call yac_test#wait_cursor_move(start_line, start_col, 5000)
+call yac_test#wait_cursor_move(start_line, start_col, 3000)
 
 let end_buf = bufnr('%')
 let end_file = expand('%:t')
@@ -129,7 +126,6 @@ if end_buf != start_buf
 
   " 测试返回
   execute "normal! \<C-o>"
-  sleep 500m
   let return_buf = bufnr('%')
   call yac_test#assert_eq(return_buf, start_buf, 'Should return to original buffer')
 endif
@@ -145,20 +141,22 @@ call yac_test#log('INFO', 'Test 5: Operations on invalid positions')
 " 在空行上操作
 call cursor(3, 1)  " 假设是空行
 YacHover
-sleep 500m
+call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'Hover on empty line: no crash')
 
 " 在注释中操作
 call cursor(1, 5)
+let start_line = line('.')
 YacDefinition
-sleep 500m
+call yac_test#wait_line_change(start_line, 3000)
 call yac_test#log('INFO', 'Goto in comment: no crash')
 
 " 在字符串中操作
 " 找一个字符串
 call search('"')
+let start_line = line('.')
 YacDefinition
-sleep 500m
+call yac_test#wait_line_change(start_line, 3000)
 call yac_test#log('INFO', 'Goto in string: no crash')
 
 " ============================================================================
@@ -169,7 +167,6 @@ call yac_test#log('INFO', 'Test 6: Multiple buffers with LSP')
 " 打开第一个文件
 edit! test_data/src/lib.rs
 let buf1 = bufnr('%')
-sleep 500m
 
 " 打开第二个 Rust 文件（创建临时）
 new
@@ -177,7 +174,6 @@ setlocal buftype=nofile
 set filetype=rust
 call setline(1, ['fn helper() -> i32 { 42 }', '', 'fn use_helper() { let _ = helper(); }'])
 let buf2 = bufnr('%')
-sleep 1
 
 " 在新 buffer 中测试
 call cursor(3, 30)  " helper() 调用
@@ -212,11 +208,12 @@ set filetype=text
 call setline(1, ['This is a plain text file', 'No LSP support expected'])
 
 YacHover
-sleep 500m
+call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'Hover on non-Rust file: handled gracefully')
 
+let start_line = line('.')
 YacDefinition
-sleep 500m
+call yac_test#wait_line_change(start_line, 3000)
 call yac_test#log('INFO', 'Goto on non-Rust file: handled gracefully')
 
 bdelete!
@@ -239,7 +236,6 @@ call popup_clear()
 if exists(':YacStop')
   YacStop
   call yac_test#reset_lsp_ready()
-  sleep 500m
   call yac_test#log('INFO', 'YAC stopped')
 endif
 
@@ -274,8 +270,6 @@ normal! o
 execute "normal! i/// Emoji: 🦀 Rust"
 normal! o
 execute "normal! ipub fn unicode_test() -> &'static str { \"你好世界\" }"
-
-sleep 1
 
 " 在 Unicode 函数上测试
 call cursor(line('$'), 8)

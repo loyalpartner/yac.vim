@@ -11,15 +11,14 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Clean file should have no diagnostics
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Clean file diagnostics')
 
-" 等待 LSP 分析完成
-sleep 2
+" 等待 LSP 分析完成（诊断信息出现或超时）
+call yac_test#wait_for({-> exists('b:yac_diagnostics') && !empty(b:yac_diagnostics)}, 3000)
 
 " 检查是否有诊断信息
 " 注意：这取决于 yac.vim 如何存储诊断
@@ -44,7 +43,7 @@ execute "normal! ilet syntax_error: i32 = \"not a number\";"
 
 " 保存文件触发诊断
 silent write
-sleep 3
+call yac_test#wait_for({-> exists('b:yac_diagnostics') && !empty(b:yac_diagnostics)}, 3000)
 
 " 检查诊断是否出现
 call yac_test#log('INFO', 'Checking for type error diagnostic')
@@ -67,7 +66,8 @@ call yac_test#log('INFO', 'Virtual text enabled: ' . vtext_enabled)
 " 切换虚拟文本
 if exists(':YacToggleDiagnosticVirtualText')
   YacToggleDiagnosticVirtualText
-  sleep 1
+  let s:prev_vtext = vtext_enabled
+  call yac_test#wait_for({-> get(g:, 'yac_bridge_diagnostic_virtual_text', 0) != s:prev_vtext}, 3000)
   let new_state = get(g:, 'yac_bridge_diagnostic_virtual_text', 0)
   call yac_test#assert_neq(vtext_enabled, new_state, 'Toggle should change state')
 
@@ -95,7 +95,7 @@ normal! Gdd
 
 " 保存
 silent write
-sleep 3
+call yac_test#wait_for({-> !exists('b:yac_diagnostics') || empty(b:yac_diagnostics)}, 3000)
 
 " 诊断应该减少或消失
 if exists('b:yac_diagnostics')
@@ -117,7 +117,7 @@ normal! o
 execute "normal! iunknown_function();"
 
 silent write
-sleep 3
+call yac_test#wait_for({-> exists('b:yac_diagnostics') && len(b:yac_diagnostics) >= 2}, 3000)
 
 if exists('b:yac_diagnostics')
   let diag_count = len(b:yac_diagnostics)

@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " ============================================================================
 " Test 1: Method completion
@@ -28,7 +27,7 @@ execute "normal! iuser."
 
 " 触发补全
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 " 检查补全菜单
 if pumvisible()
@@ -66,7 +65,7 @@ normal! G
 normal! o
 execute "normal! ilet u = User { "
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups) || pumvisible()
@@ -88,7 +87,7 @@ normal! O
 execute "normal! iuse std::collections::Hash"
 
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups) || pumvisible()
@@ -117,7 +116,7 @@ normal! G
 normal! o
 execute "normal! iUser::"
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups)
@@ -138,7 +137,7 @@ call cursor(45, 1)
 normal! O
 execute "normal! i    let name = us"
 YacComplete
-sleep 2
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups) || pumvisible()

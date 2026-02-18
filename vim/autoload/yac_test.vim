@@ -216,21 +216,46 @@ function! yac_test#wait_for(condition, timeout_ms, ...) abort
   return 0
 endfunction
 
-" 等待 LSP 就绪
+" 等待 LSP 就绪 — 通过 hover 探测实际可用性
 function! yac_test#wait_lsp_ready(timeout_ms) abort
   if s:lsp_ready
-    " LSP 已在本 session 中初始化过，跳过等待
     call s:log('INFO', 'LSP already ready, skipping wait')
     return 1
   endif
 
-  call s:log('INFO', 'Waiting for LSP to be ready...')
-  let wait_seconds = a:timeout_ms / 1000
-  execute 'sleep ' . wait_seconds
-  let s:lsp_ready = 1
+  call s:log('INFO', 'Probing LSP readiness...')
 
-  call s:log('INFO', 'LSP ready (waited ' . wait_seconds . 's)')
-  return 1
+  " 探测：发送 hover 请求，等待 popup 出现
+  let l:ready = 0
+  let l:elapsed = 0
+  let l:interval = 500
+
+  while l:elapsed < a:timeout_ms
+    call popup_clear()
+    let l:save = getpos('.')
+    call cursor(14, 12)
+    silent! YacHover
+    " 给 LSP 一小段时间响应
+    let l:got_popup = yac_test#wait_for({-> !empty(popup_list())}, 2000)
+    call popup_clear()
+    call setpos('.', l:save)
+
+    if l:got_popup
+      let l:ready = 1
+      break
+    endif
+
+    execute 'sleep ' . l:interval . 'm'
+    let l:elapsed += 2000 + l:interval
+  endwhile
+
+  if l:ready
+    let s:lsp_ready = 1
+    call s:log('INFO', 'LSP ready (probe succeeded)')
+  else
+    call s:log('WARN', 'LSP not ready after ' . (a:timeout_ms / 1000) . 's')
+  endif
+  return l:ready
 endfunction
 
 " 等待浮窗出现
@@ -260,6 +285,25 @@ endfunction
 function! yac_test#wait_file_change(start_file, timeout_ms) abort
   let l:start_file = a:start_file
   return yac_test#wait_for({-> expand('%:p') != l:start_file}, a:timeout_ms)
+endfunction
+
+" 等待 quickfix 列表有内容
+function! yac_test#wait_qflist(timeout_ms) abort
+  return yac_test#wait_for({-> !empty(getqflist())}, a:timeout_ms)
+endfunction
+
+" 等待 signs 出现
+function! yac_test#wait_signs(timeout_ms, ...) abort
+  let l:group = a:0 >= 1 ? a:1 : ''
+  if l:group != ''
+    return yac_test#wait_for({-> !empty(sign_getplaced('%', {'group': l:group})[0].signs)}, a:timeout_ms)
+  endif
+  return yac_test#wait_for({-> !empty(sign_getplaced('%')[0].signs)}, a:timeout_ms)
+endfunction
+
+" 等待 popup 关闭
+function! yac_test#wait_no_popup(timeout_ms) abort
+  return yac_test#wait_for({-> empty(popup_list())}, a:timeout_ms)
 endfunction
 
 " ----------------------------------------------------------------------------

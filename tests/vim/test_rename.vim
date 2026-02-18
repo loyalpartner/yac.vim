@@ -11,7 +11,6 @@ call yac_test#setup()
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/lib.rs', 8000)
-sleep 3
 
 " 保存原始内容以便恢复
 let s:original_content = getline(1, '$')
@@ -35,7 +34,7 @@ if exists(':YacRename')
   " YacRename 可能需要用户输入新名称
   " 这里模拟自动输入
   call feedkeys(":YacRename user_map\<CR>", 'n')
-  sleep 3
+  call yac_test#wait_for({-> count(join(getline(1, '$'), "\n"), 'user_map') > 0}, 3000)
 
   " 检查是否发生了重命名
   let users_count_after = count(join(getline(1, '$'), "\n"), 'users')
@@ -72,7 +71,7 @@ call yac_test#log('INFO', 'Function "get_name" appears ' . get_name_count . ' ti
 if exists(':YacRename')
   " 尝试重命名
   call feedkeys(":YacRename fetch_name\<CR>", 'n')
-  sleep 3
+  call yac_test#wait_for({-> count(join(getline(1, '$'), "\n"), 'fetch_name') > 0}, 3000)
 
   let fetch_name_count = count(join(getline(1, '$'), "\n"), 'fetch_name')
   if fetch_name_count > 0
@@ -111,7 +110,7 @@ call yac_test#log('INFO', 'Test 4: Rename preview')
 if exists(':YacPrepareRename')
   call cursor(31, 13)
   YacPrepareRename
-  sleep 2
+  call yac_test#wait_popup(3000)
   call yac_test#log('INFO', 'PrepareRename completed')
 else
   call yac_test#skip('Rename preview', 'YacPrepareRename not available')
