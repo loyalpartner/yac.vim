@@ -17,23 +17,30 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Method completion on User.')
 
-normal! G
-normal! o
+" 在 processUser 函数体内插入 User. 触发成员补全
+" zls 在模块顶层不会返回类型成员，需要在函数体内才能解析
+call cursor(46, 1)
+normal! O
+execute "normal! i    const x = User."
 
-" 输入 User. — cursor on '.', prefix after . is empty → all items match
-execute "normal! iUser."
-YacComplete
-call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
+" zls 冷缓存下需要时间索引类型信息，用重试循环
+let s:method_ok = 0
+let s:method_elapsed = 0
+while s:method_elapsed < 20000
+  call popup_clear()
+  YacComplete
+  if yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 2000)
+    let s:method_ok = 1
+    break
+  endif
+  let s:method_elapsed += 2000
+endwhile
 
-let popups = popup_list()
-if !empty(popups)
+if s:method_ok
   call yac_test#log('INFO', 'Method completion popup appeared')
   call yac_test#assert_true(1, 'Completion popup should appear for User.')
-elseif pumvisible()
-  call yac_test#log('INFO', 'Completion pum visible')
-  call yac_test#assert_true(1, 'Completion popup should appear for User.')
 else
-  call yac_test#log('INFO', 'No completion popup for User.')
+  call yac_test#log('INFO', 'No completion popup for User. after 20s retries')
   call yac_test#assert_true(0, 'Completion popup should appear for User.')
 endif
 
@@ -56,6 +63,9 @@ call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 let popups = popup_list()
 if !empty(popups) || pumvisible()
   call yac_test#log('INFO', 'Import completion triggered')
+  call yac_test#assert_true(1, 'Import completion should trigger')
+else
+  call yac_test#assert_true(0, 'Import completion should trigger')
 endif
 
 execute "normal! \<Esc>"
@@ -77,6 +87,9 @@ call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 let popups = popup_list()
 if !empty(popups) || pumvisible()
   call yac_test#log('INFO', 'Local variable completion triggered')
+  call yac_test#assert_true(1, 'Local variable completion should trigger')
+else
+  call yac_test#assert_true(0, 'Local variable completion should trigger')
 endif
 
 execute "normal! \<Esc>"

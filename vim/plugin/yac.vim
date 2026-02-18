@@ -75,6 +75,7 @@ if get(g:, 'lsp_bridge_auto_start', 1)
     execute 'autocmd TextChanged,TextChangedI ' . s:lsp_filetypes . ' call yac#did_change()'
     execute 'autocmd BufUnload ' . s:lsp_filetypes . ' call yac#did_close()'
     execute 'autocmd TextChangedI ' . s:lsp_filetypes . ' call yac#auto_complete_trigger()'
+    execute 'autocmd InsertLeave ' . s:lsp_filetypes . ' call yac#close_completion()'
     " SSH连接清理 - Vim退出时清理SSH Master连接
     autocmd VimLeave * call yac_remote#cleanup()
   augroup END
