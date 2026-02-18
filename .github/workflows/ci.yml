@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  zig:
+    name: Zig Build & Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+    - name: Check formatting
+      run: zig fmt --check src/*.zig
+    - name: Build
+      run: zig build
+    - name: Unit tests
+      run: zig build test
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsp-bridge
+        path: zig-out/bin/lsp-bridge
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: zig
+    steps:
+    - uses: actions/checkout@v4
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.15.2
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: lsp-bridge
+        path: zig-out/bin
+    - run: chmod +x zig-out/bin/lsp-bridge
+    - name: Install ZLS
+      run: |
+        curl -L https://builds.zigtools.org/zls-linux-x86_64-0.15.0.tar.xz | tar -xJ
+        sudo mv zls /usr/local/bin/
+        zls --version
+    - uses: astral-sh/setup-uv@v5
+    - name: Run E2E tests
+      run: uv run pytest -v
+
+  ci-status:
+    name: CI Status
+    runs-on: ubuntu-latest
+    needs: [zig, e2e]
+    if: always()
+    steps:
+    - name: Check results
+      if: needs.zig.result != 'success' || needs.e2e.result != 'success'
+      run: exit 1
+    - run: echo "All checks passed"

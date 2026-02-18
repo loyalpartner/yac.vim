@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   workflow_run:
-    workflows: ["Rust CI"]
+    workflows: ["CI"]
     types: [completed]
   # Also allow manual triggering for testing
   workflow_dispatch:
