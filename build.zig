@@ -4,11 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "lsp-bridge",
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "lsp-bridge",
+        .root_module = mod,
     });
 
     b.installArtifact(exe);
@@ -22,10 +26,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run lsp-bridge");
     run_step.dependOn(&run_cmd.step);
 
-    const tests = b.addTest(.{
+    const test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const tests = b.addTest(.{
+        .root_module = test_mod,
     });
 
     const run_tests = b.addRunArtifact(tests);
