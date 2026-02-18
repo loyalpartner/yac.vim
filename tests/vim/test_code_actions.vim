@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " 保存原始内容
 let s:original_content = getline(1, '$')
@@ -23,7 +23,7 @@ call yac_test#log('INFO', 'Test 1: Code action for unused variable')
 " 添加一个未使用的变量
 normal! G
 normal! o
-execute "normal! ifn test_unused() {\<CR>    let unused_var = 42;\<CR>}"
+execute "normal! ifn testUnused() void {\<CR>    var unused_var: i32 = 42;\<CR>}"
 
 " 保存触发诊断
 silent write
@@ -59,7 +59,7 @@ call setline(1, s:original_content)
 " 添加使用未导入类型的代码
 normal! G
 normal! o
-execute "normal! ifn test_import() -> Vec<String> {\<CR>    vec![]\<CR>}"
+execute "normal! ifn testImport() void {\<CR>    _ = undefined;\<CR>}"
 
 silent write
 call yac_test#wait_signs(3000)
@@ -68,7 +68,7 @@ call yac_test#wait_signs(3000)
 " 添加使用 BTreeMap 的代码（需要导入）
 normal! G
 normal! o
-execute "normal! ifn test_btree() {\<CR>    let _map: BTreeMap<i32, i32> = BTreeMap::new();\<CR>}"
+execute "normal! ifn testBtree() void {\<CR>    var map = std.AutoHashMap(i32, i32).init(undefined);\<CR>    _ = &map;\<CR>}"
 
 silent write
 call yac_test#wait_signs(3000)
@@ -77,13 +77,13 @@ call yac_test#wait_signs(3000)
 call cursor(line('$') - 1, 15)
 let word = expand('<cword>')
 
-if word == 'BTreeMap'
+if word == 'AutoHashMap'
   YacCodeAction
   call yac_test#wait_popup(3000)
 
   let popups = popup_list()
   if !empty(popups)
-    call yac_test#log('INFO', 'Import action available for BTreeMap')
+    call yac_test#log('INFO', 'Import action available for AutoHashMap')
   endif
 endif
 
@@ -99,7 +99,7 @@ call setline(1, s:original_content)
 " 添加类型错误代码
 normal! G
 normal! o
-execute "normal! ifn test_type_error() {\<CR>    let x: i32 = \"hello\";\<CR>}"
+execute "normal! ifn testTypeError() void {\<CR>    const x: i32 = \"hello\";\<CR>    _ = x;\<CR>}"
 
 silent write
 call yac_test#wait_signs(3000)
@@ -110,7 +110,7 @@ call cursor(line('$') - 1, 18)
 YacCodeAction
 call yac_test#wait_popup(3000)
 
-" rust-analyzer 可能提供类型转换建议
+" zls 可能提供类型转换建议
 let popups = popup_list()
 call yac_test#log('INFO', 'Type error code actions: ' . len(popups) . ' popups')
 
@@ -124,7 +124,7 @@ silent! %d
 call setline(1, s:original_content)
 
 " 在一个复杂表达式上尝试 code action
-call cursor(34, 20)  " User::new 调用
+call cursor(34, 20)  " User.init 调用
 
 YacCodeAction
 call yac_test#wait_popup(3000)

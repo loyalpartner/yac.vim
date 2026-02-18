@@ -1,6 +1,9 @@
 " lsp-bridge Vim plugin core implementation
 " Simple LSP bridge for Vim
 
+" Plugin root directory (parent of vim/)
+let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
+
 " 定义补全匹配字符的高亮组
 if !hlexists('YacBridgeMatchChar')
   highlight YacBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
@@ -96,7 +99,7 @@ endfunction
 " 构建特定连接的 job 命令
 function! s:build_job_command(key) abort
   if a:key == 'local'
-    return get(g:, 'yac_bridge_command', ['./zig-out/bin/lsp-bridge'])
+    return get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
   else
     " SSH 连接命令，使用 ControlPersist 优化
     let l:control_path = '/tmp/yac-' . substitute(a:key, '[^a-zA-Z0-9]', '_', 'g') . '.sock'
@@ -1162,9 +1165,15 @@ function! s:show_completion_documentation() abort
     if !empty(doc_lines)
       call add(doc_lines, '')  " 分隔线
     endif
-    " 将多行文档分割成单独的行
-    let doc_text = substitute(item.documentation, '\r\n\|\r\|\n', '\n', 'g')
-    call extend(doc_lines, split(doc_text, '\n'))
+    " documentation 可能是字符串或 MarkupContent {kind, value}
+    let doc_raw = item.documentation
+    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
+      let doc_raw = doc_raw.value
+    endif
+    if type(doc_raw) == v:t_string
+      let doc_text = substitute(doc_raw, '\r\n\|\r\|\n', '\n', 'g')
+      call extend(doc_lines, split(doc_text, '\n'))
+    endif
   endif
 
   " 如果没有文档信息就不显示popup

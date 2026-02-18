@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: Clean file should have no diagnostics
@@ -18,7 +18,7 @@ call yac_test#open_test_file('test_data/src/lib.rs', 8000)
 call yac_test#log('INFO', 'Test 1: Clean file diagnostics')
 
 " 等待 LSP 分析完成（诊断信息出现或超时）
-call yac_test#wait_for({-> exists('b:yac_diagnostics') && !empty(b:yac_diagnostics)}, 3000)
+call yac_test#wait_for({-> exists('b:yac_diagnostics') && !empty(b:yac_diagnostics)}, 500)
 
 " 检查是否有诊断信息
 " 注意：这取决于 yac.vim 如何存储诊断
@@ -39,7 +39,7 @@ let original_content = getline(1, '$')
 " 在文件末尾添加语法错误
 normal! G
 normal! o
-execute "normal! ilet syntax_error: i32 = \"not a number\";"
+execute "normal! iconst syntax_error: i32 = \"not a number\";"
 
 " 保存文件触发诊断
 silent write
@@ -108,11 +108,11 @@ call yac_test#log('INFO', 'Test 6: Multiple errors detection')
 " 添加多个错误
 normal! G
 normal! o
-execute "normal! ilet err1: i32 = \"x\";"
+execute "normal! iconst err1: i32 = \"x\";"
 normal! o
-execute "normal! ilet err2: bool = 123;"
+execute "normal! iconst err2: bool = 123;"
 normal! o
-execute "normal! iunknown_function();"
+execute "normal! iunknownFunction();"
 
 silent write
 call yac_test#wait_for({-> exists('b:yac_diagnostics') && len(b:yac_diagnostics) >= 2}, 3000)

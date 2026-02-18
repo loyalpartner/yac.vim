@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: gd - Goto Definition mapping
@@ -25,8 +25,8 @@ if !empty(gd_map)
   call yac_test#assert_true(1, 'gd mapping exists')
 
   " 测试映射功能
-  call cursor(34, 18)  " User::new 调用
-  normal! f:w  " 移到 new
+  call cursor(34, 18)  " User.init 调用
+  normal! f.w  " 移到 init
   let start_line = line('.')
 
   " 使用映射
@@ -44,13 +44,13 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: gD mapping (Goto Declaration)')
 
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 let gD_map = maparg('gD', 'n')
 call yac_test#log('INFO', 'gD mapping: ' . gD_map)
 
 if !empty(gD_map)
   call cursor(34, 18)
-  normal! f:w
+  normal! f.w
   let start_line = line('.')
 
   normal gD
@@ -67,7 +67,7 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: K mapping (Hover)')
 
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 let K_map = maparg('K', 'n')
 call yac_test#log('INFO', 'K mapping: ' . K_map)
 
@@ -109,7 +109,7 @@ endif
 " 关闭 quickfix 窗口，回到测试文件
 silent! cclose
 call setqflist([])
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 
 " ============================================================================
 " Test 5: Completion key navigation
@@ -119,7 +119,7 @@ call yac_test#log('INFO', 'Test 5: Completion navigation keys')
 " 触发补全
 normal! G
 normal! o
-execute "normal! iUser::"
+execute "normal! iUser."
 YacComplete
 call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
@@ -156,7 +156,7 @@ let original = getline(1, '$')
 
 normal! G
 normal! o
-execute "normal! ilet user = User::n"
+execute "normal! iconst user = User.i"
 YacComplete
 call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
@@ -235,7 +235,7 @@ call yac_test#log('INFO', 'Colon insert map: ' . (empty(colon_imap) ? 'none' : '
 " ============================================================================
 call yac_test#log('INFO', 'Test 11: Popup window keys')
 
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 call cursor(6, 12)
 
 YacHover
@@ -246,7 +246,7 @@ if !empty(popups)
   " 测试关闭 popup
   " 通常 Esc 或移动光标会关闭
   execute "normal! j"
-  call yac_test#wait_for({-> empty(popup_list())}, 3000)
+  call yac_test#wait_for({-> empty(popup_list())}, 1000)
 
   let popups_after_move = popup_list()
   call yac_test#log('INFO', 'Popups after cursor move: ' . len(popups_after_move))

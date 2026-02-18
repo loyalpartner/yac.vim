@@ -198,7 +198,7 @@ uv run pytest -k goto    # single suite
 uv run pytest -v         # verbose
 
 # Manual testing with development vimrc
-vim -u vimrc test_data/src/lib.rs
+vim -u vimrc tests/data_tmpl/src/main.zig
 ```
 
 ### CI Checks

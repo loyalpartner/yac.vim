@@ -8,9 +8,11 @@ dependencies = []
 [tool.uv]
 dev-dependencies = [
     "pytest>=8.0",
+    "pytest-xdist>=3.0",
 ]
 
 [tool.pytest.ini_options]
+addopts = "-n auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

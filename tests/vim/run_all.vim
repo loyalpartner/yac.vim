@@ -11,13 +11,13 @@ set hidden
 
 " Pre-warm: 启动 LSP 并等待就绪，避免第一个测试浪费时间探测
 call yac_test#setup()
-call yac_test#open_test_file('test_data/src/lib.rs', 30000)
+call yac_test#open_test_file('test_data/src/main.zig', 30000)
 call popup_clear()
 silent! %bwipeout!
 
-" 记录 test_data/src/lib.rs 的原始路径（用于测试间恢复）
+" 记录 test_data/src/main.zig 的原始路径（用于测试间恢复）
 let s:project_root = getcwd()
-let s:test_file_path = s:project_root . '/test_data/src/lib.rs'
+let s:test_file_path = s:project_root . '/test_data/src/main.zig'
 
 " 收集所有测试文件
 let s:test_dir = expand('<sfile>:p:h')
@@ -47,8 +47,8 @@ for s:test_file in s:test_files
   call setqflist([])
   silent! %bwipeout!
 
-  " 恢复 test_data/src/lib.rs（某些测试会 write 修改到磁盘）
-  call system('git checkout -- test_data/src/lib.rs')
+  " 恢复 test_data/src/main.zig（某些测试会 write 修改到磁盘）
+  call system('git checkout -- test_data/src/main.zig')
 endfor
 
 call yac_test#finish()

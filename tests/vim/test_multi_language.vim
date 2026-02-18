@@ -53,7 +53,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
         \ ])
 
   " 等待 pyright 初始化
-  call yac_test#wait_lsp_ready(3000)
+  call yac_test#wait_lsp_ready(1000)
 
   " Test 1.1: Python goto definition
   call yac_test#log('INFO', 'Test 1.1: Python goto definition')
@@ -61,7 +61,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   let start_line = line('.')
 
   YacDefinition
-  call yac_test#wait_line_change(start_line, 3000)
+  call yac_test#wait_line_change(start_line, 1000)
 
   let end_line = line('.')
   if end_line != start_line
@@ -77,7 +77,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   call popup_clear()
 
   YacHover
-  call yac_test#wait_popup(3000)
+  call yac_test#wait_popup(1000)
 
   let popups = popup_list()
   call yac_test#log('INFO', 'Python hover: ' . len(popups) . ' popups')
@@ -90,7 +90,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   execute "normal! iusers[0]."
 
   YacComplete
-  call yac_test#wait_completion(3000)
+  call yac_test#wait_completion(1000)
 
   let popups = popup_list()
   if !empty(popups) || pumvisible()
@@ -141,7 +141,7 @@ if s:lsp_available('typescript-language-server')
         \ 'service.addUser({ id: 1, name: "Alice", email: "alice@test.com" });',
         \ ])
 
-  call yac_test#wait_lsp_ready(3000)
+  call yac_test#wait_lsp_ready(1000)
 
   " Test 2.1: TypeScript goto definition
   call yac_test#log('INFO', 'Test 2.1: TypeScript goto definition')
@@ -149,7 +149,7 @@ if s:lsp_available('typescript-language-server')
   let start_line = line('.')
 
   YacDefinition
-  call yac_test#wait_line_change(start_line, 3000)
+  call yac_test#wait_line_change(start_line, 1000)
 
   let end_line = line('.')
   call yac_test#log('INFO', 'TypeScript goto: ' . start_line . ' -> ' . end_line)
@@ -160,7 +160,7 @@ if s:lsp_available('typescript-language-server')
   call popup_clear()
 
   YacHover
-  call yac_test#wait_popup(3000)
+  call yac_test#wait_popup(1000)
 
   let popups = popup_list()
   call yac_test#log('INFO', 'TypeScript hover: ' . len(popups) . ' popups')
@@ -210,7 +210,7 @@ if s:lsp_available('gopls')
         \ '}',
         \ ])
 
-  call yac_test#wait_lsp_ready(3000)
+  call yac_test#wait_lsp_ready(1000)
 
   " Test 3.1: Go goto definition
   call yac_test#log('INFO', 'Test 3.1: Go goto definition')
@@ -218,7 +218,7 @@ if s:lsp_available('gopls')
   let start_line = line('.')
 
   YacDefinition
-  call yac_test#wait_line_change(start_line, 3000)
+  call yac_test#wait_line_change(start_line, 1000)
 
   let end_line = line('.')
   call yac_test#log('INFO', 'Go goto: ' . start_line . ' -> ' . end_line)
@@ -229,7 +229,7 @@ if s:lsp_available('gopls')
   call popup_clear()
 
   YacHover
-  call yac_test#wait_popup(3000)
+  call yac_test#wait_popup(1000)
 
   let popups = popup_list()
   call yac_test#log('INFO', 'Go hover: ' . len(popups) . ' popups')
@@ -247,12 +247,12 @@ endif
 call yac_test#log('INFO', 'Test 4: Switch between languages')
 
 " 打开 Rust 文件
-edit! test_data/src/lib.rs
-call yac_test#wait_lsp_ready(3000)
+edit! test_data/src/main.zig
+call yac_test#wait_lsp_ready(1000)
 
 call cursor(6, 12)
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_popup(1000)
 call yac_test#log('INFO', 'Rust hover works after language switch')
 call popup_clear()
 
@@ -262,7 +262,7 @@ call popup_clear()
 call yac_test#log('INFO', 'Test 5: Multiple language buffers simultaneously')
 
 " Rust buffer
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 let rust_buf = bufnr('%')
 
 " Python buffer (if available)
@@ -276,7 +276,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   " 在 Python buffer 中操作
   call cursor(1, 5)
   YacHover
-  call yac_test#wait_popup(3000)
+  call yac_test#wait_popup(1000)
   call yac_test#log('INFO', 'Python hover in multi-buffer')
   call popup_clear()
 
@@ -284,7 +284,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   execute 'buffer ' . rust_buf
   call cursor(14, 12)
   YacHover
-  call yac_test#wait_popup(3000)
+  call yac_test#wait_popup(1000)
   call yac_test#log('INFO', 'Rust hover after buffer switch')
   call popup_clear()
 
@@ -304,12 +304,12 @@ call setline(1, ['# Markdown file', '', 'This is not code.'])
 
 " 应该不崩溃
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_popup(500)
 call yac_test#log('INFO', 'Markdown hover handled gracefully')
 
 let start_line = line('.')
 YacDefinition
-call yac_test#wait_line_change(start_line, 3000)
+call yac_test#wait_line_change(start_line, 500)
 call yac_test#log('INFO', 'Markdown goto handled gracefully')
 
 bdelete!
@@ -317,6 +317,6 @@ bdelete!
 " ============================================================================
 " Cleanup
 " ============================================================================
-edit! test_data/src/lib.rs
+edit! test_data/src/main.zig
 call yac_test#teardown()
 call yac_test#end()

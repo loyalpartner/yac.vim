@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/lib.rs', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " 保存原始内容以便恢复
 let s:original_content = getline(1, '$')
@@ -20,7 +20,7 @@ function! s:ensure_in_test_file() abort
   silent! cclose
   call popup_clear()
   if &buftype !=# '' || !&modifiable
-    edit! test_data/src/lib.rs
+    edit! test_data/src/main.zig
   endif
 endfunction
 
@@ -29,7 +29,7 @@ endfunction
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Rename local variable')
 
-" 定位到 create_user_map 函数中的 users 变量
+" 定位到 createUserMap 函数中的 users 变量
 call cursor(31, 13)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
@@ -71,18 +71,18 @@ call yac_test#log('INFO', 'Test 2: Rename function')
 
 call cursor(19, 12)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'get_name', 'Cursor should be on "get_name"')
+call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
-let get_name_count = count(join(getline(1, '$'), "\n"), 'get_name')
-call yac_test#log('INFO', 'Function "get_name" appears ' . get_name_count . ' times')
+let getName_count = count(join(getline(1, '$'), "\n"), 'getName')
+call yac_test#log('INFO', 'Function "getName" appears ' . getName_count . ' times')
 
 if exists(':YacRename')
-  call feedkeys(":YacRename fetch_name\<CR>", 'n')
-  call yac_test#wait_for({-> count(join(getline(1, '$'), "\n"), 'fetch_name') > 0}, 3000)
+  call feedkeys(":YacRename fetchName\<CR>", 'n')
+  call yac_test#wait_for({-> count(join(getline(1, '$'), "\n"), 'fetchName') > 0}, 3000)
 
-  let fetch_name_count = count(join(getline(1, '$'), "\n"), 'fetch_name')
-  if fetch_name_count > 0
-    call yac_test#log('INFO', 'Function renamed to fetch_name')
+  let fetchName_count = count(join(getline(1, '$'), "\n"), 'fetchName')
+  if fetchName_count > 0
+    call yac_test#log('INFO', 'Function renamed to fetchName')
   endif
 else
   call yac_test#skip('Rename function', 'YacRename command not available')
