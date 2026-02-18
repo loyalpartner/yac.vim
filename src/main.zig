@@ -235,6 +235,23 @@ const EventLoop = struct {
                     self.sendVimResponse(alloc, vim_id, .null);
                 }
             },
+            .initializing => {
+                // LSP client is still initializing; defer this request for replay
+                if (vim_id != null) {
+                    const duped = self.allocator.dupe(u8, raw_line) catch |e| {
+                        log.err("Failed to defer initializing request: {any}", .{e});
+                        self.sendVimResponse(alloc, vim_id, .null);
+                        return;
+                    };
+                    self.deferred_requests.append(duped) catch |e| {
+                        self.allocator.free(duped);
+                        log.err("Failed to defer initializing request: {any}", .{e});
+                        self.sendVimResponse(alloc, vim_id, .null);
+                        return;
+                    };
+                    log.info("Deferred {s} request (LSP initializing)", .{method});
+                }
+            },
             .pending_lsp => |pending| {
                 // Register pending request: when the LSP response comes,
                 // we'll route it back to this Vim request
@@ -316,6 +333,10 @@ const EventLoop = struct {
                             self.registry.handleInitializeResponse(client_key) catch |e| {
                                 log.err("Failed to handle init response: {any}", .{e});
                             };
+                            // Flush requests that were deferred during initialization
+                            if (self.indexing_count == 0) {
+                                self.flushDeferredRequests();
+                            }
                             continue;
                         }
                     }

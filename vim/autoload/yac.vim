@@ -596,12 +596,18 @@ function! s:handle_goto_response(channel, response) abort
   " 处理 raw LSP Location 数组格式 (fallback)
   if type(l:loc) == v:t_list
     if empty(l:loc)
+      echo 'No definition found'
       return
     endif
     let l:loc = l:loc[0]
   endif
 
   if type(l:loc) != v:t_dict || empty(l:loc)
+    if l:loc is v:null
+      echo 'LSP not ready (initializing...)'
+    else
+      echo 'No definition found'
+    endif
     return
   endif
 
