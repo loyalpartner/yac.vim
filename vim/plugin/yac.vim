@@ -68,15 +68,13 @@ nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 if get(g:, 'lsp_bridge_auto_start', 1)
   augroup lsp_bridge_auto
     autocmd!
-    " 智能LSP启动 - 使用SSH Master模式
-    autocmd BufReadPost,BufNewFile *.rs call yac_remote#enhanced_lsp_start()
-    " 文档生命周期管理
-    autocmd BufWritePre *.rs call yac#will_save(1)
-    autocmd BufWritePost *.rs call yac#did_save()
-    autocmd TextChanged,TextChangedI *.rs call yac#did_change()
-    autocmd BufUnload *.rs call yac#did_close()
-    " 自动补全触发
-    autocmd TextChangedI *.rs call yac#auto_complete_trigger()
+    let s:lsp_filetypes = '*.rs,*.py,*.ts,*.tsx,*.js,*.jsx,*.go,*.zig'
+    execute 'autocmd BufReadPost,BufNewFile ' . s:lsp_filetypes . ' call yac_remote#enhanced_lsp_start()'
+    execute 'autocmd BufWritePre ' . s:lsp_filetypes . ' call yac#will_save(1)'
+    execute 'autocmd BufWritePost ' . s:lsp_filetypes . ' call yac#did_save()'
+    execute 'autocmd TextChanged,TextChangedI ' . s:lsp_filetypes . ' call yac#did_change()'
+    execute 'autocmd BufUnload ' . s:lsp_filetypes . ' call yac#did_close()'
+    execute 'autocmd TextChangedI ' . s:lsp_filetypes . ' call yac#auto_complete_trigger()'
     " SSH连接清理 - Vim退出时清理SSH Master连接
     autocmd VimLeave * call yac_remote#cleanup()
   augroup END
