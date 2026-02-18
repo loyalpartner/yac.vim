@@ -50,16 +50,17 @@ pub fn getArray(obj: ObjectMap, key: []const u8) ?[]Value {
     };
 }
 
-/// Stringify a JSON value to a writer.
-pub fn stringify(value: Value, writer: anytype) !void {
-    try std.json.stringify(value, .{}, writer);
+/// Stringify a JSON value to a std.io.Writer.
+pub fn stringifyToWriter(value: Value, w: *std.io.Writer) !void {
+    try std.json.Stringify.value(value, .{}, w);
 }
 
 /// Stringify a JSON value to an allocated string.
 pub fn stringifyAlloc(allocator: Allocator, value: Value) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    try stringify(value, buf.writer());
-    return buf.toOwnedSlice();
+    var aw: std.io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    try stringifyToWriter(value, &aw.writer);
+    return aw.toOwnedSlice();
 }
 
 /// Parse a JSON string into a Value.

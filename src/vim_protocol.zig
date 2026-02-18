@@ -4,7 +4,7 @@ const json = @import("json_utils.zig");
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
-const ArrayList = std.ArrayList;
+const Writer = std.io.Writer;
 
 // ============================================================================
 // JSON-RPC Messages (Vim <-> lsp-bridge)
@@ -103,102 +103,98 @@ pub const ChannelCommand = union(enum) {
 
 /// Encode a channel command to a JSON line (caller owns the returned memory).
 pub fn encodeChannelCommand(allocator: Allocator, cmd: ChannelCommand) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
     switch (cmd) {
         .call => |c| {
-            try writer.writeAll("[\"call\",");
-            try std.json.stringify(json.jsonString(c.func), .{}, writer);
-            try writer.writeByte(',');
-            try std.json.stringify(c.args, .{}, writer);
-            try writer.writeByte(',');
-            try std.fmt.formatInt(c.id, 10, .lower, .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"call\",");
+            try json.stringifyToWriter(json.jsonString(c.func), w);
+            try w.writeByte(',');
+            try json.stringifyToWriter(c.args, w);
+            try w.print(",{d}]", .{c.id});
         },
         .call_async => |c| {
-            try writer.writeAll("[\"call\",");
-            try std.json.stringify(json.jsonString(c.func), .{}, writer);
-            try writer.writeByte(',');
-            try std.json.stringify(c.args, .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"call\",");
+            try json.stringifyToWriter(json.jsonString(c.func), w);
+            try w.writeByte(',');
+            try json.stringifyToWriter(c.args, w);
+            try w.writeByte(']');
         },
         .expr => |e| {
-            try writer.writeAll("[\"expr\",");
-            try std.json.stringify(json.jsonString(e.expr), .{}, writer);
-            try writer.writeByte(',');
-            try std.fmt.formatInt(e.id, 10, .lower, .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"expr\",");
+            try json.stringifyToWriter(json.jsonString(e.expr), w);
+            try w.print(",{d}]", .{e.id});
         },
         .expr_async => |e| {
-            try writer.writeAll("[\"expr\",");
-            try std.json.stringify(json.jsonString(e.expr), .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"expr\",");
+            try json.stringifyToWriter(json.jsonString(e.expr), w);
+            try w.writeByte(']');
         },
         .ex => |e| {
-            try writer.writeAll("[\"ex\",");
-            try std.json.stringify(json.jsonString(e.command), .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"ex\",");
+            try json.stringifyToWriter(json.jsonString(e.command), w);
+            try w.writeByte(']');
         },
         .normal => |n| {
-            try writer.writeAll("[\"normal\",");
-            try std.json.stringify(json.jsonString(n.keys), .{}, writer);
-            try writer.writeByte(']');
+            try w.writeAll("[\"normal\",");
+            try json.stringifyToWriter(json.jsonString(n.keys), w);
+            try w.writeByte(']');
         },
         .redraw => |r| {
             if (r.force) {
-                try writer.writeAll("[\"redraw\",\"force\"]");
+                try w.writeAll("[\"redraw\",\"force\"]");
             } else {
-                try writer.writeAll("[\"redraw\",\"\"]");
+                try w.writeAll("[\"redraw\",\"\"]");
             }
         },
     }
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 /// Encode a JSON-RPC response as a JSON line.
 pub fn encodeJsonRpcResponse(allocator: Allocator, id: i64, result: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeByte('[');
-    try std.fmt.formatInt(id, 10, .lower, .{}, writer);
-    try writer.writeByte(',');
-    try std.json.stringify(result, .{}, writer);
-    try writer.writeByte(']');
+    try w.print("[{d},", .{id});
+    try json.stringifyToWriter(result, w);
+    try w.writeByte(']');
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 /// Encode a JSON-RPC request as a JSON line.
 pub fn encodeJsonRpcRequest(allocator: Allocator, id: u64, method: []const u8, params: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeByte('[');
-    try std.fmt.formatInt(id, 10, .lower, .{}, writer);
-    try writer.writeAll(",{\"method\":");
-    try std.json.stringify(json.jsonString(method), .{}, writer);
-    try writer.writeAll(",\"params\":");
-    try std.json.stringify(params, .{}, writer);
-    try writer.writeAll("}]");
+    try w.print("[{d},{{\"method\":", .{id});
+    try json.stringifyToWriter(json.jsonString(method), w);
+    try w.writeAll(",\"params\":");
+    try json.stringifyToWriter(params, w);
+    try w.writeAll("}]");
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 /// Encode a JSON-RPC notification as a JSON line.
 pub fn encodeJsonRpcNotification(allocator: Allocator, method: []const u8, params: Value) ![]const u8 {
-    var buf = ArrayList(u8).init(allocator);
-    const writer = buf.writer();
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
-    try writer.writeAll("[{\"method\":");
-    try std.json.stringify(json.jsonString(method), .{}, writer);
-    try writer.writeAll(",\"params\":");
-    try std.json.stringify(params, .{}, writer);
-    try writer.writeAll("}]");
+    try w.writeAll("[{\"method\":");
+    try json.stringifyToWriter(json.jsonString(method), w);
+    try w.writeAll(",\"params\":");
+    try json.stringifyToWriter(params, w);
+    try w.writeAll("}]");
 
-    return buf.toOwnedSlice();
+    return aw.toOwnedSlice();
 }
 
 // ============================================================================
