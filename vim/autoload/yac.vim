@@ -400,7 +400,6 @@ function! yac#code_action() abort
     \ }, 's:handle_code_action_response')
 endfunction
 
-
 function! yac#execute_command(...) abort
   if a:0 == 0
     echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
@@ -959,7 +958,6 @@ function! yac#cleanup_connections() abort
   echo printf('Cleaned up %d dead connections', cleaned)
 endfunction
 
-
 " 显示hover信息的浮动窗口
 function! s:show_hover_popup(content) abort
   " 关闭之前的hover窗口
@@ -1038,7 +1036,6 @@ function! s:show_completion_popup(items) abort
   call s:filter_completions()
 endfunction
 
-
 " 格式化补全项显示（无 marker，选中由 cursorline 高亮）
 function! s:format_completion_item(item) abort
   let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
@@ -1062,10 +1059,7 @@ endfunction
 
 " 渲染补全窗口 - cursorline 驱动选中高亮
 function! s:render_completion_window() abort
-  let lines = []
-  for i in range(len(s:completion.items))
-    call add(lines, s:format_completion_item(s:completion.items[i]))
-  endfor
+  let lines = map(copy(s:completion.items), {_, item -> s:format_completion_item(item)})
 
   call s:create_or_update_completion_popup(lines)
 
@@ -1179,10 +1173,7 @@ function! s:filter_completions() abort
     \ })
 
   " 提取排序后的项目
-  let s:completion.items = []
-  for scored in scored_items
-    call add(s:completion.items, scored.item)
-  endfor
+  let s:completion.items = map(scored_items, {_, v -> v.item})
 
   let s:completion.selected = 0
 
@@ -1194,7 +1185,6 @@ function! s:filter_completions() abort
 
   call s:render_completion_window()
 endfunction
-
 
 " 被动式 popup 创建/更新（不拦截任何按键）
 function! s:create_or_update_completion_popup(lines) abort
@@ -1550,7 +1540,6 @@ function! s:close_completion_popup() abort
   " 同时关闭文档popup
   call s:close_completion_documentation()
 endfunction
-
 
 " 公开接口：关闭补全弹窗（供 InsertLeave autocmd 调用）
 function! yac#close_completion() abort
@@ -2001,23 +1990,12 @@ function! s:show_diagnostics(diagnostics) abort
     return
   endif
 
-  " Debug: show first diagnostic structure (only if debug enabled)
-  if len(a:diagnostics) > 0
-    call s:debug_log("First diagnostic: " . string(a:diagnostics[0]))
-  endif
+  call s:debug_log("First diagnostic: " . string(a:diagnostics[0]))
 
+  let severity_map = {'Error': 'E', 'Warning': 'W', 'Info': 'I', 'Hint': 'H'}
   let qf_list = []
   for diag in a:diagnostics
-    let type = diag.severity
-    if type == 'Error'
-      let type = 'E'
-    elseif type == 'Warning'
-      let type = 'W'
-    elseif type == 'Info'
-      let type = 'I'
-    elseif type == 'Hint'
-      let type = 'H'
-    endif
+    let type = get(severity_map, diag.severity, diag.severity)
 
     let text = diag.severity . ': ' . diag.message
     if has_key(diag, 'source') && !empty(diag.source)
@@ -2086,17 +2064,11 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     call add(diagnostics_by_file[file_path], diag)
   endfor
 
-  " 清除不再有诊断的buffer的虚拟文本
-  let files_with_diagnostics = {}
-  for [file_path, file_diagnostics] in items(diagnostics_by_file)
-    let files_with_diagnostics[file_path] = 1
-  endfor
-
   " 清除不再有诊断的buffer（复制keys避免在循环中修改字典）
   let buffers_to_clear = []
   for bufnr in keys(s:diagnostic_virtual_text.storage)
     let file_path = bufname(bufnr)
-    if !has_key(files_with_diagnostics, file_path)
+    if !has_key(diagnostics_by_file, file_path)
       call add(buffers_to_clear, bufnr)
     endif
   endfor
@@ -2156,14 +2128,8 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
     call s:debug_log("Processing diagnostic at line " . line_num . ": " . text)
 
     " 根据严重程度选择高亮组
-    let hl_group = 'DiagnosticHint'
-    if diag.severity == 'Error'
-      let hl_group = 'DiagnosticError'
-    elseif diag.severity == 'Warning'
-      let hl_group = 'DiagnosticWarning'
-    elseif diag.severity == 'Info'
-      let hl_group = 'DiagnosticInfo'
-    endif
+    let hl_group = get({'Error': 'DiagnosticError', 'Warning': 'DiagnosticWarning',
+      \ 'Info': 'DiagnosticInfo'}, diag.severity, 'DiagnosticHint')
 
     " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
     if exists('*prop_type_add')

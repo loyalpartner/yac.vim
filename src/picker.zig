@@ -177,6 +177,71 @@ pub const FileIndex = struct {
     }
 };
 
+pub const Picker = struct {
+    allocator: Allocator,
+    file_index: ?*FileIndex,
+
+    pub fn init(allocator: Allocator) Picker {
+        return .{
+            .allocator = allocator,
+            .file_index = null,
+        };
+    }
+
+    pub fn deinit(self: *Picker) void {
+        self.close();
+    }
+
+    pub fn start(self: *Picker, cwd: []const u8) bool {
+        self.close();
+        const fi = self.allocator.create(FileIndex) catch return false;
+        fi.* = FileIndex.init(self.allocator);
+        fi.startScan(cwd) catch {
+            fi.deinit();
+            self.allocator.destroy(fi);
+            return false;
+        };
+        self.file_index = fi;
+        return true;
+    }
+
+    pub fn close(self: *Picker) void {
+        const fi = self.file_index orelse return;
+        fi.deinit();
+        self.allocator.destroy(fi);
+        self.file_index = null;
+    }
+
+    pub fn hasIndex(self: *Picker) bool {
+        return self.file_index != null;
+    }
+
+    pub fn getStdoutFd(self: *Picker) ?std.posix.fd_t {
+        const fi = self.file_index orelse return null;
+        return fi.getStdoutFd();
+    }
+
+    pub fn pollScan(self: *Picker) void {
+        const fi = self.file_index orelse return;
+        _ = fi.pollScan();
+    }
+
+    pub fn setRecentFiles(self: *Picker, recent: []const []const u8) void {
+        const fi = self.file_index orelse return;
+        fi.setRecentFiles(recent) catch {};
+    }
+
+    pub fn recentFiles(self: *Picker) []const []const u8 {
+        const fi = self.file_index orelse return &.{};
+        return fi.recent_files.items;
+    }
+
+    pub fn files(self: *Picker) []const []const u8 {
+        const fi = self.file_index orelse return &.{};
+        return fi.files.items;
+    }
+};
+
 fn findExecutable(name: []const u8) bool {
     const path_env = std.posix.getenv("PATH") orelse return false;
     var it = std.mem.splitScalar(u8, path_env, ':');

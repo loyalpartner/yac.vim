@@ -2,6 +2,7 @@ const std = @import("std");
 const json = @import("json_utils.zig");
 const LspClient = @import("lsp_client.zig").LspClient;
 const log = @import("log.zig");
+const lsp_config = @import("lsp_config.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -11,73 +12,7 @@ const ObjectMap = json.ObjectMap;
 // LSP Server Config - data-driven language detection
 // ============================================================================
 
-pub const LspServerConfig = struct {
-    command: []const u8,
-    args: []const []const u8,
-    language_id: []const u8,
-    file_extensions: []const []const u8,
-    workspace_markers: []const []const u8,
-};
-
-// Built-in server configs
-pub const builtin_configs = [_]LspServerConfig{
-    .{
-        .command = "rust-analyzer",
-        .args = &.{},
-        .language_id = "rust",
-        .file_extensions = &.{".rs"},
-        .workspace_markers = &.{"Cargo.toml"},
-    },
-    .{
-        .command = "pyright-langserver",
-        .args = &.{"--stdio"},
-        .language_id = "python",
-        .file_extensions = &.{".py"},
-        .workspace_markers = &.{ "pyproject.toml", "setup.py" },
-    },
-    .{
-        .command = "typescript-language-server",
-        .args = &.{"--stdio"},
-        .language_id = "typescript",
-        .file_extensions = &.{ ".ts", ".tsx" },
-        .workspace_markers = &.{ "package.json", "tsconfig.json" },
-    },
-    .{
-        .command = "typescript-language-server",
-        .args = &.{"--stdio"},
-        .language_id = "javascript",
-        .file_extensions = &.{ ".js", ".jsx" },
-        .workspace_markers = &.{"package.json"},
-    },
-    .{
-        .command = "gopls",
-        .args = &.{},
-        .language_id = "go",
-        .file_extensions = &.{".go"},
-        .workspace_markers = &.{"go.mod"},
-    },
-    .{
-        .command = "zls",
-        .args = &.{},
-        .language_id = "zig",
-        .file_extensions = &.{".zig"},
-        .workspace_markers = &.{"build.zig"},
-    },
-    .{
-        .command = "clangd",
-        .args = &.{},
-        .language_id = "c",
-        .file_extensions = &.{ ".c", ".h" },
-        .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
-    },
-    .{
-        .command = "clangd",
-        .args = &.{},
-        .language_id = "cpp",
-        .file_extensions = &.{ ".cpp", ".hpp", ".cc", ".cxx", ".hxx" },
-        .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
-    },
-};
+pub const LspServerConfig = lsp_config.LspServerConfig;
 
 // ============================================================================
 // LSP Registry - manages language server lifecycles
@@ -87,6 +22,12 @@ pub const PendingOpen = struct {
     uri: []const u8,
     language_id: []const u8,
     content: []const u8,
+
+    fn deinit(self: PendingOpen, allocator: Allocator) void {
+        allocator.free(self.uri);
+        allocator.free(self.language_id);
+        allocator.free(self.content);
+    }
 };
 
 pub const LspRegistry = struct {
@@ -131,7 +72,7 @@ pub const LspRegistry = struct {
         // Extract real path from scp:// URLs
         const real_path = extractRealPath(file_path);
 
-        for (&builtin_configs) |*config| {
+        for (&lsp_config.builtin_configs) |*config| {
             for (config.file_extensions) |ext| {
                 if (std.mem.endsWith(u8, real_path, ext)) {
                     return config.language_id;
@@ -143,7 +84,7 @@ pub const LspRegistry = struct {
 
     /// Get config for a language.
     pub fn getConfig(language: []const u8) ?*const LspServerConfig {
-        for (&builtin_configs) |*config| {
+        for (&lsp_config.builtin_configs) |*config| {
             if (std.mem.eql(u8, config.language_id, language)) {
                 return config;
             }
@@ -177,11 +118,7 @@ pub const LspRegistry = struct {
         }
         _ = self.pending_init.remove(client_key);
         if (self.pending_opens.fetchRemove(client_key)) |entry| {
-            for (entry.value.items) |open| {
-                self.allocator.free(open.uri);
-                self.allocator.free(open.language_id);
-                self.allocator.free(open.content);
-            }
+            for (entry.value.items) |open| open.deinit(self.allocator);
             var list = entry.value;
             list.deinit(self.allocator);
         }
@@ -244,9 +181,7 @@ pub const LspRegistry = struct {
                 self.sendDidOpen(client, open) catch |e| {
                     log.err("Failed to replay didOpen for {s}: {any}", .{ open.uri, e });
                 };
-                self.allocator.free(open.uri);
-                self.allocator.free(open.language_id);
-                self.allocator.free(open.content);
+                open.deinit(self.allocator);
             }
             opens.deinit(self.allocator);
             _ = self.pending_opens.remove(client_key);
@@ -315,11 +250,7 @@ pub const LspRegistry = struct {
     fn freePendingOpens(self: *LspRegistry) void {
         var it = self.pending_opens.iterator();
         while (it.next()) |entry| {
-            for (entry.value_ptr.items) |open| {
-                self.allocator.free(open.uri);
-                self.allocator.free(open.language_id);
-                self.allocator.free(open.content);
-            }
+            for (entry.value_ptr.items) |open| open.deinit(self.allocator);
             entry.value_ptr.deinit(self.allocator);
         }
     }
