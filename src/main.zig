@@ -1105,3 +1105,7 @@ test "isQueryMethod - non-query methods return false" {
     try std.testing.expect(!isQueryMethod("execute_command"));
     try std.testing.expect(!isQueryMethod("unknown_method"));
 }
+
+test {
+    _ = @import("picker.zig");
+}
