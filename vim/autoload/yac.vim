@@ -2506,6 +2506,10 @@ function! s:handle_picker_query_response(channel, response) abort
   if s:picker.results_popup == -1
     return
   endif
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    call s:debug_log('[yac] Picker error: ' . string(a:response.error))
+    return
+  endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:picker_update_results(a:response.items)
   endif
