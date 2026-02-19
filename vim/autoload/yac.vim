@@ -2291,24 +2291,21 @@ function! yac#picker_open() abort
     return
   endif
 
-  " 收集最近打开的文件
-  let recent = []
-  for buf in getbufinfo({'buflisted': 1})
-    if !empty(buf.name) && filereadable(buf.name)
-      call add(recent, buf.name)
-    endif
-  endfor
+  " 先创建 UI（立即显示）
+  call s:picker_create_ui()
 
+  " 发送请求，daemon 会通过 expr 查询 buffer 列表并回传初始结果
   call s:request('picker_open', {
     \ 'cwd': getcwd(),
-    \ 'recent_files': recent,
     \ 'file': expand('%:p'),
     \ }, 's:handle_picker_open_response')
 endfunction
 
 function! s:handle_picker_open_response(channel, response) abort
   call s:debug_log(printf('[RECV]: picker_open response: %s', string(a:response)))
-  call s:picker_create_ui()
+  if s:picker.results_popup == -1
+    return
+  endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:picker_update_results(a:response.items)
   endif
@@ -2368,6 +2365,7 @@ function! s:picker_create_ui() abort
 endfunction
 
 function! s:picker_input_filter(winid, key) abort
+  call s:debug_log(printf('[PICKER] key: %s (nr: %d, len: %d)', strtrans(a:key), char2nr(a:key), len(a:key)))
   if a:key == "\<Esc>"
     call s:picker_close()
     return 1
@@ -2378,33 +2376,36 @@ function! s:picker_input_filter(winid, key) abort
     return 1
   endif
 
-  " 结果导航
-  if a:key == "\<C-j>" || a:key == "\<C-n>" || a:key == "\<Tab>"
+  " 结果导航（用 char2nr 比较控制键，避免 popup filter 中 "\<C-n>" 展开问题）
+  let nr = char2nr(a:key)
+  if nr == 10 || nr == 14 || a:key == "\<Tab>" || a:key == "\<Down>"
+    " Ctrl+J(10) / Ctrl+N(14) / Tab / Down
     call s:picker_select_next()
     return 1
   endif
-  if a:key == "\<C-k>" || a:key == "\<C-p>" || a:key == "\<S-Tab>"
+  if nr == 11 || nr == 16 || a:key == "\<S-Tab>" || a:key == "\<Up>"
+    " Ctrl+K(11) / Ctrl+P(16) / Shift-Tab / Up
     call s:picker_select_prev()
     return 1
   endif
 
-  " 编辑快捷键
-  if a:key == "\<C-a>"
+  " 编辑快捷键（用 char2nr 比较）
+  if nr == 1  " Ctrl+A
     call win_execute(a:winid, 'call cursor(1, 3)')
     return 1
   endif
-  if a:key == "\<C-e>"
+  if nr == 5  " Ctrl+E
     call win_execute(a:winid, 'call cursor(1, col("$"))')
     return 1
   endif
-  if a:key == "\<C-u>"
+  if nr == 21  " Ctrl+U
     let buf = winbufnr(a:winid)
     call setbufline(buf, 1, '> ')
     call win_execute(a:winid, 'call cursor(1, 3)')
     call s:picker_on_input_changed()
     return 1
   endif
-  if a:key == "\<C-w>"
+  if nr == 23  " Ctrl+W
     let buf = winbufnr(a:winid)
     let line = getbufline(buf, 1)[0]
     let text = line[2:]
@@ -2415,26 +2416,7 @@ function! s:picker_input_filter(winid, key) abort
     return 1
   endif
 
-  " History browsing with Up/Down (when input is empty)
-  if a:key == "\<Up>" || a:key == "\<Down>"
-    let buf = winbufnr(a:winid)
-    let text = getbufline(buf, 1)[0][2:]
-    if empty(text) && !empty(s:picker_history)
-      if a:key == "\<Up>"
-        let s:picker_history_idx = min([s:picker_history_idx + 1, len(s:picker_history) - 1])
-      else
-        let s:picker_history_idx = max([s:picker_history_idx - 1, -1])
-      endif
-      if s:picker_history_idx >= 0
-        call setbufline(buf, 1, '> ' . s:picker_history[s:picker_history_idx])
-      else
-        call setbufline(buf, 1, '> ')
-      endif
-      call win_execute(a:winid, 'call cursor(1, col("$"))')
-      call s:picker_on_input_changed()
-      return 1
-    endif
-  endif
+  " 注：Up/Down 已绑定为结果导航，历史浏览功能暂不可用
 
   " Backspace
   if a:key == "\<BS>"
@@ -2519,22 +2501,11 @@ function! s:picker_update_results(items) abort
   let s:picker.items = a:items
   let s:picker.selected = 0
 
-  let lines = []
-  for item in a:items
-    let label = get(item, 'label', '')
-    let detail = get(item, 'detail', '')
-    if !empty(detail)
-      call add(lines, '  ' . label . '  ' . detail)
-    else
-      call add(lines, '  ' . label)
-    endif
-  endfor
-
-  if empty(lines)
-    let lines = ['  (no results)']
+  if empty(a:items)
+    call popup_settext(s:picker.results_popup, ['  (no results)'])
+    return
   endif
 
-  call popup_settext(s:picker.results_popup, lines)
   call s:picker_highlight_selected()
 endfunction
 
@@ -2542,9 +2513,26 @@ function! s:picker_highlight_selected() abort
   if s:picker.results_popup == -1 || empty(s:picker.items)
     return
   endif
+  let lines = []
+  for item in s:picker.items
+    let label = fnamemodify(get(item, 'label', ''), ':.')
+    let detail = get(item, 'detail', '')
+    let text = !empty(detail) ? ('  ' . label . '  ' . detail) : ('  ' . label)
+    call add(lines, text)
+  endfor
+  " 选中行加 > 前缀
+  if s:picker.selected < len(lines)
+    let lines[s:picker.selected] = '> ' . lines[s:picker.selected][2:]
+  endif
+  call popup_settext(s:picker.results_popup, lines)
+
+  " 用 matchaddpos 高亮选中行
   call win_execute(s:picker.results_popup, 'call clearmatches()')
-  call win_execute(s:picker.results_popup,
-    \ printf('call matchaddpos("YacPickerSelected", [%d])', s:picker.selected + 1))
+  call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '])')
+
+  " 滚动：确保选中行可见（popup 最多显示 15 行）
+  let firstline = max([1, s:picker.selected - 13])
+  call popup_setoptions(s:picker.results_popup, #{firstline: firstline})
 endfunction
 
 function! s:picker_select_next() abort
@@ -2586,7 +2574,7 @@ function! s:picker_accept() abort
 
   " Navigate to file/symbol
   if !empty(file)
-    if file !=# expand('%:p')
+    if fnamemodify(file, ':p') !=# expand('%:p')
       execute 'edit ' . fnameescape(file)
     endif
     if line > 0

@@ -75,6 +75,14 @@ fn getSocketPath(buf: []u8) []const u8 {
 // Event Loop — multi-client daemon
 // ============================================================================
 
+const PendingVimExpr = struct {
+    cid: ClientId,
+    vim_id: ?u64,
+    tag: Tag,
+
+    const Tag = enum { picker_buffers };
+};
+
 const IDLE_TIMEOUT_NS: i128 = 60 * std.time.ns_per_s;
 
 const EventLoop = struct {
@@ -95,6 +103,10 @@ const EventLoop = struct {
     idle_deadline: ?i128,
     /// Picker file index (active while picker is open)
     file_index: ?*picker_mod.FileIndex,
+    /// Maps expr_id -> pending vim expr context (for daemon→Vim expr requests)
+    pending_vim_exprs: std.AutoHashMap(i64, PendingVimExpr),
+    /// Next ID for daemon→Vim expr requests (start high to avoid collision with Vim request IDs)
+    next_expr_id: i64,
 
     const max_deferred_requests = 50;
     const deferred_ttl_ns: i128 = 10 * std.time.ns_per_s;
@@ -118,6 +130,8 @@ const EventLoop = struct {
             .progress_titles = std.StringHashMap([]const u8).init(allocator),
             .idle_deadline = std.time.nanoTimestamp(),
             .file_index = null,
+            .pending_vim_exprs = std.AutoHashMap(i64, PendingVimExpr).init(allocator),
+            .next_expr_id = 100000,
         };
     }
 
@@ -158,6 +172,7 @@ const EventLoop = struct {
             fi.deinit();
             self.allocator.destroy(fi);
         }
+        self.pending_vim_exprs.deinit();
         self.listener.deinit();
     }
 
@@ -423,6 +438,15 @@ const EventLoop = struct {
                 return;
             },
         };
+
+        // Intercept responses to our pending expr requests.
+        // Vim sends [positive_id, result] which parseJsonRpc would misinterpret.
+        if (arr.len == 2 and arr[0] == .integer) {
+            if (self.pending_vim_exprs.fetchRemove(arr[0].integer)) |entry| {
+                self.handleVimExprResponse(alloc, entry.value, arr[1]);
+                return;
+            }
+        }
 
         // Parse as JSON-RPC
         const msg = vim.parseJsonRpc(arr) catch |e| {
@@ -919,6 +943,37 @@ const EventLoop = struct {
         writeMessage(client.stream, encoded);
     }
 
+    /// Send an expr request to a specific Vim client and register a pending entry.
+    fn sendVimExprTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, expr: []const u8, tag: PendingVimExpr.Tag) void {
+        const client = self.clients.get(cid) orelse return;
+        const id = self.next_expr_id;
+        self.next_expr_id += 1;
+        const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
+        defer alloc.free(encoded);
+        writeMessage(client.stream, encoded);
+        self.pending_vim_exprs.put(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {};
+    }
+
+    /// Handle the result of a daemon→Vim expr request.
+    fn handleVimExprResponse(self: *EventLoop, alloc: Allocator, pending: PendingVimExpr, result: Value) void {
+        switch (pending.tag) {
+            .picker_buffers => {
+                const fi = self.file_index orelse return;
+                const arr = switch (result) {
+                    .array => |a| a.items,
+                    else => &[_]Value{},
+                };
+                var names: std.ArrayList([]const u8) = .{};
+                defer names.deinit(alloc);
+                for (arr) |item| {
+                    if (item == .string) names.append(alloc, item.string) catch {};
+                }
+                fi.setRecentFiles(names.items) catch {};
+                self.sendPickerResults(pending.cid, alloc, pending.vim_id, fi.recent_files.items, "file");
+            },
+        }
+    }
+
     /// Send a Vim ex command to ALL connected clients.
     fn broadcastVimEx(self: *EventLoop, alloc: Allocator, command: []const u8) void {
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
@@ -1001,27 +1056,10 @@ const EventLoop = struct {
                 self.allocator.destroy(fi);
                 return true;
             };
-            // Set recent files
-            if (obj.get("recent_files")) |rf_val| {
-                switch (rf_val) {
-                    .array => |arr| {
-                        var recent: std.ArrayList([]const u8) = .{};
-                        defer recent.deinit(alloc);
-                        for (arr.items) |item| {
-                            switch (item) {
-                                .string => |s| {
-                                    recent.append(alloc, s) catch {};
-                                },
-                                else => {},
-                            }
-                        }
-                        fi.setRecentFiles(recent.items) catch {};
-                    },
-                    else => {},
-                }
-            }
             self.file_index = fi;
-            self.sendPickerResults(cid, alloc, vim_id, fi.recent_files.items, "file");
+            self.sendVimExprTo(cid, alloc, vim_id,
+                "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
+                .picker_buffers);
             return true;
         } else if (std.mem.eql(u8, action, "picker_file_query")) {
             const query = json_utils.getString(obj, "query") orelse "";
