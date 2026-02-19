@@ -282,6 +282,10 @@ pub const LspClient = struct {
         // workspace capabilities
         var workspace = ObjectMap.init(self.allocator);
         try workspace.put("applyEdit", json.jsonBool(true));
+        // workspace/symbol support
+        var ws_symbol = ObjectMap.init(self.allocator);
+        try ws_symbol.put("dynamicRegistration", json.jsonBool(false));
+        try workspace.put("symbol", .{ .object = ws_symbol });
         try capabilities.put("workspace", .{ .object = workspace });
 
         // window capabilities — advertise progress support
