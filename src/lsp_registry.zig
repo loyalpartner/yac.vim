@@ -205,11 +205,11 @@ pub const LspRegistry = struct {
             return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
         }
 
-        // Reuse any existing client for this language rather than spawning a new
-        // LSP instance.  This prevents slow re-indexing when goto-definition
-        // jumps into stdlib/toolchain files that live under a different workspace
-        // root (e.g. Cargo.toml inside the Rust toolchain source tree).
-        {
+        // Reuse any existing client for this language ONLY when the file has no
+        // workspace marker (workspace_uri == null), e.g. stdlib/toolchain files.
+        // Files with a workspace marker must get their own client to avoid
+        // cross-project interference.
+        if (workspace_uri == null) {
             var it = self.clients.iterator();
             while (it.next()) |entry| {
                 if (std.mem.startsWith(u8, entry.key_ptr.*, language)) {

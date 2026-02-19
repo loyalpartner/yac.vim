@@ -84,6 +84,10 @@ let s:completion.mappings_installed = 0
 let s:completion.saved_mappings = {}
 let s:completion.trigger_col = 0
 let s:completion.suppress_until = 0
+let s:completion.timer_id = -1
+
+" didChange debounce timer
+let s:did_change_timer = -1
 
 " 诊断虚拟文本状态
 let s:diagnostic_virtual_text = {}
@@ -282,7 +286,8 @@ function! yac#open_file() abort
   call s:request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
-    \   'column': 0
+    \   'column': 0,
+    \   'text': join(getline(1, '$'), "\n")
     \ }, 's:handle_file_open_response')
 endfunction
 
@@ -410,12 +415,27 @@ function! yac#did_save(...) abort
 endfunction
 
 function! yac#did_change(...) abort
-  let text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
+  " Capture buffer state now (before any buffer switch)
+  let l:file_path = expand('%:p')
+  let l:text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
+
+  " Debounce: cancel previous pending didChange, send after 300ms
+  if s:did_change_timer != -1
+    call timer_stop(s:did_change_timer)
+  endif
+  let s:did_change_timer = timer_start(300, {tid -> s:send_did_change(l:file_path, l:text_content)})
+endfunction
+
+" NOTE: Full document sync (TextDocumentSyncKind.Full) is used intentionally.
+" Combined with the 300ms debounce above, this is sufficient for most use cases.
+" Incremental sync could be implemented in the future for very large files.
+function! s:send_did_change(file_path, text_content) abort
+  let s:did_change_timer = -1
   call s:notify('did_change', {
-    \   'file': expand('%:p'),
+    \   'file': a:file_path,
     \   'line': 0,
     \   'column': 0,
-    \   'text': text_content
+    \   'text': a:text_content
     \ })
 endfunction
 
@@ -457,11 +477,16 @@ function! yac#auto_complete_trigger() abort
     return
   endif
 
-  call timer_start(get(g:, 'yac_auto_complete_delay', 300), 'yac#delayed_complete')
+  if s:completion.timer_id != -1
+    call timer_stop(s:completion.timer_id)
+  endif
+  let s:completion.timer_id = timer_start(get(g:, 'yac_auto_complete_delay', 300), 'yac#delayed_complete')
 endfunction
 
 " 延迟补全触发
 function! yac#delayed_complete(timer_id) abort
+  let s:completion.timer_id = -1
+
   " 确保仍在插入模式
   if mode() != 'i'
     return
@@ -539,6 +564,11 @@ endfunction
 function! s:handle_goto_response(channel, response) abort
   call s:debug_log(printf('[RECV]: goto response: %s', string(a:response)))
 
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    echohl ErrorMsg | echo '[yac] Goto error: ' . string(a:response.error) | echohl None
+    return
+  endif
+
   let l:loc = a:response
 
   " 处理 raw LSP Location 数组格式 (fallback)
@@ -589,6 +619,11 @@ function! s:handle_hover_response(channel, response) abort
     return
   endif
 
+  if has_key(a:response, 'error')
+    echohl ErrorMsg | echo '[yac] Hover error: ' . string(a:response.error) | echohl None
+    return
+  endif
+
   " Support both 'content' (string) and 'contents' (MarkupContent / string)
   let l:text = ''
   if has_key(a:response, 'content') && !empty(a:response.content)
@@ -611,6 +646,11 @@ endfunction
 function! s:handle_completion_response(channel, response) abort
   call s:debug_log(printf('[RECV]: completion response: %s', string(a:response)))
 
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    call s:debug_log('[yac] Completion error: ' . string(a:response.error))
+    return
+  endif
+
   if type(a:response) == v:t_dict && has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completion_popup(a:response.items)
   else
@@ -622,6 +662,11 @@ endfunction
 " references 响应处理器
 function! s:handle_references_response(channel, response) abort
   call s:debug_log(printf('[RECV]: references response: %s', string(a:response)))
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    echohl ErrorMsg | echo '[yac] References error: ' . string(a:response.error) | echohl None
+    return
+  endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call s:show_references(a:response.locations)
@@ -654,6 +699,11 @@ endfunction
 " rename 响应处理器
 function! s:handle_rename_response(channel, response) abort
   call s:debug_log(printf('[RECV]: rename response: %s', string(a:response)))
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    echohl ErrorMsg | echo '[yac] Rename error: ' . string(a:response.error) | echohl None
+    return
+  endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_workspace_edit(a:response.edits)
@@ -738,11 +788,18 @@ function! s:handle_response(channel, msg) abort
   if type(a:msg) == v:t_list && len(a:msg) >= 2
     let content = a:msg[1]
 
-    " 只处理服务器主动发送的通知（如诊断）
+    " 只处理服务器主动发送的通知（如诊断、applyEdit）
     if type(content) == v:t_dict && has_key(content, 'action')
       if content.action == 'diagnostics'
         call s:debug_log("Received diagnostics action with " . len(content.diagnostics) . " items")
         call s:show_diagnostics(content.diagnostics)
+      elseif content.action == 'applyEdit'
+        call s:debug_log("Received applyEdit action")
+        if has_key(content, 'edit') && has_key(content.edit, 'changes')
+          call s:apply_workspace_edit(content.edit.changes)
+        elseif has_key(content, 'edit') && has_key(content.edit, 'documentChanges')
+          call s:apply_workspace_edit(content.edit.documentChanges)
+        endif
       endif
     endif
   endif
@@ -1420,7 +1477,7 @@ let s:callable_kinds = {'Function': 1, 'Method': 1, 'Constructor': 1}
 function! s:insert_completion(item) abort
   call s:close_completion_popup()
 
-  " 抑制接下来的自动补全触发（feedkeys 改变文本会触发 TextChangedI）
+  " 抑制接下来的自动补全触发（文本变更会触发 TextChangedI）
   let s:completion.suppress_until = reltime()
 
   " 确保在插入模式下
@@ -1434,37 +1491,41 @@ function! s:insert_completion(item) abort
     let insert_text = a:item.label
   endif
 
-  " 函数/方法自动加括号，光标停在括号内
+  " 使用 setline() 直接替换文本（正确处理多字节字符）
+  let line = getline('.')
+  let cursor_byte_col = col('.') - 1  " 0-based byte offset
+
+  " 函数/方法自动加括号
   let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
   let add_parens = has_key(s:callable_kinds, kind_str)
-  if add_parens
-    " 检查下一个字符是否已经是 (，避免重复
-    let col = col('.')
-    let line = getline('.')
-    if col <= len(line) && line[col - 1] ==# '('
-      let add_parens = 0
-    endif
-  endif
-
-  let suffix = add_parens ? "()\<Left>" : ''
-
-  " 获取当前前缀，需要替换掉这部分
+        \ && !(cursor_byte_col < len(line) && line[cursor_byte_col] ==# '(')
   let current_prefix = s:get_current_word_prefix()
-  let prefix_len = len(current_prefix)
+  let prefix_byte_len = len(current_prefix)  " len() returns byte length
+  let before = cursor_byte_col - prefix_byte_len > 0 ? line[: cursor_byte_col - prefix_byte_len - 1] : ''
+  let after = line[cursor_byte_col :]
+  let new_line = before . insert_text . after
+  call setline('.', new_line)
 
-  if empty(current_prefix)
-    call feedkeys(insert_text . suffix, 'n')
-    return
+  " 移动光标到插入文本之后
+  let new_cursor_byte = len(before) + len(insert_text) + 1  " 1-based
+  call cursor(line('.'), new_cursor_byte)
+
+  " 只在需要加括号时使用 feedkeys
+  if add_parens
+    call feedkeys("()\<Left>", 'n')
   endif
-
-  let backspaces = repeat("\<BS>", prefix_len)
-  call feedkeys(backspaces . insert_text . suffix, 'n')
 endfunction
 
 " 关闭补全窗口
 function! s:close_completion_popup() abort
   " 先卸载 mappings（在关闭 popup 之前，确保状态一致）
   call s:remove_completion_mappings()
+
+  " 停止待发的补全 timer
+  if s:completion.timer_id != -1
+    call timer_stop(s:completion.timer_id)
+    let s:completion.timer_id = -1
+  endif
 
   if s:completion.popup_id != -1 && exists('*popup_close')
     call popup_close(s:completion.popup_id)

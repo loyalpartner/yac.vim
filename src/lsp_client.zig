@@ -79,7 +79,8 @@ pub const LspClient = struct {
     /// Send a JSON-RPC request and return the request ID.
     pub fn sendRequest(self: *LspClient, method: []const u8, params: Value) !u32 {
         const id = self.next_id.*;
-        self.next_id.* += 1;
+        self.next_id.* +%= 1;
+        if (self.next_id.* == 0) self.next_id.* = 1;
 
         const content = try lsp.buildLspRequest(self.allocator, id, method, params);
         defer self.allocator.free(content);
@@ -159,27 +160,34 @@ pub const LspClient = struct {
                 },
             };
 
-            // Classify: method → notification (or server request), id only → response
+            // Classify: method + id → server request, method only → notification, id only → response
             if (json.getString(obj, "method")) |method| {
                 const params = obj.get("params") orelse .null;
 
-                // Server-to-client request (has both method and id) — auto-respond
+                // Server-to-client request (has both method and id)
                 if (obj.get("id")) |id_val| {
                     const id: i64 = switch (id_val) {
                         .integer => |i| i,
                         else => 0,
                     };
-                    self.sendResponse(id, .null) catch {};
+                    try messages.append(self.allocator, .{
+                        .parsed = parsed,
+                        .kind = .{ .server_request = .{
+                            .id = id,
+                            .method = method,
+                            .params = params,
+                        } },
+                    });
+                } else {
+                    // Pure notification (no id)
+                    try messages.append(self.allocator, .{
+                        .parsed = parsed,
+                        .kind = .{ .notification = .{
+                            .method = method,
+                            .params = params,
+                        } },
+                    });
                 }
-
-                // Treat as notification either way
-                try messages.append(self.allocator, .{
-                    .parsed = parsed,
-                    .kind = .{ .notification = .{
-                        .method = method,
-                        .params = params,
-                    } },
-                });
             } else if (obj.get("id")) |id_val| {
                 // Response
                 const id: u32 = switch (id_val) {
@@ -337,6 +345,11 @@ pub const LspMessage = struct {
             err: ?Value,
         },
         notification: struct {
+            method: []const u8,
+            params: Value,
+        },
+        server_request: struct {
+            id: i64,
             method: []const u8,
             params: Value,
         },
