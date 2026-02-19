@@ -636,6 +636,9 @@ const EventLoop = struct {
         if (std.mem.eql(u8, method, "picker_query")) {
             return lsp_transform.transformPickerSymbolResult(alloc, result, ssh_host) catch .null;
         }
+        if (std.mem.eql(u8, method, "references")) {
+            return lsp_transform.transformReferencesResult(alloc, result, ssh_host) catch .null;
+        }
 
         return result;
     }
