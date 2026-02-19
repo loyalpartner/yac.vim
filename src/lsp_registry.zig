@@ -64,6 +64,10 @@ pub const LspRegistry = struct {
         self.pending_init.deinit();
         self.freePendingOpens();
         self.pending_opens.deinit();
+        {
+            var fsi = self.failed_spawns.keyIterator();
+            while (fsi.next()) |key| self.allocator.free(key.*);
+        }
         self.failed_spawns.deinit();
     }
 
@@ -114,7 +118,16 @@ pub const LspRegistry = struct {
     pub fn removeClient(self: *LspRegistry, client_key: []const u8) void {
         if (self.clients.fetchRemove(client_key)) |entry| {
             entry.value.deinit();
+            // Remove from pending_init/pending_opens BEFORE freeing the key,
+            // since those maps may hold the same pointer.
+            _ = self.pending_init.remove(entry.key);
+            if (self.pending_opens.fetchRemove(entry.key)) |po_entry| {
+                for (po_entry.value.items) |open| open.deinit(self.allocator);
+                var list = po_entry.value;
+                list.deinit(self.allocator);
+            }
             self.allocator.free(entry.key);
+            return;
         }
         _ = self.pending_init.remove(client_key);
         if (self.pending_opens.fetchRemove(client_key)) |entry| {
@@ -157,10 +170,13 @@ pub const LspRegistry = struct {
 
         log.info("Starting {s} for {s} (workspace: {s})", .{ config.command, language, workspace_uri orelse "(none)" });
         const client = try LspClient.spawn(self.allocator, config.command, config.args, &self.next_id);
+        errdefer client.deinit();
         const key = try self.allocator.dupe(u8, lookup_key);
+        errdefer self.allocator.free(key);
 
         const init_id = try client.initialize(workspace_uri);
         try self.pending_init.put(key, init_id);
+        errdefer _ = self.pending_init.remove(key);
         try self.clients.put(key, client);
 
         log.info("LSP client created for {s}, init request id={d}", .{ language, init_id });
@@ -190,10 +206,17 @@ pub const LspRegistry = struct {
 
     /// Queue a didOpen for replay after initialization completes.
     pub fn queuePendingOpen(self: *LspRegistry, client_key: []const u8, uri: []const u8, language_id: []const u8, content: []const u8) !void {
+        const uri_owned = try self.allocator.dupe(u8, uri);
+        errdefer self.allocator.free(uri_owned);
+        const lang_owned = try self.allocator.dupe(u8, language_id);
+        errdefer self.allocator.free(lang_owned);
+        const content_owned = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(content_owned);
+
         const open = PendingOpen{
-            .uri = try self.allocator.dupe(u8, uri),
-            .language_id = try self.allocator.dupe(u8, language_id),
-            .content = try self.allocator.dupe(u8, content),
+            .uri = uri_owned,
+            .language_id = lang_owned,
+            .content = content_owned,
         };
 
         if (self.pending_opens.getPtr(client_key)) |list| {
@@ -201,6 +224,7 @@ pub const LspRegistry = struct {
         } else {
             var list: std.ArrayList(PendingOpen) = .{};
             try list.append(self.allocator, open);
+            errdefer list.deinit(self.allocator);
             try self.pending_opens.put(client_key, list);
         }
     }

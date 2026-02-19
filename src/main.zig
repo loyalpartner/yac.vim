@@ -376,7 +376,7 @@ const EventLoop = struct {
             },
             .response => |r| {
                 log.debug("Vim[{d}] response [{d}]", .{ cid, r.id });
-                // Responses to our outgoing calls - currently not tracked
+                // Responses to Vim "call" commands (expr responses are intercepted above)
             },
         }
     }
@@ -752,10 +752,14 @@ const EventLoop = struct {
     fn sendVimExprTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, expr: []const u8, tag: PendingVimExpr.Tag) void {
         const client = self.clients.get(cid) orelse return;
         const id = self.requests.nextExprId();
+        // Register pending entry BEFORE sending, so we never send an expr we can't track
+        self.requests.addExpr(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {
+            log.err("Failed to register pending vim expr (OOM)", .{});
+            return;
+        };
         const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
         defer alloc.free(encoded);
         vim_out.writeMessage(client.stream, encoded);
-        self.requests.addExpr(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag });
     }
 
     /// Handle the result of a daemon→Vim expr request.
@@ -842,8 +846,14 @@ const EventLoop = struct {
         const action = json_utils.getString(obj, "action") orelse return false;
 
         if (std.mem.eql(u8, action, "picker_init")) {
-            const cwd = json_utils.getString(obj, "cwd") orelse return true;
-            if (!self.picker.start(cwd)) return true;
+            const cwd = json_utils.getString(obj, "cwd") orelse {
+                self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                return true;
+            };
+            if (!self.picker.start(cwd)) {
+                self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                return true;
+            }
             self.sendVimExprTo(cid, alloc, vim_id,
                 "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
                 .picker_buffers);
