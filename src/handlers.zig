@@ -205,15 +205,20 @@ fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-    // Read file content
-    const content = std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
+    // Prefer buffer text from Vim (params.text), fallback to reading from disk
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+    const content_to_use = json.getString(obj, "text") orelse
+        (std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
         log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
         return .{ .empty = {} };
-    };
+    });
 
     if (ctx.registry.isInitializing(lsp_ctx.client_key)) {
         // Queue for replay after initialization completes
-        ctx.registry.queuePendingOpen(lsp_ctx.client_key, lsp_ctx.uri, lsp_ctx.language, content) catch |e| {
+        ctx.registry.queuePendingOpen(lsp_ctx.client_key, lsp_ctx.uri, lsp_ctx.language, content_to_use) catch |e| {
             log.err("Failed to queue pending open: {any}", .{e});
         };
     } else {
@@ -222,7 +227,7 @@ fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
         try td_item.put("uri", json.jsonString(lsp_ctx.uri));
         try td_item.put("languageId", json.jsonString(lsp_ctx.language));
         try td_item.put("version", json.jsonInteger(1));
-        try td_item.put("text", json.jsonString(content));
+        try td_item.put("text", json.jsonString(content_to_use));
 
         var did_open_params = ObjectMap.init(ctx.allocator);
         try did_open_params.put("textDocument", .{ .object = td_item });

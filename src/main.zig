@@ -84,8 +84,8 @@ const EventLoop = struct {
     next_client_id: ClientId,
     /// Maps lsp_request_id -> pending Vim request context
     pending_requests: std.AutoHashMap(u32, PendingLspRequest),
-    /// Number of active LSP $/progress operations (indexing, etc.)
-    indexing_count: u32,
+    /// Per-language count of active LSP $/progress operations (indexing, etc.)
+    indexing_counts: std.StringHashMap(u32),
     /// Vim requests deferred while LSP is indexing, replayed when ready
     deferred_requests: std.ArrayList(DeferredRequest),
     /// Maps progress token -> title (from $/progress begin, used for report events)
@@ -93,9 +93,13 @@ const EventLoop = struct {
     /// Timestamp (nanos) when daemon should exit if no clients; null = has clients
     idle_deadline: ?i128,
 
+    const max_deferred_requests = 50;
+    const deferred_ttl_ns: i128 = 10 * std.time.ns_per_s;
+
     const DeferredRequest = struct {
         client_id: ClientId,
         raw_line: []u8,
+        timestamp_ns: i128,
     };
 
     fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
@@ -106,7 +110,7 @@ const EventLoop = struct {
             .clients = std.AutoHashMap(ClientId, *VimClient).init(allocator),
             .next_client_id = 1,
             .pending_requests = std.AutoHashMap(u32, PendingLspRequest).init(allocator),
-            .indexing_count = 0,
+            .indexing_counts = std.StringHashMap(u32).init(allocator),
             .deferred_requests = .{},
             .progress_titles = std.StringHashMap([]const u8).init(allocator),
             .idle_deadline = std.time.nanoTimestamp(),
@@ -121,6 +125,13 @@ const EventLoop = struct {
         self.registry.shutdownAll();
         self.registry.deinit();
         self.pending_requests.deinit();
+        {
+            var icit = self.indexing_counts.iterator();
+            while (icit.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            self.indexing_counts.deinit();
+        }
         {
             var cit = self.clients.valueIterator();
             while (cit.next()) |client_ptr| {
@@ -403,13 +414,24 @@ const EventLoop = struct {
 
     /// Handle a Vim request or notification.
     fn handleVimRequest(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8) void {
-        // Defer query methods while LSP servers are indexing
-        if (vim_id != null and self.indexing_count > 0 and isQueryMethod(method)) {
+        // Defer query methods while the relevant LSP server is indexing
+        const request_language: ?[]const u8 = if (isQueryMethod(method)) blk: {
+            const obj = switch (params) { .object => |o| o, else => break :blk null };
+            const file = json_utils.getString(obj, "file") orelse break :blk null;
+            break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
+        } else null;
+        if (vim_id != null and request_language != null and self.isLanguageIndexing(request_language.?)) {
             const duped = self.allocator.dupe(u8, raw_line) catch |e| {
                 log.err("Failed to defer request: {any}", .{e});
                 return;
             };
-            self.deferred_requests.append(self.allocator, .{ .client_id = cid, .raw_line = duped }) catch |e| {
+            // Evict oldest if queue is full
+            if (self.deferred_requests.items.len >= max_deferred_requests) {
+                self.allocator.free(self.deferred_requests.items[0].raw_line);
+                _ = self.deferred_requests.orderedRemove(0);
+                log.info("Evicted oldest deferred request (queue full)", .{});
+            }
+            self.deferred_requests.append(self.allocator, .{ .client_id = cid, .raw_line = duped, .timestamp_ns = std.time.nanoTimestamp() }) catch |e| {
                 self.allocator.free(duped);
                 log.err("Failed to defer request: {any}", .{e});
                 return;
@@ -449,7 +471,11 @@ const EventLoop = struct {
                         self.sendVimResponseTo(cid, alloc, vim_id, .null);
                         return;
                     };
-                    self.deferred_requests.append(self.allocator, .{ .client_id = cid, .raw_line = duped }) catch |e| {
+                    if (self.deferred_requests.items.len >= max_deferred_requests) {
+                        self.allocator.free(self.deferred_requests.items[0].raw_line);
+                        _ = self.deferred_requests.orderedRemove(0);
+                    }
+                    self.deferred_requests.append(self.allocator, .{ .client_id = cid, .raw_line = duped, .timestamp_ns = std.time.nanoTimestamp() }) catch |e| {
                         self.allocator.free(duped);
                         log.err("Failed to defer initializing request: {any}", .{e});
                         self.sendVimResponseTo(cid, alloc, vim_id, .null);
@@ -532,7 +558,7 @@ const EventLoop = struct {
                             self.registry.handleInitializeResponse(client_key) catch |e| {
                                 log.err("Failed to handle init response: {any}", .{e});
                             };
-                            if (self.indexing_count == 0) {
+                            if (!self.isAnyLanguageIndexing()) {
                                 self.flushDeferredRequests();
                             }
                             continue;
@@ -566,8 +592,43 @@ const EventLoop = struct {
                 .notification => |notif| {
                     self.handleLspNotification(client_key, notif.method, notif.params);
                 },
+                .server_request => |req| {
+                    self.handleServerRequest(client_key, req.id, req.method, req.params);
+                },
             }
         }
+    }
+
+    /// Handle a server-to-client request (e.g. workspace/applyEdit).
+    fn handleServerRequest(self: *EventLoop, client_key: []const u8, id: i64, method: []const u8, params: Value) void {
+        const lsp_client = self.registry.getClient(client_key) orelse return;
+
+        if (std.mem.eql(u8, method, "workspace/applyEdit")) {
+            // Acknowledge the edit request
+            var result_obj = ObjectMap.init(self.allocator);
+            result_obj.put("applied", json_utils.jsonBool(true)) catch {};
+            lsp_client.sendResponse(id, .{ .object = result_obj }) catch |e| {
+                log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
+            };
+
+            // Forward the edit to all Vim clients as a notification
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "applyEdit", params) catch return;
+            self.broadcastRaw(encoded);
+            return;
+        }
+
+        // All other server requests: acknowledge with null
+        if (!std.mem.eql(u8, method, "window/workDoneProgress/create") and
+            !std.mem.eql(u8, method, "client/registerCapability") and
+            !std.mem.eql(u8, method, "client/unregisterCapability"))
+        {
+            log.debug("Unknown server request: {s} (id={d})", .{ method, id });
+        }
+        lsp_client.sendResponse(id, .null) catch |e| {
+            log.err("Failed to respond to {s}: {any}", .{ method, e });
+        };
     }
 
     /// Handle an LSP server that has died (HUP/ERR on its stdout fd).
@@ -610,9 +671,8 @@ const EventLoop = struct {
 
     /// Handle LSP server notifications.
     fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
-        _ = client_key;
-
         if (std.mem.eql(u8, method, "$/progress")) {
+            const language = extractLanguageFromKey(client_key);
             const params_obj = switch (params) {
                 .object => |o| o,
                 else => return,
@@ -634,7 +694,7 @@ const EventLoop = struct {
             };
 
             if (std.mem.eql(u8, kind, "begin")) {
-                self.indexing_count += 1;
+                self.incrementIndexingCount(language);
                 const title = json_utils.getString(value_obj, "title");
                 if (token_key) |tk| {
                     if (title) |t| {
@@ -660,8 +720,8 @@ const EventLoop = struct {
                         self.allocator.free(entry.value);
                     }
                 }
-                if (self.indexing_count > 0) self.indexing_count -= 1;
-                if (self.indexing_count == 0) {
+                self.decrementIndexingCount(language);
+                if (!self.isAnyLanguageIndexing()) {
                     self.broadcastVimEx(alloc, "echo '[yac] Indexing complete'");
                     self.flushDeferredRequests();
                 }
@@ -691,6 +751,7 @@ const EventLoop = struct {
     }
 
     /// Flush deferred requests after LSP indexing completes.
+    /// Skips requests older than deferred_ttl_ns.
     fn flushDeferredRequests(self: *EventLoop) void {
         const count = self.deferred_requests.items.len;
         if (count == 0) return;
@@ -704,11 +765,21 @@ const EventLoop = struct {
             requests.deinit(self.allocator);
         }
 
+        const now = std.time.nanoTimestamp();
+        var dropped: usize = 0;
+
         for (requests.items) |req| {
-            // Only replay if client is still connected
+            if (now - req.timestamp_ns > deferred_ttl_ns) {
+                dropped += 1;
+                continue;
+            }
             if (self.clients.contains(req.client_id)) {
                 self.handleVimLine(req.client_id, req.raw_line);
             }
+        }
+
+        if (dropped > 0) {
+            log.info("Dropped {d} stale deferred requests", .{dropped});
         }
     }
 
@@ -764,7 +835,51 @@ const EventLoop = struct {
             self.sendVimResponseTo(cid, alloc, vim_id, .{ .object = err_obj });
         }
     }
+
+    /// Increment indexing count for a language.
+    fn incrementIndexingCount(self: *EventLoop, language: []const u8) void {
+        if (self.indexing_counts.getPtr(language)) |count| {
+            count.* += 1;
+        } else {
+            const key = self.allocator.dupe(u8, language) catch return;
+            self.indexing_counts.put(key, 1) catch {
+                self.allocator.free(key);
+            };
+        }
+    }
+
+    /// Decrement indexing count for a language.
+    fn decrementIndexingCount(self: *EventLoop, language: []const u8) void {
+        if (self.indexing_counts.getPtr(language)) |count| {
+            if (count.* > 0) count.* -= 1;
+        }
+    }
+
+    /// Check if a specific language is currently indexing.
+    fn isLanguageIndexing(self: *EventLoop, language: []const u8) bool {
+        if (self.indexing_counts.get(language)) |count| {
+            return count > 0;
+        }
+        return false;
+    }
+
+    /// Check if any language is currently indexing (for flushDeferredRequests).
+    fn isAnyLanguageIndexing(self: *EventLoop) bool {
+        var it = self.indexing_counts.valueIterator();
+        while (it.next()) |count| {
+            if (count.* > 0) return true;
+        }
+        return false;
+    }
 };
+
+/// Extract language name from a client_key ("language\x00workspace_uri" or just "language").
+fn extractLanguageFromKey(client_key: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, client_key, "\x00")) |pos| {
+        return client_key[0..pos];
+    }
+    return client_key;
+}
 
 /// Check if a Vim method is a query that should be deferred during LSP indexing.
 pub fn isQueryMethod(method: []const u8) bool {
@@ -813,28 +928,50 @@ fn formatProgressEcho(alloc: Allocator, title: ?[]const u8, message: ?[]const u8
     return std.fmt.allocPrint(alloc, "echo '[yac] {s}'", .{escaped_title}) catch null;
 }
 
-/// Escape single quotes in a string for use in Vim's echo '...' syntax.
+/// Escape a string for safe use in Vim's echo '...' syntax.
+/// Handles single quotes, backslashes, newlines/carriage returns, and truncates long messages.
 fn escapeVimString(alloc: Allocator, input: []const u8) ![]const u8 {
-    var count: usize = 0;
-    for (input) |c| {
-        if (c == '\'') count += 1;
-    }
-    if (count == 0) return input;
+    const max_len: usize = 200;
+    const src = if (input.len > max_len) input[0..max_len] else input;
+    const truncated = input.len > max_len;
 
-    var result = try alloc.alloc(u8, input.len + count);
-    var i: usize = 0;
-    for (input) |c| {
-        if (c == '\'') {
-            result[i] = '\'';
-            i += 1;
-            result[i] = '\'';
-            i += 1;
-        } else {
-            result[i] = c;
-            i += 1;
+    // Count extra bytes needed and check if any escaping is required
+    var extra: usize = 0;
+    var needs_escaping = truncated;
+    for (src) |c| {
+        switch (c) {
+            '\'' => extra += 1,
+            '\\' => extra += 1,
+            '\n', '\r' => needs_escaping = true,
+            else => {},
         }
     }
-    return result;
+    if (extra > 0) needs_escaping = true;
+    if (!needs_escaping) return src;
+
+    const suffix = if (truncated) "..." else "";
+    var result = try alloc.alloc(u8, src.len + extra + suffix.len);
+    var i: usize = 0;
+    for (src) |c| {
+        switch (c) {
+            '\'', '\\' => {
+                result[i] = c;
+                i += 1;
+                result[i] = c;
+                i += 1;
+            },
+            '\n', '\r' => {
+                result[i] = ' ';
+                i += 1;
+            },
+            else => {
+                result[i] = c;
+                i += 1;
+            },
+        }
+    }
+    @memcpy(result[i..][0..suffix.len], suffix);
+    return result[0 .. i + suffix.len];
 }
 
 /// Transform a goto LSP response into a Location for Vim.
@@ -901,8 +1038,17 @@ pub fn main() !void {
     var sock_path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&sock_path_buf);
 
-    // Remove stale socket if exists (from a previous crash)
-    std.fs.deleteFileAbsolute(socket_path) catch {};
+    // Check if a daemon is already running by trying to connect
+    {
+        const existing = std.net.connectUnixSocket(socket_path) catch null;
+        if (existing) |stream| {
+            stream.close();
+            log.info("Daemon already running on {s}, exiting.", .{socket_path});
+            return;
+        }
+        // Connection failed = stale socket from a previous crash, safe to remove
+        std.fs.deleteFileAbsolute(socket_path) catch {};
+    }
 
     log.info("Binding to socket: {s}", .{socket_path});
 
