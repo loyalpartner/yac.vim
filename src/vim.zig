@@ -19,6 +19,7 @@ pub fn sendVimResponse(alloc: Allocator, stream: std.net.Stream, vim_id: u64, re
         log.err("Failed to encode response: {any}", .{e});
         return;
     };
+    defer alloc.free(encoded);
     writeMessage(stream, encoded);
 }
 

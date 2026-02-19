@@ -14,12 +14,13 @@ pub fn escapeVimString(alloc: Allocator, input: []const u8) ![]const u8 {
     const truncated = input.len > max_len;
 
     // Count extra bytes needed and check if any escaping is required
+    // In Vim single-quoted strings, only single quotes need escaping ('' → ').
+    // Backslashes are literal — no doubling needed.
     var extra: usize = 0;
     var needs_escaping = truncated;
     for (src) |c| {
         switch (c) {
             '\'' => extra += 1,
-            '\\' => extra += 1,
             '\n', '\r' => needs_escaping = true,
             else => {},
         }
@@ -32,10 +33,10 @@ pub fn escapeVimString(alloc: Allocator, input: []const u8) ![]const u8 {
     var i: usize = 0;
     for (src) |c| {
         switch (c) {
-            '\'', '\\' => {
-                result[i] = c;
+            '\'' => {
+                result[i] = '\'';
                 i += 1;
-                result[i] = c;
+                result[i] = '\'';
                 i += 1;
             },
             '\n', '\r' => {
@@ -111,11 +112,13 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
         else
             symbolKindName(kind_int);
 
-        // Extract location
+        // Extract location — handle both SymbolInformation (has "location")
+        // and DocumentSymbol (has "range"/"selectionRange" at top level, no "location")
         var file: []const u8 = "";
         var line: i64 = 0;
         var column: i64 = 0;
         if (json_utils.getObject(sym, "location")) |loc| {
+            // SymbolInformation format (workspace/symbol)
             if (json_utils.getString(loc, "uri")) |uri| {
                 file = lsp_registry_mod.uriToFilePath(uri) orelse "";
                 if (ssh_host) |host| {
@@ -124,6 +127,16 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
             }
             if (json_utils.getObject(loc, "range")) |range| {
                 if (json_utils.getObject(range, "start")) |start| {
+                    line = json_utils.getInteger(start, "line") orelse 0;
+                    column = json_utils.getInteger(start, "character") orelse 0;
+                }
+            }
+        } else {
+            // DocumentSymbol format (textDocument/documentSymbol) — range at top level
+            const range = json_utils.getObject(sym, "selectionRange") orelse
+                json_utils.getObject(sym, "range");
+            if (range) |r| {
+                if (json_utils.getObject(r, "start")) |start| {
                     line = json_utils.getInteger(start, "line") orelse 0;
                     column = json_utils.getInteger(start, "character") orelse 0;
                 }

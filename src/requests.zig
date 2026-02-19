@@ -71,8 +71,8 @@ pub const Requests = struct {
         return self.pending_requests.iterator();
     }
 
-    pub fn addExpr(self: *Requests, id: i64, pending: PendingVimExpr) void {
-        self.pending_vim_exprs.put(id, pending) catch {};
+    pub fn addExpr(self: *Requests, id: i64, pending: PendingVimExpr) !void {
+        try self.pending_vim_exprs.put(id, pending);
     }
 
     pub fn takeExpr(self: *Requests, id: i64) ?PendingVimExpr {
