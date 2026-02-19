@@ -106,6 +106,16 @@ let s:picker = {
 let s:picker_history = []
 let s:picker_history_idx = -1
 
+let s:refs = {
+  \ 'popup': -1,
+  \ 'lines': [],
+  \ 'locations': [],
+  \ 'selected': 0,
+  \ 'orig_file': '',
+  \ 'orig_lnum': 0,
+  \ 'orig_col': 0,
+  \ }
+
 " 获取当前 buffer 应该使用的连接 key
 function! s:get_connection_key() abort
   return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
@@ -681,21 +691,10 @@ function! s:handle_references_response(channel, response) abort
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call s:show_references(a:response.locations)
-  elseif type(a:response) == v:t_list && !empty(a:response)
-    " Raw LSP Location[] — convert uri+range to file+line+column
-    let l:locs = []
-    for l:item in a:response
-      if type(l:item) == v:t_dict && has_key(l:item, 'uri')
-        let l:file = substitute(l:item.uri, '^file://', '', '')
-        let l:line = get(get(get(l:item, 'range', {}), 'start', {}), 'line', 0)
-        let l:col  = get(get(get(l:item, 'range', {}), 'start', {}), 'character', 0)
-        call add(l:locs, {'file': l:file, 'line': l:line, 'column': l:col})
-      endif
-    endfor
-    if !empty(l:locs)
-      call s:show_references(l:locs)
-    endif
+    return
   endif
+
+  echo "No references found"
 endfunction
 
 " inlay_hints 响应处理器
@@ -1548,26 +1547,203 @@ endfunction
 
 " === 日志查看功能 ===
 
-" 显示引用结果
+" Peek references popup
 function! s:show_references(locations) abort
   if empty(a:locations)
     echo "No references found"
     return
   endif
 
-  let qf_list = []
+  " Group by file
+  let groups = {}
+  let order = []
   for loc in a:locations
-    call add(qf_list, {
-      \ 'filename': loc.file,
-      \ 'lnum': loc.line + 1,
-      \ 'col': loc.column + 1,
-      \ 'text': 'Reference'
-      \ })
+    let f = get(loc, 'file', '')
+    if !has_key(groups, f)
+      let groups[f] = []
+      call add(order, f)
+    endif
+    call add(groups[f], loc)
   endfor
 
-  call setqflist(qf_list)
-  copen
-  echo 'Found ' . len(a:locations) . ' references'
+  " Build display lines + location map
+  let lines = []
+  let locs = []
+  for f in order
+    let rel = fnamemodify(f, ':.')
+    call add(lines, '  ' . rel . ' (' . len(groups[f]) . ')')
+    call add(locs, {})
+    for loc in groups[f]
+      let lnum = get(loc, 'line', 0) + 1
+      let text = s:refs_read_line(f, lnum)
+      call add(lines, '    ' . lnum . ': ' . text)
+      call add(locs, loc)
+    endfor
+  endfor
+
+  let s:refs.lines = lines
+  let s:refs.locations = locs
+  let s:refs.selected = empty(locs) ? 0 : 1
+
+  let height = min([len(lines), 20])
+  let width = float2nr(&columns * 0.7)
+  let col = float2nr((&columns - width) / 2)
+  let row = float2nr(&lines * 0.2)
+
+  let s:refs.popup = popup_create(lines, {
+    \ 'line': row,
+    \ 'col': col,
+    \ 'minwidth': width,
+    \ 'maxwidth': width,
+    \ 'minheight': height,
+    \ 'maxheight': 20,
+    \ 'border': [1, 1, 1, 1],
+    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ 'borderhighlight': ['Comment'],
+    \ 'highlight': 'Normal',
+    \ 'title': ' References (' . len(a:locations) . ') ',
+    \ 'filter': function('s:refs_popup_filter'),
+    \ 'mapping': 0,
+    \ 'scrollbar': 0,
+    \ 'wrap': 0,
+    \ 'zindex': 100,
+    \ })
+
+  let s:refs.orig_file = expand('%:p')
+  let s:refs.orig_lnum = line('.')
+  let s:refs.orig_col = col('.')
+
+  highlight default link YacRefsHeader Directory
+  highlight default link YacRefsSelected CursorLine
+  call s:refs_highlight()
+  call s:refs_preview()
+endfunction
+
+function! s:refs_read_line(file, lnum) abort
+  let bufnr = bufnr(a:file)
+  if bufnr != -1
+    let blines = getbufline(bufnr, a:lnum)
+    if !empty(blines)
+      return substitute(blines[0], '^\s*', '', '')
+    endif
+  endif
+  if filereadable(a:file)
+    let flines = readfile(a:file, '', a:lnum)
+    if len(flines) >= a:lnum
+      return substitute(flines[a:lnum - 1], '^\s*', '', '')
+    endif
+  endif
+  return ''
+endfunction
+
+function! s:refs_highlight() abort
+  if s:refs.popup == -1
+    return
+  endif
+  let display = []
+  for i in range(len(s:refs.lines))
+    if i == s:refs.selected && !empty(s:refs.locations[i])
+      call add(display, '>>' . s:refs.lines[i][2:])
+    else
+      call add(display, s:refs.lines[i])
+    endif
+  endfor
+  call popup_settext(s:refs.popup, display)
+  call win_execute(s:refs.popup, 'call clearmatches()')
+  for i in range(len(s:refs.locations))
+    if empty(s:refs.locations[i])
+      call win_execute(s:refs.popup, 'call matchaddpos("YacRefsHeader", [' . (i + 1) . '], 10)')
+    endif
+  endfor
+  if s:refs.selected >= 0 && s:refs.selected < len(s:refs.lines)
+    call win_execute(s:refs.popup, 'call matchaddpos("YacRefsSelected", [' . (s:refs.selected + 1) . '], 20)')
+  endif
+  call popup_setoptions(s:refs.popup, #{firstline: max([1, s:refs.selected - 17])})
+endfunction
+
+function! s:refs_popup_filter(winid, key) abort
+  if a:key == "\<Esc>" || a:key == 'q'
+    call s:refs_close()
+    return 1
+  endif
+  if a:key == "\<CR>"
+    call s:refs_accept()
+    return 1
+  endif
+  let nr = char2nr(a:key)
+  if a:key == 'j' || a:key == "\<Down>" || nr == 14
+    call s:refs_move(1)
+    return 1
+  endif
+  if a:key == 'k' || a:key == "\<Up>" || nr == 16
+    call s:refs_move(-1)
+    return 1
+  endif
+  return 1
+endfunction
+
+function! s:refs_preview() abort
+  let loc = get(s:refs.locations, s:refs.selected, {})
+  if empty(loc) | return | endif
+  let file = get(loc, 'file', '')
+  let lnum = get(loc, 'line', 0) + 1
+  let col = get(loc, 'column', 0) + 1
+  if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
+    execute 'edit ' . fnameescape(file)
+  endif
+  call cursor(lnum, col)
+  normal! zz
+endfunction
+
+function! s:refs_move(step) abort
+  let total = len(s:refs.locations)
+  if total == 0 | return | endif
+  let i = s:refs.selected + a:step
+  while i >= 0 && i < total
+    if !empty(s:refs.locations[i])
+      let s:refs.selected = i
+      call s:refs_highlight()
+      call s:refs_preview()
+      return
+    endif
+    let i += a:step
+  endwhile
+endfunction
+
+function! s:refs_reset() abort
+  if s:refs.popup != -1
+    call popup_close(s:refs.popup)
+    let s:refs.popup = -1
+  endif
+  let s:refs.lines = []
+  let s:refs.locations = []
+  let s:refs.selected = 0
+endfunction
+
+function! s:refs_accept() abort
+  if s:refs.selected < 0 || s:refs.selected >= len(s:refs.locations)
+    return
+  endif
+  if empty(s:refs.locations[s:refs.selected])
+    return
+  endif
+  " Preview already moved cursor to the right place, just close popup
+  call s:refs_reset()
+endfunction
+
+function! s:refs_close() abort
+  let orig_file = s:refs.orig_file
+  let orig_lnum = s:refs.orig_lnum
+  let orig_col = s:refs.orig_col
+  call s:refs_reset()
+  " Restore original position
+  if !empty(orig_file)
+    if fnamemodify(orig_file, ':p') !=# expand('%:p')
+      execute 'edit ' . fnameescape(orig_file)
+    endif
+    call cursor(orig_lnum, orig_col)
+    normal! zz
+  endif
 endfunction
 
 " 显示 call hierarchy 结果

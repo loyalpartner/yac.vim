@@ -158,6 +158,36 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
     return .{ .object = result_obj };
 }
 
+/// Build a {file, line, column} JSON object from a file path and position.
+/// Prepends scp:// prefix when ssh_host is set. Returns null on allocation failure.
+fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, column: i64, ssh_host: ?[]const u8) !Value {
+    const result_path = if (ssh_host) |host|
+        std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file_path }) catch return .null
+    else
+        file_path;
+
+    var loc = ObjectMap.init(alloc);
+    try loc.put("file", json_utils.jsonString(result_path));
+    try loc.put("line", json_utils.jsonInteger(line));
+    try loc.put("column", json_utils.jsonInteger(column));
+    return .{ .object = loc };
+}
+
+/// Extract start position (line, character) from a range object.
+fn extractStartPosition(range_val: Value) ?struct { line: i64, column: i64 } {
+    const range_obj = switch (range_val) {
+        .object => |o| o,
+        else => return null,
+    };
+    const start_obj = switch (range_obj.get("start") orelse return null) {
+        .object => |o| o,
+        else => return null,
+    };
+    const line = json_utils.getInteger(start_obj, "line") orelse return null;
+    const column = json_utils.getInteger(start_obj, "character") orelse return null;
+    return .{ .line = line, .column = column };
+}
+
 /// Transform a goto LSP response into a Location for Vim.
 pub fn transformGotoResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
     const location = switch (result) {
@@ -183,29 +213,32 @@ pub fn transformGotoResult(alloc: Allocator, result: Value, ssh_host: ?[]const u
     const file_path = lsp_registry_mod.uriToFilePath(uri) orelse return .null;
 
     const range_val = loc_obj.get("range") orelse loc_obj.get("targetSelectionRange") orelse return .null;
-    const range_obj = switch (range_val) {
-        .object => |o| o,
-        else => return .null,
+    const pos = extractStartPosition(range_val) orelse return .null;
+
+    return makeLocationObject(alloc, file_path, pos.line, pos.column, ssh_host);
+}
+
+/// Transform a references LSP response (Location[]) into {locations: [{file, line, column}]}.
+pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
+    const items = switch (result) {
+        .array => |a| a.items,
+        else => &[_]Value{},
     };
 
-    const start_val = range_obj.get("start") orelse return .null;
-    const start_obj = switch (start_val) {
-        .object => |o| o,
-        else => return .null,
-    };
+    var locations = std.json.Array.init(alloc);
+    for (items) |item| {
+        const loc = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const uri = json_utils.getString(loc, "uri") orelse continue;
+        const file_path = lsp_registry_mod.uriToFilePath(uri) orelse continue;
+        const pos = extractStartPosition(loc.get("range") orelse continue) orelse continue;
+        const loc_val = makeLocationObject(alloc, file_path, pos.line, pos.column, ssh_host) catch continue;
+        try locations.append(loc_val);
+    }
 
-    const line = json_utils.getInteger(start_obj, "line") orelse return .null;
-    const column = json_utils.getInteger(start_obj, "character") orelse return .null;
-
-    const result_path = if (ssh_host) |host|
-        std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file_path }) catch return .null
-    else
-        file_path;
-
-    var loc = ObjectMap.init(alloc);
-    try loc.put("file", json_utils.jsonString(result_path));
-    try loc.put("line", json_utils.jsonInteger(line));
-    try loc.put("column", json_utils.jsonInteger(column));
-
-    return .{ .object = loc };
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("locations", .{ .array = locations });
+    return .{ .object = result_obj };
 }
