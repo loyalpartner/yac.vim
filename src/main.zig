@@ -4,6 +4,7 @@ const vim = @import("vim_protocol.zig");
 const lsp_client_mod = @import("lsp_client.zig");
 const lsp_registry_mod = @import("lsp_registry.zig");
 const handlers_mod = @import("handlers.zig");
+const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -92,6 +93,8 @@ const EventLoop = struct {
     progress_titles: std.StringHashMap([]const u8),
     /// Timestamp (nanos) when daemon should exit if no clients; null = has clients
     idle_deadline: ?i128,
+    /// Picker file index (active while picker is open)
+    file_index: ?*picker_mod.FileIndex,
 
     const max_deferred_requests = 50;
     const deferred_ttl_ns: i128 = 10 * std.time.ns_per_s;
@@ -114,6 +117,7 @@ const EventLoop = struct {
             .deferred_requests = .{},
             .progress_titles = std.StringHashMap([]const u8).init(allocator),
             .idle_deadline = std.time.nanoTimestamp(),
+            .file_index = null,
         };
     }
 
@@ -149,6 +153,10 @@ const EventLoop = struct {
                 self.allocator.free(entry.value_ptr.*);
             }
             self.progress_titles.deinit();
+        }
+        if (self.file_index) |fi| {
+            fi.deinit();
+            self.allocator.destroy(fi);
         }
         self.listener.deinit();
     }
@@ -194,6 +202,22 @@ const EventLoop = struct {
 
             // fd[N+1..N+M] = LSP server stdouts
             try self.registry.collectFds(&poll_fds, &poll_client_keys);
+
+            // fd[N+M+1] = picker fd/find stdout (if active)
+            const picker_fd_index: ?usize = blk: {
+                if (self.file_index) |fi| {
+                    if (fi.getStdoutFd()) |fd| {
+                        const idx = poll_fds.items.len;
+                        try poll_fds.append(self.allocator, .{
+                            .fd = fd,
+                            .events = std.posix.POLL.IN,
+                            .revents = 0,
+                        });
+                        break :blk idx;
+                    }
+                }
+                break :blk null;
+            };
 
             // Calculate timeout
             const poll_timeout: i32 = blk: {
@@ -258,7 +282,8 @@ const EventLoop = struct {
             }
 
             // Check LSP server stdouts
-            for (poll_fds.items[1 + client_count ..], 0..) |pfd, i| {
+            const lsp_end = 1 + client_count + poll_client_keys.items.len;
+            for (poll_fds.items[1 + client_count .. lsp_end], 0..) |pfd, i| {
                 if (pfd.revents & std.posix.POLL.IN != 0) {
                     const client_key = poll_client_keys.items[i];
                     self.processLspOutput(client_key);
@@ -266,6 +291,15 @@ const EventLoop = struct {
                 if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
                     const dead_key = poll_client_keys.items[i];
                     self.handleLspDeath(dead_key);
+                }
+            }
+
+            // Check picker fd
+            if (picker_fd_index) |pfi| {
+                if (poll_fds.items[pfi].revents & (std.posix.POLL.IN | std.posix.POLL.HUP) != 0) {
+                    if (self.file_index) |fi| {
+                        _ = fi.pollScan();
+                    }
                 }
             }
         }
@@ -457,6 +491,7 @@ const EventLoop = struct {
 
         switch (result) {
             .data => |data| {
+                if (self.handlePickerAction(cid, alloc, vim_id, data)) return;
                 self.sendVimResponseTo(cid, alloc, vim_id, data);
             },
             .empty => {
@@ -871,6 +906,101 @@ const EventLoop = struct {
         }
         return false;
     }
+
+    /// Handle picker-specific actions returned by handlers.
+    /// Returns true if the action was handled.
+    fn handlePickerAction(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, data: Value) bool {
+        const obj = switch (data) {
+            .object => |o| o,
+            else => return false,
+        };
+        const action = json_utils.getString(obj, "action") orelse return false;
+
+        if (std.mem.eql(u8, action, "picker_init")) {
+            const cwd = json_utils.getString(obj, "cwd") orelse return true;
+            if (self.file_index) |fi| {
+                fi.deinit();
+                self.allocator.destroy(fi);
+            }
+            const fi = self.allocator.create(picker_mod.FileIndex) catch return true;
+            fi.* = picker_mod.FileIndex.init(self.allocator);
+            fi.startScan(cwd) catch {
+                fi.deinit();
+                self.allocator.destroy(fi);
+                return true;
+            };
+            // Set recent files
+            if (obj.get("recent_files")) |rf_val| {
+                switch (rf_val) {
+                    .array => |arr| {
+                        var recent: std.ArrayList([]const u8) = .{};
+                        defer recent.deinit(alloc);
+                        for (arr.items) |item| {
+                            switch (item) {
+                                .string => |s| {
+                                    recent.append(alloc, s) catch {};
+                                },
+                                else => {},
+                            }
+                        }
+                        fi.setRecentFiles(recent.items) catch {};
+                    },
+                    else => {},
+                }
+            }
+            self.file_index = fi;
+            self.sendPickerResults(cid, alloc, vim_id, fi.recent_files.items, "file");
+            return true;
+        } else if (std.mem.eql(u8, action, "picker_file_query")) {
+            const query = json_utils.getString(obj, "query") orelse "";
+            const fi = self.file_index orelse {
+                self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                return true;
+            };
+            _ = fi.pollScan();
+            if (query.len == 0) {
+                self.sendPickerResults(cid, alloc, vim_id, fi.recent_files.items, "file");
+            } else {
+                const indices = picker_mod.filterAndSort(alloc, fi.files.items, query) catch {
+                    self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                    return true;
+                };
+                var items: std.ArrayList([]const u8) = .{};
+                for (indices) |idx| {
+                    items.append(alloc, fi.files.items[idx]) catch {};
+                }
+                self.sendPickerResults(cid, alloc, vim_id, items.items, "file");
+            }
+            return true;
+        } else if (std.mem.eql(u8, action, "picker_close")) {
+            if (self.file_index) |fi| {
+                fi.deinit();
+                self.allocator.destroy(fi);
+                self.file_index = null;
+            }
+            self.sendVimResponseTo(cid, alloc, vim_id, .null);
+            return true;
+        }
+        return false;
+    }
+
+    /// Send picker results in the standard format.
+    fn sendPickerResults(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, paths: []const []const u8, mode: []const u8) void {
+        var items = std.json.Array.init(alloc);
+        for (paths) |path| {
+            var item = ObjectMap.init(alloc);
+            item.put("label", json_utils.jsonString(path)) catch continue;
+            item.put("detail", json_utils.jsonString("")) catch continue;
+            item.put("file", json_utils.jsonString(path)) catch continue;
+            item.put("line", json_utils.jsonInteger(0)) catch continue;
+            item.put("column", json_utils.jsonInteger(0)) catch continue;
+            items.append(.{ .object = item }) catch continue;
+        }
+        var result = ObjectMap.init(alloc);
+        result.put("items", .{ .array = items }) catch {};
+        result.put("mode", json_utils.jsonString(mode)) catch {};
+        self.sendVimResponseTo(cid, alloc, vim_id, .{ .object = result });
+    }
 };
 
 /// Extract language name from a client_key ("language\x00workspace_uri" or just "language").
@@ -897,6 +1027,7 @@ pub fn isQueryMethod(method: []const u8) bool {
         "inlay_hints",
         "folding_range",
         "call_hierarchy",
+        "picker_query",
     };
     for (query_methods) |m| {
         if (std.mem.eql(u8, method, m)) return true;
