@@ -700,8 +700,80 @@ const EventLoop = struct {
         if (std.mem.startsWith(u8, method, "goto_")) {
             return transformGotoResult(alloc, result, ssh_host) catch .null;
         }
+        if (std.mem.eql(u8, method, "picker_query")) {
+            return transformPickerSymbolResult(alloc, result, ssh_host) catch .null;
+        }
 
         return result;
+    }
+
+    /// Transform workspace/symbol or documentSymbol LSP results into picker format.
+    fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
+        const arr = switch (result) {
+            .array => |a| a.items,
+            else => return .null,
+        };
+
+        var items = std.json.Array.init(alloc);
+        for (arr) |sym_val| {
+            const sym = switch (sym_val) {
+                .object => |o| o,
+                else => continue,
+            };
+            const name = json_utils.getString(sym, "name") orelse continue;
+            const kind_int = json_utils.getInteger(sym, "kind");
+            const container = json_utils.getString(sym, "containerName");
+            const detail = if (container) |c|
+                std.fmt.allocPrint(alloc, "{s} ({s})", .{ symbolKindName(kind_int), c }) catch ""
+            else
+                symbolKindName(kind_int);
+
+            // Extract location
+            var file: []const u8 = "";
+            var line: i64 = 0;
+            var column: i64 = 0;
+            if (json_utils.getObject(sym, "location")) |loc| {
+                if (json_utils.getString(loc, "uri")) |uri| {
+                    file = lsp_registry_mod.uriToFilePath(uri) orelse "";
+                    if (ssh_host) |host| {
+                        file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
+                    }
+                }
+                if (json_utils.getObject(loc, "range")) |range| {
+                    if (json_utils.getObject(range, "start")) |start| {
+                        line = json_utils.getInteger(start, "line") orelse 0;
+                        column = json_utils.getInteger(start, "character") orelse 0;
+                    }
+                }
+            }
+
+            var item = ObjectMap.init(alloc);
+            try item.put("label", json_utils.jsonString(name));
+            try item.put("detail", json_utils.jsonString(detail));
+            try item.put("file", json_utils.jsonString(file));
+            try item.put("line", json_utils.jsonInteger(line));
+            try item.put("column", json_utils.jsonInteger(column));
+            try items.append(.{ .object = item });
+        }
+
+        var result_obj = ObjectMap.init(alloc);
+        try result_obj.put("items", .{ .array = items });
+        try result_obj.put("mode", json_utils.jsonString("symbol"));
+        return .{ .object = result_obj };
+    }
+
+    fn symbolKindName(kind: ?i64) []const u8 {
+        const k = kind orelse return "Symbol";
+        return switch (k) {
+            1 => "File", 2 => "Module", 3 => "Namespace", 4 => "Package",
+            5 => "Class", 6 => "Method", 7 => "Property", 8 => "Field",
+            9 => "Constructor", 10 => "Enum", 11 => "Interface", 12 => "Function",
+            13 => "Variable", 14 => "Constant", 15 => "String", 16 => "Number",
+            17 => "Boolean", 18 => "Array", 19 => "Object", 20 => "Key",
+            21 => "Null", 22 => "EnumMember", 23 => "Struct", 24 => "Event",
+            25 => "Operator", 26 => "TypeParameter",
+            else => "Symbol",
+        };
     }
 
     /// Handle LSP server notifications.
