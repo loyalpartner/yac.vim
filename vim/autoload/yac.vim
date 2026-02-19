@@ -94,6 +94,18 @@ let s:diagnostic_virtual_text = {}
 let s:diagnostic_virtual_text.enabled = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
 let s:diagnostic_virtual_text.storage = {}  " buffer_id -> diagnostics
 
+" Picker 状态
+let s:picker = {
+  \ 'input_popup': -1,
+  \ 'results_popup': -1,
+  \ 'items': [],
+  \ 'selected': 0,
+  \ 'timer_id': -1,
+  \ 'last_query': '',
+  \ }
+let s:picker_history = []
+let s:picker_history_idx = -1
+
 " 获取当前 buffer 应该使用的连接 key
 function! s:get_connection_key() abort
   return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
@@ -2266,6 +2278,337 @@ function! s:find_workspace_root() abort
 
   " 如果没有找到项目根，使用当前目录
   return expand('%:p:h')
+endfunction
+
+" ============================================================================
+" Picker — Ctrl+P style file/symbol search
+" ============================================================================
+
+" 打开 Picker 面板
+function! yac#picker_open() abort
+  if s:picker.input_popup != -1
+    call s:picker_close()
+    return
+  endif
+
+  " 收集最近打开的文件
+  let recent = []
+  for buf in getbufinfo({'buflisted': 1})
+    if !empty(buf.name) && filereadable(buf.name)
+      call add(recent, buf.name)
+    endif
+  endfor
+
+  call s:request('picker_open', {
+    \ 'cwd': getcwd(),
+    \ 'recent_files': recent,
+    \ 'file': expand('%:p'),
+    \ }, 's:handle_picker_open_response')
+endfunction
+
+function! s:handle_picker_open_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: picker_open response: %s', string(a:response)))
+  call s:picker_create_ui()
+  if type(a:response) == v:t_dict && has_key(a:response, 'items')
+    call s:picker_update_results(a:response.items)
+  endif
+endfunction
+
+function! s:picker_create_ui() abort
+  let width = float2nr(&columns * 0.6)
+  let col = float2nr((&columns - width) / 2)
+  let row = float2nr(&lines * 0.2)
+
+  " 输入框 popup
+  let input_buf = bufadd('')
+  call bufload(input_buf)
+  call setbufvar(input_buf, '&buftype', 'nofile')
+  call setbufvar(input_buf, '&bufhidden', 'wipe')
+  call setbufvar(input_buf, '&swapfile', 0)
+  call setbufline(input_buf, 1, '> ')
+
+  let s:picker.input_popup = popup_create(input_buf, {
+    \ 'line': row,
+    \ 'col': col,
+    \ 'minwidth': width,
+    \ 'maxwidth': width,
+    \ 'minheight': 1,
+    \ 'maxheight': 1,
+    \ 'border': [1, 1, 0, 1],
+    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '┤', '├'],
+    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'highlight': 'YacPickerInput',
+    \ 'title': ' YacPicker ',
+    \ 'filter': function('s:picker_input_filter'),
+    \ 'mapping': 0,
+    \ 'zindex': 100,
+    \ })
+
+  " 结果列表 popup
+  let s:picker.results_popup = popup_create([], {
+    \ 'line': row + 2,
+    \ 'col': col,
+    \ 'minwidth': width,
+    \ 'maxwidth': width,
+    \ 'minheight': 15,
+    \ 'maxheight': 15,
+    \ 'border': [0, 1, 1, 1],
+    \ 'borderchars': ['─', '│', '─', '│', '├', '┤', '╯', '╰'],
+    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'highlight': 'YacPickerNormal',
+    \ 'scrollbar': 0,
+    \ 'zindex': 100,
+    \ })
+
+  " 高亮组
+  highlight default YacPickerBorder guifg=#555555
+  highlight default YacPickerInput guibg=#1e1e2e guifg=#cdd6f4
+  highlight default YacPickerNormal guibg=#1e1e2e guifg=#cdd6f4
+  highlight default YacPickerSelected guibg=#45475a guifg=#cdd6f4
+endfunction
+
+function! s:picker_input_filter(winid, key) abort
+  if a:key == "\<Esc>"
+    call s:picker_close()
+    return 1
+  endif
+
+  if a:key == "\<CR>"
+    call s:picker_accept()
+    return 1
+  endif
+
+  " 结果导航
+  if a:key == "\<C-j>" || a:key == "\<C-n>" || a:key == "\<Tab>"
+    call s:picker_select_next()
+    return 1
+  endif
+  if a:key == "\<C-k>" || a:key == "\<C-p>" || a:key == "\<S-Tab>"
+    call s:picker_select_prev()
+    return 1
+  endif
+
+  " 编辑快捷键
+  if a:key == "\<C-a>"
+    call win_execute(a:winid, 'call cursor(1, 3)')
+    return 1
+  endif
+  if a:key == "\<C-e>"
+    call win_execute(a:winid, 'call cursor(1, col("$"))')
+    return 1
+  endif
+  if a:key == "\<C-u>"
+    let buf = winbufnr(a:winid)
+    call setbufline(buf, 1, '> ')
+    call win_execute(a:winid, 'call cursor(1, 3)')
+    call s:picker_on_input_changed()
+    return 1
+  endif
+  if a:key == "\<C-w>"
+    let buf = winbufnr(a:winid)
+    let line = getbufline(buf, 1)[0]
+    let text = line[2:]
+    let text = substitute(text, '\S*\s*$', '', '')
+    call setbufline(buf, 1, '> ' . text)
+    call win_execute(a:winid, 'call cursor(1, col("$"))')
+    call s:picker_on_input_changed()
+    return 1
+  endif
+
+  " History browsing with Up/Down (when input is empty)
+  if a:key == "\<Up>" || a:key == "\<Down>"
+    let buf = winbufnr(a:winid)
+    let text = getbufline(buf, 1)[0][2:]
+    if empty(text) && !empty(s:picker_history)
+      if a:key == "\<Up>"
+        let s:picker_history_idx = min([s:picker_history_idx + 1, len(s:picker_history) - 1])
+      else
+        let s:picker_history_idx = max([s:picker_history_idx - 1, -1])
+      endif
+      if s:picker_history_idx >= 0
+        call setbufline(buf, 1, '> ' . s:picker_history[s:picker_history_idx])
+      else
+        call setbufline(buf, 1, '> ')
+      endif
+      call win_execute(a:winid, 'call cursor(1, col("$"))')
+      call s:picker_on_input_changed()
+      return 1
+    endif
+  endif
+
+  " Backspace
+  if a:key == "\<BS>"
+    let buf = winbufnr(a:winid)
+    let line = getbufline(buf, 1)[0]
+    if len(line) <= 2
+      return 1
+    endif
+    " Remove last char before cursor
+    let new_line = line[:len(line) - 2]
+    call setbufline(buf, 1, new_line)
+    call win_execute(a:winid, 'call cursor(1, col("$"))')
+    call s:picker_on_input_changed()
+    return 1
+  endif
+
+  " Regular character input
+  if len(a:key) == 1 && char2nr(a:key) >= 32
+    let buf = winbufnr(a:winid)
+    let line = getbufline(buf, 1)[0]
+    call setbufline(buf, 1, line . a:key)
+    call win_execute(a:winid, 'call cursor(1, col("$"))')
+    call s:picker_on_input_changed()
+    return 1
+  endif
+
+  return 1  " consume all keys
+endfunction
+
+function! s:picker_on_input_changed() abort
+  if s:picker.timer_id != -1
+    call timer_stop(s:picker.timer_id)
+  endif
+  let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
+endfunction
+
+function! s:picker_send_query(timer_id) abort
+  let s:picker.timer_id = -1
+  if s:picker.input_popup == -1
+    return
+  endif
+
+  let buf = winbufnr(s:picker.input_popup)
+  let line = getbufline(buf, 1)[0]
+  let text = line[2:]
+
+  " Determine mode from prefix
+  let mode = 'file'
+  let query = text
+  if text =~# '^#'
+    let mode = 'workspace_symbol'
+    let query = text[1:]
+  elseif text =~# '^@'
+    let mode = 'document_symbol'
+    let query = text[1:]
+  endif
+
+  let s:picker.last_query = text
+
+  call s:request('picker_query', {
+    \ 'query': query,
+    \ 'mode': mode,
+    \ 'file': expand('%:p'),
+    \ }, 's:handle_picker_query_response')
+endfunction
+
+function! s:handle_picker_query_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: picker_query response: %s', string(a:response)))
+  if s:picker.results_popup == -1
+    return
+  endif
+  if type(a:response) == v:t_dict && has_key(a:response, 'items')
+    call s:picker_update_results(a:response.items)
+  endif
+endfunction
+
+function! s:picker_update_results(items) abort
+  let s:picker.items = a:items
+  let s:picker.selected = 0
+
+  let lines = []
+  for item in a:items
+    let label = get(item, 'label', '')
+    let detail = get(item, 'detail', '')
+    if !empty(detail)
+      call add(lines, '  ' . label . '  ' . detail)
+    else
+      call add(lines, '  ' . label)
+    endif
+  endfor
+
+  if empty(lines)
+    let lines = ['  (no results)']
+  endif
+
+  call popup_settext(s:picker.results_popup, lines)
+  call s:picker_highlight_selected()
+endfunction
+
+function! s:picker_highlight_selected() abort
+  if s:picker.results_popup == -1 || empty(s:picker.items)
+    return
+  endif
+  call win_execute(s:picker.results_popup, 'call clearmatches()')
+  call win_execute(s:picker.results_popup,
+    \ printf('call matchaddpos("YacPickerSelected", [%d])', s:picker.selected + 1))
+endfunction
+
+function! s:picker_select_next() abort
+  if !empty(s:picker.items)
+    let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
+    call s:picker_highlight_selected()
+  endif
+endfunction
+
+function! s:picker_select_prev() abort
+  if !empty(s:picker.items)
+    let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
+    call s:picker_highlight_selected()
+  endif
+endfunction
+
+function! s:picker_accept() abort
+  if empty(s:picker.items)
+    call s:picker_close()
+    return
+  endif
+
+  let item = s:picker.items[s:picker.selected]
+  let file = get(item, 'file', '')
+  let line = get(item, 'line', 0)
+  let column = get(item, 'column', 0)
+
+  " Save to history
+  let query = s:picker.last_query
+  if !empty(query)
+    call filter(s:picker_history, 'v:val !=# query')
+    call insert(s:picker_history, query, 0)
+    if len(s:picker_history) > 20
+      call remove(s:picker_history, 20, -1)
+    endif
+  endif
+
+  call s:picker_close()
+
+  " Navigate to file/symbol
+  if !empty(file)
+    if file !=# expand('%:p')
+      execute 'edit ' . fnameescape(file)
+    endif
+    if line > 0
+      call cursor(line + 1, column + 1)
+      normal! zz
+    endif
+  endif
+endfunction
+
+function! s:picker_close() abort
+  if s:picker.timer_id != -1
+    call timer_stop(s:picker.timer_id)
+    let s:picker.timer_id = -1
+  endif
+  if s:picker.input_popup != -1
+    call popup_close(s:picker.input_popup)
+    let s:picker.input_popup = -1
+  endif
+  if s:picker.results_popup != -1
+    call popup_close(s:picker.results_popup)
+    let s:picker.results_popup = -1
+  endif
+  let s:picker.items = []
+  let s:picker.selected = 0
+  let s:picker_history_idx = -1
+  call s:notify('picker_close', {})
 endfunction
 
 " 启动定时清理任务
