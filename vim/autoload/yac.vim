@@ -2498,11 +2498,14 @@ function! s:picker_on_input_changed() abort
   endif
   if s:picker.mode ==# 'references'
     let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
-  elseif !empty(s:picker.all_locations)
-    " Document symbol cache is warm — filter locally
-    let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
   else
-    let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
+    let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+    if text =~# '^@' && !empty(s:picker.all_locations)
+      " Document symbol cache is warm — filter locally
+      let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
+    else
+      let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
+    endif
   endif
 endfunction
 
@@ -2551,12 +2554,14 @@ function! s:handle_picker_query_response(channel, response) abort
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
-    if s:picker.mode ==# 'document_symbol'
-      " Cache all symbols; filter client-side by current query
+    let text = s:picker.input_popup != -1
+      \ ? getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+      \ : ''
+    if text =~# '^@'
+      " Cache all doc symbols; filter client-side by current query
       let s:picker.all_locations = a:response.items
-      let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
-      let query = text =~# '^@' ? text[1:] : ''
-      call s:picker_apply_doc_symbol_filter(query)
+      let s:picker.mode = 'document_symbol'
+      call s:picker_apply_doc_symbol_filter(text[1:])
     else
       call s:picker_update_results(a:response.items)
     endif
