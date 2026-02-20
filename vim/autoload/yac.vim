@@ -102,19 +102,17 @@ let s:picker = {
   \ 'selected': 0,
   \ 'timer_id': -1,
   \ 'last_query': '',
-  \ }
-let s:picker_history = []
-let s:picker_history_idx = -1
-
-let s:refs = {
-  \ 'popup': -1,
-  \ 'lines': [],
-  \ 'locations': [],
-  \ 'selected': 0,
+  \ 'mode': '',
+  \ 'grouped': 0,
+  \ 'preview': 0,
+  \ 'lnum_width': 0,
+  \ 'all_locations': [],
   \ 'orig_file': '',
   \ 'orig_lnum': 0,
   \ 'orig_col': 0,
   \ }
+let s:picker_history = []
+let s:picker_history_idx = -1
 
 " 获取当前 buffer 应该使用的连接 key
 function! s:get_connection_key() abort
@@ -690,7 +688,7 @@ function! s:handle_references_response(channel, response) abort
   endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
-    call s:show_references(a:response.locations)
+    call s:picker_open_references(a:response.locations)
     return
   endif
 
@@ -1547,79 +1545,7 @@ endfunction
 
 " === 日志查看功能 ===
 
-" Peek references popup
-function! s:show_references(locations) abort
-  if empty(a:locations)
-    echo "No references found"
-    return
-  endif
-
-  " Group by file
-  let groups = {}
-  let order = []
-  for loc in a:locations
-    let f = get(loc, 'file', '')
-    if !has_key(groups, f)
-      let groups[f] = []
-      call add(order, f)
-    endif
-    call add(groups[f], loc)
-  endfor
-
-  " Build display lines + location map
-  let lines = []
-  let locs = []
-  for f in order
-    let rel = fnamemodify(f, ':.')
-    call add(lines, '  ' . rel . ' (' . len(groups[f]) . ')')
-    call add(locs, {})
-    for loc in groups[f]
-      let lnum = get(loc, 'line', 0) + 1
-      let text = s:refs_read_line(f, lnum)
-      call add(lines, '    ' . lnum . ': ' . text)
-      call add(locs, loc)
-    endfor
-  endfor
-
-  let s:refs.lines = lines
-  let s:refs.locations = locs
-  let s:refs.selected = empty(locs) ? 0 : 1
-
-  let height = min([len(lines), 20])
-  let width = float2nr(&columns * 0.7)
-  let col = float2nr((&columns - width) / 2)
-  let row = float2nr(&lines * 0.2)
-
-  let s:refs.popup = popup_create(lines, {
-    \ 'line': row,
-    \ 'col': col,
-    \ 'minwidth': width,
-    \ 'maxwidth': width,
-    \ 'minheight': height,
-    \ 'maxheight': 20,
-    \ 'border': [1, 1, 1, 1],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['Comment'],
-    \ 'highlight': 'Normal',
-    \ 'title': ' References (' . len(a:locations) . ') ',
-    \ 'filter': function('s:refs_popup_filter'),
-    \ 'mapping': 0,
-    \ 'scrollbar': 0,
-    \ 'wrap': 0,
-    \ 'zindex': 100,
-    \ })
-
-  let s:refs.orig_file = expand('%:p')
-  let s:refs.orig_lnum = line('.')
-  let s:refs.orig_col = col('.')
-
-  highlight default link YacRefsHeader Directory
-  highlight default link YacRefsSelected CursorLine
-  call s:refs_highlight()
-  call s:refs_preview()
-endfunction
-
-function! s:refs_read_line(file, lnum) abort
+function! s:picker_read_line(file, lnum) abort
   let bufnr = bufnr(a:file)
   if bufnr != -1
     let blines = getbufline(bufnr, a:lnum)
@@ -1636,114 +1562,86 @@ function! s:refs_read_line(file, lnum) abort
   return ''
 endfunction
 
-function! s:refs_highlight() abort
-  if s:refs.popup == -1
+function! s:picker_open_references(locations) abort
+  if empty(a:locations)
+    echo "No references found"
     return
   endif
-  let display = []
-  for i in range(len(s:refs.lines))
-    if i == s:refs.selected && !empty(s:refs.locations[i])
-      call add(display, '>>' . s:refs.lines[i][2:])
-    else
-      call add(display, s:refs.lines[i])
-    endif
-  endfor
-  call popup_settext(s:refs.popup, display)
-  call win_execute(s:refs.popup, 'call clearmatches()')
-  for i in range(len(s:refs.locations))
-    if empty(s:refs.locations[i])
-      call win_execute(s:refs.popup, 'call matchaddpos("YacRefsHeader", [' . (i + 1) . '], 10)')
-    endif
-  endfor
-  if s:refs.selected >= 0 && s:refs.selected < len(s:refs.lines)
-    call win_execute(s:refs.popup, 'call matchaddpos("YacRefsSelected", [' . (s:refs.selected + 1) . '], 20)')
+  if s:picker.input_popup != -1
+    call s:picker_close()
   endif
-  call popup_setoptions(s:refs.popup, #{firstline: max([1, s:refs.selected - 17])})
+  let s:picker.mode = 'references'
+  let s:picker.grouped = 1
+  let s:picker.orig_file = expand('%:p')
+  let s:picker.orig_lnum = line('.')
+  let s:picker.orig_col = col('.')
+  " Pre-cache line text on each location
+  let s:picker.all_locations = a:locations
+  for loc in s:picker.all_locations
+    let loc._text = s:picker_read_line(get(loc, 'file', ''), get(loc, 'line', 0) + 1)
+  endfor
+  call s:picker_create_ui({'title': ' References (' . len(a:locations) . ') '})
+  call s:picker_filter_references('')
 endfunction
 
-function! s:refs_popup_filter(winid, key) abort
-  if a:key == "\<Esc>" || a:key == 'q'
-    call s:refs_close()
-    return 1
+function! s:picker_filter_references(query) abort
+  let filtered = []
+  if empty(a:query)
+    let filtered = copy(s:picker.all_locations)
+  else
+    let pat = tolower(a:query)
+    for loc in s:picker.all_locations
+      let f = tolower(fnamemodify(get(loc, 'file', ''), ':.'))
+      if stridx(f, pat) >= 0 || stridx(tolower(get(loc, '_text', '')), pat) >= 0
+        call add(filtered, loc)
+      endif
+    endfor
   endif
-  if a:key == "\<CR>"
-    call s:refs_accept()
-    return 1
+  " Group by file
+  let groups = {}
+  let order = []
+  for loc in filtered
+    let f = get(loc, 'file', '')
+    if !has_key(groups, f)
+      let groups[f] = []
+      call add(order, f)
+    endif
+    call add(groups[f], loc)
+  endfor
+  let s:picker.items = []
+  for f in order
+    call add(s:picker.items, {'label': fnamemodify(f, ':.') . ' (' . len(groups[f]) . ')', 'is_header': 1})
+    for loc in groups[f]
+      call add(s:picker.items, {
+        \ 'label': (get(loc, 'line', 0) + 1) . ': ' . get(loc, '_text', ''),
+        \ 'file': f, 'line': get(loc, 'line', 0), 'column': get(loc, 'column', 0),
+        \ 'is_header': 0})
+    endfor
+  endfor
+  let s:picker.selected = 0
+  call s:picker_advance_past_header(1)
+  call s:picker_highlight_selected()
+  if s:picker.mode ==# 'references'
+    call s:picker_preview()
   endif
-  let nr = char2nr(a:key)
-  if a:key == 'j' || a:key == "\<Down>" || nr == 14
-    call s:refs_move(1)
-    return 1
-  endif
-  if a:key == 'k' || a:key == "\<Up>" || nr == 16
-    call s:refs_move(-1)
-    return 1
-  endif
-  return 1
 endfunction
 
-function! s:refs_preview() abort
-  let loc = get(s:refs.locations, s:refs.selected, {})
-  if empty(loc) | return | endif
-  let file = get(loc, 'file', '')
-  let lnum = get(loc, 'line', 0) + 1
-  let col = get(loc, 'column', 0) + 1
+function! s:picker_filter_references_timer(timer_id) abort
+  let s:picker.timer_id = -1
+  if s:picker.input_popup == -1 | return | endif
+  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  call s:picker_filter_references(text)
+endfunction
+
+function! s:picker_preview() abort
+  let item = get(s:picker.items, s:picker.selected, {})
+  if get(item, 'is_header', 0) || empty(item) | return | endif
+  let file = get(item, 'file', '')
   if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
     execute 'edit ' . fnameescape(file)
   endif
-  call cursor(lnum, col)
+  call cursor(get(item, 'line', 0) + 1, get(item, 'column', 0) + 1)
   normal! zz
-endfunction
-
-function! s:refs_move(step) abort
-  let total = len(s:refs.locations)
-  if total == 0 | return | endif
-  let i = s:refs.selected + a:step
-  while i >= 0 && i < total
-    if !empty(s:refs.locations[i])
-      let s:refs.selected = i
-      call s:refs_highlight()
-      call s:refs_preview()
-      return
-    endif
-    let i += a:step
-  endwhile
-endfunction
-
-function! s:refs_reset() abort
-  if s:refs.popup != -1
-    call popup_close(s:refs.popup)
-    let s:refs.popup = -1
-  endif
-  let s:refs.lines = []
-  let s:refs.locations = []
-  let s:refs.selected = 0
-endfunction
-
-function! s:refs_accept() abort
-  if s:refs.selected < 0 || s:refs.selected >= len(s:refs.locations)
-    return
-  endif
-  if empty(s:refs.locations[s:refs.selected])
-    return
-  endif
-  " Preview already moved cursor to the right place, just close popup
-  call s:refs_reset()
-endfunction
-
-function! s:refs_close() abort
-  let orig_file = s:refs.orig_file
-  let orig_lnum = s:refs.orig_lnum
-  let orig_col = s:refs.orig_col
-  call s:refs_reset()
-  " Restore original position
-  if !empty(orig_file)
-    if fnamemodify(orig_file, ':p') !=# expand('%:p')
-      execute 'edit ' . fnameescape(orig_file)
-    endif
-    call cursor(orig_lnum, orig_col)
-    normal! zz
-  endif
 endfunction
 
 " 显示 call hierarchy 结果
@@ -2433,8 +2331,9 @@ function! yac#picker_open() abort
     return
   endif
 
-  " 先创建 UI（立即显示）
-  call s:picker_create_ui()
+  let s:picker.mode = 'file'
+  let s:picker.grouped = 0
+  call s:picker_create_ui({})
 
   " 发送请求，daemon 会通过 expr 查询 buffer 列表并回传初始结果
   call s:request('picker_open', {
@@ -2453,12 +2352,13 @@ function! s:handle_picker_open_response(channel, response) abort
   endif
 endfunction
 
-function! s:picker_create_ui() abort
+function! s:picker_create_ui(opts) abort
+  let title = get(a:opts, 'title', ' YacPicker ')
   let width = float2nr(&columns * 0.6)
   let col = float2nr((&columns - width) / 2)
   let row = float2nr(&lines * 0.2)
 
-  " 输入框 popup
+  " Input popup
   let input_buf = bufadd('')
   call bufload(input_buf)
   call setbufvar(input_buf, '&buftype', 'nofile')
@@ -2477,13 +2377,13 @@ function! s:picker_create_ui() abort
     \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '┤', '├'],
     \ 'borderhighlight': ['YacPickerBorder'],
     \ 'highlight': 'YacPickerInput',
-    \ 'title': ' YacPicker ',
+    \ 'title': title,
     \ 'filter': function('s:picker_input_filter'),
     \ 'mapping': 0,
     \ 'zindex': 100,
     \ })
 
-  " 结果列表 popup
+  " Results popup
   let s:picker.results_popup = popup_create([], {
     \ 'line': row + 2,
     \ 'col': col,
@@ -2496,14 +2396,15 @@ function! s:picker_create_ui() abort
     \ 'borderhighlight': ['YacPickerBorder'],
     \ 'highlight': 'YacPickerNormal',
     \ 'scrollbar': 0,
+    \ 'wrap': 0,
     \ 'zindex': 100,
     \ })
 
-  " 高亮组
-  highlight default YacPickerBorder guifg=#555555
-  highlight default YacPickerInput guibg=#1e1e2e guifg=#cdd6f4
-  highlight default YacPickerNormal guibg=#1e1e2e guifg=#cdd6f4
-  highlight default YacPickerSelected guibg=#45475a guifg=#cdd6f4
+  highlight default link YacPickerBorder Comment
+  highlight default link YacPickerInput Normal
+  highlight default link YacPickerNormal Normal
+  highlight default link YacPickerSelected CursorLine
+  highlight default link YacPickerHeader Directory
 endfunction
 
 function! s:picker_input_filter(winid, key) abort
@@ -2592,7 +2493,11 @@ function! s:picker_on_input_changed() abort
   if s:picker.timer_id != -1
     call timer_stop(s:picker.timer_id)
   endif
-  let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
+  if s:picker.mode ==# 'references'
+    let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
+  else
+    let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
+  endif
 endfunction
 
 function! s:picker_send_query(timer_id) abort
@@ -2616,6 +2521,7 @@ function! s:picker_send_query(timer_id) abort
     let query = text[1:]
   endif
 
+  let s:picker.mode = mode
   let s:picker.last_query = text
 
   call s:request('picker_query', {
@@ -2656,39 +2562,85 @@ function! s:picker_highlight_selected() abort
     return
   endif
   let lines = []
-  for item in s:picker.items
-    let label = fnamemodify(get(item, 'label', ''), ':.')
-    let detail = get(item, 'detail', '')
-    let text = !empty(detail) ? ('  ' . label . '  ' . detail) : ('  ' . label)
-    call add(lines, text)
+  for i in range(len(s:picker.items))
+    let item = s:picker.items[i]
+    if get(item, 'is_header', 0)
+      call add(lines, '  ' . get(item, 'label', ''))
+    elseif i == s:picker.selected
+      if s:picker.grouped
+        call add(lines, '>>  ' . get(item, 'label', ''))
+      else
+        let label = fnamemodify(get(item, 'label', ''), ':.')
+        let detail = get(item, 'detail', '')
+        call add(lines, !empty(detail) ? ('> ' . label . '  ' . detail) : ('> ' . label))
+      endif
+    else
+      if s:picker.grouped
+        call add(lines, '    ' . get(item, 'label', ''))
+      else
+        let label = fnamemodify(get(item, 'label', ''), ':.')
+        let detail = get(item, 'detail', '')
+        call add(lines, !empty(detail) ? ('  ' . label . '  ' . detail) : ('  ' . label))
+      endif
+    endif
   endfor
-  " 选中行加 > 前缀
-  if s:picker.selected < len(lines)
-    let lines[s:picker.selected] = '> ' . lines[s:picker.selected][2:]
-  endif
   call popup_settext(s:picker.results_popup, lines)
-
-  " 用 matchaddpos 高亮选中行
   call win_execute(s:picker.results_popup, 'call clearmatches()')
-  call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '])')
-
-  " 滚动：确保选中行可见（popup 最多显示 15 行）
-  let firstline = max([1, s:picker.selected - 13])
-  call popup_setoptions(s:picker.results_popup, #{firstline: firstline})
+  for i in range(len(s:picker.items))
+    if get(s:picker.items[i], 'is_header', 0)
+      call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerHeader", [' . (i + 1) . '], 10)')
+    endif
+  endfor
+  if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
+    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 20)')
+  endif
+  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - 13])})
 endfunction
 
 function! s:picker_select_next() abort
-  if !empty(s:picker.items)
+  if empty(s:picker.items) | return | endif
+  if s:picker.grouped
+    call s:picker_move_grouped(1)
+  else
     let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
     call s:picker_highlight_selected()
   endif
 endfunction
 
 function! s:picker_select_prev() abort
-  if !empty(s:picker.items)
+  if empty(s:picker.items) | return | endif
+  if s:picker.grouped
+    call s:picker_move_grouped(-1)
+  else
     let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
     call s:picker_highlight_selected()
   endif
+endfunction
+
+function! s:picker_move_grouped(step) abort
+  let total = len(s:picker.items)
+  let i = s:picker.selected + a:step
+  while i >= 0 && i < total
+    if !get(s:picker.items[i], 'is_header', 0)
+      let s:picker.selected = i
+      call s:picker_highlight_selected()
+      if s:picker.mode ==# 'references'
+        call s:picker_preview()
+      endif
+      return
+    endif
+    let i += a:step
+  endwhile
+endfunction
+
+function! s:picker_advance_past_header(direction) abort
+  let total = len(s:picker.items)
+  while s:picker.selected >= 0 && s:picker.selected < total
+    if !get(s:picker.items[s:picker.selected], 'is_header', 0)
+      return
+    endif
+    let s:picker.selected += a:direction
+  endwhile
 endfunction
 
 function! s:picker_accept() abort
@@ -2698,6 +2650,14 @@ function! s:picker_accept() abort
   endif
 
   let item = s:picker.items[s:picker.selected]
+  if get(item, 'is_header', 0) | return | endif
+
+  if s:picker.mode ==# 'references'
+    " Preview already placed cursor, just close without restore
+    call s:picker_close_popups()
+    return
+  endif
+
   let file = get(item, 'file', '')
   let line = get(item, 'line', 0)
   let column = get(item, 'column', 0)
@@ -2727,6 +2687,26 @@ function! s:picker_accept() abort
 endfunction
 
 function! s:picker_close() abort
+  let is_refs = (s:picker.mode ==# 'references')
+  let orig_file = s:picker.orig_file
+  let orig_lnum = s:picker.orig_lnum
+  let orig_col = s:picker.orig_col
+
+  call s:picker_close_popups()
+
+  if is_refs && !empty(orig_file)
+    if fnamemodify(orig_file, ':p') !=# expand('%:p')
+      execute 'edit ' . fnameescape(orig_file)
+    endif
+    call cursor(orig_lnum, orig_col)
+    normal! zz
+  else
+    let s:picker_history_idx = -1
+    call s:notify('picker_close', {})
+  endif
+endfunction
+
+function! s:picker_close_popups() abort
   if s:picker.timer_id != -1
     call timer_stop(s:picker.timer_id)
     let s:picker.timer_id = -1
@@ -2741,8 +2721,15 @@ function! s:picker_close() abort
   endif
   let s:picker.items = []
   let s:picker.selected = 0
-  let s:picker_history_idx = -1
-  call s:notify('picker_close', {})
+  let s:picker.last_query = ''
+  let s:picker.all_locations = []
+  let s:picker.mode = ''
+  let s:picker.grouped = 0
+  let s:picker.preview = 0
+  let s:picker.lnum_width = 0
+  let s:picker.orig_file = ''
+  let s:picker.orig_lnum = 0
+  let s:picker.orig_col = 0
 endfunction
 
 " 启动定时清理任务
