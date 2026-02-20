@@ -2621,6 +2621,9 @@ function! s:picker_select_next() abort
   else
     let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
     call s:picker_highlight_selected()
+    if s:picker.preview
+      call s:picker_preview()
+    endif
   endif
 endfunction
 
@@ -2631,6 +2634,9 @@ function! s:picker_select_prev() abort
   else
     let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
     call s:picker_highlight_selected()
+    if s:picker.preview
+      call s:picker_preview()
+    endif
   endif
 endfunction
 
