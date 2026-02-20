@@ -2551,7 +2551,18 @@ function! s:picker_update_results(items) abort
 
   if empty(a:items)
     call popup_settext(s:picker.results_popup, ['  (no results)'])
+    let s:picker.preview = 0
+    let s:picker.lnum_width = 0
     return
+  endif
+
+  if s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol'
+    let max_line = max(map(copy(a:items), 'get(v:val, "line", 0) + 1'))
+    let s:picker.lnum_width = len(string(max_line))
+    let s:picker.preview = 1
+  else
+    let s:picker.lnum_width = 0
+    let s:picker.preview = 0
   endif
 
   call s:picker_highlight_selected()
