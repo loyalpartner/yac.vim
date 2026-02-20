@@ -2333,6 +2333,9 @@ function! yac#picker_open() abort
 
   let s:picker.mode = 'file'
   let s:picker.grouped = 0
+  let s:picker.orig_file = expand('%:p')
+  let s:picker.orig_lnum = line('.')
+  let s:picker.orig_col = col('.')
   call s:picker_create_ui({})
 
   " 发送请求，daemon 会通过 expr 查询 buffer 列表并回传初始结果
@@ -2495,6 +2498,9 @@ function! s:picker_on_input_changed() abort
   endif
   if s:picker.mode ==# 'references'
     let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
+  elseif !empty(s:picker.all_locations)
+    " Document symbol cache is warm — filter locally
+    let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
   else
     let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
   endif
@@ -2521,6 +2527,10 @@ function! s:picker_send_query(timer_id) abort
     let query = text[1:]
   endif
 
+  " Clear doc symbol cache when leaving document_symbol mode
+  if mode !=# 'document_symbol'
+    let s:picker.all_locations = []
+  endif
   let s:picker.mode = mode
   let s:picker.last_query = text
 
@@ -2541,8 +2551,35 @@ function! s:handle_picker_query_response(channel, response) abort
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
-    call s:picker_update_results(a:response.items)
+    if s:picker.mode ==# 'document_symbol'
+      " Cache all symbols; filter client-side by current query
+      let s:picker.all_locations = a:response.items
+      let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+      let query = text =~# '^@' ? text[1:] : ''
+      call s:picker_apply_doc_symbol_filter(query)
+    else
+      call s:picker_update_results(a:response.items)
+    endif
   endif
+endfunction
+
+function! s:picker_apply_doc_symbol_filter(query) abort
+  if empty(a:query)
+    let items = copy(s:picker.all_locations)
+  else
+    let pat = tolower(a:query)
+    let items = filter(copy(s:picker.all_locations),
+      \ 'stridx(tolower(get(v:val, "label", "")), pat) >= 0')
+  endif
+  call s:picker_update_results(items)
+endfunction
+
+function! s:picker_filter_doc_symbols_timer(timer_id) abort
+  let s:picker.timer_id = -1
+  if s:picker.input_popup == -1 | return | endif
+  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let query = text =~# '^@' ? text[1:] : ''
+  call s:picker_apply_doc_symbol_filter(query)
 endfunction
 
 function! s:picker_update_results(items) abort
@@ -2711,13 +2748,14 @@ endfunction
 
 function! s:picker_close() abort
   let is_refs = (s:picker.mode ==# 'references')
+  let needs_restore = is_refs || s:picker.preview
   let orig_file = s:picker.orig_file
   let orig_lnum = s:picker.orig_lnum
   let orig_col = s:picker.orig_col
 
   call s:picker_close_popups()
 
-  if is_refs && !empty(orig_file)
+  if needs_restore && !empty(orig_file)
     if fnamemodify(orig_file, ':p') !=# expand('%:p')
       execute 'edit ' . fnameescape(orig_file)
     endif
