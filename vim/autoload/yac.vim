@@ -2583,7 +2583,10 @@ function! s:picker_highlight_selected() abort
       else
         let label = fnamemodify(get(item, 'label', ''), ':.')
         let detail = get(item, 'detail', '')
-        call add(lines, !empty(detail) ? ('> ' . label . '  ' . detail) : ('> ' . label))
+        let prefix = s:picker.lnum_width > 0
+          \ ? printf('> %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
+          \ : '> '
+        call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
       endif
     else
       if s:picker.grouped
@@ -2591,7 +2594,10 @@ function! s:picker_highlight_selected() abort
       else
         let label = fnamemodify(get(item, 'label', ''), ':.')
         let detail = get(item, 'detail', '')
-        call add(lines, !empty(detail) ? ('  ' . label . '  ' . detail) : ('  ' . label))
+        let prefix = s:picker.lnum_width > 0
+          \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
+          \ : '  '
+        call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
       endif
     endif
   endfor
