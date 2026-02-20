@@ -93,9 +93,10 @@ pub fn symbolKindName(kind: ?i64) []const u8 {
 
 /// Transform workspace/symbol or documentSymbol LSP results into picker format.
 pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
-    const arr = switch (result) {
+    const arr: []const Value = switch (result) {
         .array => |a| a.items,
-        else => return .null,
+        // null/unsupported: return empty items so the picker shows "(no results)"
+        else => &.{},
     };
 
     var items = std.json.Array.init(alloc);
