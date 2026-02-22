@@ -405,8 +405,14 @@ const EventLoop = struct {
 
         switch (result) {
             .data => |data| {
-                if (self.handlePickerAction(cid, alloc, vim_id, data)) return;
-                self.sendVimResponseTo(cid, alloc, vim_id, data);
+                switch (self.picker.processAction(alloc, data)) {
+                    .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
+                    .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
+                    .respond_results => |r| self.sendVimResponseTo(cid, alloc, vim_id, picker_mod.buildPickerResults(alloc, r.paths, r.mode)),
+                    .query_buffers => self.sendVimExprTo(cid, alloc, vim_id,
+                        "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
+                        .picker_buffers),
+                }
             },
             .empty => {
                 if (vim_id != null) {
@@ -514,7 +520,7 @@ const EventLoop = struct {
                             log.err("LSP error for request {d}: {any}", .{ resp.id, err_val });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
                         } else {
-                            const transformed = transformLspResult(
+                            const transformed = lsp_transform.transformLspResult(
                                 arena.allocator(),
                                 pending.method,
                                 resp.result,
@@ -595,21 +601,6 @@ const EventLoop = struct {
         }
 
         self.lsp.registry.removeClient(client_key);
-    }
-
-    /// Transform an LSP response into the format Vim expects.
-    fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
-        if (std.mem.startsWith(u8, method, "goto_")) {
-            return lsp_transform.transformGotoResult(alloc, result, ssh_host) catch .null;
-        }
-        if (std.mem.eql(u8, method, "picker_query")) {
-            return lsp_transform.transformPickerSymbolResult(alloc, result, ssh_host) catch .null;
-        }
-        if (std.mem.eql(u8, method, "references")) {
-            return lsp_transform.transformReferencesResult(alloc, result, ssh_host) catch .null;
-        }
-
-        return result;
     }
 
     /// Handle LSP server notifications.
@@ -728,7 +719,7 @@ const EventLoop = struct {
                 for (arr) |item| {
                     if (item == .string) self.picker.appendIfMissing(item.string);
                 }
-                self.sendPickerResults(pending.cid, alloc, pending.vim_id, self.picker.recentFiles(), "file");
+                self.sendVimResponseTo(pending.cid, alloc, pending.vim_id, picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file"));
             },
         }
     }
@@ -754,84 +745,6 @@ const EventLoop = struct {
         vim_out.sendVimError(alloc, client.stream, vim_id, message);
     }
 
-    /// Handle picker-specific actions returned by handlers.
-    /// Returns true if the action was handled.
-    fn handlePickerAction(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, data: Value) bool {
-        const obj = switch (data) {
-            .object => |o| o,
-            else => return false,
-        };
-        const action = json_utils.getString(obj, "action") orelse return false;
-
-        if (std.mem.eql(u8, action, "picker_init")) {
-            const cwd = json_utils.getString(obj, "cwd") orelse {
-                self.sendVimResponseTo(cid, alloc, vim_id, .null);
-                return true;
-            };
-            if (!self.picker.start(cwd)) {
-                self.sendVimResponseTo(cid, alloc, vim_id, .null);
-                return true;
-            }
-            // Pre-seed MRU from Vim before querying buffers
-            if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
-                var names: std.ArrayList([]const u8) = .{};
-                defer names.deinit(alloc);
-                for (rf_arr) |v| {
-                    if (v == .string) names.append(alloc, v.string) catch {};
-                }
-                self.picker.setRecentFiles(names.items);
-            }
-            self.sendVimExprTo(cid, alloc, vim_id,
-                "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
-                .picker_buffers);
-            return true;
-        } else if (std.mem.eql(u8, action, "picker_file_query")) {
-            const query = json_utils.getString(obj, "query") orelse "";
-            if (!self.picker.hasIndex()) {
-                self.sendVimResponseTo(cid, alloc, vim_id, .null);
-                return true;
-            }
-            self.picker.pollScan();
-            if (query.len == 0) {
-                self.sendPickerResults(cid, alloc, vim_id, self.picker.recentFiles(), "file");
-            } else {
-                const indices = picker_mod.filterAndSort(alloc, self.picker.files(), query) catch {
-                    self.sendVimResponseTo(cid, alloc, vim_id, .null);
-                    return true;
-                };
-                var items: std.ArrayList([]const u8) = .{};
-                const files = self.picker.files();
-                for (indices) |idx| {
-                    items.append(alloc, files[idx]) catch {};
-                }
-                self.sendPickerResults(cid, alloc, vim_id, items.items, "file");
-            }
-            return true;
-        } else if (std.mem.eql(u8, action, "picker_close")) {
-            self.picker.close();
-            self.sendVimResponseTo(cid, alloc, vim_id, .null);
-            return true;
-        }
-        return false;
-    }
-
-    /// Send picker results in the standard format.
-    fn sendPickerResults(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, paths: []const []const u8, mode: []const u8) void {
-        var items = std.json.Array.init(alloc);
-        for (paths) |path| {
-            var item = ObjectMap.init(alloc);
-            item.put("label", json_utils.jsonString(path)) catch continue;
-            item.put("detail", json_utils.jsonString("")) catch continue;
-            item.put("file", json_utils.jsonString(path)) catch continue;
-            item.put("line", json_utils.jsonInteger(0)) catch continue;
-            item.put("column", json_utils.jsonInteger(0)) catch continue;
-            items.append(.{ .object = item }) catch continue;
-        }
-        var result = ObjectMap.init(alloc);
-        result.put("items", .{ .array = items }) catch {};
-        result.put("mode", json_utils.jsonString(mode)) catch {};
-        self.sendVimResponseTo(cid, alloc, vim_id, .{ .object = result });
-    }
 };
 
 pub fn main() !void {
