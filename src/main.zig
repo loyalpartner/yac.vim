@@ -282,15 +282,7 @@ const EventLoop = struct {
         }
 
         // Remove deferred requests for this client
-        var i: usize = 0;
-        while (i < self.lsp.deferred_requests.items.len) {
-            if (self.lsp.deferred_requests.items[i].client_id == cid) {
-                self.allocator.free(self.lsp.deferred_requests.items[i].raw_line);
-                _ = self.lsp.deferred_requests.swapRemove(i);
-            } else {
-                i += 1;
-            }
-        }
+        self.lsp.removeDeferredForClient(cid);
 
         self.clients.remove(cid);
 
@@ -384,13 +376,13 @@ const EventLoop = struct {
     /// Handle a Vim request or notification.
     fn handleVimRequest(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8) void {
         // Defer query methods while the relevant LSP server is indexing
-        const request_language: ?[]const u8 = if (isQueryMethod(method)) blk: {
+        const request_language: ?[]const u8 = if (lsp_mod.isQueryMethod(method)) blk: {
             const obj = switch (params) { .object => |o| o, else => break :blk null };
             const file = json_utils.getString(obj, "file") orelse break :blk null;
             break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
         } else null;
-        if (vim_id != null and request_language != null and self.isLanguageIndexing(request_language.?)) {
-            if (self.enqueueDeferred(cid, raw_line)) {
+        if (vim_id != null and request_language != null and self.lsp.isLanguageIndexing(request_language.?)) {
+            if (self.lsp.enqueueDeferred(cid, raw_line)) {
                 log.info("Deferred {s} request (LSP indexing in progress)", .{method});
                 self.sendVimExTo(cid, alloc, "echo '[yac] LSP indexing, request queued...'");
             }
@@ -423,7 +415,7 @@ const EventLoop = struct {
             },
             .initializing => {
                 if (vim_id != null) {
-                    if (self.enqueueDeferred(cid, raw_line)) {
+                    if (self.lsp.enqueueDeferred(cid, raw_line)) {
                         log.info("Deferred {s} request (LSP initializing)", .{method});
                         self.sendVimExTo(cid, alloc, "echo '[yac] LSP initializing, request queued...'");
                     } else {
@@ -435,29 +427,6 @@ const EventLoop = struct {
                 self.trackPendingRequest(pending.lsp_request_id, cid, vim_id, method, params);
             },
         }
-    }
-
-    /// Enqueue a raw request line for deferred replay. Returns true on success.
-    fn enqueueDeferred(self: *EventLoop, cid: ClientId, raw_line: []const u8) bool {
-        const duped = self.allocator.dupe(u8, raw_line) catch |e| {
-            log.err("Failed to defer request: {any}", .{e});
-            return false;
-        };
-        if (self.lsp.deferred_requests.items.len >= lsp_mod.Lsp.max_deferred_requests) {
-            self.allocator.free(self.lsp.deferred_requests.items[0].raw_line);
-            _ = self.lsp.deferred_requests.orderedRemove(0);
-            log.info("Evicted oldest deferred request (queue full)", .{});
-        }
-        self.lsp.deferred_requests.append(self.allocator, .{
-            .client_id = cid,
-            .raw_line = duped,
-            .timestamp_ns = std.time.nanoTimestamp(),
-        }) catch |e| {
-            self.allocator.free(duped);
-            log.err("Failed to defer request: {any}", .{e});
-            return false;
-        };
-        return true;
     }
 
     /// Track a pending LSP request so the response can be routed back to the correct Vim client.
@@ -527,7 +496,7 @@ const EventLoop = struct {
                             self.lsp.registry.handleInitializeResponse(client_key) catch |e| {
                                 log.err("Failed to handle init response: {any}", .{e});
                             };
-                            if (!self.isAnyLanguageIndexing()) {
+                            if (!self.lsp.isAnyLanguageIndexing()) {
                                 self.flushDeferredRequests();
                             }
                             continue;
@@ -646,7 +615,7 @@ const EventLoop = struct {
     /// Handle LSP server notifications.
     fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
         if (std.mem.eql(u8, method, "$/progress")) {
-            const language = extractLanguageFromKey(client_key);
+            const language = lsp_mod.extractLanguageFromKey(client_key);
             const params_obj = switch (params) {
                 .object => |o| o,
                 else => return,
@@ -671,7 +640,7 @@ const EventLoop = struct {
             const percentage = json_utils.getInteger(value_obj, "percentage");
 
             if (std.mem.eql(u8, kind, "begin")) {
-                self.incrementIndexingCount(language);
+                self.lsp.incrementIndexingCount(language);
                 const title = json_utils.getString(value_obj, "title");
                 if (token_key) |tk| if (title) |t| self.progress.storeTitle(tk, t);
                 if (lsp_transform.formatProgressEcho(alloc, title, message, percentage)) |echo_cmd| {
@@ -684,8 +653,8 @@ const EventLoop = struct {
                 }
             } else if (std.mem.eql(u8, kind, "end")) {
                 if (token_key) |tk| self.progress.removeTitle(tk);
-                self.decrementIndexingCount(language);
-                if (!self.isAnyLanguageIndexing()) {
+                self.lsp.decrementIndexingCount(language);
+                if (!self.lsp.isAnyLanguageIndexing()) {
                     self.broadcastVimEx(alloc, "echo '[yac] Indexing complete'");
                     self.flushDeferredRequests();
                 }
@@ -702,35 +671,17 @@ const EventLoop = struct {
     }
 
     /// Flush deferred requests after LSP indexing completes.
-    /// Skips requests older than deferred_ttl_ns.
     fn flushDeferredRequests(self: *EventLoop) void {
-        const count = self.lsp.deferred_requests.items.len;
-        if (count == 0) return;
-
-        log.info("Flushing {d} deferred requests", .{count});
-
-        var requests = self.lsp.deferred_requests;
-        self.lsp.deferred_requests = .{};
+        var requests = self.lsp.takeDeferredRequests();
         defer {
             for (requests.items) |req| self.allocator.free(req.raw_line);
             requests.deinit(self.allocator);
         }
 
-        const now = std.time.nanoTimestamp();
-        var dropped: usize = 0;
-
         for (requests.items) |req| {
-            if (now - req.timestamp_ns > lsp_mod.Lsp.deferred_ttl_ns) {
-                dropped += 1;
-                continue;
-            }
             if (self.clients.contains(req.client_id)) {
                 self.handleVimLine(req.client_id, req.raw_line);
             }
-        }
-
-        if (dropped > 0) {
-            log.info("Dropped {d} stale deferred requests", .{dropped});
         }
     }
 
@@ -801,39 +752,6 @@ const EventLoop = struct {
     fn sendVimErrorTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, message: []const u8) void {
         const client = self.clients.get(cid) orelse return;
         vim_out.sendVimError(alloc, client.stream, vim_id, message);
-    }
-
-    /// Increment indexing count for a language.
-    fn incrementIndexingCount(self: *EventLoop, language: []const u8) void {
-        if (self.lsp.indexing_counts.getPtr(language)) |count| {
-            count.* += 1;
-        } else {
-            const key = self.allocator.dupe(u8, language) catch return;
-            self.lsp.indexing_counts.put(key, 1) catch {
-                self.allocator.free(key);
-            };
-        }
-    }
-
-    /// Decrement indexing count for a language.
-    fn decrementIndexingCount(self: *EventLoop, language: []const u8) void {
-        if (self.lsp.indexing_counts.getPtr(language)) |count| {
-            if (count.* > 0) count.* -= 1;
-        }
-    }
-
-    /// Check if a specific language is currently indexing.
-    fn isLanguageIndexing(self: *EventLoop, language: []const u8) bool {
-        return (self.lsp.indexing_counts.get(language) orelse 0) > 0;
-    }
-
-    /// Check if any language is currently indexing (for flushDeferredRequests).
-    fn isAnyLanguageIndexing(self: *EventLoop) bool {
-        var it = self.lsp.indexing_counts.valueIterator();
-        while (it.next()) |count| {
-            if (count.* > 0) return true;
-        }
-        return false;
     }
 
     /// Handle picker-specific actions returned by handlers.
@@ -916,37 +834,6 @@ const EventLoop = struct {
     }
 };
 
-/// Extract language name from a client_key ("language\x00workspace_uri" or just "language").
-fn extractLanguageFromKey(client_key: []const u8) []const u8 {
-    const pos = std.mem.indexOfScalar(u8, client_key, 0) orelse return client_key;
-    return client_key[0..pos];
-}
-
-/// Check if a Vim method is a query that should be deferred during LSP indexing.
-pub fn isQueryMethod(method: []const u8) bool {
-    const query_methods = [_][]const u8{
-        "goto_definition",
-        "goto_declaration",
-        "goto_type_definition",
-        "goto_implementation",
-        "hover",
-        "completion",
-        "references",
-        "rename",
-        "code_action",
-        "document_symbols",
-        "inlay_hints",
-        "folding_range",
-        "call_hierarchy",
-        "picker_query",
-    };
-    for (query_methods) |m| {
-        if (std.mem.eql(u8, method, m)) return true;
-    }
-    return false;
-}
-
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -995,35 +882,6 @@ test {
     _ = @import("lsp_protocol.zig");
     _ = @import("lsp_registry.zig");
     _ = @import("lsp_client.zig");
-}
-
-test "isQueryMethod - query methods return true" {
-    try std.testing.expect(isQueryMethod("goto_definition"));
-    try std.testing.expect(isQueryMethod("goto_declaration"));
-    try std.testing.expect(isQueryMethod("goto_type_definition"));
-    try std.testing.expect(isQueryMethod("goto_implementation"));
-    try std.testing.expect(isQueryMethod("hover"));
-    try std.testing.expect(isQueryMethod("completion"));
-    try std.testing.expect(isQueryMethod("references"));
-    try std.testing.expect(isQueryMethod("rename"));
-    try std.testing.expect(isQueryMethod("code_action"));
-    try std.testing.expect(isQueryMethod("document_symbols"));
-    try std.testing.expect(isQueryMethod("inlay_hints"));
-    try std.testing.expect(isQueryMethod("folding_range"));
-    try std.testing.expect(isQueryMethod("call_hierarchy"));
-}
-
-test "isQueryMethod - non-query methods return false" {
-    try std.testing.expect(!isQueryMethod("file_open"));
-    try std.testing.expect(!isQueryMethod("did_change"));
-    try std.testing.expect(!isQueryMethod("did_save"));
-    try std.testing.expect(!isQueryMethod("did_close"));
-    try std.testing.expect(!isQueryMethod("will_save"));
-    try std.testing.expect(!isQueryMethod("diagnostics"));
-    try std.testing.expect(!isQueryMethod("execute_command"));
-    try std.testing.expect(!isQueryMethod("unknown_method"));
-}
-
-test {
+    _ = @import("lsp.zig");
     _ = @import("picker.zig");
 }
