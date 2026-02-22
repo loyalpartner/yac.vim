@@ -1,8 +1,8 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const vim = @import("../vim_protocol.zig");
-const registry_mod = @import("../lsp_registry.zig");
-const LspClient = @import("../lsp_client.zig").LspClient;
+const registry_mod = @import("../lsp/registry.zig");
+const LspClient = @import("../lsp/client.zig").LspClient;
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;

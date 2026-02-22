@@ -1,7 +1,7 @@
 const std = @import("std");
-const lsp_registry_mod = @import("lsp_registry.zig");
-const clients_mod = @import("clients.zig");
-const log = @import("log.zig");
+const lsp_registry_mod = @import("registry.zig");
+const clients_mod = @import("../clients.zig");
+const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
 const ClientId = clients_mod.ClientId;

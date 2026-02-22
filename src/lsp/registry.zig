@@ -1,8 +1,8 @@
 const std = @import("std");
-const json = @import("json_utils.zig");
-const LspClient = @import("lsp_client.zig").LspClient;
-const log = @import("log.zig");
-const lsp_config = @import("lsp_config.zig");
+const json = @import("../json_utils.zig");
+const LspClient = @import("client.zig").LspClient;
+const log = @import("../log.zig");
+const lsp_config = @import("config.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;

@@ -1,6 +1,6 @@
 const std = @import("std");
-const json_utils = @import("json_utils.zig");
-const lsp_registry_mod = @import("lsp_registry.zig");
+const json_utils = @import("../json_utils.zig");
+const lsp_registry_mod = @import("registry.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
