@@ -294,9 +294,9 @@ pub const Picker = struct {
             if (query.len == 0) {
                 return .{ .respond_results = .{ .paths = self.recentFiles(), .mode = "file" } };
             }
-            const indices = filterAndSort(alloc, self.files(), query) catch return .respond_null;
-            var items: std.ArrayList([]const u8) = .{};
             const file_list = self.files();
+            const indices = filterAndSort(alloc, file_list, query) catch return .respond_null;
+            var items: std.ArrayList([]const u8) = .{};
             for (indices) |idx| {
                 items.append(alloc, file_list[idx]) catch {};
             }

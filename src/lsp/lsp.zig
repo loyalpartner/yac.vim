@@ -45,7 +45,7 @@ pub const Lsp = struct {
     }
 
     // ====================================================================
-    // Indexing counts (Step 1.1)
+    // Indexing counts
     // ====================================================================
 
     /// Increment indexing count for a language.
@@ -82,7 +82,7 @@ pub const Lsp = struct {
     }
 
     // ====================================================================
-    // Deferred requests (Steps 1.2–1.4)
+    // Deferred requests
     // ====================================================================
 
     /// Enqueue a raw request line for deferred replay. Returns true on success.
@@ -156,7 +156,7 @@ pub const Lsp = struct {
 };
 
 // ============================================================================
-// Pure helper functions (Step 1.5)
+// Pure helper functions
 // ============================================================================
 
 /// Extract language name from a client_key ("language\x00workspace_uri" or just "language").
