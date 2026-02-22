@@ -116,8 +116,7 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
         // Extract location — handle both SymbolInformation (has "location")
         // and DocumentSymbol (has "range"/"selectionRange" at top level, no "location")
         var file: []const u8 = "";
-        var line: i64 = 0;
-        var column: i64 = 0;
+        var pos: Position = .{ .line = 0, .column = 0 };
         if (json_utils.getObject(sym, "location")) |loc| {
             // SymbolInformation format (workspace/symbol)
             if (json_utils.getString(loc, "uri")) |uri| {
@@ -126,21 +125,14 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
                     file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
                 }
             }
-            if (json_utils.getObject(loc, "range")) |range| {
-                if (json_utils.getObject(range, "start")) |start| {
-                    line = json_utils.getInteger(start, "line") orelse 0;
-                    column = json_utils.getInteger(start, "character") orelse 0;
-                }
+            if (loc.get("range")) |range_val| {
+                if (extractStartPosition(range_val)) |p| pos = p;
             }
         } else {
             // DocumentSymbol format (textDocument/documentSymbol) — range at top level
-            const range = json_utils.getObject(sym, "selectionRange") orelse
-                json_utils.getObject(sym, "range");
-            if (range) |r| {
-                if (json_utils.getObject(r, "start")) |start| {
-                    line = json_utils.getInteger(start, "line") orelse 0;
-                    column = json_utils.getInteger(start, "character") orelse 0;
-                }
+            const range_val = sym.get("selectionRange") orelse sym.get("range");
+            if (range_val) |rv| {
+                if (extractStartPosition(rv)) |p| pos = p;
             }
         }
 
@@ -148,8 +140,8 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
         try item.put("label", json_utils.jsonString(name));
         try item.put("detail", json_utils.jsonString(detail));
         try item.put("file", json_utils.jsonString(file));
-        try item.put("line", json_utils.jsonInteger(line));
-        try item.put("column", json_utils.jsonInteger(column));
+        try item.put("line", json_utils.jsonInteger(pos.line));
+        try item.put("column", json_utils.jsonInteger(pos.column));
         try items.append(.{ .object = item });
     }
 
@@ -174,8 +166,10 @@ fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, column
     return .{ .object = loc };
 }
 
+const Position = struct { line: i64, column: i64 };
+
 /// Extract start position (line, character) from a range object.
-fn extractStartPosition(range_val: Value) ?struct { line: i64, column: i64 } {
+fn extractStartPosition(range_val: Value) ?Position {
     const range_obj = switch (range_val) {
         .object => |o| o,
         else => return null,

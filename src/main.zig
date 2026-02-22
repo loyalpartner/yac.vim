@@ -376,17 +376,21 @@ const EventLoop = struct {
     /// Handle a Vim request or notification.
     fn handleVimRequest(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8) void {
         // Defer query methods while the relevant LSP server is indexing
-        const request_language: ?[]const u8 = if (lsp_mod.isQueryMethod(method)) blk: {
-            const obj = switch (params) { .object => |o| o, else => break :blk null };
-            const file = json_utils.getString(obj, "file") orelse break :blk null;
-            break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
-        } else null;
-        if (vim_id != null and request_language != null and self.lsp.isLanguageIndexing(request_language.?)) {
-            if (self.lsp.enqueueDeferred(cid, raw_line)) {
-                log.info("Deferred {s} request (LSP indexing in progress)", .{method});
-                self.sendVimExTo(cid, alloc, "echo '[yac] LSP indexing, request queued...'");
+        if (vim_id != null and lsp_mod.isQueryMethod(method)) {
+            const lang = blk: {
+                const obj = switch (params) { .object => |o| o, else => break :blk null };
+                const file = json_utils.getString(obj, "file") orelse break :blk null;
+                break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
+            };
+            if (lang) |language| {
+                if (self.lsp.isLanguageIndexing(language)) {
+                    if (self.lsp.enqueueDeferred(cid, raw_line)) {
+                        log.info("Deferred {s} request (LSP indexing in progress)", .{method});
+                        self.sendVimExTo(cid, alloc, "echo '[yac] LSP indexing, request queued...'");
+                    }
+                    return;
+                }
             }
-            return;
         }
 
         const client = self.clients.get(cid) orelse return;

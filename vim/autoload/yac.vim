@@ -2347,6 +2347,10 @@ endfunction
 " ============================================================================
 
 " 打开 Picker 面板
+function! yac#picker_info() abort
+  return {'mode': s:picker.mode, 'count': len(s:picker.all_locations), 'items': len(s:picker.items)}
+endfunction
+
 function! yac#picker_open() abort
   if s:picker.input_popup != -1
     call s:picker_close()
