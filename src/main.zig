@@ -1,15 +1,15 @@
 const std = @import("std");
 const json_utils = @import("json_utils.zig");
 const vim = @import("vim_protocol.zig");
-const lsp_registry_mod = @import("lsp_registry.zig");
+const lsp_registry_mod = @import("lsp/registry.zig");
 const handlers_mod = @import("handlers.zig");
 const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
-const lsp_transform = @import("lsp_transform.zig");
+const lsp_transform = @import("lsp/transform.zig");
 const vim_out = @import("vim.zig");
 const clients_mod = @import("clients.zig");
 const requests_mod = @import("requests.zig");
-const lsp_mod = @import("lsp.zig");
+const lsp_mod = @import("lsp/lsp.zig");
 const progress_mod = @import("progress.zig");
 
 const Allocator = std.mem.Allocator;
@@ -792,9 +792,9 @@ pub fn main() !void {
 test {
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
-    _ = @import("lsp_protocol.zig");
-    _ = @import("lsp_registry.zig");
-    _ = @import("lsp_client.zig");
-    _ = @import("lsp.zig");
+    _ = @import("lsp/protocol.zig");
+    _ = @import("lsp/registry.zig");
+    _ = @import("lsp/client.zig");
+    _ = @import("lsp/lsp.zig");
     _ = @import("picker.zig");
 }
