@@ -774,12 +774,9 @@ const EventLoop = struct {
                     .array => |a| a.items,
                     else => &[_]Value{},
                 };
-                var names: std.ArrayList([]const u8) = .{};
-                defer names.deinit(alloc);
                 for (arr) |item| {
-                    if (item == .string) names.append(alloc, item.string) catch {};
+                    if (item == .string) self.picker.appendIfMissing(item.string);
                 }
-                self.picker.setRecentFiles(names.items);
                 self.sendPickerResults(pending.cid, alloc, pending.vim_id, self.picker.recentFiles(), "file");
             },
         }
@@ -856,6 +853,15 @@ const EventLoop = struct {
             if (!self.picker.start(cwd)) {
                 self.sendVimResponseTo(cid, alloc, vim_id, .null);
                 return true;
+            }
+            // Pre-seed MRU from Vim before querying buffers
+            if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
+                var names: std.ArrayList([]const u8) = .{};
+                defer names.deinit(alloc);
+                for (rf_arr) |v| {
+                    if (v == .string) names.append(alloc, v.string) catch {};
+                }
+                self.picker.setRecentFiles(names.items);
             }
             self.sendVimExprTo(cid, alloc, vim_id,
                 "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",

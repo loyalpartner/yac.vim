@@ -170,6 +170,16 @@ pub const FileIndex = struct {
         }
     }
 
+    pub fn appendIfMissing(self: *FileIndex, path: []const u8) void {
+        for (self.recent_files.items) |f| {
+            if (std.mem.eql(u8, f, path)) return;
+        }
+        const duped = self.allocator.dupe(u8, path) catch return;
+        self.recent_files.append(self.allocator, duped) catch {
+            self.allocator.free(duped);
+        };
+    }
+
     pub fn getStdoutFd(self: *FileIndex) ?std.posix.fd_t {
         const child = self.child orelse return null;
         const stdout = child.stdout orelse return null;
@@ -229,6 +239,11 @@ pub const Picker = struct {
     pub fn setRecentFiles(self: *Picker, recent: []const []const u8) void {
         const fi = self.file_index orelse return;
         fi.setRecentFiles(recent) catch {};
+    }
+
+    pub fn appendIfMissing(self: *Picker, path: []const u8) void {
+        const fi = self.file_index orelse return;
+        fi.appendIfMissing(path);
     }
 
     pub fn recentFiles(self: *Picker) []const []const u8 {

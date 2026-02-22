@@ -113,6 +113,27 @@ let s:picker = {
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
+let s:picker_mru = []
+
+function! s:picker_mru_file() abort
+  return expand('~/.local/share/yac.vim/history')
+endfunction
+
+function! s:picker_mru_load() abort
+  let f = s:picker_mru_file()
+  if filereadable(f)
+    let s:picker_mru = readfile(f)
+  endif
+endfunction
+
+function! s:picker_mru_save() abort
+  let f = s:picker_mru_file()
+  let dir = fnamemodify(f, ':h')
+  if !isdirectory(dir)
+    call mkdir(dir, 'p')
+  endif
+  call writefile(s:picker_mru[:99], f)
+endfunction
 
 " 获取当前 buffer 应该使用的连接 key
 function! s:get_connection_key() abort
@@ -1572,6 +1593,7 @@ function! s:picker_open_references(locations) abort
   endif
   let s:picker.mode = 'references'
   let s:picker.grouped = 1
+  let s:picker.preview = 1
   let s:picker.orig_file = expand('%:p')
   let s:picker.orig_lnum = line('.')
   let s:picker.orig_col = col('.')
@@ -1621,7 +1643,7 @@ function! s:picker_filter_references(query) abort
   let s:picker.selected = 0
   call s:picker_advance_past_header(1)
   call s:picker_highlight_selected()
-  if s:picker.mode ==# 'references'
+  if s:picker.preview
     call s:picker_preview()
   endif
 endfunction
@@ -2342,12 +2364,18 @@ function! yac#picker_open() abort
   call s:request('picker_open', {
     \ 'cwd': getcwd(),
     \ 'file': expand('%:p'),
+    \ 'recent_files': s:picker_mru,
     \ }, 's:handle_picker_open_response')
 endfunction
 
 function! s:handle_picker_open_response(channel, response) abort
   call s:debug_log(printf('[RECV]: picker_open response: %s', string(a:response)))
   if s:picker.results_popup == -1
+    return
+  endif
+  " Don't overwrite if user has already typed (e.g. switched to ! or @ mode)
+  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  if !empty(text)
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
@@ -2500,7 +2528,9 @@ function! s:picker_on_input_changed() abort
     let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
   else
     let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
-    if text =~# '^@' && !empty(s:picker.all_locations)
+    if text =~# '^!'
+      let s:picker.timer_id = timer_start(30, function('s:picker_filter_history_timer'))
+    elseif text =~# '^@' && !empty(s:picker.all_locations)
       " Document symbol cache is warm — filter locally
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
     else
@@ -2528,6 +2558,9 @@ function! s:picker_send_query(timer_id) abort
   elseif text =~# '^@'
     let mode = 'document_symbol'
     let query = text[1:]
+  elseif text =~# '^!'
+    let mode = 'history'
+    let query = text[1:]
   endif
 
   " Clear doc symbol cache when leaving document_symbol mode
@@ -2536,6 +2569,12 @@ function! s:picker_send_query(timer_id) abort
   endif
   let s:picker.mode = mode
   let s:picker.last_query = text
+
+  " History mode filters client-side — no daemon request
+  if mode ==# 'history'
+    call s:picker_apply_history_filter(query)
+    return
+  endif
 
   call s:request('picker_query', {
     \ 'query': query,
@@ -2587,6 +2626,26 @@ function! s:picker_filter_doc_symbols_timer(timer_id) abort
   call s:picker_apply_doc_symbol_filter(query)
 endfunction
 
+function! s:picker_apply_history_filter(query) abort
+  let pat = tolower(a:query)
+  let items = []
+  for path in s:picker_mru
+    if empty(pat) || stridx(tolower(path), pat) >= 0
+      call add(items, {'label': path, 'file': path, 'detail': '', 'line': 0, 'column': 0})
+    endif
+  endfor
+  call s:picker_update_results(items)
+endfunction
+
+function! s:picker_filter_history_timer(timer_id) abort
+  let s:picker.timer_id = -1
+  if s:picker.input_popup == -1 | return | endif
+  let s:picker.mode = 'history'
+  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let query = text =~# '^!' ? text[1:] : ''
+  call s:picker_apply_history_filter(query)
+endfunction
+
 function! s:picker_update_results(items) abort
   let s:picker.items = a:items
   let s:picker.selected = 0
@@ -2619,28 +2678,15 @@ function! s:picker_highlight_selected() abort
     let item = s:picker.items[i]
     if get(item, 'is_header', 0)
       call add(lines, '  ' . get(item, 'label', ''))
-    elseif i == s:picker.selected
-      if s:picker.grouped
-        call add(lines, '>>  ' . get(item, 'label', ''))
-      else
-        let label = fnamemodify(get(item, 'label', ''), ':.')
-        let detail = get(item, 'detail', '')
-        let prefix = s:picker.lnum_width > 0
-          \ ? printf('> %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
-          \ : '> '
-        call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
-      endif
+    elseif s:picker.grouped
+      call add(lines, '    ' . get(item, 'label', ''))
     else
-      if s:picker.grouped
-        call add(lines, '    ' . get(item, 'label', ''))
-      else
-        let label = fnamemodify(get(item, 'label', ''), ':.')
-        let detail = get(item, 'detail', '')
-        let prefix = s:picker.lnum_width > 0
-          \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
-          \ : '  '
-        call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
-      endif
+      let label = fnamemodify(get(item, 'label', ''), ':.')
+      let detail = get(item, 'detail', '')
+      let prefix = s:picker.lnum_width > 0
+        \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
+        \ : '  '
+      call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
     endif
   endfor
   call popup_settext(s:picker.results_popup, lines)
@@ -2689,7 +2735,7 @@ function! s:picker_move_grouped(step) abort
     if !get(s:picker.items[i], 'is_header', 0)
       let s:picker.selected = i
       call s:picker_highlight_selected()
-      if s:picker.mode ==# 'references'
+      if s:picker.preview
         call s:picker_preview()
       endif
       return
@@ -2727,6 +2773,9 @@ function! s:picker_accept() abort
   let line = get(item, 'line', 0)
   let column = get(item, 'column', 0)
 
+  " Capture before s:picker_close() resets state
+  let mode = s:picker.mode
+
   " Save to history
   let query = s:picker.last_query
   if !empty(query)
@@ -2737,23 +2786,33 @@ function! s:picker_accept() abort
     endif
   endif
 
+  " Track in MRU (file mode and symbol modes with a file)
+  let target_file = !empty(file) ? fnamemodify(file, ':p') : expand('%:p')
+  if !empty(target_file)
+    call filter(s:picker_mru, 'v:val !=# target_file')
+    call insert(s:picker_mru, target_file, 0)
+    if len(s:picker_mru) > 100
+      call remove(s:picker_mru, 100, -1)
+    endif
+    call s:picker_mru_save()
+  endif
+
   call s:picker_close()
 
-  " Navigate to file/symbol
-  if !empty(file)
-    if fnamemodify(file, ':p') !=# expand('%:p')
-      execute 'edit ' . fnameescape(file)
-    endif
-    if line > 0
-      call cursor(line + 1, column + 1)
-      normal! zz
-    endif
+  " Navigate to file
+  if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
+    execute 'edit ' . fnameescape(file)
+  endif
+  " Jump to line: always for symbol modes (line 0 = first line), else only if line > 0
+  let is_symbol = mode ==# 'workspace_symbol' || mode ==# 'document_symbol'
+  if is_symbol || line > 0
+    call cursor(line + 1, column + 1)
+    normal! zz
   endif
 endfunction
 
 function! s:picker_close() abort
-  let is_refs = (s:picker.mode ==# 'references')
-  let needs_restore = is_refs || s:picker.preview
+  let needs_restore = s:picker.preview
   let orig_file = s:picker.orig_file
   let orig_lnum = s:picker.orig_lnum
   let orig_col = s:picker.orig_col
@@ -2803,3 +2862,4 @@ if !exists('s:cleanup_timer')
   " 每5分钟清理一次死连接
   let s:cleanup_timer = timer_start(300000, {-> s:cleanup_dead_connections()}, {'repeat': -1})
 endif
+call s:picker_mru_load()
