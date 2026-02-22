@@ -243,3 +243,18 @@ pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]c
     try result_obj.put("locations", .{ .array = locations });
     return .{ .object = result_obj };
 }
+
+/// Transform an LSP response into the format Vim expects, dispatching by method name.
+pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
+    if (std.mem.startsWith(u8, method, "goto_")) {
+        return transformGotoResult(alloc, result, ssh_host) catch .null;
+    }
+    if (std.mem.eql(u8, method, "picker_query")) {
+        return transformPickerSymbolResult(alloc, result, ssh_host) catch .null;
+    }
+    if (std.mem.eql(u8, method, "references")) {
+        return transformReferencesResult(alloc, result, ssh_host) catch .null;
+    }
+
+    return result;
+}

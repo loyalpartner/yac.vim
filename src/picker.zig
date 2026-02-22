@@ -1,5 +1,8 @@
 const std = @import("std");
+const json_utils = @import("json_utils.zig");
 const Allocator = std.mem.Allocator;
+const Value = json_utils.Value;
+const ObjectMap = json_utils.ObjectMap;
 
 const max_results = 50;
 const max_files = 50000;
@@ -255,7 +258,74 @@ pub const Picker = struct {
         const fi = self.file_index orelse return &.{};
         return fi.files.items;
     }
+
+    pub const PickerAction = union(enum) {
+        none,
+        respond_null,
+        respond_results: struct { paths: []const []const u8, mode: []const u8 },
+        query_buffers,
+    };
+
+    /// Process a picker action from handler data. Returns what the EventLoop should do.
+    pub fn processAction(self: *Picker, alloc: Allocator, data: Value) PickerAction {
+        const obj = switch (data) {
+            .object => |o| o,
+            else => return .none,
+        };
+        const action = json_utils.getString(obj, "action") orelse return .none;
+
+        if (std.mem.eql(u8, action, "picker_init")) {
+            const cwd = json_utils.getString(obj, "cwd") orelse return .respond_null;
+            if (!self.start(cwd)) return .respond_null;
+            // Pre-seed MRU from Vim
+            if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
+                var names: std.ArrayList([]const u8) = .{};
+                defer names.deinit(alloc);
+                for (rf_arr) |v| {
+                    if (v == .string) names.append(alloc, v.string) catch {};
+                }
+                self.setRecentFiles(names.items);
+            }
+            return .query_buffers;
+        } else if (std.mem.eql(u8, action, "picker_file_query")) {
+            const query = json_utils.getString(obj, "query") orelse "";
+            if (!self.hasIndex()) return .respond_null;
+            self.pollScan();
+            if (query.len == 0) {
+                return .{ .respond_results = .{ .paths = self.recentFiles(), .mode = "file" } };
+            }
+            const indices = filterAndSort(alloc, self.files(), query) catch return .respond_null;
+            var items: std.ArrayList([]const u8) = .{};
+            const file_list = self.files();
+            for (indices) |idx| {
+                items.append(alloc, file_list[idx]) catch {};
+            }
+            return .{ .respond_results = .{ .paths = items.items, .mode = "file" } };
+        } else if (std.mem.eql(u8, action, "picker_close")) {
+            self.close();
+            return .respond_null;
+        }
+        return .none;
+    }
 };
+
+/// Build picker results in the standard JSON format for Vim.
+pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []const u8) Value {
+    var items = std.json.Array.init(alloc);
+    for (paths) |path| {
+        var item = ObjectMap.init(alloc);
+        item.put("label", json_utils.jsonString(path)) catch continue;
+        item.put("detail", json_utils.jsonString("")) catch continue;
+        item.put("file", json_utils.jsonString(path)) catch continue;
+        item.put("line", json_utils.jsonInteger(0)) catch continue;
+        item.put("column", json_utils.jsonInteger(0)) catch continue;
+        items.append(.{ .object = item }) catch continue;
+    }
+    var result = ObjectMap.init(alloc);
+    result.put("items", .{ .array = items }) catch {};
+    result.put("mode", json_utils.jsonString(mode)) catch {};
+    return .{ .object = result };
+}
 
 fn findExecutable(name: []const u8) bool {
     const path_env = std.posix.getenv("PATH") orelse return false;
