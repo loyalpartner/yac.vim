@@ -110,6 +110,9 @@ let s:picker = {
   \ 'orig_file': '',
   \ 'orig_lnum': 0,
   \ 'orig_col': 0,
+  \ 'cursor_col': 0,
+  \ 'cursor_match_id': -1,
+  \ 'input_text': '',
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
@@ -1651,7 +1654,7 @@ endfunction
 function! s:picker_filter_references_timer(timer_id) abort
   let s:picker.timer_id = -1
   if s:picker.input_popup == -1 | return | endif
-  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let text = s:picker_get_text()
   call s:picker_filter_references(text)
 endfunction
 
@@ -2378,7 +2381,7 @@ function! s:handle_picker_open_response(channel, response) abort
     return
   endif
   " Don't overwrite if user has already typed (e.g. switched to ! or @ mode)
-  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let text = s:picker_get_text()
   if !empty(text)
     return
   endif
@@ -2400,6 +2403,7 @@ function! s:picker_create_ui(opts) abort
   call setbufvar(input_buf, '&bufhidden', 'wipe')
   call setbufvar(input_buf, '&swapfile', 0)
   call setbufline(input_buf, 1, '> ')
+  let s:picker.input_text = ''
 
   let s:picker.input_popup = popup_create(input_buf, {
     \ 'line': row,
@@ -2440,6 +2444,47 @@ function! s:picker_create_ui(opts) abort
   highlight default link YacPickerNormal Normal
   highlight default link YacPickerSelected CursorLine
   highlight default link YacPickerHeader Directory
+  highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
+
+  let s:picker.cursor_col = 0
+  call s:picker_set_text('')
+endfunction
+
+" Update the visual cursor in the input popup using matchaddpos.
+" cursor_col is 0-based index into the text after '> '.
+" Buffer always has '> text ' (trailing space), so cursor at EOL highlights that space.
+function! s:picker_update_cursor() abort
+  if s:picker.input_popup == -1 | return | endif
+  if s:picker.cursor_match_id != -1
+    call win_execute(s:picker.input_popup, 'silent! call matchdelete(' . s:picker.cursor_match_id . ')')
+    let s:picker.cursor_match_id = -1
+  endif
+  " Column in buffer: '> ' = 2 chars, then 1-based → cursor_col + 3
+  let col = s:picker.cursor_col + 3
+  let id = 100
+  call win_execute(s:picker.input_popup, 'let w:_yac_cursor_id = matchaddpos("YacPickerCursor", [[1, ' . col . ']], 20, ' . id . ')')
+  let s:picker.cursor_match_id = id
+endfunction
+
+" Get the picker input text (authoritative source, not from buffer).
+function! s:picker_get_text() abort
+  return s:picker.input_text
+endfunction
+
+" Set the picker input text and refresh the buffer display + cursor.
+function! s:picker_set_text(text) abort
+  let s:picker.input_text = a:text
+  " Buffer shows '> text ' — trailing space is cursor placeholder at EOL
+  call setbufline(winbufnr(s:picker.input_popup), 1, '> ' . a:text . ' ')
+  call s:picker_update_cursor()
+endfunction
+
+" Set text and cursor position, then notify that input changed.
+" Used by all editing key handlers (BS, Del, Ctrl+U, Ctrl+W, char input).
+function! s:picker_edit(text, col) abort
+  let s:picker.cursor_col = a:col
+  call s:picker_set_text(a:text)
+  call s:picker_on_input_changed()
 endfunction
 
 function! s:picker_input_filter(winid, key) abort
@@ -2467,57 +2512,64 @@ function! s:picker_input_filter(winid, key) abort
     return 1
   endif
 
-  " 编辑快捷键（用 char2nr 比较）
-  if nr == 1  " Ctrl+A
-    call win_execute(a:winid, 'call cursor(1, 3)')
+  " Cursor movement
+  if nr == 1  " Ctrl+A — jump to start
+    let s:picker.cursor_col = 0
+    call s:picker_update_cursor()
     return 1
   endif
-  if nr == 5  " Ctrl+E
-    call win_execute(a:winid, 'call cursor(1, col("$"))')
+  if nr == 5  " Ctrl+E — jump to end
+    let s:picker.cursor_col = len(s:picker_get_text())
+    call s:picker_update_cursor()
     return 1
   endif
-  if nr == 21  " Ctrl+U
-    let buf = winbufnr(a:winid)
-    call setbufline(buf, 1, '> ')
-    call win_execute(a:winid, 'call cursor(1, 3)')
-    call s:picker_on_input_changed()
-    return 1
-  endif
-  if nr == 23  " Ctrl+W
-    let buf = winbufnr(a:winid)
-    let line = getbufline(buf, 1)[0]
-    let text = line[2:]
-    let text = substitute(text, '\S*\s*$', '', '')
-    call setbufline(buf, 1, '> ' . text)
-    call win_execute(a:winid, 'call cursor(1, col("$"))')
-    call s:picker_on_input_changed()
-    return 1
-  endif
-
-  " 注：Up/Down 已绑定为结果导航，历史浏览功能暂不可用
-
-  " Backspace
-  if a:key == "\<BS>"
-    let buf = winbufnr(a:winid)
-    let line = getbufline(buf, 1)[0]
-    if len(line) <= 2
-      return 1
+  if a:key == "\<Left>" || nr == 2  " Left / Ctrl+B
+    if s:picker.cursor_col > 0
+      let s:picker.cursor_col -= 1
+      call s:picker_update_cursor()
     endif
-    " Remove last char before cursor
-    let new_line = line[:len(line) - 2]
-    call setbufline(buf, 1, new_line)
-    call win_execute(a:winid, 'call cursor(1, col("$"))')
-    call s:picker_on_input_changed()
+    return 1
+  endif
+  if a:key == "\<Right>" || nr == 6  " Right / Ctrl+F
+    if s:picker.cursor_col < len(s:picker_get_text())
+      let s:picker.cursor_col += 1
+      call s:picker_update_cursor()
+    endif
     return 1
   endif
 
-  " Regular character input
-  if len(a:key) == 1 && char2nr(a:key) >= 32
-    let buf = winbufnr(a:winid)
-    let line = getbufline(buf, 1)[0]
-    call setbufline(buf, 1, line . a:key)
-    call win_execute(a:winid, 'call cursor(1, col("$"))')
-    call s:picker_on_input_changed()
+  " Editing
+  if nr == 21  " Ctrl+U — clear all
+    call s:picker_edit('', 0)
+    return 1
+  endif
+  if nr == 23  " Ctrl+W — delete word before cursor
+    let text = s:picker_get_text()
+    let before = substitute(strpart(text, 0, s:picker.cursor_col), '\S*\s*$', '', '')
+    call s:picker_edit(before . strpart(text, s:picker.cursor_col), len(before))
+    return 1
+  endif
+
+  " Backspace — delete char before cursor
+  if a:key == "\<BS>"
+    if s:picker.cursor_col <= 0 | return 1 | endif
+    let text = s:picker_get_text()
+    call s:picker_edit(strpart(text, 0, s:picker.cursor_col - 1) . strpart(text, s:picker.cursor_col), s:picker.cursor_col - 1)
+    return 1
+  endif
+
+  " Delete — delete char at cursor
+  if a:key == "\<Del>"
+    let text = s:picker_get_text()
+    if s:picker.cursor_col >= len(text) | return 1 | endif
+    call s:picker_edit(strpart(text, 0, s:picker.cursor_col) . strpart(text, s:picker.cursor_col + 1), s:picker.cursor_col)
+    return 1
+  endif
+
+  " Regular character input — insert at cursor position
+  if len(a:key) == 1 && nr >= 32
+    let text = s:picker_get_text()
+    call s:picker_edit(strpart(text, 0, s:picker.cursor_col) . a:key . strpart(text, s:picker.cursor_col), s:picker.cursor_col + 1)
     return 1
   endif
 
@@ -2531,7 +2583,7 @@ function! s:picker_on_input_changed() abort
   if s:picker.mode ==# 'references'
     let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
   else
-    let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+    let text = s:picker_get_text()
     if text =~# '^!'
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_history_timer'))
     elseif text =~# '^@' && !empty(s:picker.all_locations)
@@ -2549,9 +2601,7 @@ function! s:picker_send_query(timer_id) abort
     return
   endif
 
-  let buf = winbufnr(s:picker.input_popup)
-  let line = getbufline(buf, 1)[0]
-  let text = line[2:]
+  let text = s:picker_get_text()
 
   " Determine mode from prefix
   let mode = 'file'
@@ -2598,7 +2648,7 @@ function! s:handle_picker_query_response(channel, response) abort
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     let text = s:picker.input_popup != -1
-      \ ? getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+      \ ? s:picker_get_text()
       \ : ''
     if text =~# '^@'
       " Cache all doc symbols; filter client-side by current query
@@ -2625,7 +2675,7 @@ endfunction
 function! s:picker_filter_doc_symbols_timer(timer_id) abort
   let s:picker.timer_id = -1
   if s:picker.input_popup == -1 | return | endif
-  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let text = s:picker_get_text()
   let query = text =~# '^@' ? text[1:] : ''
   call s:picker_apply_doc_symbol_filter(query)
 endfunction
@@ -2645,7 +2695,7 @@ function! s:picker_filter_history_timer(timer_id) abort
   let s:picker.timer_id = -1
   if s:picker.input_popup == -1 | return | endif
   let s:picker.mode = 'history'
-  let text = getbufline(winbufnr(s:picker.input_popup), 1)[0][2:]
+  let text = s:picker_get_text()
   let query = text =~# '^!' ? text[1:] : ''
   call s:picker_apply_history_filter(query)
 endfunction
@@ -2856,6 +2906,9 @@ function! s:picker_close_popups() abort
   let s:picker.grouped = 0
   let s:picker.preview = 0
   let s:picker.lnum_width = 0
+  let s:picker.cursor_col = 0
+  let s:picker.cursor_match_id = -1
+  let s:picker.input_text = ''
   let s:picker.orig_file = ''
   let s:picker.orig_lnum = 0
   let s:picker.orig_col = 0
