@@ -252,3 +252,509 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
 
     return result;
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+/// Build an LSP range object: {"start": {"line": l, "character": c}, ...}
+fn makeTestRange(alloc: Allocator, line: i64, character: i64) !Value {
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(line));
+    try start.put("character", json_utils.jsonInteger(character));
+
+    var end_obj = ObjectMap.init(alloc);
+    try end_obj.put("line", json_utils.jsonInteger(line));
+    try end_obj.put("character", json_utils.jsonInteger(character + 5));
+
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end_obj });
+    return .{ .object = range };
+}
+
+/// Build an LSP Location object: {"uri": uri, "range": ...}
+fn makeTestLocation(alloc: Allocator, uri: []const u8, line: i64, character: i64) !Value {
+    var loc = ObjectMap.init(alloc);
+    try loc.put("uri", json_utils.jsonString(uri));
+    try loc.put("range", try makeTestRange(alloc, line, character));
+    return .{ .object = loc };
+}
+
+// -- escapeVimString tests --
+
+test "escapeVimString - simple string no escaping needed" {
+    const result = try escapeVimString(testing.allocator, "hello world");
+    // No escaping needed, returns input slice directly (no alloc)
+    try testing.expectEqualStrings("hello world", result);
+}
+
+test "escapeVimString - empty string" {
+    const result = try escapeVimString(testing.allocator, "");
+    try testing.expectEqualStrings("", result);
+}
+
+test "escapeVimString - single quotes are doubled" {
+    const result = try escapeVimString(testing.allocator, "it's a test");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("it''s a test", result);
+}
+
+test "escapeVimString - newlines replaced with spaces" {
+    const result = try escapeVimString(testing.allocator, "line1\nline2\rline3");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("line1 line2 line3", result);
+}
+
+test "escapeVimString - truncates long strings" {
+    // Build a string longer than 200 chars
+    var long_buf: [250]u8 = undefined;
+    @memset(&long_buf, 'a');
+    const result = try escapeVimString(testing.allocator, &long_buf);
+    defer testing.allocator.free(result);
+    // Should be 200 chars + "..."
+    try testing.expectEqual(@as(usize, 203), result.len);
+    try testing.expectEqualStrings("...", result[200..]);
+}
+
+test "escapeVimString - mixed escaping" {
+    const result = try escapeVimString(testing.allocator, "it's\nnew");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("it''s new", result);
+}
+
+// -- symbolKindName tests --
+
+test "symbolKindName - known kinds" {
+    try testing.expectEqualStrings("File", symbolKindName(1));
+    try testing.expectEqualStrings("Function", symbolKindName(12));
+    try testing.expectEqualStrings("Variable", symbolKindName(13));
+    try testing.expectEqualStrings("Struct", symbolKindName(23));
+    try testing.expectEqualStrings("TypeParameter", symbolKindName(26));
+}
+
+test "symbolKindName - null returns Symbol" {
+    try testing.expectEqualStrings("Symbol", symbolKindName(null));
+}
+
+test "symbolKindName - unknown kind returns Symbol" {
+    try testing.expectEqualStrings("Symbol", symbolKindName(99));
+    try testing.expectEqualStrings("Symbol", symbolKindName(0));
+    try testing.expectEqualStrings("Symbol", symbolKindName(-1));
+}
+
+// -- formatProgressEcho tests --
+
+test "formatProgressEcho - null title returns null" {
+    const result = formatProgressEcho(testing.allocator, null, null, null);
+    try testing.expect(result == null);
+}
+
+test "formatProgressEcho - title only" {
+    const result = formatProgressEcho(testing.allocator, "Indexing", null, null).?;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("echo '[yac] Indexing'", result);
+}
+
+test "formatProgressEcho - title with message" {
+    const result = formatProgressEcho(testing.allocator, "Loading", "main.zig", null).?;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("echo '[yac] Loading: main.zig'", result);
+}
+
+test "formatProgressEcho - title with percentage" {
+    const result = formatProgressEcho(testing.allocator, "Indexing", null, 50).?;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("echo '[yac] Indexing (50%)'", result);
+}
+
+test "formatProgressEcho - title, message, and percentage" {
+    const result = formatProgressEcho(testing.allocator, "Indexing", "src/main.zig", 75).?;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("echo '[yac] Indexing (75%): src/main.zig'", result);
+}
+
+// -- transformGotoResult tests --
+
+test "transformGotoResult - object Location format" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = try makeTestLocation(alloc, "file:///src/main.zig", 10, 5);
+    const result = try transformGotoResult(alloc, input, null);
+
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("/src/main.zig", json_utils.getString(obj, "file").?);
+    try testing.expectEqual(@as(i64, 10), json_utils.getInteger(obj, "line").?);
+    try testing.expectEqual(@as(i64, 5), json_utils.getInteger(obj, "column").?);
+}
+
+test "transformGotoResult - array takes first item" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(try makeTestLocation(alloc, "file:///first.zig", 1, 0));
+    try arr.append(try makeTestLocation(alloc, "file:///second.zig", 2, 0));
+
+    const result = try transformGotoResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("/first.zig", json_utils.getString(obj, "file").?);
+    try testing.expectEqual(@as(i64, 1), json_utils.getInteger(obj, "line").?);
+}
+
+test "transformGotoResult - empty array returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    const result = try transformGotoResult(alloc, .{ .array = arr }, null);
+    try testing.expect(result == .null);
+}
+
+test "transformGotoResult - null input returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = try transformGotoResult(arena.allocator(), .null, null);
+    try testing.expect(result == .null);
+}
+
+test "transformGotoResult - LocationLink format (targetUri/targetSelectionRange)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var loc = ObjectMap.init(alloc);
+    try loc.put("targetUri", json_utils.jsonString("file:///lib.zig"));
+    try loc.put("targetSelectionRange", try makeTestRange(alloc, 20, 3));
+
+    const result = try transformGotoResult(alloc, .{ .object = loc }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("/lib.zig", json_utils.getString(obj, "file").?);
+    try testing.expectEqual(@as(i64, 20), json_utils.getInteger(obj, "line").?);
+    try testing.expectEqual(@as(i64, 3), json_utils.getInteger(obj, "column").?);
+}
+
+test "transformGotoResult - with ssh_host prepends scp://" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = try makeTestLocation(alloc, "file:///remote/file.zig", 5, 0);
+    const result = try transformGotoResult(alloc, input, "user@server");
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("scp://user@server//remote/file.zig", json_utils.getString(obj, "file").?);
+}
+
+test "transformGotoResult - missing uri returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var loc = ObjectMap.init(alloc);
+    try loc.put("range", try makeTestRange(alloc, 1, 0));
+    // No "uri" field
+
+    const result = try transformGotoResult(alloc, .{ .object = loc }, null);
+    try testing.expect(result == .null);
+}
+
+// -- transformReferencesResult tests --
+
+test "transformReferencesResult - array of locations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(try makeTestLocation(alloc, "file:///a.zig", 1, 0));
+    try arr.append(try makeTestLocation(alloc, "file:///b.zig", 5, 3));
+
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const locations = json_utils.getArray(obj, "locations").?;
+    try testing.expectEqual(@as(usize, 2), locations.len);
+
+    const first = switch (locations[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("/a.zig", json_utils.getString(first, "file").?);
+    try testing.expectEqual(@as(i64, 1), json_utils.getInteger(first, "line").?);
+}
+
+test "transformReferencesResult - empty array" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const locations = json_utils.getArray(obj, "locations").?;
+    try testing.expectEqual(@as(usize, 0), locations.len);
+}
+
+test "transformReferencesResult - non-array returns empty locations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try transformReferencesResult(alloc, .null, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const locations = json_utils.getArray(obj, "locations").?;
+    try testing.expectEqual(@as(usize, 0), locations.len);
+}
+
+test "transformReferencesResult - with ssh_host" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(try makeTestLocation(alloc, "file:///src/lib.zig", 10, 0));
+
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, "dev@box");
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const locations = json_utils.getArray(obj, "locations").?;
+    const first = switch (locations[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("scp://dev@box//src/lib.zig", json_utils.getString(first, "file").?);
+}
+
+test "transformReferencesResult - skips invalid items" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    // Valid
+    try arr.append(try makeTestLocation(alloc, "file:///ok.zig", 1, 0));
+    // Invalid: not an object
+    try arr.append(.{ .integer = 42 });
+    // Invalid: missing uri
+    var bad_loc = ObjectMap.init(alloc);
+    try bad_loc.put("range", try makeTestRange(alloc, 1, 0));
+    try arr.append(.{ .object = bad_loc });
+
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const locations = json_utils.getArray(obj, "locations").?;
+    try testing.expectEqual(@as(usize, 1), locations.len);
+}
+
+// -- transformPickerSymbolResult tests --
+
+test "transformPickerSymbolResult - SymbolInformation format" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var location = ObjectMap.init(alloc);
+    try location.put("uri", json_utils.jsonString("file:///src/main.zig"));
+    try location.put("range", try makeTestRange(alloc, 5, 0));
+
+    var sym = ObjectMap.init(alloc);
+    try sym.put("name", json_utils.jsonString("User"));
+    try sym.put("kind", json_utils.jsonInteger(23)); // Struct
+    try sym.put("location", .{ .object = location });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = sym });
+
+    const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("symbol", json_utils.getString(obj, "mode").?);
+
+    const items = json_utils.getArray(obj, "items").?;
+    try testing.expectEqual(@as(usize, 1), items.len);
+
+    const item = switch (items[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("User", json_utils.getString(item, "label").?);
+    try testing.expectEqualStrings("Struct", json_utils.getString(item, "detail").?);
+    try testing.expectEqualStrings("/src/main.zig", json_utils.getString(item, "file").?);
+    try testing.expectEqual(@as(i64, 5), json_utils.getInteger(item, "line").?);
+}
+
+test "transformPickerSymbolResult - DocumentSymbol format with selectionRange" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sym = ObjectMap.init(alloc);
+    try sym.put("name", json_utils.jsonString("init"));
+    try sym.put("kind", json_utils.jsonInteger(12)); // Function
+    try sym.put("selectionRange", try makeTestRange(alloc, 14, 8));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = sym });
+
+    const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const items = json_utils.getArray(obj, "items").?;
+    const item = switch (items[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("init", json_utils.getString(item, "label").?);
+    try testing.expectEqualStrings("Function", json_utils.getString(item, "detail").?);
+    try testing.expectEqual(@as(i64, 14), json_utils.getInteger(item, "line").?);
+    try testing.expectEqual(@as(i64, 8), json_utils.getInteger(item, "column").?);
+}
+
+test "transformPickerSymbolResult - with containerName" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sym = ObjectMap.init(alloc);
+    try sym.put("name", json_utils.jsonString("getName"));
+    try sym.put("kind", json_utils.jsonInteger(6)); // Method
+    try sym.put("containerName", json_utils.jsonString("User"));
+    try sym.put("selectionRange", try makeTestRange(alloc, 0, 0));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = sym });
+
+    const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const items = json_utils.getArray(obj, "items").?;
+    const item = switch (items[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("Method (User)", json_utils.getString(item, "detail").?);
+}
+
+test "transformPickerSymbolResult - null input returns empty items" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try transformPickerSymbolResult(alloc, .null, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("symbol", json_utils.getString(obj, "mode").?);
+    const items = json_utils.getArray(obj, "items").?;
+    try testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "transformPickerSymbolResult - with ssh_host" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var location = ObjectMap.init(alloc);
+    try location.put("uri", json_utils.jsonString("file:///remote/main.zig"));
+    try location.put("range", try makeTestRange(alloc, 0, 0));
+
+    var sym = ObjectMap.init(alloc);
+    try sym.put("name", json_utils.jsonString("main"));
+    try sym.put("kind", json_utils.jsonInteger(12));
+    try sym.put("location", .{ .object = location });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = sym });
+
+    const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, "user@host");
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    const items = json_utils.getArray(obj, "items").?;
+    const item = switch (items[0]) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("scp://user@host//remote/main.zig", json_utils.getString(item, "file").?);
+}
+
+// -- transformLspResult tests --
+
+test "transformLspResult - goto_ prefix dispatches to transformGotoResult" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = try makeTestLocation(alloc, "file:///test.zig", 10, 5);
+    const result = transformLspResult(alloc, "goto_definition", input, null);
+
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expectEqualStrings("/test.zig", json_utils.getString(obj, "file").?);
+}
+
+test "transformLspResult - references dispatches to transformReferencesResult" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(try makeTestLocation(alloc, "file:///a.zig", 1, 0));
+
+    const result = transformLspResult(alloc, "references", .{ .array = arr }, null);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+    try testing.expect(json_utils.getArray(obj, "locations") != null);
+}
+
+test "transformLspResult - unknown method returns result as-is" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const input = json_utils.jsonString("hello");
+    const result = transformLspResult(arena.allocator(), "hover", input, null);
+    try testing.expectEqualStrings("hello", result.string);
+}

@@ -801,4 +801,8 @@ test {
     _ = @import("lsp/client.zig");
     _ = @import("lsp/lsp.zig");
     _ = @import("picker.zig");
+    _ = @import("requests.zig");
+    _ = @import("clients.zig");
+    _ = @import("lsp/transform.zig");
+    _ = @import("handlers/common.zig");
 }

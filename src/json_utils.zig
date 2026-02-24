@@ -98,3 +98,80 @@ test "getInteger" {
     try std.testing.expectEqual(@as(i64, 42), getInteger(obj, "num").?);
     try std.testing.expect(getInteger(obj, "missing") == null);
 }
+
+test "getInteger returns null for wrong type" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("str", .{ .string = "not a number" });
+    try std.testing.expect(getInteger(obj, "str") == null);
+}
+
+test "getString returns null for wrong type" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("num", .{ .integer = 42 });
+    try std.testing.expect(getString(obj, "num") == null);
+}
+
+test "getUnsigned" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("pos", .{ .integer = 100 });
+    try obj.put("neg", .{ .integer = -1 });
+    try obj.put("str", .{ .string = "hello" });
+
+    try std.testing.expectEqual(@as(u64, 100), getUnsigned(obj, "pos").?);
+    try std.testing.expect(getUnsigned(obj, "neg") == null);
+    try std.testing.expect(getUnsigned(obj, "str") == null);
+    try std.testing.expect(getUnsigned(obj, "missing") == null);
+}
+
+test "getObject" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+
+    var inner = ObjectMap.init(std.testing.allocator);
+    try inner.put("key", .{ .string = "val" });
+    try obj.put("nested", .{ .object = inner });
+    try obj.put("num", .{ .integer = 1 });
+
+    const nested = getObject(obj, "nested");
+    try std.testing.expect(nested != null);
+    try std.testing.expectEqualStrings("val", getString(nested.?, "key").?);
+
+    try std.testing.expect(getObject(obj, "num") == null);
+    try std.testing.expect(getObject(obj, "missing") == null);
+}
+
+test "getArray" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+
+    var arr = std.json.Array.init(std.testing.allocator);
+    try arr.append(.{ .integer = 1 });
+    try arr.append(.{ .integer = 2 });
+    try obj.put("list", .{ .array = arr });
+    try obj.put("num", .{ .integer = 1 });
+
+    const items = getArray(obj, "list");
+    try std.testing.expect(items != null);
+    try std.testing.expectEqual(@as(usize, 2), items.?.len);
+    try std.testing.expectEqual(@as(i64, 1), items.?[0].integer);
+
+    try std.testing.expect(getArray(obj, "num") == null);
+    try std.testing.expect(getArray(obj, "missing") == null);
+}
+
+test "jsonString and jsonInteger and jsonBool" {
+    const s = jsonString("hello");
+    try std.testing.expectEqualStrings("hello", s.string);
+
+    const i = jsonInteger(42);
+    try std.testing.expectEqual(@as(i64, 42), i.integer);
+
+    const bt = jsonBool(true);
+    try std.testing.expect(bt.bool == true);
+
+    const bf = jsonBool(false);
+    try std.testing.expect(bf.bool == false);
+}

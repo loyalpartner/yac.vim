@@ -150,3 +150,64 @@ pub fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
     try ctx.client_stream.writeAll(encoded);
     try ctx.client_stream.writeAll("\n");
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "buildTextDocumentPosition produces correct structure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try buildTextDocumentPosition(alloc, "file:///src/main.zig", 10, 5);
+    const params = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+
+    // Check textDocument.uri
+    const td = json.getObject(params, "textDocument").?;
+    try testing.expectEqualStrings("file:///src/main.zig", json.getString(td, "uri").?);
+
+    // Check position.line and position.character
+    const pos = json.getObject(params, "position").?;
+    try testing.expectEqual(@as(i64, 10), json.getInteger(pos, "line").?);
+    try testing.expectEqual(@as(i64, 5), json.getInteger(pos, "character").?);
+}
+
+test "buildTextDocumentPosition with zero line/column" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try buildTextDocumentPosition(alloc, "file:///test.zig", 0, 0);
+    const params = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+
+    const pos = json.getObject(params, "position").?;
+    try testing.expectEqual(@as(i64, 0), json.getInteger(pos, "line").?);
+    try testing.expectEqual(@as(i64, 0), json.getInteger(pos, "character").?);
+}
+
+test "buildTextDocumentIdentifier produces correct structure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try buildTextDocumentIdentifier(alloc, "file:///src/lib.zig");
+    const params = switch (result) {
+        .object => |o| o,
+        else => return error.TestExpectedObject,
+    };
+
+    const td = json.getObject(params, "textDocument").?;
+    try testing.expectEqualStrings("file:///src/lib.zig", json.getString(td, "uri").?);
+
+    // Should NOT have position
+    try testing.expect(json.getObject(params, "position") == null);
+}

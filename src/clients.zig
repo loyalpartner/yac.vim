@@ -99,3 +99,107 @@ pub const Clients = struct {
         return self.clients.valueIterator();
     }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+/// Create a temporary Unix socket server for testing.
+fn makeTestServer() !std.net.Server {
+    const address = try std.net.Address.initUnix("/tmp/yac_test_clients.sock");
+    std.fs.deleteFileAbsolute("/tmp/yac_test_clients.sock") catch {};
+    return try address.listen(.{ .reuse_address = true });
+}
+
+fn cleanupTestServer() void {
+    std.fs.deleteFileAbsolute("/tmp/yac_test_clients.sock") catch {};
+}
+
+test "Clients.init sets correct initial state" {
+    var clients = Clients.init(testing.allocator);
+    defer clients.deinit();
+
+    try testing.expectEqual(@as(ClientId, 1), clients.next_client_id);
+    try testing.expectEqual(@as(usize, 0), clients.count());
+    try testing.expect(!clients.contains(1));
+}
+
+test "Clients.accept creates client with incrementing IDs" {
+    var server = try makeTestServer();
+    defer server.deinit();
+    defer cleanupTestServer();
+
+    var clients = Clients.init(testing.allocator);
+    defer clients.deinit();
+
+    // Connect two clients
+    const conn1 = try std.net.connectUnixSocket("/tmp/yac_test_clients.sock");
+    defer conn1.close();
+    const conn2 = try std.net.connectUnixSocket("/tmp/yac_test_clients.sock");
+    defer conn2.close();
+
+    const cid1 = clients.accept(&server);
+    const cid2 = clients.accept(&server);
+
+    try testing.expect(cid1 != null);
+    try testing.expect(cid2 != null);
+    try testing.expectEqual(@as(ClientId, 1), cid1.?);
+    try testing.expectEqual(@as(ClientId, 2), cid2.?);
+    try testing.expectEqual(@as(usize, 2), clients.count());
+}
+
+test "Clients.get returns client or null" {
+    var server = try makeTestServer();
+    defer server.deinit();
+    defer cleanupTestServer();
+
+    var clients = Clients.init(testing.allocator);
+    defer clients.deinit();
+
+    // No client yet
+    try testing.expect(clients.get(1) == null);
+
+    const conn = try std.net.connectUnixSocket("/tmp/yac_test_clients.sock");
+    defer conn.close();
+    const cid = clients.accept(&server).?;
+
+    const client = clients.get(cid);
+    try testing.expect(client != null);
+    try testing.expectEqual(cid, client.?.id);
+
+    // Non-existent client
+    try testing.expect(clients.get(999) == null);
+}
+
+test "Clients.remove decrements count" {
+    var server = try makeTestServer();
+    defer server.deinit();
+    defer cleanupTestServer();
+
+    var clients = Clients.init(testing.allocator);
+    defer clients.deinit();
+
+    const conn = try std.net.connectUnixSocket("/tmp/yac_test_clients.sock");
+    defer conn.close();
+    const cid = clients.accept(&server).?;
+
+    try testing.expectEqual(@as(usize, 1), clients.count());
+    try testing.expect(clients.contains(cid));
+
+    clients.remove(cid);
+
+    try testing.expectEqual(@as(usize, 0), clients.count());
+    try testing.expect(!clients.contains(cid));
+    try testing.expect(clients.get(cid) == null);
+}
+
+test "Clients.remove on non-existent id is safe" {
+    var clients = Clients.init(testing.allocator);
+    defer clients.deinit();
+
+    // Should not panic or error
+    clients.remove(999);
+    try testing.expectEqual(@as(usize, 0), clients.count());
+}
