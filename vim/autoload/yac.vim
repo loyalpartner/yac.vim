@@ -2371,7 +2371,7 @@ function! yac#picker_open() abort
   call s:request('picker_open', {
     \ 'cwd': getcwd(),
     \ 'file': expand('%:p'),
-    \ 'recent_files': s:picker_mru,
+    \ 'recent_files': map(copy(s:picker_mru), 'fnamemodify(v:val, ":.")'),
     \ }, 's:handle_picker_open_response')
 endfunction
 
@@ -2380,7 +2380,7 @@ function! s:handle_picker_open_response(channel, response) abort
   if s:picker.results_popup == -1
     return
   endif
-  " Don't overwrite if user has already typed (e.g. switched to ! or @ mode)
+  " Don't overwrite if user has already typed (e.g. switched to @ mode)
   let text = s:picker_get_text()
   if !empty(text)
     return
@@ -2584,9 +2584,7 @@ function! s:picker_on_input_changed() abort
     let s:picker.timer_id = timer_start(30, function('s:picker_filter_references_timer'))
   else
     let text = s:picker_get_text()
-    if text =~# '^!'
-      let s:picker.timer_id = timer_start(30, function('s:picker_filter_history_timer'))
-    elseif text =~# '^@' && !empty(s:picker.all_locations)
+    if text =~# '^@' && !empty(s:picker.all_locations)
       " Document symbol cache is warm — filter locally
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
     else
@@ -2612,9 +2610,6 @@ function! s:picker_send_query(timer_id) abort
   elseif text =~# '^@'
     let mode = 'document_symbol'
     let query = text[1:]
-  elseif text =~# '^!'
-    let mode = 'history'
-    let query = text[1:]
   endif
 
   " Clear doc symbol cache when leaving document_symbol mode
@@ -2623,12 +2618,6 @@ function! s:picker_send_query(timer_id) abort
   endif
   let s:picker.mode = mode
   let s:picker.last_query = text
-
-  " History mode filters client-side — no daemon request
-  if mode ==# 'history'
-    call s:picker_apply_history_filter(query)
-    return
-  endif
 
   call s:request('picker_query', {
     \ 'query': query,
@@ -2678,26 +2667,6 @@ function! s:picker_filter_doc_symbols_timer(timer_id) abort
   let text = s:picker_get_text()
   let query = text =~# '^@' ? text[1:] : ''
   call s:picker_apply_doc_symbol_filter(query)
-endfunction
-
-function! s:picker_apply_history_filter(query) abort
-  let pat = tolower(a:query)
-  let items = []
-  for path in s:picker_mru
-    if empty(pat) || stridx(tolower(path), pat) >= 0
-      call add(items, {'label': path, 'file': path, 'detail': '', 'line': 0, 'column': 0})
-    endif
-  endfor
-  call s:picker_update_results(items)
-endfunction
-
-function! s:picker_filter_history_timer(timer_id) abort
-  let s:picker.timer_id = -1
-  if s:picker.input_popup == -1 | return | endif
-  let s:picker.mode = 'history'
-  let text = s:picker_get_text()
-  let query = text =~# '^!' ? text[1:] : ''
-  call s:picker_apply_history_filter(query)
 endfunction
 
 function! s:picker_update_results(items) abort

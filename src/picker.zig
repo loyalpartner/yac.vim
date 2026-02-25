@@ -57,17 +57,23 @@ fn isBoundary(c: u8) bool {
     return c == '/' or c == '_' or c == '-' or c == '.';
 }
 
+/// Fuzzy-filter and sort items by score. MRU files in `boost_files` get a
+/// +5000 score boost so they rank higher among equal-quality matches.
 pub fn filterAndSort(
     allocator: Allocator,
     items: []const []const u8,
     pattern: []const u8,
+    boost_files: []const []const u8,
 ) ![]const usize {
     var scored: std.ArrayList(ScoredEntry) = .{};
     defer scored.deinit(allocator);
     for (items, 0..) |item, i| {
         const score = fuzzyScore(item, pattern);
         if (score > 0) {
-            try scored.append(allocator, .{ .index = i, .score = score });
+            const boost: i32 = for (boost_files) |rf| {
+                if (std.mem.eql(u8, rf, item)) break 5000;
+            } else 0;
+            try scored.append(allocator, .{ .index = i, .score = score + boost });
         }
     }
     std.mem.sort(ScoredEntry, scored.items, {}, struct {
@@ -295,7 +301,8 @@ pub const Picker = struct {
                 return .{ .respond_results = .{ .paths = self.recentFiles(), .mode = "file" } };
             }
             const file_list = self.files();
-            const indices = filterAndSort(alloc, file_list, query) catch return .respond_null;
+            const recent = self.recentFiles();
+            const indices = filterAndSort(alloc, file_list, query, recent) catch return .respond_null;
             var items: std.ArrayList([]const u8) = .{};
             for (indices) |idx| {
                 items.append(alloc, file_list[idx]) catch {};
