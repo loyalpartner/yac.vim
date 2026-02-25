@@ -112,7 +112,10 @@ let s:picker = {
   \ 'orig_col': 0,
   \ 'cursor_col': 0,
   \ 'cursor_match_id': -1,
+  \ 'prefix_match_id': -1,
   \ 'input_text': '',
+  \ 'pending_ctrl_r': 0,
+  \ 'loading': 0,
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
@@ -1605,7 +1608,7 @@ function! s:picker_open_references(locations) abort
   for loc in s:picker.all_locations
     let loc._text = s:picker_read_line(get(loc, 'file', ''), get(loc, 'line', 0) + 1)
   endfor
-  call s:picker_create_ui({'title': ' References (' . len(a:locations) . ') '})
+  call s:picker_create_ui({'title': ' References '})
   call s:picker_filter_references('')
 endfunction
 
@@ -1645,7 +1648,8 @@ function! s:picker_filter_references(query) abort
   endfor
   let s:picker.selected = 0
   call s:picker_advance_past_header(1)
-  call s:picker_highlight_selected()
+  call s:picker_render_results()
+  call s:picker_update_title()
   if s:picker.preview
     call s:picker_preview()
   endif
@@ -1663,7 +1667,7 @@ function! s:picker_preview() abort
   if get(item, 'is_header', 0) || empty(item) | return | endif
   let file = get(item, 'file', '')
   if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
-    execute 'edit ' . fnameescape(file)
+    noautocmd execute 'edit ' . fnameescape(file)
   endif
   call cursor(get(item, 'line', 0) + 1, get(item, 'column', 0) + 1)
   normal! zz
@@ -2354,7 +2358,8 @@ function! yac#picker_info() abort
   return {'mode': s:picker.mode, 'count': len(s:picker.all_locations), 'items': len(s:picker.items)}
 endfunction
 
-function! yac#picker_open() abort
+function! yac#picker_open(...) abort
+  let opts = a:0 ? a:1 : {}
   if s:picker.input_popup != -1
     call s:picker_close()
     return
@@ -2367,12 +2372,16 @@ function! yac#picker_open() abort
   let s:picker.orig_col = col('.')
   call s:picker_create_ui({})
 
-  " 发送请求，daemon 会通过 expr 查询 buffer 列表并回传初始结果
   call s:request('picker_open', {
     \ 'cwd': getcwd(),
     \ 'file': expand('%:p'),
     \ 'recent_files': map(copy(s:picker_mru), 'fnamemodify(v:val, ":.")'),
     \ }, 's:handle_picker_open_response')
+
+  let initial = get(opts, 'initial', '')
+  if !empty(initial)
+    call s:picker_edit(initial, len(initial))
+  endif
 endfunction
 
 function! s:handle_picker_open_response(channel, response) abort
@@ -2388,6 +2397,77 @@ function! s:handle_picker_open_response(channel, response) abort
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:picker_update_results(a:response.items)
   endif
+endfunction
+
+" Return mode-specific title label for the picker.
+function! s:picker_mode_label() abort
+  let m = s:picker.mode
+  if m ==# 'grep'           | return 'Grep'
+  elseif m ==# 'workspace_symbol' | return 'Symbols'
+  elseif m ==# 'document_symbol'  | return 'Document'
+  elseif m ==# 'references'       | return 'References'
+  else                             | return 'YacPicker'
+  endif
+endfunction
+
+" Update the input popup title to reflect mode, count, and loading state.
+function! s:picker_update_title() abort
+  if s:picker.input_popup == -1 | return | endif
+  let label = s:picker_mode_label()
+  if s:picker.loading
+    let title = ' ' . label . ' (...) '
+  else
+    let n = len(filter(copy(s:picker.items), '!get(v:val, "is_header", 0)'))
+    let title = n > 0 ? (' ' . label . ' (' . n . ') ') : (' ' . label . ' ')
+  endif
+  call popup_setoptions(s:picker.input_popup, #{title: title})
+endfunction
+
+" Return a mode-aware empty-state message for the results popup.
+function! s:picker_empty_message() abort
+  let text = s:picker_get_text()
+  let m = s:picker.mode
+  if m ==# 'file' || empty(m)
+    return empty(text) ? '  (type to search files...)' : '  (no results)'
+  elseif m ==# 'grep'
+    let query = len(text) > 1 ? text[1:] : ''
+    return empty(query) ? '  (type to grep...)' : '  (no matches)'
+  elseif m ==# 'workspace_symbol' || m ==# 'document_symbol'
+    return '  (no symbols found)'
+  endif
+  return '  (no results)'
+endfunction
+
+" Group flat grep items by file, producing headers and indented items.
+function! s:picker_group_grep_results(items) abort
+  let groups = {}
+  let order = []
+  for item in a:items
+    let f = get(item, 'file', get(item, 'detail', ''))
+    if !has_key(groups, f)
+      let groups[f] = []
+      call add(order, f)
+    endif
+    call add(groups[f], item)
+  endfor
+  let result = []
+  for f in order
+    call add(result, {'label': fnamemodify(f, ':.') . ' (' . len(groups[f]) . ')', 'is_header': 1})
+    for item in groups[f]
+      call add(result, {
+        \ 'label': (get(item, 'line', 0) + 1) . ': ' . get(item, 'label', ''),
+        \ 'file': f, 'line': get(item, 'line', 0), 'column': get(item, 'column', 0),
+        \ 'is_header': 0})
+    endfor
+  endfor
+  return result
+endfunction
+
+" Resize the results popup height to fit content, clamped to [3, 15].
+function! s:picker_resize_results(line_count) abort
+  if s:picker.results_popup == -1 | return | endif
+  let h = max([3, min([15, a:line_count])])
+  call popup_setoptions(s:picker.results_popup, #{minheight: h, maxheight: h})
 endfunction
 
 function! s:picker_create_ui(opts) abort
@@ -2445,6 +2525,8 @@ function! s:picker_create_ui(opts) abort
   highlight default link YacPickerSelected CursorLine
   highlight default link YacPickerHeader Directory
   highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
+  highlight default YacPickerPrefix ctermfg=Cyan gui=bold guifg=#56B6C2
+  highlight default YacPickerMatch ctermfg=Yellow gui=bold guifg=#E5C07B
 
   let s:picker.cursor_col = 0
   call s:picker_set_text('')
@@ -2466,17 +2548,61 @@ function! s:picker_update_cursor() abort
   let s:picker.cursor_match_id = id
 endfunction
 
+" Extract word at orig cursor position from the original buffer.
+" pat is a Vim regex for the word class, e.g. '\k\+' or '\S\+'.
+function! s:picker_get_orig_word(pat) abort
+  let bufnr = bufnr(s:picker.orig_file)
+  if bufnr == -1 | return '' | endif
+  let lines = getbufline(bufnr, s:picker.orig_lnum)
+  if empty(lines) | return '' | endif
+  let line = lines[0]
+  let col = s:picker.orig_col - 1
+  " Scan all matches in the line, return the one covering col
+  let pos = 0
+  while pos <= col
+    let m = matchstrpos(line, a:pat, pos)
+    if m[1] == -1 | break | endif
+    if m[1] <= col && m[2] > col
+      return m[0]
+    endif
+    let pos = m[2]
+  endwhile
+  return ''
+endfunction
+
 " Get the picker input text (authoritative source, not from buffer).
 function! s:picker_get_text() abort
   return s:picker.input_text
 endfunction
 
 " Set the picker input text and refresh the buffer display + cursor.
+" When text starts with a mode prefix (>, @, #), replace the prompt '>' with
+" the prefix char and display the rest as the query — e.g. input '>foo'
+" shows '> foo ' with the '>' colored by YacPickerPrefix.
 function! s:picker_set_text(text) abort
   let s:picker.input_text = a:text
-  " Buffer shows '> text ' — trailing space is cursor placeholder at EOL
-  call setbufline(winbufnr(s:picker.input_popup), 1, '> ' . a:text . ' ')
+  let has_prefix = !empty(a:text) && (a:text[0] ==# '>' || a:text[0] ==# '@' || a:text[0] ==# '#')
+  if has_prefix
+    call setbufline(winbufnr(s:picker.input_popup), 1, a:text[0] . ' ' . a:text[1:] . ' ')
+  else
+    call setbufline(winbufnr(s:picker.input_popup), 1, '> ' . a:text . ' ')
+  endif
   call s:picker_update_cursor()
+  call s:picker_update_prefix(has_prefix)
+endfunction
+
+" Highlight mode prefix character (>, @, #) at column 1 in the input line.
+function! s:picker_update_prefix(has_prefix) abort
+  if s:picker.input_popup == -1 | return | endif
+  if s:picker.prefix_match_id != -1
+    call win_execute(s:picker.input_popup, 'silent! call matchdelete(' . s:picker.prefix_match_id . ')')
+    let s:picker.prefix_match_id = -1
+  endif
+  if a:has_prefix
+    let id = 101
+    call win_execute(s:picker.input_popup, 'let w:_yac_prefix_id = matchaddpos("YacPickerPrefix", [[1, 1]], 15, ' . id . ')')
+    let s:picker.prefix_match_id = id
+  endif
 endfunction
 
 " Set text and cursor position, then notify that input changed.
@@ -2499,8 +2625,32 @@ function! s:picker_input_filter(winid, key) abort
     return 1
   endif
 
-  " 结果导航（用 char2nr 比较控制键，避免 popup filter 中 "\<C-n>" 展开问题）
   let nr = char2nr(a:key)
+
+  " Ctrl+R sequence — insert register/word (like Vim command-line)
+  " Must be checked before other ctrl-key handlers to avoid conflicts.
+  if s:picker.pending_ctrl_r
+    let s:picker.pending_ctrl_r = 0
+    let paste = ''
+    if nr == 23  " Ctrl+W — word under cursor (from original buffer)
+      let paste = s:picker_get_orig_word('\k\+')
+    elseif nr == 1  " Ctrl+A — WORD under cursor
+      let paste = s:picker_get_orig_word('\S\+')
+    elseif len(a:key) == 1
+      let paste = getreg(a:key)
+    endif
+    if !empty(paste)
+      let text = s:picker_get_text()
+      call s:picker_edit(strpart(text, 0, s:picker.cursor_col) . paste . strpart(text, s:picker.cursor_col), s:picker.cursor_col + len(paste))
+    endif
+    return 1
+  endif
+  if nr == 18  " Ctrl+R — start register/word insert sequence
+    let s:picker.pending_ctrl_r = 1
+    return 1
+  endif
+
+  " 结果导航（用 char2nr 比较控制键，避免 popup filter 中 "\<C-n>" 展开问题）
   if nr == 10 || nr == 14 || a:key == "\<Tab>" || a:key == "\<Down>"
     " Ctrl+J(10) / Ctrl+N(14) / Tab / Down
     call s:picker_select_next()
@@ -2588,7 +2738,6 @@ function! s:picker_on_input_changed() abort
       " Document symbol cache is warm — filter locally
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
     elseif text =~# '^>'
-      " Grep mode — longer debounce since rg is spawned per query
       let s:picker.timer_id = timer_start(200, function('s:picker_send_query'))
     else
       let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
@@ -2625,12 +2774,13 @@ function! s:picker_send_query(timer_id) abort
   let s:picker.mode = mode
   let s:picker.last_query = text
 
-  " Grep mode: require at least 3 characters
-  if mode ==# 'grep' && len(query) < 3
+  if mode ==# 'grep' && empty(query)
     call s:picker_update_results([])
     return
   endif
 
+  let s:picker.loading = 1
+  call s:picker_update_title()
   call s:request('picker_query', {
     \ 'query': query,
     \ 'mode': mode,
@@ -2656,7 +2806,11 @@ function! s:handle_picker_query_response(channel, response) abort
       let s:picker.all_locations = a:response.items
       let s:picker.mode = 'document_symbol'
       call s:picker_apply_doc_symbol_filter(text[1:])
+    elseif s:picker.mode ==# 'grep'
+      let s:picker.grouped = 1
+      call s:picker_update_results(s:picker_group_grep_results(a:response.items))
     else
+      let s:picker.grouped = 0
       call s:picker_update_results(a:response.items)
     endif
   endif
@@ -2681,19 +2835,28 @@ function! s:picker_filter_doc_symbols_timer(timer_id) abort
   call s:picker_apply_doc_symbol_filter(query)
 endfunction
 
+function! s:picker_has_locations(mode) abort
+  return a:mode ==# 'workspace_symbol' || a:mode ==# 'document_symbol' || a:mode ==# 'grep'
+endfunction
+
 function! s:picker_update_results(items) abort
+  let s:picker.loading = 0
   let s:picker.items = a:items
   let s:picker.selected = 0
 
   if empty(a:items)
-    call popup_settext(s:picker.results_popup, ['  (no results)'])
+    let s:picker.grouped = 0
+    call popup_settext(s:picker.results_popup, [s:picker_empty_message()])
+    call s:picker_resize_results(1)
     let s:picker.preview = 0
     let s:picker.lnum_width = 0
+    call s:picker_update_title()
     return
   endif
 
-  if s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol' || s:picker.mode ==# 'grep'
-    let max_line = max(map(copy(a:items), 'get(v:val, "line", 0) + 1'))
+  if s:picker_has_locations(s:picker.mode)
+    let non_headers = filter(copy(a:items), '!get(v:val, "is_header", 0)')
+    let max_line = empty(non_headers) ? 0 : max(map(non_headers, 'get(v:val, "line", 0) + 1'))
     let s:picker.lnum_width = len(string(max_line))
     let s:picker.preview = 1
   else
@@ -2701,10 +2864,17 @@ function! s:picker_update_results(items) abort
     let s:picker.preview = 0
   endif
 
-  call s:picker_highlight_selected()
+  if s:picker.grouped
+    call s:picker_advance_past_header(1)
+  endif
+
+  call s:picker_render_results()
+  call s:picker_update_title()
 endfunction
 
-function! s:picker_highlight_selected() abort
+" Rebuild the results popup text, static highlights (headers, grep match),
+" then update the selected-line highlight. Called when items change.
+function! s:picker_render_results() abort
   if s:picker.results_popup == -1 || empty(s:picker.items)
     return
   endif
@@ -2731,16 +2901,37 @@ function! s:picker_highlight_selected() abort
     endif
   endfor
   call popup_settext(s:picker.results_popup, lines)
+  call s:picker_resize_results(len(lines))
   call win_execute(s:picker.results_popup, 'call clearmatches()')
   for i in range(len(s:picker.items))
     if get(s:picker.items[i], 'is_header', 0)
       call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerHeader", [' . (i + 1) . '], 10)')
     endif
   endfor
-  if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
-    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 20)')
+  if s:picker.mode ==# 'grep'
+    let query = s:picker_get_text()[1:]
+    if !empty(query)
+      let pat = '\c\V' . escape(query, '\')
+      call win_execute(s:picker.results_popup,
+        \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
+    endif
   endif
-  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - 13])})
+  call s:picker_highlight_selected()
+endfunction
+
+" Update only the selected-line highlight. Called on navigation (fast path).
+function! s:picker_highlight_selected() abort
+  if s:picker.results_popup == -1 || empty(s:picker.items)
+    return
+  endif
+  " Remove old selected-line match (ID 102) and add new one
+  call win_execute(s:picker.results_popup, 'silent! call matchdelete(102)')
+  if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
+    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 20, 102)')
+  endif
+  let pos = popup_getpos(s:picker.results_popup)
+  let visible = get(pos, 'core_height', 15)
+  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - visible + 1])})
 endfunction
 
 function! s:picker_select_next() abort
@@ -2844,9 +3035,7 @@ function! s:picker_accept() abort
   if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
     execute 'edit ' . fnameescape(file)
   endif
-  " Jump to line: always for symbol/grep modes (line 0 = first line), else only if line > 0
-  let is_symbol = mode ==# 'workspace_symbol' || mode ==# 'document_symbol' || mode ==# 'grep'
-  if is_symbol || line > 0
+  if s:picker_has_locations(mode) || line > 0
     call cursor(line + 1, column + 1)
     normal! zz
   endif
@@ -2892,9 +3081,12 @@ function! s:picker_close_popups() abort
   let s:picker.mode = ''
   let s:picker.grouped = 0
   let s:picker.preview = 0
+  let s:picker.loading = 0
   let s:picker.lnum_width = 0
   let s:picker.cursor_col = 0
   let s:picker.cursor_match_id = -1
+  let s:picker.prefix_match_id = -1
+  let s:picker.pending_ctrl_r = 0
   let s:picker.input_text = ''
   let s:picker.orig_file = ''
   let s:picker.orig_lnum = 0
