@@ -11,6 +11,7 @@ const clients_mod = @import("clients.zig");
 const requests_mod = @import("requests.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const progress_mod = @import("progress.zig");
+const treesitter_mod = @import("treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -57,10 +58,13 @@ const EventLoop = struct {
     idle_deadline: ?i128,
     /// Picker state (active while picker is open)
     picker: picker_mod.Picker,
+    /// Tree-sitter state
+    ts: treesitter_mod.TreeSitter,
 
     const DeferredRequest = lsp_mod.Lsp.DeferredRequest;
 
-    fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
+    fn init(allocator: Allocator, listener: std.net.Server, query_dir: []const u8) EventLoop {
+        const ts_state = treesitter_mod.TreeSitter.init(allocator, query_dir);
         return .{
             .allocator = allocator,
             .lsp = lsp_mod.Lsp.init(allocator),
@@ -70,6 +74,7 @@ const EventLoop = struct {
             .progress = progress_mod.Progress.init(allocator),
             .idle_deadline = std.time.nanoTimestamp(),
             .picker = picker_mod.Picker.init(allocator),
+            .ts = ts_state,
         };
     }
 
@@ -79,6 +84,7 @@ const EventLoop = struct {
         self.clients.deinit();
         self.progress.deinit();
         self.picker.deinit();
+        self.ts.deinit();
         self.listener.deinit();
     }
 
@@ -399,6 +405,7 @@ const EventLoop = struct {
             .allocator = alloc,
             .registry = &self.lsp.registry,
             .client_stream = client.stream,
+            .ts = &self.ts,
         };
 
         const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {
@@ -759,6 +766,29 @@ pub fn main() !void {
     log.init();
     defer log.deinit();
 
+    // Parse CLI args: [--query-dir /path/to/vim/queries]
+    var query_dir: []const u8 = "";
+    var args = std.process.args();
+    _ = args.skip(); // skip argv[0]
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--query-dir")) {
+            query_dir = args.next() orelse "";
+        }
+    }
+
+    // Fallback: resolve from exe path ({exe_dir}/../../vim/queries)
+    var resolved_query_dir: ?[]const u8 = null;
+    defer if (resolved_query_dir) |p| allocator.free(p);
+    if (query_dir.len == 0) {
+        resolved_query_dir = treesitter_mod.resolveQueryDir(allocator);
+        query_dir = resolved_query_dir orelse "";
+    }
+    if (query_dir.len > 0) {
+        log.info("Query dir: {s}", .{query_dir});
+    } else {
+        log.warn("No query dir found; tree-sitter highlights disabled", .{});
+    }
+
     // Compute socket path
     var sock_path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&sock_path_buf);
@@ -777,7 +807,7 @@ pub fn main() !void {
     const address = try std.net.Address.initUnix(socket_path);
     const server = try address.listen(.{ .reuse_address = true });
 
-    var event_loop = EventLoop.init(allocator, server);
+    var event_loop = EventLoop.init(allocator, server, query_dir);
     defer event_loop.deinit();
 
     event_loop.run() catch |e| {
@@ -801,4 +831,5 @@ test {
     _ = @import("lsp/client.zig");
     _ = @import("lsp/lsp.zig");
     _ = @import("picker.zig");
+    _ = @import("treesitter/treesitter.zig");
 }

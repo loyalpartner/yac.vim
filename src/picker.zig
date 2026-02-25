@@ -364,7 +364,8 @@ fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
     const stdout_fd = (child.stdout orelse return error.NoStdout).handle;
     const max_output = 256 * 1024;
     var output_buf: std.ArrayList(u8) = .{};
-    defer output_buf.deinit(alloc);
+    // NOTE: do NOT deinit output_buf — parseGrepLine returns slices into it,
+    // and the arena allocator will free everything when the request completes.
     while (true) {
         var buf: [8192]u8 = undefined;
         const n = std.posix.read(stdout_fd, &buf) catch break;

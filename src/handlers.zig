@@ -5,6 +5,7 @@ const common = @import("handlers/common.zig");
 const lsp_requests = @import("handlers/lsp_requests.zig");
 const lsp_notifications = @import("handlers/lsp_notifications.zig");
 const picker_handlers = @import("handlers/picker.zig");
+const ts_handlers = @import("handlers/treesitter.zig");
 
 pub const HandlerContext = common.HandlerContext;
 pub const DispatchResult = common.DispatchResult;
@@ -45,6 +46,11 @@ pub const handlers = [_]Handler{
     .{ .name = "picker_open", .handleFn = picker_handlers.handlePickerOpen },
     .{ .name = "picker_query", .handleFn = picker_handlers.handlePickerQuery },
     .{ .name = "picker_close", .handleFn = picker_handlers.handlePickerClose },
+    .{ .name = "ts_symbols", .handleFn = ts_handlers.handleTsSymbols },
+    .{ .name = "ts_folding", .handleFn = ts_handlers.handleTsFolding },
+    .{ .name = "ts_navigate", .handleFn = ts_handlers.handleTsNavigate },
+    .{ .name = "ts_textobjects", .handleFn = ts_handlers.handleTsTextObjects },
+    .{ .name = "ts_highlights", .handleFn = ts_handlers.handleTsHighlights },
 };
 
 pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !DispatchResult {
