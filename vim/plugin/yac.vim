@@ -46,6 +46,7 @@ command! YacStopAll        call yac#stop_all()
 command! YacDaemonStop     call yac#daemon_stop()
 command! YacRemoteCleanup  call yac_remote#cleanup()
 command! YacPicker      call yac#picker_open()
+command! YacGrep        call yac#picker_open({'initial': '>'})
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
@@ -62,6 +63,7 @@ nnoremap <silent> <leader>f :YacFoldingRange<CR>
 nnoremap <silent> <leader>ca :YacCodeAction<CR>
 nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 nnoremap <silent> <C-p> :YacPicker<CR>
+nnoremap <silent> g/ :YacGrep<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)

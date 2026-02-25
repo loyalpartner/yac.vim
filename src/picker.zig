@@ -318,7 +318,7 @@ pub const Picker = struct {
             return .{ .respond = buildPickerResults(alloc, items.items, "file") };
         } else if (std.mem.eql(u8, action, "picker_grep_query")) {
             const query = json_utils.getString(obj, "query") orelse "";
-            if (query.len < 3) return .respond_null;
+            if (query.len == 0) return .respond_null;
             const cwd = self.cwd orelse return .respond_null;
             return .{ .respond = runGrep(alloc, query, cwd) catch return .respond_null };
         } else if (std.mem.eql(u8, action, "picker_close")) {
