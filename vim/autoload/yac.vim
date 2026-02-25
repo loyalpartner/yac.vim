@@ -2587,6 +2587,9 @@ function! s:picker_on_input_changed() abort
     if text =~# '^@' && !empty(s:picker.all_locations)
       " Document symbol cache is warm — filter locally
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
+    elseif text =~# '^>'
+      " Grep mode — longer debounce since rg is spawned per query
+      let s:picker.timer_id = timer_start(200, function('s:picker_send_query'))
     else
       let s:picker.timer_id = timer_start(50, function('s:picker_send_query'))
     endif
@@ -2604,7 +2607,10 @@ function! s:picker_send_query(timer_id) abort
   " Determine mode from prefix
   let mode = 'file'
   let query = text
-  if text =~# '^#'
+  if text =~# '^>'
+    let mode = 'grep'
+    let query = text[1:]
+  elseif text =~# '^#'
     let mode = 'workspace_symbol'
     let query = text[1:]
   elseif text =~# '^@'
@@ -2618,6 +2624,12 @@ function! s:picker_send_query(timer_id) abort
   endif
   let s:picker.mode = mode
   let s:picker.last_query = text
+
+  " Grep mode: require at least 3 characters
+  if mode ==# 'grep' && len(query) < 3
+    call s:picker_update_results([])
+    return
+  endif
 
   call s:request('picker_query', {
     \ 'query': query,
@@ -2680,7 +2692,7 @@ function! s:picker_update_results(items) abort
     return
   endif
 
-  if s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol'
+  if s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol' || s:picker.mode ==# 'grep'
     let max_line = max(map(copy(a:items), 'get(v:val, "line", 0) + 1'))
     let s:picker.lnum_width = len(string(max_line))
     let s:picker.preview = 1
@@ -2704,12 +2716,18 @@ function! s:picker_highlight_selected() abort
     elseif s:picker.grouped
       call add(lines, '    ' . get(item, 'label', ''))
     else
-      let label = fnamemodify(get(item, 'label', ''), ':.')
+      let label = get(item, 'label', '')
       let detail = get(item, 'detail', '')
-      let prefix = s:picker.lnum_width > 0
-        \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
-        \ : '  '
-      call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
+      if s:picker.mode ==# 'grep'
+        let prefix = printf('  %s:%*d: ', fnamemodify(detail, ':.'), s:picker.lnum_width, get(item, 'line', 0) + 1)
+        call add(lines, prefix . label)
+      else
+        let label = fnamemodify(label, ':.')
+        let prefix = s:picker.lnum_width > 0
+          \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
+          \ : '  '
+        call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
+      endif
     endif
   endfor
   call popup_settext(s:picker.results_popup, lines)
@@ -2826,8 +2844,8 @@ function! s:picker_accept() abort
   if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
     execute 'edit ' . fnameescape(file)
   endif
-  " Jump to line: always for symbol modes (line 0 = first line), else only if line > 0
-  let is_symbol = mode ==# 'workspace_symbol' || mode ==# 'document_symbol'
+  " Jump to line: always for symbol/grep modes (line 0 = first line), else only if line > 0
+  let is_symbol = mode ==# 'workspace_symbol' || mode ==# 'document_symbol' || mode ==# 'grep'
   if is_symbol || line > 0
     call cursor(line + 1, column + 1)
     normal! zz

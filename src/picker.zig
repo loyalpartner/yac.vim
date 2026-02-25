@@ -199,11 +199,13 @@ pub const FileIndex = struct {
 pub const Picker = struct {
     allocator: Allocator,
     file_index: ?*FileIndex,
+    cwd: ?[]const u8,
 
     pub fn init(allocator: Allocator) Picker {
         return .{
             .allocator = allocator,
             .file_index = null,
+            .cwd = null,
         };
     }
 
@@ -221,14 +223,20 @@ pub const Picker = struct {
             return false;
         };
         self.file_index = fi;
+        self.cwd = self.allocator.dupe(u8, cwd) catch null;
         return true;
     }
 
     pub fn close(self: *Picker) void {
-        const fi = self.file_index orelse return;
-        fi.deinit();
-        self.allocator.destroy(fi);
-        self.file_index = null;
+        if (self.cwd) |c| {
+            self.allocator.free(c);
+            self.cwd = null;
+        }
+        if (self.file_index) |fi| {
+            fi.deinit();
+            self.allocator.destroy(fi);
+            self.file_index = null;
+        }
     }
 
     pub fn hasIndex(self: *Picker) bool {
@@ -268,7 +276,7 @@ pub const Picker = struct {
     pub const PickerAction = union(enum) {
         none,
         respond_null,
-        respond_results: struct { paths: []const []const u8, mode: []const u8 },
+        respond: Value,
         query_buffers,
     };
 
@@ -298,7 +306,7 @@ pub const Picker = struct {
             if (!self.hasIndex()) return .respond_null;
             self.pollScan();
             if (query.len == 0) {
-                return .{ .respond_results = .{ .paths = self.recentFiles(), .mode = "file" } };
+                return .{ .respond = buildPickerResults(alloc, self.recentFiles(), "file") };
             }
             const file_list = self.files();
             const recent = self.recentFiles();
@@ -307,7 +315,12 @@ pub const Picker = struct {
             for (indices) |idx| {
                 items.append(alloc, file_list[idx]) catch {};
             }
-            return .{ .respond_results = .{ .paths = items.items, .mode = "file" } };
+            return .{ .respond = buildPickerResults(alloc, items.items, "file") };
+        } else if (std.mem.eql(u8, action, "picker_grep_query")) {
+            const query = json_utils.getString(obj, "query") orelse "";
+            if (query.len < 3) return .respond_null;
+            const cwd = self.cwd orelse return .respond_null;
+            return .{ .respond = runGrep(alloc, query, cwd) catch return .respond_null };
         } else if (std.mem.eql(u8, action, "picker_close")) {
             self.close();
             return .respond_null;
@@ -332,6 +345,72 @@ pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []c
     result.put("items", .{ .array = items }) catch {};
     result.put("mode", json_utils.jsonString(mode)) catch {};
     return .{ .object = result };
+}
+
+/// Spawn rg synchronously and return results as a picker Value.
+/// Caller's arena allocator owns all memory.
+fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
+    const argv: []const []const u8 = &.{
+        "rg", "--vimgrep", "--max-count", "5", "--max-columns", "200",
+        "--max-filesize", "1M", "--color", "never", "--", pattern,
+    };
+    var child = std.process.Child.init(argv, alloc);
+    child.cwd = cwd;
+    child.stdin_behavior = .Close;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Close;
+    try child.spawn();
+
+    const stdout_fd = (child.stdout orelse return error.NoStdout).handle;
+    const max_output = 256 * 1024;
+    var output_buf: std.ArrayList(u8) = .{};
+    defer output_buf.deinit(alloc);
+    while (true) {
+        var buf: [8192]u8 = undefined;
+        const n = std.posix.read(stdout_fd, &buf) catch break;
+        if (n == 0) break;
+        output_buf.appendSlice(alloc, buf[0..n]) catch break;
+        if (output_buf.items.len >= max_output) break;
+    }
+    _ = child.kill() catch {};
+    _ = child.wait() catch {};
+
+    var items = std.json.Array.init(alloc);
+    var line_iter = std.mem.splitScalar(u8, output_buf.items, '\n');
+    while (line_iter.next()) |line| {
+        if (items.items.len >= max_results) break;
+        if (line.len == 0) continue;
+        const item = parseGrepLine(alloc, line) orelse continue;
+        items.append(item) catch break;
+    }
+
+    var result = ObjectMap.init(alloc);
+    result.put("items", .{ .array = items }) catch {};
+    result.put("mode", json_utils.jsonString("grep")) catch {};
+    return .{ .object = result };
+}
+
+/// Parse a single rg --vimgrep output line: `path:line:column:text`
+/// With child.cwd set, rg outputs relative paths (no colons on Unix).
+fn parseGrepLine(alloc: Allocator, line: []const u8) ?Value {
+    const colon1 = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    const rest1 = line[colon1 + 1 ..];
+    const colon2 = std.mem.indexOfScalar(u8, rest1, ':') orelse return null;
+    const rest2 = rest1[colon2 + 1 ..];
+    const colon3 = std.mem.indexOfScalar(u8, rest2, ':') orelse return null;
+
+    const file = line[0..colon1];
+    const line_num = std.fmt.parseInt(u32, rest1[0..colon2], 10) catch return null;
+    const col_num = std.fmt.parseInt(u32, rest2[0..colon3], 10) catch return null;
+    const text = std.mem.trimLeft(u8, rest2[colon3 + 1 ..], " \t");
+
+    var item = ObjectMap.init(alloc);
+    item.put("label", json_utils.jsonString(text)) catch return null;
+    item.put("detail", json_utils.jsonString(file)) catch return null;
+    item.put("file", json_utils.jsonString(file)) catch return null;
+    item.put("line", json_utils.jsonInteger(if (line_num > 0) @as(i64, line_num) - 1 else 0)) catch return null;
+    item.put("column", json_utils.jsonInteger(if (col_num > 0) @as(i64, col_num) - 1 else 0)) catch return null;
+    return .{ .object = item };
 }
 
 fn findExecutable(name: []const u8) bool {

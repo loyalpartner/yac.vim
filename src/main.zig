@@ -412,7 +412,7 @@ const EventLoop = struct {
                 switch (self.picker.processAction(alloc, data)) {
                     .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
                     .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
-                    .respond_results => |r| self.sendVimResponseTo(cid, alloc, vim_id, picker_mod.buildPickerResults(alloc, r.paths, r.mode)),
+                    .respond => |v| self.sendVimResponseTo(cid, alloc, vim_id, v),
                     .query_buffers => self.sendVimExprTo(cid, alloc, vim_id,
                         "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
                         .picker_buffers),

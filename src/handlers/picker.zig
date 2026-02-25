@@ -44,6 +44,11 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
         try ws_params.put("query", json.jsonString(query));
         const request_id = try lsp_ctx.client.sendRequest("workspace/symbol", .{ .object = ws_params });
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    } else if (std.mem.eql(u8, mode, "grep")) {
+        var result = ObjectMap.init(ctx.allocator);
+        try result.put("action", json.jsonString("picker_grep_query"));
+        try result.put("query", json.jsonString(query));
+        return .{ .data = .{ .object = result } };
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
         const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
             .ready => |c| c,
