@@ -82,9 +82,9 @@ nnoremap <silent> [s :call yac#ts_prev_struct()<CR>
 xnoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
 xnoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
 xnoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
-omap <silent> af :normal vaf<CR>
-omap <silent> if :normal vif<CR>
-omap <silent> ac :normal vac<CR>
+onoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
+onoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
+onoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
 
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)
@@ -106,8 +106,8 @@ endif
 " Tree-sitter highlights autocommands (only fire when enabled per-buffer)
 augroup yac_ts_highlights
   autocmd!
-  autocmd CursorMoved,CursorMovedI,BufEnter *.zig,*.rs,*.go call yac#ts_highlights_debounce()
-  autocmd WinScrolled *.zig,*.rs,*.go call yac#ts_highlights_debounce()
-  autocmd TextChanged,TextChangedI *.zig,*.rs,*.go call yac#ts_highlights_invalidate()
-  autocmd BufLeave *.zig,*.rs,*.go call yac#ts_highlights_detach()
+  autocmd CursorMoved,CursorMovedI,BufEnter *.zig,*.rs,*.go,*.vim call yac#ts_highlights_debounce()
+  autocmd WinScrolled *.zig,*.rs,*.go,*.vim call yac#ts_highlights_debounce()
+  autocmd TextChanged,TextChangedI *.zig,*.rs,*.go,*.vim call yac#ts_highlights_invalidate()
+  autocmd BufLeave *.zig,*.rs,*.go,*.vim call yac#ts_highlights_detach()
 augroup END

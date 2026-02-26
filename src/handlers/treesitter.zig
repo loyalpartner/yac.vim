@@ -29,6 +29,16 @@ fn getTsContext(ctx: *HandlerContext, params: Value) ?TsContext {
     const file = json.getString(obj, "file") orelse return null;
     const lang = ts_mod.Lang.fromExtension(file) orelse return null;
     const lang_state = ts_state.getLangState(lang) orelse return null;
+
+    // Auto-parse if buffer not yet tracked (e.g. .vim files with no LSP file_open)
+    if (ts_state.getTree(file) == null) {
+        if (json.getString(obj, "text")) |text| {
+            ts_state.parseBuffer(file, text) catch |e| {
+                log.debug("TreeSitter auto-parse failed for {s}: {any}", .{ file, e });
+            };
+        }
+    }
+
     return .{ .ts = ts_state, .file = file, .lang = lang, .lang_state = lang_state, .obj = obj };
 }
 

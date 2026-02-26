@@ -18,6 +18,10 @@
             .url = "git+https://github.com/tree-sitter/tree-sitter-go#1547678a9da59885853f5f5cc8a99cc203fa2e2c",
             .hash = "N-V-__8AAM9cIgDSWz10pu4QwvyegGvG1p3E3KBTILC3fqGh",
         },
+        .tree_sitter_vim = .{
+            .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-vim#1cd0a0892b389bd314a9bd09545160e5ee3c9137",
+            .hash = "N-V-__8AAHWbVADvoQDYiOUyiNwPlykZsk1a9jIrlsvLNHL1",
+        },
     },
     .fingerprint = 0x51ef1c1f165459a7,
     .minimum_zig_version = "0.15.0",

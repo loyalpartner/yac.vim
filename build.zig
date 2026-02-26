@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Compile a tree-sitter grammar from C source and create a Zig binding module.
-/// For grammars that don't ship their own build.zig (e.g. rust, go).
+/// For grammars that don't ship their own build.zig (e.g. rust, go, vim).
 fn addGrammarLib(
     b: *std.Build,
     dep: *std.Build.Dependency,
@@ -55,6 +55,11 @@ fn addTreeSitterDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.Re
     const ts_go_dep = b.dependency("tree_sitter_go", .{});
     const go_mod = addGrammarLib(b, ts_go_dep, "go", false, target, optimize);
     mod.addImport("tree_sitter_go", go_mod);
+
+    // VimScript grammar (parser.c + scanner.c)
+    const ts_vim_dep = b.dependency("tree_sitter_vim", .{});
+    const vim_mod = addGrammarLib(b, ts_vim_dep, "vim", true, target, optimize);
+    mod.addImport("tree_sitter_vim", vim_mod);
 }
 
 pub fn build(b: *std.Build) void {

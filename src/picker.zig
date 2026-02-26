@@ -122,9 +122,9 @@ pub const FileIndex = struct {
 
     pub fn startScan(self: *FileIndex, cwd: []const u8) !void {
         const argv: []const []const u8 = if (findExecutable("fd"))
-            &.{ "fd", "--type", "f", "--color", "never" }
+            &.{ "fd", "--type", "f", "--hidden", "--color", "never" }
         else if (findExecutable("rg"))
-            &.{ "rg", "--files" }
+            &.{ "rg", "--files", "--hidden" }
         else
             &.{ "find", ".", "-type", "f", "-not", "-path", "*/.git/*" };
         var child = std.process.Child.init(argv, self.allocator);

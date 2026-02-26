@@ -3,6 +3,7 @@ const ts = @import("tree_sitter");
 const ts_zig = @import("tree_sitter_zig");
 const ts_rust = @import("tree_sitter_rust");
 const ts_go = @import("tree_sitter_go");
+const ts_vim = @import("tree_sitter_vim");
 const queries_mod = @import("queries.zig");
 const log = @import("../log.zig");
 
@@ -19,11 +20,13 @@ pub const Lang = enum {
     zig,
     rust,
     go,
+    vim,
 
     pub fn fromExtension(path: []const u8) ?Lang {
         if (std.mem.endsWith(u8, path, ".zig")) return .zig;
         if (std.mem.endsWith(u8, path, ".rs")) return .rust;
         if (std.mem.endsWith(u8, path, ".go")) return .go;
+        if (std.mem.endsWith(u8, path, ".vim")) return .vim;
         return null;
     }
 
@@ -32,15 +35,12 @@ pub const Lang = enum {
             .zig => ts_zig.language(),
             .rust => ts_rust.language(),
             .go => ts_go.language(),
+            .vim => ts_vim.language(),
         });
     }
 
     pub fn name(self: Lang) []const u8 {
-        return switch (self) {
-            .zig => "zig",
-            .rust => "rust",
-            .go => "go",
-        };
+        return @tagName(self);
     }
 };
 
@@ -268,5 +268,49 @@ test "Lang.fromExtension" {
     try std.testing.expectEqual(Lang.zig, Lang.fromExtension("foo.zig").?);
     try std.testing.expectEqual(Lang.rust, Lang.fromExtension("main.rs").?);
     try std.testing.expectEqual(Lang.go, Lang.fromExtension("server.go").?);
+    try std.testing.expectEqual(Lang.vim, Lang.fromExtension("plugin.vim").?);
     try std.testing.expect(Lang.fromExtension("test.py") == null);
+}
+
+test "TreeSitter vim queries load" {
+    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
+    defer t.deinit();
+    const ls = t.getLangState(.vim) orelse {
+        std.debug.print("FAIL: vim LangState is null\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(ls.symbols != null);
+    try std.testing.expect(ls.folds != null);
+    try std.testing.expect(ls.textobjects != null);
+    try std.testing.expect(ls.highlights != null);
+}
+
+test "TreeSitter vim parse and symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
+    defer t.deinit();
+
+    const source =
+        \\function! s:MyFunc(arg1)
+        \\  echo a:arg1
+        \\endfunction
+    ;
+
+    try t.parseBuffer("test.vim", source);
+    const tree = t.getTree("test.vim").?;
+    const ls = t.getLangState(.vim).?;
+
+    const result = try symbols.extractSymbols(
+        alloc,
+        ls.symbols.?,
+        tree,
+        source,
+        "test.vim",
+    );
+    const obj = result.object;
+    const arr = obj.get("symbols").?.array;
+    try std.testing.expect(arr.items.len >= 1);
 }

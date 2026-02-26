@@ -3210,23 +3210,29 @@ function! s:handle_ts_navigate_response(channel, response) abort
 endfunction
 
 function! yac#ts_select(target) abort
-  call s:request('ts_textobjects', {
+  let l:ch = s:ensure_connection()
+  if l:ch is v:null || ch_status(l:ch) != 'open'
+    return
+  endif
+
+  let l:msg = {
+    \ 'method': 'ts_textobjects',
+    \ 'params': {
     \   'file': expand('%:p'),
     \   'target': a:target,
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
-    \ }, 's:handle_ts_textobject_response')
-endfunction
+    \ }}
 
-function! s:handle_ts_textobject_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_textobjects response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'start_line')
-    " Convert 0-based to 1-based
-    let start_line = a:response.start_line + 1
-    let start_col = a:response.start_col + 1
-    let end_line = a:response.end_line + 1
-    let end_col = a:response.end_col
-    " Select the range in visual mode
+  " Synchronous request so operator-pending mode (daf, cif, etc.) works
+  let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
+  call s:debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
+
+  if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
+    let start_line = l:response.start_line + 1
+    let start_col = l:response.start_col + 1
+    let end_line = l:response.end_line + 1
+    let end_col = l:response.end_col
     call cursor(start_line, start_col)
     normal! v
     call cursor(end_line, end_col)
@@ -3268,11 +3274,16 @@ function! yac#ts_highlights_request() abort
     let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
   endif
 
-  call s:request('ts_highlights', {
+  let l:params = {
     \ 'file': expand('%:p'),
     \ 'start_line': l:req_lo,
     \ 'end_line': l:req_hi,
-    \ }, 's:handle_ts_highlights_response')
+    \ }
+  if !get(b:, 'yac_ts_hl_parsed', 0)
+    let l:params.text = join(getline(1, '$'), "\n")
+    let b:yac_ts_hl_parsed = 1
+  endif
+  call s:request('ts_highlights', l:params, 's:handle_ts_highlights_response')
 endfunction
 
 function! s:handle_ts_highlights_response(channel, response) abort
@@ -3312,6 +3323,7 @@ function! s:ts_highlights_reset_coverage() abort
   call s:clear_ts_highlights()
   let b:yac_ts_hl_lo = -1
   let b:yac_ts_hl_hi = -1
+  let b:yac_ts_hl_parsed = 0
   let s:ts_hl_last_range = ''
 endfunction
 
