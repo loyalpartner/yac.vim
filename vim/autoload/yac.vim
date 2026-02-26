@@ -3347,6 +3347,10 @@ function! yac#ts_highlights_toggle() abort
 endfunction
 
 function! yac#ts_highlights_debounce() abort
+  " Suppress while picker is open — redraws cause visible flashing
+  if s:picker.input_popup != -1
+    return
+  endif
   " Auto-enable on first BufEnter if global option is on
   if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
     let b:yac_ts_highlights_enabled = 1
@@ -3372,6 +3376,9 @@ function! yac#ts_highlights_detach() abort
 endfunction
 
 function! yac#ts_highlights_invalidate() abort
+  if s:picker.input_popup != -1
+    return
+  endif
   if !get(b:, 'yac_ts_highlights_enabled', 0)
     return
   endif
