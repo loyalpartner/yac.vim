@@ -2,6 +2,7 @@ const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 const log = @import("../log.zig");
+const ts_handlers = @import("treesitter.zig");
 
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
@@ -9,6 +10,8 @@ const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 
 pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
+    ts_handlers.parseIfSupported(ctx, params);
+
     const lsp_ctx = switch (try common.getLspContextEx(ctx, params, false)) {
         .ready => |c| c,
         .initializing, .not_available => return .{ .empty = {} },
@@ -51,7 +54,7 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     return .{ .data = .{ .object = response } };
 }
 
-fn handleGoto(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
+fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
     const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
         .ready => |c| c,
         .initializing => return .{ .initializing = {} },
@@ -73,61 +76,27 @@ fn handleGoto(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !Disp
 }
 
 pub fn handleGotoDefinition(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleGoto(ctx, params, "textDocument/definition");
+    return sendPositionRequest(ctx, params, "textDocument/definition");
 }
 
 pub fn handleGotoDeclaration(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleGoto(ctx, params, "textDocument/declaration");
+    return sendPositionRequest(ctx, params, "textDocument/declaration");
 }
 
 pub fn handleGotoTypeDefinition(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleGoto(ctx, params, "textDocument/typeDefinition");
+    return sendPositionRequest(ctx, params, "textDocument/typeDefinition");
 }
 
 pub fn handleGotoImplementation(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleGoto(ctx, params, "textDocument/implementation");
+    return sendPositionRequest(ctx, params, "textDocument/implementation");
 }
 
 pub fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
-
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
-
-    const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/hover", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    return sendPositionRequest(ctx, params, "textDocument/hover");
 }
 
 pub fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
-
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
-
-    const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    return sendPositionRequest(ctx, params, "textDocument/completion");
 }
 
 pub fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
@@ -202,21 +171,8 @@ pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
     const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
     const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
 
-    // Build code action params with range
     var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
-
-    var start = ObjectMap.init(ctx.allocator);
-    try start.put("line", json.jsonInteger(@intCast(line)));
-    try start.put("character", json.jsonInteger(@intCast(column)));
-
-    var end = ObjectMap.init(ctx.allocator);
-    try end.put("line", json.jsonInteger(@intCast(line)));
-    try end.put("character", json.jsonInteger(@intCast(column)));
-
-    var range = ObjectMap.init(ctx.allocator);
-    try range.put("start", .{ .object = start });
-    try range.put("end", .{ .object = end });
 
     var context_obj = ObjectMap.init(ctx.allocator);
     const diag_array = std.json.Array.init(ctx.allocator);
@@ -224,7 +180,7 @@ pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     var lsp_params = ObjectMap.init(ctx.allocator);
     try lsp_params.put("textDocument", .{ .object = td });
-    try lsp_params.put("range", .{ .object = range });
+    try lsp_params.put("range", try common.buildRange(ctx.allocator, line, column, line, column));
     try lsp_params.put("context", .{ .object = context_obj });
 
     const request_id = try lsp_ctx.client.sendRequest("textDocument/codeAction", .{ .object = lsp_params });
@@ -263,21 +219,9 @@ pub fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
     var td = ObjectMap.init(ctx.allocator);
     try td.put("uri", json.jsonString(lsp_ctx.uri));
 
-    var start_pos = ObjectMap.init(ctx.allocator);
-    try start_pos.put("line", json.jsonInteger(@intCast(start_line)));
-    try start_pos.put("character", json.jsonInteger(0));
-
-    var end_pos = ObjectMap.init(ctx.allocator);
-    try end_pos.put("line", json.jsonInteger(@intCast(end_line)));
-    try end_pos.put("character", json.jsonInteger(0));
-
-    var range = ObjectMap.init(ctx.allocator);
-    try range.put("start", .{ .object = start_pos });
-    try range.put("end", .{ .object = end_pos });
-
     var lsp_params = ObjectMap.init(ctx.allocator);
     try lsp_params.put("textDocument", .{ .object = td });
-    try lsp_params.put("range", .{ .object = range });
+    try lsp_params.put("range", try common.buildRange(ctx.allocator, start_line, 0, end_line, 0));
 
     const request_id = try lsp_ctx.client.sendRequest("textDocument/inlayHint", .{ .object = lsp_params });
 
@@ -298,24 +242,7 @@ pub fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
 }
 
 pub fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
-
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
-
-    const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/prepareCallHierarchy", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    return sendPositionRequest(ctx, params, "textDocument/prepareCallHierarchy");
 }
 
 pub fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {

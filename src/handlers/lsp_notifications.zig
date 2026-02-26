@@ -2,6 +2,7 @@ const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 const log = @import("../log.zig");
+const ts_handlers = @import("treesitter.zig");
 
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
@@ -18,6 +19,9 @@ pub fn handleDiagnostics(_: *HandlerContext, _: Value) !DispatchResult {
 // ============================================================================
 
 pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
+    // Tree-sitter parse: independent of LSP — always parse if supported
+    ts_handlers.parseIfSupported(ctx, params);
+
     const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
         .ready => |c| c,
         .initializing, .not_available => return .{ .empty = {} },
@@ -61,13 +65,9 @@ pub fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(lsp_ctx.uri));
+    const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
-    var lsp_params = ObjectMap.init(ctx.allocator);
-    try lsp_params.put("textDocument", .{ .object = td });
-
-    lsp_ctx.client.sendNotification("textDocument/didSave", .{ .object = lsp_params }) catch |e| {
+    lsp_ctx.client.sendNotification("textDocument/didSave", lsp_params) catch |e| {
         log.err("Failed to send didSave: {any}", .{e});
     };
 
@@ -75,6 +75,9 @@ pub fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
 }
 
 pub fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
+    // Tree-sitter cleanup: independent of LSP
+    ts_handlers.removeIfSupported(ctx, params);
+
     const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
         .ready => |c| c,
         .initializing, .not_available => return .{ .empty = {} },
@@ -95,11 +98,7 @@ pub fn handleWillSave(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(lsp_ctx.uri));
-
-    var lsp_params = ObjectMap.init(ctx.allocator);
-    try lsp_params.put("textDocument", .{ .object = td });
+    var lsp_params = (try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri)).object;
     try lsp_params.put("reason", json.jsonInteger(1)); // Manual save
 
     lsp_ctx.client.sendNotification("textDocument/willSave", .{ .object = lsp_params }) catch |e| {

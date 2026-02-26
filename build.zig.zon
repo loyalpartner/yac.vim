@@ -1,6 +1,28 @@
 .{
     .name = .yac_lsp_bridge,
     .version = "0.1.0",
+    .dependencies = .{
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#5373b8395bcf6cf17e6a02be1a9996bedb34abf6",
+            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+        },
+        .tree_sitter_zig = .{
+            .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-zig#6479aa13f32f701c383083d8b28360ebd682fb7d",
+            .hash = "tree_sitter_zig-1.1.2-AAAAAJ57XACsD_XBHC4i6G6rnCsZ1dZj7CLRTC09toEB",
+        },
+        .tree_sitter_rust = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-rust#18b0515fca567f5a10aee9978c6d2640e878671a",
+            .hash = "N-V-__8AAItxbQDcrvshXYdPUV9STG6PaJyk2DZb-uBzQjlw",
+        },
+        .tree_sitter_go = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-go#1547678a9da59885853f5f5cc8a99cc203fa2e2c",
+            .hash = "N-V-__8AAM9cIgDSWz10pu4QwvyegGvG1p3E3KBTILC3fqGh",
+        },
+        .tree_sitter_vim = .{
+            .url = "git+https://github.com/tree-sitter-grammars/tree-sitter-vim#1cd0a0892b389bd314a9bd09545160e5ee3c9137",
+            .hash = "N-V-__8AAHWbVADvoQDYiOUyiNwPlykZsk1a9jIrlsvLNHL1",
+        },
+    },
     .fingerprint = 0x51ef1c1f165459a7,
     .minimum_zig_version = "0.15.0",
     .paths = .{

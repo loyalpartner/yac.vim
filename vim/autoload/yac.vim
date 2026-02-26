@@ -66,6 +66,48 @@ let s:completion_icons = {
   \ 'Event': '󱐋 '
   \ }
 
+" Tree-sitter highlight groups (linked to standard Vim groups)
+hi def link YacTsVariable            Identifier
+hi def link YacTsVariableParameter   Identifier
+hi def link YacTsVariableBuiltin     Special
+hi def link YacTsVariableMember      Identifier
+hi def link YacTsType                Type
+hi def link YacTsTypeBuiltin         Type
+hi def link YacTsConstant            Constant
+hi def link YacTsConstantBuiltin     Constant
+hi def link YacTsLabel               Label
+hi def link YacTsFunction            Function
+hi def link YacTsFunctionBuiltin     Special
+hi def link YacTsFunctionCall        Function
+hi def link YacTsModule              Include
+hi def link YacTsKeyword             Keyword
+hi def link YacTsKeywordType         Keyword
+hi def link YacTsKeywordCoroutine    Keyword
+hi def link YacTsKeywordFunction     Keyword
+hi def link YacTsKeywordOperator     Keyword
+hi def link YacTsKeywordReturn       Keyword
+hi def link YacTsKeywordConditional  Conditional
+hi def link YacTsKeywordRepeat       Repeat
+hi def link YacTsKeywordImport       Include
+hi def link YacTsKeywordException    Exception
+hi def link YacTsKeywordModifier     StorageClass
+hi def link YacTsOperator            Operator
+hi def link YacTsCharacter           Character
+hi def link YacTsString              String
+hi def link YacTsStringEscape        SpecialChar
+hi def link YacTsNumber              Number
+hi def link YacTsNumberFloat         Float
+hi def link YacTsBoolean             Boolean
+hi def link YacTsComment             Comment
+hi def link YacTsCommentDocumentation SpecialComment
+hi def link YacTsPunctuationBracket  Delimiter
+hi def link YacTsPunctuationDelimiter Delimiter
+hi def link YacTsAttribute           PreProc
+hi def link YacTsConstructor         Special
+hi def link YacTsFunctionMacro       Macro
+hi def link YacTsFunctionMethod      Function
+hi def link YacTsProperty            Identifier
+
 " 连接池管理 - daemon socket mode
 let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
@@ -184,7 +226,7 @@ endfunction
 
 " 启动 daemon 进程（fire-and-forget）
 function! s:start_daemon() abort
-  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
+  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge', '--query-dir', s:plugin_root . '/vim/queries'])
   " stoponexit='' means don't kill on VimLeave
   call job_start(l:cmd, {'stoponexit': ''})
   call s:debug_log('Started lsp-bridge daemon')
@@ -758,8 +800,12 @@ endfunction
 function! s:handle_document_symbols_response(channel, response) abort
   call s:debug_log(printf('[RECV]: document_symbols response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
+  if type(a:response) == v:t_dict && has_key(a:response, 'symbols') && !empty(a:response.symbols)
     call s:show_document_symbols(a:response.symbols)
+  else
+    " Fallback to tree-sitter symbols
+    call s:debug_log('[FALLBACK]: LSP symbols empty, trying tree-sitter')
+    call yac#ts_symbols()
   endif
 endfunction
 
@@ -767,8 +813,23 @@ endfunction
 function! s:handle_folding_range_response(channel, response) abort
   call s:debug_log(printf('[RECV]: folding_range response: %s', string(a:response)))
 
+  if type(a:response) == v:t_dict && has_key(a:response, 'ranges') && !empty(a:response.ranges)
+    call s:apply_folding_ranges(a:response.ranges)
+  else
+    " Fallback to tree-sitter folding
+    call s:debug_log('[FALLBACK]: LSP folding empty, trying tree-sitter')
+    call s:request('ts_folding', {
+      \   'file': expand('%:p')
+      \ }, 's:handle_ts_folding_response')
+  endif
+endfunction
+
+function! s:handle_ts_folding_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
+  else
+    echo 'No folding ranges available'
   endif
 endfunction
 
@@ -2443,7 +2504,9 @@ function! s:picker_group_grep_results(items) abort
   let groups = {}
   let order = []
   for item in a:items
+    if type(item) != v:t_dict | continue | endif
     let f = get(item, 'file', get(item, 'detail', ''))
+    if type(f) != v:t_string | continue | endif
     if !has_key(groups, f)
       let groups[f] = []
       call add(order, f)
@@ -2789,7 +2852,7 @@ function! s:picker_send_query(timer_id) abort
 endfunction
 
 function! s:handle_picker_query_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: picker_query response: %s', string(a:response)))
+  call s:debug_log(printf('[RECV]: picker_query response: %s', string(a:response)[:200]))
   if s:picker.results_popup == -1
     return
   endif
@@ -2841,10 +2904,10 @@ endfunction
 
 function! s:picker_update_results(items) abort
   let s:picker.loading = 0
-  let s:picker.items = a:items
+  let s:picker.items = type(a:items) == v:t_list ? a:items : []
   let s:picker.selected = 0
 
-  if empty(a:items)
+  if empty(s:picker.items)
     let s:picker.grouped = 0
     call popup_settext(s:picker.results_popup, [s:picker_empty_message()])
     call s:picker_resize_results(1)
@@ -2855,7 +2918,7 @@ function! s:picker_update_results(items) abort
   endif
 
   if s:picker_has_locations(s:picker.mode)
-    let non_headers = filter(copy(a:items), '!get(v:val, "is_header", 0)')
+    let non_headers = filter(copy(s:picker.items), '!get(v:val, "is_header", 0)')
     let max_line = empty(non_headers) ? 0 : max(map(non_headers, 'get(v:val, "line", 0) + 1'))
     let s:picker.lnum_width = len(string(max_line))
     let s:picker.preview = 1
@@ -3091,6 +3154,229 @@ function! s:picker_close_popups() abort
   let s:picker.orig_file = ''
   let s:picker.orig_lnum = 0
   let s:picker.orig_col = 0
+endfunction
+
+" === Tree-sitter Integration ===
+
+function! yac#ts_symbols() abort
+  call s:request('ts_symbols', {
+    \   'file': expand('%:p')
+    \ }, 's:handle_ts_symbols_response')
+endfunction
+
+function! s:handle_ts_symbols_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: ts_symbols response: %s', string(a:response)))
+  if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
+    call s:show_document_symbols(a:response.symbols)
+  else
+    echo 'No tree-sitter symbols found'
+  endif
+endfunction
+
+function! s:ts_navigate(target, direction) abort
+  call s:request('ts_navigate', {
+    \   'file': expand('%:p'),
+    \   'target': a:target,
+    \   'direction': a:direction,
+    \   'line': line('.') - 1
+    \ }, 's:handle_ts_navigate_response')
+endfunction
+
+function! yac#ts_next_function() abort
+  call s:ts_navigate('function', 'next')
+endfunction
+
+function! yac#ts_prev_function() abort
+  call s:ts_navigate('function', 'prev')
+endfunction
+
+function! yac#ts_next_struct() abort
+  call s:ts_navigate('struct', 'next')
+endfunction
+
+function! yac#ts_prev_struct() abort
+  call s:ts_navigate('struct', 'prev')
+endfunction
+
+function! s:handle_ts_navigate_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
+  if type(a:response) == v:t_dict && has_key(a:response, 'line')
+    " Convert 0-based to 1-based
+    let lnum = a:response.line + 1
+    let col = get(a:response, 'column', 0) + 1
+    call cursor(lnum, col)
+    normal! zz
+  endif
+endfunction
+
+function! yac#ts_select(target) abort
+  let l:ch = s:ensure_connection()
+  if l:ch is v:null || ch_status(l:ch) != 'open'
+    return
+  endif
+
+  let l:msg = {
+    \ 'method': 'ts_textobjects',
+    \ 'params': {
+    \   'file': expand('%:p'),
+    \   'target': a:target,
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }}
+
+  " Synchronous request so operator-pending mode (daf, cif, etc.) works
+  let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
+  call s:debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
+
+  if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
+    let start_line = l:response.start_line + 1
+    let start_col = l:response.start_col + 1
+    let end_line = l:response.end_line + 1
+    let end_col = l:response.end_col
+    call cursor(start_line, start_col)
+    normal! v
+    call cursor(end_line, end_col)
+  endif
+endfunction
+
+" ============================================================================
+" Tree-sitter syntax highlighting
+" ============================================================================
+
+" Debounce timer for ts highlights
+let s:ts_hl_timer = -1
+let s:ts_hl_last_range = ''
+
+function! yac#ts_highlights_request() abort
+  if !get(b:, 'yac_ts_highlights_enabled', 0)
+    return
+  endif
+  let l:vis_lo = line('w0') - 1  " 0-indexed
+  let l:vis_hi = line('w$')
+  let l:cov_lo = get(b:, 'yac_ts_hl_lo', -1)
+  let l:cov_hi = get(b:, 'yac_ts_hl_hi', -1)
+
+  " Already fully covered — nothing to do
+  if l:cov_lo >= 0 && l:vis_lo >= l:cov_lo && l:vis_hi <= l:cov_hi
+    return
+  endif
+
+  " Compute the request range: expand covered range to include visible area
+  " with padding so small scrolls don't trigger new requests
+  let l:pad = max([line('w$') - line('w0'), 20])
+  if l:cov_lo < 0
+    " First request — cover visible + padding
+    let l:req_lo = max([0, l:vis_lo - l:pad])
+    let l:req_hi = l:vis_hi + l:pad
+  else
+    " Incremental — only request uncovered region, but expand coverage
+    let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
+    let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
+  endif
+
+  let l:params = {
+    \ 'file': expand('%:p'),
+    \ 'start_line': l:req_lo,
+    \ 'end_line': l:req_hi,
+    \ }
+  if !get(b:, 'yac_ts_hl_parsed', 0)
+    let l:params.text = join(getline(1, '$'), "\n")
+    let b:yac_ts_hl_parsed = 1
+  endif
+  call s:request('ts_highlights', l:params, 's:handle_ts_highlights_response')
+endfunction
+
+function! s:handle_ts_highlights_response(channel, response) abort
+  if type(a:response) != v:t_dict
+        \ || !has_key(a:response, 'highlights')
+        \ || !has_key(a:response, 'range')
+    return
+  endif
+
+  call s:clear_ts_highlights()
+
+  " Apply new highlights (dict: {"GroupName": [[l,c,len], ...], ...})
+  for [group, positions] in items(a:response.highlights)
+    let i = 0
+    while i < len(positions)
+      let l:id = matchaddpos(group, positions[i : i + 7])
+      if l:id != -1
+        call add(b:yac_ts_hl_ids, l:id)
+      endif
+      let i += 8
+    endwhile
+  endfor
+
+  " Update covered range
+  let b:yac_ts_hl_lo = a:response.range[0]
+  let b:yac_ts_hl_hi = a:response.range[1]
+endfunction
+
+function! s:clear_ts_highlights() abort
+  for id in get(b:, 'yac_ts_hl_ids', [])
+    silent! call matchdelete(id)
+  endfor
+  let b:yac_ts_hl_ids = []
+endfunction
+
+function! s:ts_highlights_reset_coverage() abort
+  call s:clear_ts_highlights()
+  let b:yac_ts_hl_lo = -1
+  let b:yac_ts_hl_hi = -1
+  let b:yac_ts_hl_parsed = 0
+  let s:ts_hl_last_range = ''
+endfunction
+
+function! yac#ts_highlights_enable() abort
+  let b:yac_ts_highlights_enabled = 1
+  call s:ts_highlights_reset_coverage()
+  call yac#ts_highlights_request()
+endfunction
+
+function! yac#ts_highlights_disable() abort
+  let b:yac_ts_highlights_enabled = 0
+  call s:ts_highlights_reset_coverage()
+endfunction
+
+function! yac#ts_highlights_toggle() abort
+  if get(b:, 'yac_ts_highlights_enabled', 0)
+    call yac#ts_highlights_disable()
+  else
+    call yac#ts_highlights_enable()
+  endif
+endfunction
+
+function! yac#ts_highlights_debounce() abort
+  " Auto-enable on first BufEnter if global option is on
+  if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
+    let b:yac_ts_highlights_enabled = 1
+  endif
+  if !get(b:, 'yac_ts_highlights_enabled', 0)
+    return
+  endif
+  let l:range = expand('%:p') . ':' . line('w0') . ':' . line('w$')
+  if l:range ==# s:ts_hl_last_range
+    return
+  endif
+  let s:ts_hl_last_range = l:range
+  if s:ts_hl_timer != -1
+    call timer_stop(s:ts_hl_timer)
+  endif
+  let s:ts_hl_timer = timer_start(30, {-> yac#ts_highlights_request()})
+endfunction
+
+" Clear window matches on BufLeave so they don't bleed into other buffers.
+" Coverage is reset so BufEnter will re-request.
+function! yac#ts_highlights_detach() abort
+  call s:ts_highlights_reset_coverage()
+endfunction
+
+function! yac#ts_highlights_invalidate() abort
+  if !get(b:, 'yac_ts_highlights_enabled', 0)
+    return
+  endif
+  call s:ts_highlights_reset_coverage()
+  call yac#ts_highlights_request()
 endfunction
 
 " 启动定时清理任务

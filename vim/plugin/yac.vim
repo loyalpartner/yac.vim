@@ -15,6 +15,9 @@ let g:yac_auto_complete_delay = get(g:, 'yac_auto_complete_delay', 300)
 let g:yac_auto_complete_min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
 let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
 
+" Tree-sitter highlights (auto-enable for supported filetypes)
+let g:yac_ts_highlights = get(g:, 'yac_ts_highlights', 1)
+
 " 用户命令
 command! YacStart          call yac#start()
 command! YacStop           call yac#stop()
@@ -47,6 +50,10 @@ command! YacDaemonStop     call yac#daemon_stop()
 command! YacRemoteCleanup  call yac_remote#cleanup()
 command! YacPicker      call yac#picker_open()
 command! YacGrep        call yac#picker_open({'initial': '>'})
+command! YacTsSymbols             call yac#ts_symbols()
+command! YacTsHighlightsEnable    call yac#ts_highlights_enable()
+command! YacTsHighlightsDisable   call yac#ts_highlights_disable()
+command! YacTsHighlightsToggle    call yac#ts_highlights_toggle()
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
@@ -65,6 +72,20 @@ nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 nnoremap <silent> <C-p> :YacPicker<CR>
 nnoremap <silent> g/ :YacGrep<CR>
 
+" Tree-sitter navigation
+nnoremap <silent> ]f :call yac#ts_next_function()<CR>
+nnoremap <silent> [f :call yac#ts_prev_function()<CR>
+nnoremap <silent> ]s :call yac#ts_next_struct()<CR>
+nnoremap <silent> [s :call yac#ts_prev_struct()<CR>
+
+" Tree-sitter text objects
+xnoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
+xnoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
+xnoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
+onoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
+onoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
+onoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
+
 " 简单的文件初始化和生命周期管理
 if get(g:, 'lsp_bridge_auto_start', 1)
   augroup lsp_bridge_auto
@@ -81,3 +102,12 @@ if get(g:, 'lsp_bridge_auto_start', 1)
     autocmd VimLeave * call yac_remote#cleanup()
   augroup END
 endif
+
+" Tree-sitter highlights autocommands (only fire when enabled per-buffer)
+augroup yac_ts_highlights
+  autocmd!
+  autocmd CursorMoved,CursorMovedI,BufEnter *.zig,*.rs,*.go,*.vim call yac#ts_highlights_debounce()
+  autocmd WinScrolled *.zig,*.rs,*.go,*.vim call yac#ts_highlights_debounce()
+  autocmd TextChanged,TextChangedI *.zig,*.rs,*.go,*.vim call yac#ts_highlights_invalidate()
+  autocmd BufLeave *.zig,*.rs,*.go,*.vim call yac#ts_highlights_detach()
+augroup END

@@ -4,6 +4,7 @@ const vim = @import("../vim_protocol.zig");
 const registry_mod = @import("../lsp/registry.zig");
 const LspClient = @import("../lsp/client.zig").LspClient;
 const log = @import("../log.zig");
+pub const treesitter_mod = @import("../treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -18,6 +19,7 @@ pub const HandlerContext = struct {
     allocator: Allocator,
     registry: *LspRegistry,
     client_stream: std.net.Stream,
+    ts: ?*treesitter_mod.TreeSitter = null,
 };
 
 /// Result of dispatching a handler.
@@ -120,6 +122,20 @@ pub fn buildTextDocumentPosition(allocator: Allocator, uri: []const u8, line: u3
     try params.put("textDocument", .{ .object = td });
     try params.put("position", .{ .object = pos });
     return .{ .object = params };
+}
+
+/// Build an LSP Range object: {start: {line, character}, end: {line, character}}.
+pub fn buildRange(allocator: Allocator, start_line: u32, start_col: u32, end_line: u32, end_col: u32) !Value {
+    var start = ObjectMap.init(allocator);
+    try start.put("line", json.jsonInteger(@intCast(start_line)));
+    try start.put("character", json.jsonInteger(@intCast(start_col)));
+    var end = ObjectMap.init(allocator);
+    try end.put("line", json.jsonInteger(@intCast(end_line)));
+    try end.put("character", json.jsonInteger(@intCast(end_col)));
+    var range = ObjectMap.init(allocator);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end });
+    return .{ .object = range };
 }
 
 /// Build textDocument identifier params for LSP.

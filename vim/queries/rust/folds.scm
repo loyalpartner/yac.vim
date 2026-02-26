@@ -1,0 +1,9 @@
+(block) @fold
+(declaration_list) @fold
+(field_declaration_list) @fold
+(enum_variant_list) @fold
+(match_block) @fold
+(if_expression) @fold
+(for_expression) @fold
+(while_expression) @fold
+(loop_expression) @fold
