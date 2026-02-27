@@ -2991,13 +2991,17 @@ function! s:picker_render_results() abort
       call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerHeader", [' . (i + 1) . '], 10)')
     endif
   endfor
-  if s:picker.mode ==# 'grep'
-    let query = s:picker_get_text()[1:]
-    if !empty(query)
-      let pat = '\c\V' . escape(query, '\')
-      call win_execute(s:picker.results_popup,
-        \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
-    endif
+  let text = s:picker_get_text()
+  let query = ''
+  if s:picker.mode ==# 'grep' || s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol'
+    let query = len(text) > 1 ? text[1:] : ''
+  elseif s:picker.mode ==# 'file'
+    let query = text
+  endif
+  if !empty(query)
+    let pat = '\c\V' . escape(query, '\')
+    call win_execute(s:picker.results_popup,
+      \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
   endif
   call s:picker_highlight_selected()
 endfunction
@@ -3014,7 +3018,8 @@ function! s:picker_highlight_selected() abort
   endif
   let pos = popup_getpos(s:picker.results_popup)
   let visible = get(pos, 'core_height', 15)
-  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - visible + 1])})
+  " selected is 0-indexed, firstline is 1-based
+  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - visible + 2])})
 endfunction
 
 function! s:picker_select_next() abort
