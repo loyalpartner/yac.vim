@@ -6,17 +6,17 @@ const std = @import("std");
 
 var log_file: ?std.fs.File = null;
 
-/// Compute the daemon log path: $XDG_RUNTIME_DIR/yac-lsp-bridge.log or /tmp/yac-lsp-bridge-$USER.log
+/// Compute the daemon log path: $XDG_RUNTIME_DIR/yacd.log or /tmp/yacd-$USER.log
 fn getLogPath(buf: []u8) ?[]const u8 {
     // Try XDG_RUNTIME_DIR first
     if (std.posix.getenv("XDG_RUNTIME_DIR")) |xdg| {
-        return std.fmt.bufPrint(buf, "{s}/yac-lsp-bridge.log", .{xdg}) catch null;
+        return std.fmt.bufPrint(buf, "{s}/yacd.log", .{xdg}) catch null;
     }
     // Fallback with $USER
     if (std.posix.getenv("USER")) |user| {
-        return std.fmt.bufPrint(buf, "/tmp/yac-lsp-bridge-{s}.log", .{user}) catch null;
+        return std.fmt.bufPrint(buf, "/tmp/yacd-{s}.log", .{user}) catch null;
     }
-    return std.fmt.bufPrint(buf, "/tmp/yac-lsp-bridge.log", .{}) catch null;
+    return std.fmt.bufPrint(buf, "/tmp/yacd.log", .{}) catch null;
 }
 
 pub fn init() void {
@@ -24,7 +24,7 @@ pub fn init() void {
     const path = getLogPath(&buf) orelse return;
     log_file = std.fs.cwd().createFile(path, .{}) catch null;
     const pid = std.os.linux.getpid();
-    info("lsp-bridge daemon started, pid={d}, log={s}", .{ pid, path });
+    info("yacd started, pid={d}, log={s}", .{ pid, path });
 }
 
 pub fn deinit() void {

@@ -29,12 +29,12 @@ const ClientId = clients_mod.ClientId;
 
 fn getSocketPath(buf: []u8) []const u8 {
     if (std.posix.getenv("XDG_RUNTIME_DIR")) |xdg| {
-        return std.fmt.bufPrint(buf, "{s}/yac-lsp-bridge.sock", .{xdg}) catch "/tmp/yac-lsp-bridge.sock";
+        return std.fmt.bufPrint(buf, "{s}/yacd.sock", .{xdg}) catch "/tmp/yacd.sock";
     }
     if (std.posix.getenv("USER")) |user| {
-        return std.fmt.bufPrint(buf, "/tmp/yac-lsp-bridge-{s}.sock", .{user}) catch "/tmp/yac-lsp-bridge.sock";
+        return std.fmt.bufPrint(buf, "/tmp/yacd-{s}.sock", .{user}) catch "/tmp/yacd.sock";
     }
-    return "/tmp/yac-lsp-bridge.sock";
+    return "/tmp/yacd.sock";
 }
 
 // ============================================================================
@@ -793,7 +793,7 @@ pub fn main() !void {
 
     // Clean up socket file
     std.fs.deleteFileAbsolute(socket_path) catch {};
-    log.info("lsp-bridge daemon shutdown complete", .{});
+    log.info("yacd shutdown complete", .{});
 }
 
 // ============================================================================

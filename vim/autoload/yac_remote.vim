@@ -1,5 +1,5 @@
 " yac_remote.vim - SSH Master architecture for remote editing
-" Uses SSH ControlMaster for direct stdio connection to remote lsp-bridge
+" Uses SSH ControlMaster for direct stdio connection to remote yacd
 
 if exists('g:loaded_yac_remote')
   finish
@@ -28,7 +28,7 @@ function! s:start_ssh_master_mode(ssh_path) abort
   " Parse SSH path: scp://user@host//path/file
   let [l:user_host, l:remote_path] = s:parse_ssh_path(a:ssh_path)
 
-  " Deploy lsp-bridge binary if needed
+  " Deploy yacd binary if needed
   call s:ensure_remote_binary(l:user_host)
 
   echo printf("Starting remote LSP for %s...", l:user_host)
@@ -66,23 +66,23 @@ function! s:parse_ssh_path(ssh_path) abort
   return [l:user_host, l:remote_path]
 endfunction
 
-" Deploy lsp-bridge binary to remote host (simplified)
+" Deploy yacd binary to remote host (simplified)
 function! s:ensure_remote_binary(user_host) abort
   " Check if already exists
-  if system(printf('ssh %s "test -x ./lsp-bridge"', shellescape(a:user_host))) == 0
+  if system(printf('ssh %s "test -x ./yacd"', shellescape(a:user_host))) == 0
     return 1
   endif
 
   " Build if needed
-  if !filereadable('./zig-out/bin/lsp-bridge')
-    echo "Building lsp-bridge..."
+  if !filereadable('./zig-out/bin/yacd')
+    echo "Building yacd..."
     call system('zig build -Doptimize=ReleaseFast')
   endif
 
   " Deploy
   echo "Deploying to " . a:user_host . "..."
-  call system(printf('scp ./zig-out/bin/lsp-bridge %s:lsp-bridge', shellescape(a:user_host)))
-  call system(printf('ssh %s "chmod +x lsp-bridge"', shellescape(a:user_host)))
+  call system(printf('scp ./zig-out/bin/yacd %s:yacd', shellescape(a:user_host)))
+  call system(printf('ssh %s "chmod +x yacd"', shellescape(a:user_host)))
 
   return 1
 endfunction

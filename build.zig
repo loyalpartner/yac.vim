@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
     addTreeSitterDeps(b, mod, target, optimize);
 
     const exe = b.addExecutable(.{
-        .name = "lsp-bridge",
+        .name = "yacd",
         .root_module = mod,
     });
 
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run lsp-bridge");
+    const run_step = b.step("run", "Run yacd");
     run_step.dependOn(&run_cmd.step);
 
     const test_mod = b.createModule(.{

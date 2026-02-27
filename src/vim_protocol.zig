@@ -7,7 +7,7 @@ const ObjectMap = json.ObjectMap;
 const Writer = std.io.Writer;
 
 // ============================================================================
-// JSON-RPC Messages (Vim <-> lsp-bridge)
+// JSON-RPC Messages (Vim <-> yacd)
 //
 // Vim channel protocol uses JSON arrays:
 //   Request:      [positive_id, {"method": "xxx", "params": {...}}]
@@ -79,7 +79,7 @@ pub fn parseJsonRpc(arr: []const Value) !JsonRpcMessage {
 }
 
 // ============================================================================
-// Channel Commands (lsp-bridge -> Vim)
+// Channel Commands (yacd -> Vim)
 //
 // These are outgoing commands we send to Vim:
 //   ["call", func, args, id]  -- call with response

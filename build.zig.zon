@@ -1,5 +1,5 @@
 .{
-    .name = .yac_lsp_bridge,
+    .name = .yacd,
     .version = "0.1.0",
     .dependencies = .{
         .tree_sitter = .{
@@ -7,7 +7,7 @@
             .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
         },
     },
-    .fingerprint = 0x51ef1c1f165459a7,
+    .fingerprint = 0x7a690c38e21ca7b4,
     .minimum_zig_version = "0.15.0",
     .paths = .{
         "build.zig",

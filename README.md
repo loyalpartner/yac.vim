@@ -86,7 +86,7 @@ You also need the LSP servers installed for the languages you use (e.g. `rust-an
 
 ```vim
 " Auto-start daemon (default: 1)
-let g:lsp_bridge_auto_start = 1
+let g:yac_auto_start = 1
 
 " Tree-sitter highlights (default: 1)
 let g:yac_ts_highlights = 1
@@ -135,8 +135,8 @@ zig build test                   # Zig tests
 uv run pytest                    # E2E tests
 
 # Debug logging
-YAC_LOG=debug ./zig-out/bin/lsp-bridge
-tail -f /tmp/lsp-bridge.log
+YAC_LOG=debug ./zig-out/bin/yacd
+tail -f /tmp/yacd.log
 ```
 
 ## License

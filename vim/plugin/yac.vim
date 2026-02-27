@@ -1,5 +1,4 @@
-" lsp-bridge Vim plugin entry point
-" Minimal LSP integration for Vim
+" yac.vim plugin entry point
 
 " 兼容性检查 - 需要 channel + Unix socket 支持
 if !has('channel') || !has('job')
@@ -7,7 +6,7 @@ if !has('channel') || !has('job')
 endif
 
 " 配置选项
-let g:lsp_bridge_diagnostic_virtual_text = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
+let g:yac_diagnostic_virtual_text = get(g:, 'yac_diagnostic_virtual_text', 1)
 
 " 自动补全配置选项
 let g:yac_auto_complete = get(g:, 'yac_auto_complete', 1)
@@ -130,8 +129,8 @@ endfunction
 
 " 简单的文件初始化和生命周期管理
 " Use * pattern and check dynamically against registered language plugins
-if get(g:, 'lsp_bridge_auto_start', 1)
-  augroup lsp_bridge_auto
+if get(g:, 'yac_auto_start', 1)
+  augroup yac_auto
     autocmd!
     autocmd BufReadPost,BufNewFile * call s:yac_check_language() | call yac_remote#enhanced_lsp_start()
     autocmd BufWritePre * call yac#will_save(1)

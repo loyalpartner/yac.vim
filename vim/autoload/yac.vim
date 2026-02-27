@@ -1,5 +1,4 @@
-" lsp-bridge Vim plugin core implementation
-" Simple LSP bridge for Vim
+" yac.vim core implementation
 
 " Plugin root directory (parent of vim/)
 let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
@@ -133,7 +132,7 @@ let s:did_change_timer = -1
 
 " 诊断虚拟文本状态
 let s:diagnostic_virtual_text = {}
-let s:diagnostic_virtual_text.enabled = get(g:, 'lsp_bridge_diagnostic_virtual_text', 1)
+let s:diagnostic_virtual_text.enabled = get(g:, 'yac_diagnostic_virtual_text', 1)
 let s:diagnostic_virtual_text.storage = {}  " buffer_id -> diagnostics
 
 " Picker 状态
@@ -190,7 +189,7 @@ endfunction
 
 " Debug 日志写入文件，不干扰 Vim 命令行
 function! s:debug_log(msg) abort
-  if !get(g:, 'lsp_bridge_debug', 0)
+  if !get(g:, 'yac_debug', 0)
     return
   endif
   let line = printf('[%s] %s', strftime('%H:%M:%S'), a:msg)
@@ -200,11 +199,11 @@ endfunction
 " 获取 daemon socket 路径
 function! s:get_socket_path() abort
   if !empty($XDG_RUNTIME_DIR)
-    return $XDG_RUNTIME_DIR . '/yac-lsp-bridge.sock'
+    return $XDG_RUNTIME_DIR . '/yacd.sock'
   elseif !empty($USER)
-    return '/tmp/yac-lsp-bridge-' . $USER . '.sock'
+    return '/tmp/yacd-' . $USER . '.sock'
   else
-    return '/tmp/yac-lsp-bridge.sock'
+    return '/tmp/yacd.sock'
   endif
 endfunction
 
@@ -226,10 +225,10 @@ endfunction
 
 " 启动 daemon 进程（fire-and-forget）
 function! s:start_daemon() abort
-  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
+  let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/zig-out/bin/yacd'])
   " stoponexit='' means don't kill on VimLeave
   call job_start(l:cmd, {'stoponexit': ''})
-  call s:debug_log('Started lsp-bridge daemon')
+  call s:debug_log('Started yacd daemon')
 endfunction
 
 " 确保连接到 daemon
@@ -245,7 +244,7 @@ function! s:ensure_connection() abort
 
   " 开启 channel 日志（仅第一次）
   if !exists('s:log_started')
-    if get(g:, 'lsp_bridge_debug', 0)
+    if get(g:, 'yac_debug', 0)
       call ch_logfile('/tmp/vim_channel.log', 'w')
       call s:debug_log('Channel logging enabled to /tmp/vim_channel.log')
     endif
@@ -274,7 +273,7 @@ function! s:ensure_connection() abort
     endif
   endfor
 
-  echoerr 'Failed to connect to lsp-bridge daemon'
+  echoerr 'Failed to connect to yacd daemon'
   return v:null
 endfunction
 
@@ -311,7 +310,7 @@ function! s:request(method, params, callback_func) abort
     " 使用指定的回调函数
     call ch_sendexpr(l:ch, jsonrpc_msg, {'callback': a:callback_func})
   else
-    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
+    echoerr printf('yacd not running for %s', s:get_connection_key())
   endif
 endfunction
 
@@ -336,7 +335,7 @@ function! s:notify(method, params) abort
     call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
     return 1
   else
-    echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
+    echoerr printf('yacd not running for %s', s:get_connection_key())
   endif
   return 0
 endfunction
@@ -875,7 +874,7 @@ function! s:handle_file_open_response(channel, response) abort
   if type(a:response) == v:t_dict && has_key(a:response, 'log_file')
     let s:log_file = a:response.log_file
     " Silent init - log file path available via :YacDebugStatus
-    call s:debug_log('lsp-bridge initialized with log: ' . s:log_file)
+    call s:debug_log('yacd initialized with log: ' . s:log_file)
   endif
 endfunction
 
@@ -961,9 +960,9 @@ endfunction
 
 " 切换调试模式
 function! yac#debug_toggle() abort
-  let g:lsp_bridge_debug = !get(g:, 'lsp_bridge_debug', 0)
+  let g:yac_debug = !get(g:, 'yac_debug', 0)
 
-  if g:lsp_bridge_debug
+  if g:yac_debug
     echo 'YacDebug: Debug mode ENABLED'
     echo '  - Command send/receive logging enabled'
     echo '  - Channel communication will be logged to /tmp/vim_channel.log'
@@ -984,7 +983,7 @@ endfunction
 
 " 显示调试状态
 function! yac#debug_status() abort
-  let debug_enabled = get(g:, 'lsp_bridge_debug', 0)
+  let debug_enabled = get(g:, 'yac_debug', 0)
   let active_connections = len(s:channel_pool)
   let current_key = s:get_connection_key()
 
