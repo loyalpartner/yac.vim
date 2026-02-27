@@ -46,6 +46,7 @@ pub const handlers = [_]Handler{
     .{ .name = "picker_open", .handleFn = picker_handlers.handlePickerOpen },
     .{ .name = "picker_query", .handleFn = picker_handlers.handlePickerQuery },
     .{ .name = "picker_close", .handleFn = picker_handlers.handlePickerClose },
+    .{ .name = "load_language", .handleFn = ts_handlers.handleLoadLanguage },
     .{ .name = "ts_symbols", .handleFn = ts_handlers.handleTsSymbols },
     .{ .name = "ts_folding", .handleFn = ts_handlers.handleTsFolding },
     .{ .name = "ts_navigate", .handleFn = ts_handlers.handleTsNavigate },

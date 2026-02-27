@@ -15,7 +15,6 @@ const DispatchResult = common.DispatchResult;
 const TsContext = struct {
     ts: *ts_mod.TreeSitter,
     file: []const u8,
-    lang: ts_mod.Lang,
     lang_state: *const ts_mod.LangState,
     obj: ObjectMap,
 };
@@ -27,8 +26,7 @@ fn getTsContext(ctx: *HandlerContext, params: Value) ?TsContext {
         else => return null,
     };
     const file = json.getString(obj, "file") orelse return null;
-    const lang = ts_mod.Lang.fromExtension(file) orelse return null;
-    const lang_state = ts_state.getLangState(lang) orelse return null;
+    const lang_state = ts_state.fromExtension(file) orelse return null;
 
     // Auto-parse if buffer not yet tracked (e.g. .vim files with no LSP file_open)
     if (ts_state.getTree(file) == null) {
@@ -39,7 +37,7 @@ fn getTsContext(ctx: *HandlerContext, params: Value) ?TsContext {
         }
     }
 
-    return .{ .ts = ts_state, .file = file, .lang = lang, .lang_state = lang_state, .obj = obj };
+    return .{ .ts = ts_state, .file = file, .lang_state = lang_state, .obj = obj };
 }
 
 /// Parse a buffer for tree-sitter if the file type is supported.
@@ -126,6 +124,21 @@ pub fn handleTsTextObjects(ctx: *HandlerContext, params: Value) !DispatchResult 
         column,
     );
     return .{ .data = result };
+}
+
+pub fn handleLoadLanguage(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const ts_state = ctx.ts orelse return .{ .empty = {} };
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+    const lang_dir = json.getString(obj, "lang_dir") orelse return .{ .empty = {} };
+
+    ts_state.loadFromDir(lang_dir);
+
+    var result = ObjectMap.init(ctx.allocator);
+    try result.put("ok", .{ .bool = true });
+    return .{ .data = .{ .object = result } };
 }
 
 pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {

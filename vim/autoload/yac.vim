@@ -226,7 +226,7 @@ endfunction
 
 " 启动 daemon 进程（fire-and-forget）
 function! s:start_daemon() abort
-  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge', '--query-dir', s:plugin_root . '/vim/queries'])
+  let l:cmd = get(g:, 'yac_bridge_command', [s:plugin_root . '/zig-out/bin/lsp-bridge'])
   " stoponexit='' means don't kill on VimLeave
   call job_start(l:cmd, {'stoponexit': ''})
   call s:debug_log('Started lsp-bridge daemon')
@@ -283,6 +283,15 @@ function! yac#start() abort
   return s:ensure_connection() isnot v:null
 endfunction
 
+" Load a language plugin into the daemon (idempotent).
+function! yac#ensure_language(lang_dir) abort
+  if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
+  if has_key(s:loaded_langs, a:lang_dir) | return | endif
+  if s:notify('load_language', {'lang_dir': a:lang_dir})
+    let s:loaded_langs[a:lang_dir] = 1
+  endif
+endfunction
+
 function! s:request(method, params, callback_func) abort
   let jsonrpc_msg = {
     \ 'method': a:method,
@@ -325,9 +334,11 @@ function! s:notify(method, params) abort
 
     " 发送通知（不需要回调）
     call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
+    return 1
   else
     echoerr printf('lsp-bridge not running for %s', s:get_connection_key())
   endif
+  return 0
 endfunction
 
 " LSP 方法
@@ -503,6 +514,9 @@ function! yac#did_save(...) abort
 endfunction
 
 function! yac#did_change(...) abort
+  if !get(b:, 'yac_lsp_supported', 0)
+    return
+  endif
   " Capture buffer state now (before any buffer switch)
   let l:file_path = expand('%:p')
   let l:text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")

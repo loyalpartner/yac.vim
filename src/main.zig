@@ -63,8 +63,8 @@ const EventLoop = struct {
 
     const DeferredRequest = lsp_mod.Lsp.DeferredRequest;
 
-    fn init(allocator: Allocator, listener: std.net.Server, query_dir: []const u8) EventLoop {
-        const ts_state = treesitter_mod.TreeSitter.init(allocator, query_dir);
+    fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
+        const ts_state = treesitter_mod.TreeSitter.init(allocator);
         return .{
             .allocator = allocator,
             .lsp = lsp_mod.Lsp.init(allocator),
@@ -766,29 +766,6 @@ pub fn main() !void {
     log.init();
     defer log.deinit();
 
-    // Parse CLI args: [--query-dir /path/to/vim/queries]
-    var query_dir: []const u8 = "";
-    var args = std.process.args();
-    _ = args.skip(); // skip argv[0]
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--query-dir")) {
-            query_dir = args.next() orelse "";
-        }
-    }
-
-    // Fallback: resolve from exe path ({exe_dir}/../../vim/queries)
-    var resolved_query_dir: ?[]const u8 = null;
-    defer if (resolved_query_dir) |p| allocator.free(p);
-    if (query_dir.len == 0) {
-        resolved_query_dir = treesitter_mod.resolveQueryDir(allocator);
-        query_dir = resolved_query_dir orelse "";
-    }
-    if (query_dir.len > 0) {
-        log.info("Query dir: {s}", .{query_dir});
-    } else {
-        log.warn("No query dir found; tree-sitter highlights disabled", .{});
-    }
-
     // Compute socket path
     var sock_path_buf: [256]u8 = undefined;
     const socket_path = getSocketPath(&sock_path_buf);
@@ -807,7 +784,7 @@ pub fn main() !void {
     const address = try std.net.Address.initUnix(socket_path);
     const server = try address.listen(.{ .reuse_address = true });
 
-    var event_loop = EventLoop.init(allocator, server, query_dir);
+    var event_loop = EventLoop.init(allocator, server);
     defer event_loop.deinit();
 
     event_loop.run() catch |e| {
