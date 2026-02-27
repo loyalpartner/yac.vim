@@ -50,9 +50,7 @@ command! YacDebugToggle    call yac#debug_toggle()
 command! YacDebugStatus    call yac#debug_status()
 command! YacConnections    call yac#connections()
 command! YacCleanupConnections call yac#cleanup_connections()
-command! YacStopAll        call yac#stop_all()
 command! YacDaemonStop     call yac#daemon_stop()
-command! YacRemoteCleanup  call yac_remote#cleanup()
 command! YacPicker      call yac#picker_open()
 command! YacGrep        call yac#picker_open({'initial': '>'})
 command! YacTsSymbols             call yac#ts_symbols()
@@ -144,8 +142,7 @@ if get(g:, 'yac_auto_start', 1)
     autocmd BufUnload * if s:not_preview_loading() | call yac#did_close() | endif
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | endif
     autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | endif
-    " SSH连接清理 - Vim退出时清理SSH Master连接
-    autocmd VimLeave * call yac_remote#cleanup()
+    autocmd VimLeave * call yac#daemon_stop()
   augroup END
 endif
 

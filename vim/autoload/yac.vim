@@ -974,8 +974,8 @@ function! yac#stop() abort
   endif
 endfunction
 
-" 关闭所有 channel 连接
-function! yac#stop_all() abort
+" 关闭所有 channel 连接（内部使用）
+function! s:stop_all_channels() abort
   for [key, ch] in items(s:channel_pool)
     if ch_status(ch) == 'open'
       call s:debug_log(printf('Closing channel for %s', key))
@@ -987,7 +987,7 @@ endfunction
 
 " 停止 daemon 进程（通过删除 socket 文件触发）
 function! yac#daemon_stop() abort
-  call yac#stop_all()
+  call s:stop_all_channels()
   let l:sock = s:get_socket_path()
   if filereadable(l:sock) || getftype(l:sock) == 'socket'
     call delete(l:sock)
@@ -1011,7 +1011,7 @@ function! yac#debug_toggle() abort
     " 如果有活跃的连接，断开以启用channel日志
     if !empty(s:channel_pool)
       call s:debug_log('Reconnecting to enable channel logging...')
-      call yac#stop_all()
+      call s:stop_all_channels()
       " 下次调用 LSP 命令时会自动重新连接
     endif
   else

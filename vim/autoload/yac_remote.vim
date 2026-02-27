@@ -94,14 +94,7 @@ endfunction
 
 " Note: get_job_command removed - now handled by connection pool in yac.vim
 
-" Cleanup command for remote connections - now delegates to connection pool
+" Cleanup remote connections - delegates to daemon stop
 function! yac_remote#cleanup() abort
-  echo "Cleaning up remote LSP connections..."
-  
-  " Use the connection pool's cleanup
-  call yac#stop_all()
-  
-  " Clean up any stale socket files
-  call system('rm -f /tmp/yac-*.sock')
-  echo "Remote LSP cleanup complete"
+  call yac#daemon_stop()
 endfunction
