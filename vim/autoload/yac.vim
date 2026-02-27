@@ -258,7 +258,6 @@ function! s:ensure_connection() abort
   if l:ch isnot v:null
     let s:channel_pool[l:key] = l:ch
     call s:debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
-    call s:schedule_preload()
     return l:ch
   endif
 
@@ -270,7 +269,6 @@ function! s:ensure_connection() abort
     if l:ch isnot v:null
       let s:channel_pool[l:key] = l:ch
       call s:debug_log(printf('Connected to daemon [%s] after start', l:key))
-      call s:schedule_preload()
       return l:ch
     endif
   endfor
@@ -279,38 +277,26 @@ function! s:ensure_connection() abort
   return v:null
 endfunction
 
-" Schedule language preloading via timer so it doesn't block the first request.
-function! s:schedule_preload() abort
-  if exists('s:langs_preloaded') | return | endif
-  let s:langs_preloaded = 1
-  call timer_start(0, {-> s:preload_languages()})
-endfunction
-
-" Preload all registered language plugins into daemon.
-function! s:preload_languages() abort
-  let l:ch = s:ensure_connection()
-  if l:ch is v:null || ch_status(l:ch) != 'open' | return | endif
-  if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
-  for [lang, lang_dir] in items(get(g:, 'yac_lang_plugins', {}))
-    if has_key(s:loaded_langs, lang_dir) | continue | endif
-    let s:loaded_langs[lang_dir] = 1
-    call ch_sendraw(l:ch, json_encode([{'method': 'load_language', 'params': {'lang_dir': lang_dir}}]) . "\n")
-  endfor
-endfunction
-
 " 启动/连接 daemon
 function! yac#start() abort
   return s:ensure_connection() isnot v:null
 endfunction
 
-" Load a language plugin into the daemon (idempotent).
-" Normally a no-op since s:preload_languages() runs on first connect.
-" Handles the edge case of plugins registered after initial connect.
+" Load a language plugin into the daemon (synchronous, idempotent).
+" Uses ch_evalexpr to block until the language is fully loaded,
+" so subsequent highlight/symbol requests work immediately.
 function! yac#ensure_language(lang_dir) abort
   if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
   if has_key(s:loaded_langs, a:lang_dir) | return | endif
+
+  let l:key = s:get_connection_key()
+  let l:conn = get(s:connections, l:key, {})
+  let l:ch = get(l:conn, 'channel', '')
+  if empty(l:ch) || ch_status(l:ch) !=# 'open' | return | endif
+
+  let l:msg = {'method': 'load_language', 'params': {'lang_dir': a:lang_dir}}
+  call ch_evalexpr(l:ch, l:msg, {'timeout': 5000})
   let s:loaded_langs[a:lang_dir] = 1
-  call s:notify('load_language', {'lang_dir': a:lang_dir})
 endfunction
 
 function! s:request(method, params, callback_func) abort
