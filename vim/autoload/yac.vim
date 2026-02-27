@@ -441,7 +441,7 @@ function! yac#rename(...) abort
     let current_symbol = expand('<cword>')
     let new_name = input('Rename symbol to: ', current_symbol)
     if empty(new_name)
-      echo 'Rename cancelled'
+      call yac#toast('Rename cancelled')
       return
     endif
   endif
@@ -673,7 +673,7 @@ function! s:handle_goto_response(channel, response) abort
   call s:debug_log(printf('[RECV]: goto response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    echohl ErrorMsg | echo '[yac] Goto error: ' . string(a:response.error) | echohl None
+    call yac#toast('[yac] Goto error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
     return
   endif
 
@@ -682,7 +682,7 @@ function! s:handle_goto_response(channel, response) abort
   " 处理 raw LSP Location 数组格式 (fallback)
   if type(l:loc) == v:t_list
     if empty(l:loc)
-      echo 'No definition found'
+      call yac#toast('No definition found')
       return
     endif
     let l:loc = l:loc[0]
@@ -690,7 +690,7 @@ function! s:handle_goto_response(channel, response) abort
 
   if type(l:loc) != v:t_dict || empty(l:loc)
     if l:loc isnot v:null
-      echo 'No definition found'
+      call yac#toast('No definition found')
     endif
     return
   endif
@@ -728,7 +728,7 @@ function! s:handle_hover_response(channel, response) abort
   endif
 
   if has_key(a:response, 'error')
-    echohl ErrorMsg | echo '[yac] Hover error: ' . string(a:response.error) | echohl None
+    call yac#toast('[yac] Hover error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
     return
   endif
 
@@ -772,7 +772,7 @@ function! s:handle_references_response(channel, response) abort
   call s:debug_log(printf('[RECV]: references response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    echohl ErrorMsg | echo '[yac] References error: ' . string(a:response.error) | echohl None
+    call yac#toast('[yac] References error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
     return
   endif
 
@@ -781,7 +781,7 @@ function! s:handle_references_response(channel, response) abort
     return
   endif
 
-  echo "No references found"
+  call yac#toast('No references found')
 endfunction
 
 " inlay_hints 响应处理器
@@ -798,7 +798,7 @@ function! s:handle_rename_response(channel, response) abort
   call s:debug_log(printf('[RECV]: rename response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    echohl ErrorMsg | echo '[yac] Rename error: ' . string(a:response.error) | echohl None
+    call yac#toast('[yac] Rename error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
     return
   endif
 
@@ -849,7 +849,7 @@ function! s:handle_ts_folding_response(channel, response) abort
   if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
   else
-    echo 'No folding ranges available'
+    call yac#toast('No folding ranges available')
   endif
 endfunction
 
@@ -925,6 +925,39 @@ endfunction
 function! yac#set_log_file(log_path) abort
   let s:log_file = a:log_path
   call s:debug_log('Log file path set to: ' . a:log_path)
+endfunction
+
+" Toast notification popup (top-right corner, auto-dismiss)
+let s:toast_popup = -1
+
+function! yac#toast(msg, ...) abort
+  let opts = a:0 > 0 ? a:1 : {}
+  let time = get(opts, 'time', 3000)
+  let hl = get(opts, 'highlight', 'Normal')
+  let width = 40
+  let msg = a:msg
+  if strwidth(msg) > width - 2
+    let msg = msg[:width - 5] . '...'
+  endif
+  if s:toast_popup != -1
+    silent! call popup_close(s:toast_popup)
+    let s:toast_popup = -1
+  endif
+  let s:toast_popup = popup_notification(' ' . msg . ' ', #{
+    \ pos: 'botright',
+    \ line: &lines - 1,
+    \ col: &columns,
+    \ minwidth: width,
+    \ maxwidth: width,
+    \ padding: [0, 1, 0, 1],
+    \ time: time,
+    \ highlight: hl,
+    \ zindex: 300,
+    \ border: [],
+    \ borderchars: ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+    \ borderhighlight: ['Comment'],
+    \ callback: {id, result -> execute('let s:toast_popup = -1')},
+    \ })
 endfunction
 
 " 关闭当前连接的 channel
@@ -1672,7 +1705,7 @@ endfunction
 
 function! s:picker_open_references(locations) abort
   if empty(a:locations)
-    echo "No references found"
+    call yac#toast('No references found')
     return
   endif
   if s:picker.input_popup != -1
@@ -1743,12 +1776,22 @@ function! s:picker_filter_references_timer(timer_id) abort
   call s:picker_filter_references(text)
 endfunction
 
+" Edit a file for preview — keep syntax highlighting, skip yac autocmds.
+function! s:picker_noautocmd_edit(file) abort
+  let g:yac_preview_loading = 1
+  try
+    execute 'edit ' . fnameescape(a:file)
+  finally
+    unlet! g:yac_preview_loading
+  endtry
+endfunction
+
 function! s:picker_preview() abort
   let item = get(s:picker.items, s:picker.selected, {})
   if get(item, 'is_header', 0) || empty(item) | return | endif
   let file = get(item, 'file', '')
   if !empty(file) && fnamemodify(file, ':p') !=# expand('%:p')
-    noautocmd execute 'edit ' . fnameescape(file)
+    call s:picker_noautocmd_edit(file)
   endif
   call cursor(get(item, 'line', 0) + 1, get(item, 'column', 0) + 1)
   normal! zz
@@ -1784,7 +1827,7 @@ endfunction
 " 显示文档符号结果
 function! s:show_document_symbols(symbols) abort
   if empty(a:symbols)
-    echo "No document symbols found"
+    call yac#toast('No document symbols found')
     return
   endif
 
@@ -1846,7 +1889,7 @@ function! s:show_inlay_hints(hints) abort
   call s:clear_inlay_hints()
 
   if empty(a:hints)
-    echo "No inlay hints available"
+    call yac#toast('No inlay hints available')
     return
   endif
 
@@ -1854,7 +1897,7 @@ function! s:show_inlay_hints(hints) abort
   let s:inlay_hints[bufnr('%')] = a:hints
   call s:render_inlay_hints()
 
-  echo 'Showing ' . len(a:hints) . ' inlay hints'
+  call yac#toast('Showing ' . len(a:hints) . ' inlay hints')
 endfunction
 
 " 清除inlay hints
@@ -1881,7 +1924,7 @@ endfunction
 " 公开接口：清除inlay hints
 function! yac#clear_inlay_hints() abort
   call s:clear_inlay_hints()
-  echo 'Inlay hints cleared'
+  call yac#toast('Inlay hints cleared')
 endfunction
 
 " 渲染inlay hints到buffer
@@ -1938,7 +1981,7 @@ endfunction
 " 应用工作区编辑
 function! s:apply_workspace_edit(edits) abort
   if empty(a:edits)
-    echo 'No changes to apply'
+    call yac#toast('No changes to apply')
     return
   endif
 
@@ -1989,7 +2032,7 @@ function! s:apply_workspace_edit(edits) abort
       call setpos('.', current_pos)
     endif
 
-    echo printf('Applied %d changes across %d files', total_changes, files_changed)
+    call yac#toast(printf('Applied %d changes across %d files', total_changes, files_changed))
 
   catch
     echoerr 'Error applying workspace edit: ' . v:exception
@@ -2058,7 +2101,7 @@ endfunction
 " 应用折叠范围
 function! s:apply_folding_ranges(ranges) abort
   if empty(a:ranges)
-    echo "No folding ranges available"
+    call yac#toast('No folding ranges available')
     return
   endif
 
@@ -2078,7 +2121,7 @@ function! s:apply_folding_ranges(ranges) abort
     endif
   endfor
 
-  echo 'Applied ' . len(a:ranges) . ' folding ranges'
+  call yac#toast('Applied ' . len(a:ranges) . ' folding ranges')
 endfunction
 
 " === Code Actions 功能 ===
@@ -2086,7 +2129,7 @@ endfunction
 " 显示代码操作
 function! s:show_code_actions(actions) abort
   if empty(a:actions)
-    echo "No code actions available"
+    call yac#toast('No code actions available')
     return
   endif
 
@@ -2658,6 +2701,11 @@ function! s:picker_get_text() abort
   return s:picker.input_text
 endfunction
 
+" Check if text starts with a mode prefix character (>, @, #).
+function! s:picker_has_prefix(text) abort
+  return !empty(a:text) && (a:text[0] ==# '>' || a:text[0] ==# '@' || a:text[0] ==# '#')
+endfunction
+
 " Set the picker input text and refresh the buffer display + cursor.
 " When text starts with a mode prefix (>, @, #), replace the prompt '>' with
 " the prefix char and display the rest as the query — e.g. input '>foo'
@@ -2772,22 +2820,39 @@ function! s:picker_input_filter(winid, key) abort
   endif
 
   " Editing
-  if nr == 21  " Ctrl+U — clear all
-    call s:picker_edit('', 0)
+  if nr == 21  " Ctrl+U — clear filter first, then prefix
+    let text = s:picker_get_text()
+    if s:picker_has_prefix(text) && len(text) > 1
+      call s:picker_edit(text[0], 1)
+    else
+      call s:picker_edit('', 0)
+    endif
     return 1
   endif
-  if nr == 23  " Ctrl+W — delete word before cursor
+  if nr == 23  " Ctrl+W — delete word before cursor, stop at prefix
     let text = s:picker_get_text()
     let before = substitute(strpart(text, 0, s:picker.cursor_col), '\S*\s*$', '', '')
+    if s:picker_has_prefix(text) && len(before) < 1
+      let before = text[0]
+    endif
     call s:picker_edit(before . strpart(text, s:picker.cursor_col), len(before))
     return 1
   endif
 
-  " Backspace — delete char before cursor
+  " Backspace — delete char before cursor; stop at prefix boundary
   if a:key == "\<BS>"
     if s:picker.cursor_col <= 0 | return 1 | endif
     let text = s:picker_get_text()
-    call s:picker_edit(strpart(text, 0, s:picker.cursor_col - 1) . strpart(text, s:picker.cursor_col), s:picker.cursor_col - 1)
+    let has_prefix = s:picker_has_prefix(text)
+    if has_prefix && s:picker.cursor_col == 1 && len(text) == 1
+      " Only prefix left — delete it
+      call s:picker_edit('', 0)
+    elseif has_prefix && s:picker.cursor_col <= 1
+      " At prefix boundary with filter still present — don't delete prefix
+      return 1
+    else
+      call s:picker_edit(strpart(text, 0, s:picker.cursor_col - 1) . strpart(text, s:picker.cursor_col), s:picker.cursor_col - 1)
+    endif
     return 1
   endif
 
@@ -2992,14 +3057,14 @@ function! s:picker_render_results() abort
     endif
   endfor
   let text = s:picker_get_text()
-  let query = ''
-  if s:picker.mode ==# 'grep' || s:picker.mode ==# 'workspace_symbol' || s:picker.mode ==# 'document_symbol'
-    let query = len(text) > 1 ? text[1:] : ''
-  elseif s:picker.mode ==# 'file'
-    let query = text
-  endif
+  let query = s:picker.mode ==# 'file' ? text : (len(text) > 1 ? text[1:] : '')
   if !empty(query)
-    let pat = '\c\V' . escape(query, '\')
+    if s:picker.mode ==# 'grep'
+      let pat = '\c\V' . escape(query, '\')
+    else
+      let chars = join(uniq(sort(split(query, '\zs'))), '')
+      let pat = '\c[' . escape(chars, '\]^-') . ']'
+    endif
     call win_execute(s:picker.results_popup,
       \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
   endif
@@ -3014,7 +3079,7 @@ function! s:picker_highlight_selected() abort
   " Remove old selected-line match (ID 102) and add new one
   call win_execute(s:picker.results_popup, 'silent! call matchdelete(102)')
   if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
-    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 20, 102)')
+    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 5, 102)')
   endif
   let pos = popup_getpos(s:picker.results_popup)
   let visible = get(pos, 'core_height', 15)
@@ -3194,7 +3259,7 @@ function! s:handle_ts_symbols_response(channel, response) abort
   if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
     call s:show_document_symbols(a:response.symbols)
   else
-    echo 'No tree-sitter symbols found'
+    call yac#toast('No tree-sitter symbols found')
   endif
 endfunction
 

@@ -53,28 +53,41 @@ pub fn escapeVimString(alloc: Allocator, input: []const u8) ![]const u8 {
     return result[0 .. i + suffix.len];
 }
 
-/// Format a progress echo command for Vim.
+/// Format a `call yac#toast(...)` Vim command string.
+/// The message is escaped for safe embedding in single quotes.
+/// Pass a highlight group name (e.g. "ErrorMsg") or null for default styling.
+pub fn formatToastCmd(alloc: Allocator, msg: []const u8, highlight: ?[]const u8) ?[]const u8 {
+    const escaped = escapeVimString(alloc, msg) catch return null;
+    if (highlight) |hl| {
+        return std.fmt.allocPrint(alloc, "call yac#toast('{s}', {{'highlight': '{s}'}})", .{ escaped, hl }) catch null;
+    }
+    return std.fmt.allocPrint(alloc, "call yac#toast('{s}')", .{escaped}) catch null;
+}
+
+/// Format a progress toast command for Vim.
 /// Returns null if no title is available (nothing useful to show).
-pub fn formatProgressEcho(alloc: Allocator, title: ?[]const u8, message: ?[]const u8, percentage: ?i64) ?[]const u8 {
+pub fn formatProgressToast(alloc: Allocator, title: ?[]const u8, message: ?[]const u8, percentage: ?i64) ?[]const u8 {
     const t = title orelse return null;
 
-    // Escape single quotes for Vim's echo '...' syntax
+    // Escape individual parts, then compose. The composed string is passed
+    // directly to allocPrint (not through escapeVimString again) to avoid
+    // double-escaping.
     const escaped_title = escapeVimString(alloc, t) catch return null;
     const escaped_message = if (message) |m| (escapeVimString(alloc, m) catch null) else null;
 
     // Build: [yac] Title (N%): Message
     if (percentage) |pct| {
         if (escaped_message) |msg| {
-            return std.fmt.allocPrint(alloc, "echo '[yac] {s} ({d}%): {s}'", .{ escaped_title, pct, msg }) catch null;
+            return std.fmt.allocPrint(alloc, "call yac#toast('[yac] {s} ({d}%): {s}')", .{ escaped_title, pct, msg }) catch null;
         }
-        return std.fmt.allocPrint(alloc, "echo '[yac] {s} ({d}%)'", .{ escaped_title, pct }) catch null;
+        return std.fmt.allocPrint(alloc, "call yac#toast('[yac] {s} ({d}%)')", .{ escaped_title, pct }) catch null;
     }
 
     if (escaped_message) |msg| {
-        return std.fmt.allocPrint(alloc, "echo '[yac] {s}: {s}'", .{ escaped_title, msg }) catch null;
+        return std.fmt.allocPrint(alloc, "call yac#toast('[yac] {s}: {s}')", .{ escaped_title, msg }) catch null;
     }
 
-    return std.fmt.allocPrint(alloc, "echo '[yac] {s}'", .{escaped_title}) catch null;
+    return std.fmt.allocPrint(alloc, "call yac#toast('[yac] {s}')", .{escaped_title}) catch null;
 }
 
 pub fn symbolKindName(kind: ?i64) []const u8 {

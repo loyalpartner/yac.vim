@@ -392,7 +392,8 @@ const EventLoop = struct {
                 if (self.lsp.isLanguageIndexing(language)) {
                     if (self.lsp.enqueueDeferred(cid, raw_line)) {
                         log.info("Deferred {s} request (LSP indexing in progress)", .{method});
-                        self.sendVimExTo(cid, alloc, "echo '[yac] LSP indexing, request queued...'");
+                        if (lsp_transform.formatToastCmd(alloc, "[yac] LSP indexing, request queued...", null)) |cmd|
+                            self.sendVimExTo(cid, alloc, cmd);
                     }
                     return;
                 }
@@ -434,7 +435,8 @@ const EventLoop = struct {
                 if (vim_id != null) {
                     if (self.lsp.enqueueDeferred(cid, raw_line)) {
                         log.info("Deferred {s} request (LSP initializing)", .{method});
-                        self.sendVimExTo(cid, alloc, "echo '[yac] LSP initializing, request queued...'");
+                        if (lsp_transform.formatToastCmd(alloc, "[yac] LSP initializing, request queued...", null)) |cmd|
+                            self.sendVimExTo(cid, alloc, cmd);
                     } else {
                         self.sendVimResponseTo(cid, alloc, vim_id, .null);
                     }
@@ -604,12 +606,12 @@ const EventLoop = struct {
             break :blk stderr_buf[0..@min(n, 200)];
         };
 
-        if (stderr_snippet) |msg| {
-            const echo_msg = std.fmt.allocPrint(alloc, "echohl ErrorMsg | echo '[yac] LSP server crashed: {s}' | echohl None", .{msg}) catch return;
-            self.broadcastVimEx(alloc, echo_msg);
-        } else {
-            self.broadcastVimEx(alloc, "echohl ErrorMsg | echo '[yac] LSP server crashed (no stderr output)' | echohl None");
-        }
+        const crash_msg = if (stderr_snippet) |msg|
+            std.fmt.allocPrint(alloc, "[yac] LSP server crashed: {s}", .{msg}) catch return
+        else
+            "[yac] LSP server crashed (no stderr output)";
+        if (lsp_transform.formatToastCmd(alloc, crash_msg, "ErrorMsg")) |cmd|
+            self.broadcastVimEx(alloc, cmd);
 
         self.lsp.registry.removeClient(client_key);
     }
@@ -645,19 +647,20 @@ const EventLoop = struct {
                 self.lsp.incrementIndexingCount(language);
                 const title = json_utils.getString(value_obj, "title");
                 if (token_key) |tk| if (title) |t| self.progress.storeTitle(tk, t);
-                if (lsp_transform.formatProgressEcho(alloc, title, message, percentage)) |echo_cmd| {
+                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
                     self.broadcastVimEx(alloc, echo_cmd);
                 }
             } else if (std.mem.eql(u8, kind, "report")) {
                 const title = if (token_key) |tk| self.progress.getTitle(tk) else null;
-                if (lsp_transform.formatProgressEcho(alloc, title, message, percentage)) |echo_cmd| {
+                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
                     self.broadcastVimEx(alloc, echo_cmd);
                 }
             } else if (std.mem.eql(u8, kind, "end")) {
                 if (token_key) |tk| self.progress.removeTitle(tk);
                 self.lsp.decrementIndexingCount(language);
                 if (!self.lsp.isAnyLanguageIndexing()) {
-                    self.broadcastVimEx(alloc, "echo '[yac] Indexing complete'");
+                    if (lsp_transform.formatToastCmd(alloc, "[yac] Indexing complete", null)) |cmd|
+                        self.broadcastVimEx(alloc, cmd);
                     self.flushDeferredRequests();
                 }
             }

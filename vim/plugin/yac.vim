@@ -127,18 +127,23 @@ function! s:yac_check_language() abort
   endfor
 endfunction
 
+" Guard: skip autocmds while picker preview is loading a buffer.
+function! s:not_preview_loading() abort
+  return !get(g:, 'yac_preview_loading', 0)
+endfunction
+
 " 简单的文件初始化和生命周期管理
 " Use * pattern and check dynamically against registered language plugins
 if get(g:, 'yac_auto_start', 1)
   augroup yac_auto
     autocmd!
-    autocmd BufReadPost,BufNewFile * call s:yac_check_language() | call yac_remote#enhanced_lsp_start()
-    autocmd BufWritePre * call yac#will_save(1)
-    autocmd BufWritePost * call yac#did_save()
-    autocmd TextChanged,TextChangedI * call yac#did_change()
-    autocmd BufUnload * call yac#did_close()
-    autocmd TextChangedI * call yac#auto_complete_trigger()
-    autocmd InsertLeave * call yac#close_completion()
+    autocmd BufReadPost,BufNewFile * if s:not_preview_loading() | call s:yac_check_language() | call yac_remote#enhanced_lsp_start() | endif
+    autocmd BufWritePre * if s:not_preview_loading() | call yac#will_save(1) | endif
+    autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
+    autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif
+    autocmd BufUnload * if s:not_preview_loading() | call yac#did_close() | endif
+    autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | endif
+    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | endif
     " SSH连接清理 - Vim退出时清理SSH Master连接
     autocmd VimLeave * call yac_remote#cleanup()
   augroup END
@@ -148,8 +153,8 @@ endif
 " Use * pattern — handlers check per-buffer enablement
 augroup yac_ts_highlights
   autocmd!
-  autocmd CursorMoved,CursorMovedI,BufEnter * call yac#ts_highlights_debounce()
-  autocmd WinScrolled * call yac#ts_highlights_debounce()
-  autocmd TextChanged,TextChangedI * call yac#ts_highlights_invalidate()
-  autocmd BufLeave * call yac#ts_highlights_detach()
+  autocmd CursorMoved,CursorMovedI,BufEnter * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
+  autocmd WinScrolled * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
+  autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
+  autocmd BufLeave * if s:not_preview_loading() | call yac#ts_highlights_detach() | endif
 augroup END
