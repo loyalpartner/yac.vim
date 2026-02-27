@@ -258,7 +258,7 @@ function! s:ensure_connection() abort
   if l:ch isnot v:null
     let s:channel_pool[l:key] = l:ch
     call s:debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
-    call s:preload_languages(l:ch)
+    call s:schedule_preload()
     return l:ch
   endif
 
@@ -270,7 +270,7 @@ function! s:ensure_connection() abort
     if l:ch isnot v:null
       let s:channel_pool[l:key] = l:ch
       call s:debug_log(printf('Connected to daemon [%s] after start', l:key))
-      call s:preload_languages(l:ch)
+      call s:schedule_preload()
       return l:ch
     endif
   endfor
@@ -279,15 +279,22 @@ function! s:ensure_connection() abort
   return v:null
 endfunction
 
-" Preload all registered language plugins into daemon on first connect.
-function! s:preload_languages(ch) abort
+" Schedule language preloading via timer so it doesn't block the first request.
+function! s:schedule_preload() abort
   if exists('s:langs_preloaded') | return | endif
   let s:langs_preloaded = 1
+  call timer_start(0, {-> s:preload_languages()})
+endfunction
+
+" Preload all registered language plugins into daemon.
+function! s:preload_languages() abort
+  let l:ch = s:ensure_connection()
+  if l:ch is v:null || ch_status(l:ch) != 'open' | return | endif
   if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
   for [lang, lang_dir] in items(get(g:, 'yac_lang_plugins', {}))
     if has_key(s:loaded_langs, lang_dir) | continue | endif
     let s:loaded_langs[lang_dir] = 1
-    call ch_sendraw(a:ch, json_encode([{'method': 'load_language', 'params': {'lang_dir': lang_dir}}]) . "\n")
+    call ch_sendraw(l:ch, json_encode([{'method': 'load_language', 'params': {'lang_dir': lang_dir}}]) . "\n")
   endfor
 endfunction
 
