@@ -258,6 +258,7 @@ function! s:ensure_connection() abort
   if l:ch isnot v:null
     let s:channel_pool[l:key] = l:ch
     call s:debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
+    call s:preload_languages(l:ch)
     return l:ch
   endif
 
@@ -269,6 +270,7 @@ function! s:ensure_connection() abort
     if l:ch isnot v:null
       let s:channel_pool[l:key] = l:ch
       call s:debug_log(printf('Connected to daemon [%s] after start', l:key))
+      call s:preload_languages(l:ch)
       return l:ch
     endif
   endfor
@@ -277,18 +279,31 @@ function! s:ensure_connection() abort
   return v:null
 endfunction
 
+" Preload all registered language plugins into daemon on first connect.
+function! s:preload_languages(ch) abort
+  if exists('s:langs_preloaded') | return | endif
+  let s:langs_preloaded = 1
+  if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
+  for [lang, lang_dir] in items(get(g:, 'yac_lang_plugins', {}))
+    if has_key(s:loaded_langs, lang_dir) | continue | endif
+    let s:loaded_langs[lang_dir] = 1
+    call ch_sendraw(a:ch, json_encode([{'method': 'load_language', 'params': {'lang_dir': lang_dir}}]) . "\n")
+  endfor
+endfunction
+
 " 启动/连接 daemon
 function! yac#start() abort
   return s:ensure_connection() isnot v:null
 endfunction
 
 " Load a language plugin into the daemon (idempotent).
+" Normally a no-op since s:preload_languages() runs on first connect.
+" Handles the edge case of plugins registered after initial connect.
 function! yac#ensure_language(lang_dir) abort
   if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
   if has_key(s:loaded_langs, a:lang_dir) | return | endif
-  if s:notify('load_language', {'lang_dir': a:lang_dir})
-    let s:loaded_langs[a:lang_dir] = 1
-  endif
+  let s:loaded_langs[a:lang_dir] = 1
+  call s:notify('load_language', {'lang_dir': a:lang_dir})
 endfunction
 
 function! s:request(method, params, callback_func) abort
