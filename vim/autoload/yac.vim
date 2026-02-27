@@ -290,8 +290,7 @@ function! yac#ensure_language(lang_dir) abort
   if has_key(s:loaded_langs, a:lang_dir) | return | endif
 
   let l:key = s:get_connection_key()
-  let l:conn = get(s:connections, l:key, {})
-  let l:ch = get(l:conn, 'channel', '')
+  let l:ch = get(s:channel_pool, l:key, '')
   if empty(l:ch) || ch_status(l:ch) !=# 'open' | return | endif
 
   let l:msg = {'method': 'load_language', 'params': {'lang_dir': a:lang_dir}}
