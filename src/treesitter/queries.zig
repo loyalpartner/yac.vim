@@ -4,10 +4,10 @@ const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
 
-/// Load and compile a tree-sitter query from {query_dir}/{lang_name}/{query_name}.scm.
+/// Load and compile a tree-sitter query from {query_dir}/{query_name}.scm.
 /// Returns null if the file doesn't exist or fails to compile.
 pub fn loadQuery(allocator: Allocator, query_dir: []const u8, lang_name: []const u8, query_name: []const u8, language: *const ts.Language) ?*ts.Query {
-    const query_src = loadQueryFromDir(allocator, query_dir, lang_name, query_name) catch |e| {
+    const query_src = loadQueryFromDir(allocator, query_dir, query_name) catch |e| {
         log.warn("Failed to load {s}.scm for {s}: {any}", .{ query_name, lang_name, e });
         return null;
     } orelse return null;
@@ -20,8 +20,8 @@ pub fn loadQuery(allocator: Allocator, query_dir: []const u8, lang_name: []const
     };
 }
 
-fn loadQueryFromDir(allocator: Allocator, base_dir: []const u8, lang_name: []const u8, query_name: []const u8) !?[]const u8 {
-    const path = try std.fmt.allocPrint(allocator, "{s}/{s}/{s}.scm", .{ base_dir, lang_name, query_name });
+fn loadQueryFromDir(allocator: Allocator, query_dir: []const u8, query_name: []const u8) !?[]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "{s}/{s}.scm", .{ query_dir, query_name });
     defer allocator.free(path);
 
     const file = openFile(path) catch |e| {

@@ -184,6 +184,7 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "character", "YacTsCharacter" },
         .{ "string", "YacTsString" },
         .{ "string.escape", "YacTsStringEscape" },
+        .{ "string.special", "YacTsStringEscape" },
         .{ "escape", "YacTsStringEscape" },
         .{ "number", "YacTsNumber" },
         .{ "number.float", "YacTsNumberFloat" },
@@ -192,9 +193,19 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "comment.documentation", "YacTsCommentDocumentation" },
         .{ "punctuation.bracket", "YacTsPunctuationBracket" },
         .{ "punctuation.delimiter", "YacTsPunctuationDelimiter" },
+        .{ "punctuation.special", "YacTsPunctuationDelimiter" },
         .{ "attribute", "YacTsAttribute" },
         .{ "constructor", "YacTsConstructor" },
         .{ "property", "YacTsProperty" },
+        // Legacy capture names (pre-nvim-treesitter 1.0 convention)
+        .{ "parameter", "YacTsVariableParameter" },
+        .{ "field", "YacTsProperty" },
+        .{ "method", "YacTsFunctionMethod" },
+        .{ "method.call", "YacTsFunctionCall" },
+        .{ "conditional", "YacTsKeywordConditional" },
+        .{ "repeat", "YacTsKeywordRepeat" },
+        .{ "preproc", "YacTsKeyword" },
+        .{ "delimiter", "YacTsPunctuationDelimiter" },
     };
 
     // Exact match

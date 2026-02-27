@@ -1,10 +1,8 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const ts_zig = @import("tree_sitter_zig");
-const ts_rust = @import("tree_sitter_rust");
-const ts_go = @import("tree_sitter_go");
-const ts_vim = @import("tree_sitter_vim");
 const queries_mod = @import("queries.zig");
+const lang_config = @import("lang_config.zig");
+const wasm_loader_mod = @import("wasm_loader.zig");
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -16,38 +14,13 @@ pub const navigate = @import("navigate.zig");
 pub const highlights = @import("highlights.zig");
 pub const predicates = @import("predicates.zig");
 
-pub const Lang = enum {
-    zig,
-    rust,
-    go,
-    vim,
-
-    pub fn fromExtension(path: []const u8) ?Lang {
-        if (std.mem.endsWith(u8, path, ".zig")) return .zig;
-        if (std.mem.endsWith(u8, path, ".rs")) return .rust;
-        if (std.mem.endsWith(u8, path, ".go")) return .go;
-        if (std.mem.endsWith(u8, path, ".vim")) return .vim;
-        return null;
-    }
-
-    pub fn tsLanguage(self: Lang) *const ts.Language {
-        return ts.Language.fromRaw(switch (self) {
-            .zig => ts_zig.language(),
-            .rust => ts_rust.language(),
-            .go => ts_go.language(),
-            .vim => ts_vim.language(),
-        });
-    }
-
-    pub fn name(self: Lang) []const u8 {
-        return @tagName(self);
-    }
-};
+const WasmLoader = wasm_loader_mod.WasmLoader;
 
 const BufferTree = struct {
     tree: *ts.Tree,
     source: []const u8,
-    lang: Lang,
+    /// Language name (key into the registry). Owned by dynamic_langs map.
+    lang_name: []const u8,
     content_hash: u64,
 
     fn deinit(self: *BufferTree, allocator: Allocator) void {
@@ -65,13 +38,15 @@ pub const LangState = struct {
     textobjects: ?*ts.Query,
     highlights: ?*ts.Query,
 
-    fn initForLang(lang: Lang, allocator: Allocator, query_dir: []const u8) !LangState {
-        const language = lang.tsLanguage();
+    fn initForDynamic(language: *const ts.Language, lang_name: []const u8, allocator: Allocator, query_dir: []const u8, wasm_loader: *WasmLoader) !LangState {
         const parser = ts.Parser.create();
         errdefer parser.destroy();
+
+        // WASM-loaded languages require the parser to have a WasmStore bound.
+        wasm_loader.setParserWasmStore(parser);
+
         try parser.setLanguage(language);
 
-        const lang_name = lang.name();
         const sym_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "symbols", language);
         const folds_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "folds", language);
         const to_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "textobjects", language);
@@ -95,7 +70,7 @@ pub const LangState = struct {
         };
     }
 
-    fn deinit(self: *LangState) void {
+    pub fn deinit(self: *LangState) void {
         if (self.symbols) |q| q.destroy();
         if (self.folds) |q| q.destroy();
         if (self.textobjects) |q| q.destroy();
@@ -103,6 +78,39 @@ pub const LangState = struct {
         self.parser.destroy();
     }
 };
+
+/// Dynamic language entry (WASM-loaded).
+const DynamicLang = struct {
+    state: LangState,
+    /// Owned list of extensions (e.g. [".py", ".pyi"])
+    extensions: []const []const u8,
+
+    fn deinit(self: *DynamicLang, allocator: Allocator) void {
+        self.state.deinit();
+        freeDupedStringSlice(allocator, self.extensions);
+    }
+};
+
+/// Duplicate a slice of strings, returning an owned copy of both the slice and each element.
+fn dupeStringSlice(allocator: Allocator, strings: []const []const u8) ?[]const []const u8 {
+    const duped = allocator.alloc([]const u8, strings.len) catch return null;
+    var count: usize = 0;
+    for (strings) |s| {
+        duped[count] = allocator.dupe(u8, s) catch {
+            freeDupedStringSlice(allocator, duped[0..count]);
+            allocator.free(duped);
+            return null;
+        };
+        count += 1;
+    }
+    return duped[0..count];
+}
+
+/// Free a slice of strings produced by dupeStringSlice.
+fn freeDupedStringSlice(allocator: Allocator, strings: []const []const u8) void {
+    for (strings) |s| allocator.free(s);
+    allocator.free(strings);
+}
 
 /// Central tree-sitter state: manages parsers, queries, and parsed buffer trees.
 ///
@@ -112,26 +120,27 @@ pub const LangState = struct {
 /// exclusive access without explicit locking.
 pub const TreeSitter = struct {
     allocator: Allocator,
-    langs: std.EnumArray(Lang, ?LangState),
+    /// All languages (WASM-loaded), keyed by language name.
+    dynamic_langs: std.StringHashMap(DynamicLang),
     buffers: std.StringHashMap(BufferTree),
+    wasm_loader: WasmLoader,
 
-    pub fn init(allocator: Allocator, query_dir: []const u8) TreeSitter {
-        var langs = std.EnumArray(Lang, ?LangState).initFill(null);
-
-        // Initialize all languages; failures are non-fatal per language.
-        inline for (std.meta.fields(Lang)) |f| {
-            const lang: Lang = @enumFromInt(f.value);
-            langs.set(lang, LangState.initForLang(lang, allocator, query_dir) catch |e| blk: {
-                log.warn("TreeSitter: failed to init {s}: {any}", .{ lang.name(), e });
-                break :blk null;
-            });
-        }
-
-        return .{
-            .allocator = allocator,
-            .langs = langs,
-            .buffers = std.StringHashMap(BufferTree).init(allocator),
+    pub fn init(allocator: Allocator) TreeSitter {
+        const wasm_loader = WasmLoader.init(allocator) catch |e| {
+            std.debug.panic("TreeSitter: WASM loader init failed (fatal): {any}", .{e});
         };
+
+        var self = TreeSitter{
+            .allocator = allocator,
+            .dynamic_langs = std.StringHashMap(DynamicLang).init(allocator),
+            .buffers = std.StringHashMap(BufferTree).init(allocator),
+            .wasm_loader = wasm_loader,
+        };
+
+        // Load languages from user config (~/.config/yac/languages.json)
+        self.loadUserLanguages();
+
+        return self;
     }
 
     pub fn deinit(self: *TreeSitter) void {
@@ -143,25 +152,120 @@ pub const TreeSitter = struct {
         }
         self.buffers.deinit();
 
-        inline for (std.meta.fields(Lang)) |f| {
-            const lang: Lang = @enumFromInt(f.value);
-            if (self.langs.getPtr(lang).*) |*ls| ls.deinit();
+        var dyn_it = self.dynamic_langs.iterator();
+        while (dyn_it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.dynamic_langs.deinit();
+
+        self.wasm_loader.deinit();
+    }
+
+    /// Load languages from user configuration (~/.config/yac/languages.json).
+    fn loadUserLanguages(self: *TreeSitter) void {
+        const configs = lang_config.loadUserConfigs(self.allocator) orelse return;
+        self.registerConfigs(configs);
+    }
+
+    /// Load all languages from a plugin directory.
+    /// Reads {lang_dir}/languages.json for grammar/extension info.
+    /// Queries are loaded from {lang_dir}/queries/.
+    pub fn loadFromDir(self: *TreeSitter, lang_dir: []const u8) void {
+        const configs = lang_config.loadFromDir(self.allocator, lang_dir) orelse {
+            log.warn("TreeSitter: no languages found in {s}", .{lang_dir});
+            return;
+        };
+        self.registerConfigs(configs);
+    }
+
+    /// Register all configs, then free the config slice.
+    fn registerConfigs(self: *TreeSitter, configs: []lang_config.LangConfig) void {
+        defer {
+            for (configs) |c| c.deinit(self.allocator);
+            self.allocator.free(configs);
+        }
+        for (configs) |config| {
+            self.registerLangConfig(config);
         }
     }
 
-    pub fn getLangState(self: *const TreeSitter, lang: Lang) ?*const LangState {
-        const opt: *const ?LangState = &self.langs.values[@intFromEnum(lang)];
-        if (opt.*) |*ls| return ls;
+    /// Register a single language from its config.
+    fn registerLangConfig(self: *TreeSitter, config: lang_config.LangConfig) void {
+        if (self.dynamic_langs.get(config.name) != null) {
+            log.debug("TreeSitter: skipping '{s}' (already registered)", .{config.name});
+            return;
+        }
+
+        const language = self.wasm_loader.loadGrammar(self.allocator, config.name, config.grammar_path) catch |e| {
+            log.warn("TreeSitter: failed to load WASM grammar '{s}': {any}", .{ config.name, e });
+            return;
+        };
+
+        var state = LangState.initForDynamic(language, config.name, self.allocator, config.query_dir, &self.wasm_loader) catch |e| {
+            log.warn("TreeSitter: failed to init lang '{s}': {any}", .{ config.name, e });
+            return;
+        };
+
+        const exts = dupeStringSlice(self.allocator, config.extensions) orelse {
+            state.deinit();
+            return;
+        };
+
+        const owned_name = self.allocator.dupe(u8, config.name) catch {
+            freeDupedStringSlice(self.allocator, exts);
+            state.deinit();
+            return;
+        };
+
+        self.dynamic_langs.put(owned_name, .{
+            .state = state,
+            .extensions = exts,
+        }) catch {
+            self.allocator.free(owned_name);
+            freeDupedStringSlice(self.allocator, exts);
+            state.deinit();
+            return;
+        };
+
+        log.info("TreeSitter: registered language '{s}'", .{config.name});
+    }
+
+    // -- Public query API --
+
+    /// Find the dynamic language entry matching a file path by extension.
+    fn findDynamicLangForFile(self: *const TreeSitter, path: []const u8) ?struct { name: []const u8, lang: *DynamicLang } {
+        var it = self.dynamic_langs.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.extensions) |ext| {
+                if (std.mem.endsWith(u8, path, ext))
+                    return .{ .name = entry.key_ptr.*, .lang = entry.value_ptr };
+            }
+        }
         return null;
     }
 
+    /// Look up a LangState by file extension.
+    pub fn fromExtension(self: *const TreeSitter, path: []const u8) ?*const LangState {
+        const dl = self.findDynamicLangForFile(path) orelse return null;
+        return &dl.lang.state;
+    }
+
+    /// Look up a LangState by language name.
+    pub fn findLangStateByName(self: *const TreeSitter, name: []const u8) ?*const LangState {
+        if (self.dynamic_langs.get(name)) |*dl| return &dl.state;
+        return null;
+    }
+
+    /// Get language name for a file path.
+    pub fn langNameForFile(self: *const TreeSitter, path: []const u8) ?[]const u8 {
+        const dl = self.findDynamicLangForFile(path) orelse return null;
+        return dl.name;
+    }
+
     pub fn parseBuffer(self: *TreeSitter, file_path: []const u8, source: []const u8) !void {
-        const lang = Lang.fromExtension(file_path) orelse return error.UnsupportedLanguage;
-        const ls: *LangState = blk: {
-            const opt: *?LangState = &self.langs.values[@intFromEnum(lang)];
-            if (opt.*) |*s| break :blk s;
-            return error.LanguageNotInitialized;
-        };
+        const dl = self.findDynamicLangForFile(file_path) orelse return error.UnsupportedLanguage;
+        const ls: *LangState = &dl.lang.state;
 
         const new_hash = std.hash.Wyhash.hash(0, source);
 
@@ -189,7 +293,7 @@ pub const TreeSitter = struct {
                 return error.OutOfMemory;
             };
         }
-        gop.value_ptr.* = .{ .tree = new_tree, .source = source_copy, .lang = lang, .content_hash = new_hash };
+        gop.value_ptr.* = .{ .tree = new_tree, .source = source_copy, .lang_name = dl.name, .content_hash = new_hash };
     }
 
     pub fn removeBuffer(self: *TreeSitter, file_path: []const u8) void {
@@ -209,108 +313,4 @@ pub const TreeSitter = struct {
         const buf = self.buffers.get(file_path) orelse return null;
         return buf.source;
     }
-
 };
-
-/// Resolve query_dir from exe path: {exe_dir}/../../vim/queries
-pub fn resolveQueryDir(allocator: Allocator) ?[]const u8 {
-    var exe_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_dir = std.fs.selfExeDirPath(&exe_dir_buf) catch return null;
-    return std.fs.path.resolve(allocator, &.{ exe_dir, "../../vim/queries" }) catch null;
-}
-
-/// Compile-time path to vim/queries (for tests).
-fn testQueryDir() []const u8 {
-    // Zig test runner CWD = project root, so just use the known relative path.
-    return "vim/queries";
-}
-
-test "TreeSitter init/deinit" {
-    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
-    defer t.deinit();
-    // Verify all langs loaded their queries from .scm files
-    try std.testing.expect(t.getLangState(.zig).?.symbols != null);
-}
-
-test "TreeSitter parse and query symbols" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
-    defer t.deinit();
-
-    const source =
-        \\const std = @import("std");
-        \\
-        \\fn main() void {}
-        \\
-        \\test "hello" {}
-    ;
-
-    try t.parseBuffer("test.zig", source);
-    const tree = t.getTree("test.zig").?;
-    const ls = t.getLangState(.zig).?;
-
-    const result = try symbols.extractSymbols(
-        alloc,
-        ls.symbols.?,
-        tree,
-        source,
-        "test.zig",
-    );
-    const obj = result.object;
-    const arr = obj.get("symbols").?.array;
-    try std.testing.expect(arr.items.len >= 2); // at least main + test
-}
-
-test "Lang.fromExtension" {
-    try std.testing.expectEqual(Lang.zig, Lang.fromExtension("foo.zig").?);
-    try std.testing.expectEqual(Lang.rust, Lang.fromExtension("main.rs").?);
-    try std.testing.expectEqual(Lang.go, Lang.fromExtension("server.go").?);
-    try std.testing.expectEqual(Lang.vim, Lang.fromExtension("plugin.vim").?);
-    try std.testing.expect(Lang.fromExtension("test.py") == null);
-}
-
-test "TreeSitter vim queries load" {
-    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
-    defer t.deinit();
-    const ls = t.getLangState(.vim) orelse {
-        std.debug.print("FAIL: vim LangState is null\n", .{});
-        return error.TestUnexpectedResult;
-    };
-    try std.testing.expect(ls.symbols != null);
-    try std.testing.expect(ls.folds != null);
-    try std.testing.expect(ls.textobjects != null);
-    try std.testing.expect(ls.highlights != null);
-}
-
-test "TreeSitter vim parse and symbols" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var t = TreeSitter.init(std.testing.allocator, testQueryDir());
-    defer t.deinit();
-
-    const source =
-        \\function! s:MyFunc(arg1)
-        \\  echo a:arg1
-        \\endfunction
-    ;
-
-    try t.parseBuffer("test.vim", source);
-    const tree = t.getTree("test.vim").?;
-    const ls = t.getLangState(.vim).?;
-
-    const result = try symbols.extractSymbols(
-        alloc,
-        ls.symbols.?,
-        tree,
-        source,
-        "test.vim",
-    );
-    const obj = result.object;
-    const arr = obj.get("symbols").?.array;
-    try std.testing.expect(arr.items.len >= 1);
-}
