@@ -66,7 +66,7 @@ let s:completion_icons = {
   \ }
 
 " Tree-sitter highlight groups (linked to standard Vim groups)
-hi def link YacTsVariable            Identifier
+hi def link YacTsVariable            NONE
 hi def link YacTsVariableParameter   Identifier
 hi def link YacTsVariableBuiltin     Special
 hi def link YacTsVariableMember      Identifier
@@ -659,7 +659,7 @@ function! yac#did_change(...) abort
   if s:did_change_timer != -1
     call timer_stop(s:did_change_timer)
   endif
-  let s:did_change_timer = timer_start(300, {tid -> s:send_did_change(l:file_path, l:text_content)})
+  let s:did_change_timer = timer_start(180, {tid -> s:send_did_change(l:file_path, l:text_content)})
 endfunction
 
 " NOTE: Full document sync (TextDocumentSyncKind.Full) is used intentionally.
@@ -3781,7 +3781,10 @@ endfunction
 
 " Debounce timer for ts highlights
 let s:ts_hl_timer = -1
+let s:ts_hl_invalidate_timer = -1
 let s:ts_hl_last_range = ''
+let s:ts_prop_types_created = {}
+let s:ts_hl_request_seq = 0
 
 function! yac#ts_highlights_request() abort
   if !get(b:, 'yac_ts_highlights_enabled', 0)
@@ -3819,47 +3822,96 @@ function! yac#ts_highlights_request() abort
     let l:params.text = join(getline(1, '$'), "\n")
     let b:yac_ts_hl_parsed = 1
   endif
-  call s:request('ts_highlights', l:params, 's:handle_ts_highlights_response')
+  let s:ts_hl_request_seq += 1
+  let l:seq = s:ts_hl_request_seq
+  let l:bufnr = bufnr('%')
+  call s:request('ts_highlights', l:params,
+    \ {ch, resp -> s:handle_ts_highlights_response(ch, resp, l:seq, l:bufnr)})
 endfunction
 
-function! s:handle_ts_highlights_response(channel, response) abort
+function! s:handle_ts_highlights_response(channel, response, seq, bufnr) abort
   if type(a:response) != v:t_dict
         \ || !has_key(a:response, 'highlights')
         \ || !has_key(a:response, 'range')
     return
   endif
+  " Discard stale responses — a newer request has been sent
+  if a:seq != s:ts_hl_request_seq
+    return
+  endif
+  " Discard if buffer changed (user switched to another buffer)
+  if a:bufnr != bufnr('%')
+    return
+  endif
 
-  call s:clear_ts_highlights()
+  " Double-buffering: apply new props FIRST, then remove old props.
+  " This avoids a visible gap where highlights disappear before new ones arrive.
+  let l:bufnr = a:bufnr
+  let l:old_gen = get(b:, 'yac_ts_hl_gen', 0)
+  let l:new_gen = 1 - l:old_gen
+  let l:old_types = get(b:, 'yac_ts_hl_prop_types', [])
+  let l:new_types = []
 
-  " Apply new highlights (dict: {"GroupName": [[l,c,len], ...], ...})
+  " Step 1: Apply new highlights
   for [group, positions] in items(a:response.highlights)
-    let i = 0
-    while i < len(positions)
-      let l:id = matchaddpos(group, positions[i : i + 7])
-      if l:id != -1
-        call add(b:yac_ts_hl_ids, l:id)
-      endif
-      let i += 8
-    endwhile
+    let l:prop_type = 'yac_ts_' . l:new_gen . '_' . group
+    call s:ensure_ts_prop_type(l:prop_type, group)
+    call add(l:new_types, l:prop_type)
+    for pos in positions
+      " pos = [line, col, len] (1-indexed)
+      try
+        call prop_add(pos[0], pos[1], {
+              \ 'type': l:prop_type,
+              \ 'length': pos[2],
+              \ 'bufnr': l:bufnr
+              \ })
+      catch
+      endtry
+    endfor
   endfor
 
-  " Update covered range
+  " Step 2: Remove old generation props
+  for prop_type in l:old_types
+    silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
+  endfor
+
+  " Update state
+  let b:yac_ts_hl_gen = l:new_gen
+  let b:yac_ts_hl_prop_types = l:new_types
   let b:yac_ts_hl_lo = a:response.range[0]
   let b:yac_ts_hl_hi = a:response.range[1]
 endfunction
 
+" Ensure a prop type exists for the given highlight group
+function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
+  if !has_key(s:ts_prop_types_created, a:prop_type)
+    try
+      call prop_type_add(a:prop_type, {
+            \ 'highlight': a:highlight_group,
+            \ 'start_incl': 1,
+            \ 'end_incl': 1
+            \ })
+    catch /E969/
+      " Already exists
+    endtry
+    let s:ts_prop_types_created[a:prop_type] = 1
+  endif
+endfunction
+
 function! s:clear_ts_highlights() abort
-  for id in get(b:, 'yac_ts_hl_ids', [])
-    silent! call matchdelete(id)
+  let l:bufnr = bufnr('%')
+  for prop_type in get(b:, 'yac_ts_hl_prop_types', [])
+    silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
   endfor
-  let b:yac_ts_hl_ids = []
 endfunction
 
 function! s:ts_highlights_reset_coverage() abort
   call s:clear_ts_highlights()
+  let b:yac_ts_hl_gen = 0
   let b:yac_ts_hl_lo = -1
   let b:yac_ts_hl_hi = -1
   let b:yac_ts_hl_parsed = 0
+  let b:yac_ts_hl_prop_types = []
   let s:ts_hl_last_range = ''
 endfunction
 
@@ -3907,11 +3959,43 @@ function! yac#ts_highlights_detach() abort
   call s:ts_highlights_reset_coverage()
 endfunction
 
+" Debounced invalidate for insert mode — waits until typing pauses.
+" During typing, old props auto-track positions so highlights stay correct.
+" Only refreshes when the user pauses, avoiding white-flash on new chars.
+function! yac#ts_highlights_invalidate_debounced() abort
+  if !get(b:, 'yac_ts_highlights_enabled', 0)
+    return
+  endif
+  if s:ts_hl_invalidate_timer != -1
+    call timer_stop(s:ts_hl_invalidate_timer)
+  endif
+  let s:ts_hl_invalidate_timer = timer_start(200, {-> yac#ts_highlights_invalidate()})
+endfunction
+
 function! yac#ts_highlights_invalidate() abort
   if !get(b:, 'yac_ts_highlights_enabled', 0)
     return
   endif
-  call s:ts_highlights_reset_coverage()
+  " Cancel pending timers — they would use stale tree state
+  if s:ts_hl_timer != -1
+    call timer_stop(s:ts_hl_timer)
+    let s:ts_hl_timer = -1
+  endif
+  if s:ts_hl_invalidate_timer != -1
+    call timer_stop(s:ts_hl_invalidate_timer)
+    let s:ts_hl_invalidate_timer = -1
+  endif
+  " Flush pending did_change so daemon's tree-sitter tree is up to date
+  " before we request highlights. Same pattern as yac#complete().
+  call s:flush_did_change()
+  " Reset metadata but keep old props on screen.
+  " The response handler does clear + apply synchronously (no gap).
+  " With prop_add, old props have auto-tracked positions so they're
+  " mostly correct during the brief async wait.
+  let b:yac_ts_hl_lo = -1
+  let b:yac_ts_hl_hi = -1
+  let b:yac_ts_hl_parsed = 0
+  let s:ts_hl_last_range = ''
   call yac#ts_highlights_request()
 endfunction
 

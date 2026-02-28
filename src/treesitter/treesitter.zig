@@ -278,9 +278,11 @@ pub const TreeSitter = struct {
             if (buf.content_hash == new_hash) return;
         }
 
-        const old_tree: ?*const ts.Tree = if (existing) |buf| buf.tree else null;
-
-        const new_tree = ls.parser.parseString(source, old_tree) orelse return error.ParseFailed;
+        // Always do a full parse (pass null for old_tree).
+        // Incremental parsing requires ts_tree_edit() to describe changes,
+        // which we don't track. Without it, tree-sitter reuses stale nodes
+        // and produces incorrect parse results after edits.
+        const new_tree = ls.parser.parseString(source, null) orelse return error.ParseFailed;
         errdefer new_tree.destroy();
 
         const source_copy = try self.allocator.dupe(u8, source);

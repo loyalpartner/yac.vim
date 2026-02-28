@@ -166,5 +166,6 @@ augroup yac_ts_highlights
   autocmd CursorMoved,CursorMovedI,BufEnter * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
   autocmd WinScrolled * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
   autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
+  autocmd InsertLeave * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
   autocmd BufLeave * if s:not_preview_loading() | call yac#ts_highlights_detach() | endif
 augroup END
