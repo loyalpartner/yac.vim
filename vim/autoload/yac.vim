@@ -2141,6 +2141,14 @@ function! yac#get_completion_popup_options() abort
   return popup_getoptions(s:completion.popup_id)
 endfunction
 
+" 通用响应注入：直接调用任意 feature 的 response handler
+" method: 'hover', 'references', 'inlay_hints', 'folding_range', 等
+" response: 模拟的响应数据（与 daemon 返回格式一致）
+function! yac#test_inject_response(method, response) abort
+  let l:handler = 's:handle_' . a:method . '_response'
+  call call(l:handler, [v:null, a:response])
+endfunction
+
 " === 日志查看功能 ===
 
 function! s:picker_read_line(file, lnum) abort

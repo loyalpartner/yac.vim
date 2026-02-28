@@ -26,6 +26,7 @@ class SuiteResult:
     duration: float = 0.0
     success: bool = False
     output: str = ""
+    formatted_failures: str = ""
 
 
 class VimRunner:
@@ -130,11 +131,17 @@ class VimRunner:
                 duration=time.time() - start_time,
                 output=str(e),
             )
-        finally:
-            shutil.rmtree(workspace, ignore_errors=True)
 
         duration = time.time() - start_time
-        return self._parse_output(test_name, output, duration)
+        suite_result = self._parse_output(test_name, output, duration)
+        if not suite_result.success:
+            print(f"\n  [debug] workspace preserved: {workspace}")
+            suite_result.formatted_failures = self._format_failures(
+                suite_result.tests
+            )
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
+        return suite_result
 
     def _parse_output(self, suite: str, output: str, duration: float) -> SuiteResult:
         match = re.search(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE)
@@ -164,6 +171,15 @@ class VimRunner:
             success=failed == 0 and passed > 0,
             output=output,
         )
+
+    def _format_failures(self, tests: list) -> str:
+        """Extract a structured report of failed tests."""
+        lines = []
+        for t in tests:
+            if t.get("status") == "fail":
+                lines.append(f"  FAIL: {t['name']}")
+                lines.append(f"        {t.get('reason', '')}")
+        return "\n".join(lines)
 
     def list_tests(self) -> list[str]:
         return sorted(f.stem for f in self.test_dir.glob("test_*.vim"))

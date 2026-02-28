@@ -399,3 +399,336 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
 
     return result;
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "escapeVimString — plain text passes through" {
+    const alloc = std.testing.allocator;
+    const result = try escapeVimString(alloc, "hello world");
+    // Plain text without special chars returns the input slice (no allocation)
+    try std.testing.expectEqualStrings("hello world", result);
+}
+
+test "escapeVimString — single quotes are doubled" {
+    const alloc = std.testing.allocator;
+    const result = try escapeVimString(alloc, "it's a test");
+    defer alloc.free(result);
+    try std.testing.expectEqualStrings("it''s a test", result);
+}
+
+test "escapeVimString — newlines replaced with spaces" {
+    const alloc = std.testing.allocator;
+    const result = try escapeVimString(alloc, "line1\nline2\rline3");
+    defer alloc.free(result);
+    try std.testing.expectEqualStrings("line1 line2 line3", result);
+}
+
+test "escapeVimString — truncation at 200 chars" {
+    const alloc = std.testing.allocator;
+    const long = "x" ** 250;
+    const result = try escapeVimString(alloc, long);
+    defer alloc.free(result);
+    try std.testing.expect(result.len == 203); // 200 + "..."
+    try std.testing.expect(std.mem.endsWith(u8, result, "..."));
+}
+
+test "symbolKindName — known kinds" {
+    try std.testing.expectEqualStrings("File", symbolKindName(1));
+    try std.testing.expectEqualStrings("Function", symbolKindName(12));
+    try std.testing.expectEqualStrings("Variable", symbolKindName(13));
+    try std.testing.expectEqualStrings("Struct", symbolKindName(23));
+}
+
+test "symbolKindName — unknown kind returns Symbol" {
+    try std.testing.expectEqualStrings("Symbol", symbolKindName(99));
+    try std.testing.expectEqualStrings("Symbol", symbolKindName(null));
+}
+
+test "transformGotoResult — null returns null" {
+    const alloc = std.testing.allocator;
+    const result = try transformGotoResult(alloc, .null, null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformGotoResult — empty array returns null" {
+    const alloc = std.testing.allocator;
+    var arr = std.json.Array.init(alloc);
+    defer arr.deinit();
+    const result = try transformGotoResult(alloc, .{ .array = arr }, null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformGotoResult — single location" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build: {"uri": "file:///tmp/test.zig", "range": {"start": {"line": 10, "character": 5}}}
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(10));
+    try start.put("character", json_utils.jsonInteger(5));
+
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+
+    var loc = ObjectMap.init(alloc);
+    try loc.put("uri", json_utils.jsonString("file:///tmp/test.zig"));
+    try loc.put("range", .{ .object = range });
+
+    const result = try transformGotoResult(alloc, .{ .object = loc }, null);
+    const obj = result.object;
+    try std.testing.expectEqualStrings("/tmp/test.zig", json_utils.getString(obj, "file").?);
+    try std.testing.expectEqual(@as(i64, 10), json_utils.getInteger(obj, "line").?);
+    try std.testing.expectEqual(@as(i64, 5), json_utils.getInteger(obj, "column").?);
+}
+
+test "transformGotoResult — array takes first element" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(3));
+    try start.put("character", json_utils.jsonInteger(0));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    var loc = ObjectMap.init(alloc);
+    try loc.put("uri", json_utils.jsonString("file:///a.zig"));
+    try loc.put("range", .{ .object = range });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = loc });
+
+    const result = try transformGotoResult(alloc, .{ .array = arr }, null);
+    try std.testing.expectEqualStrings("/a.zig", json_utils.getString(result.object, "file").?);
+}
+
+test "transformGotoResult — targetUri format (LocationLink)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(7));
+    try start.put("character", json_utils.jsonInteger(2));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    var loc = ObjectMap.init(alloc);
+    try loc.put("targetUri", json_utils.jsonString("file:///b.zig"));
+    try loc.put("targetSelectionRange", .{ .object = range });
+
+    const result = try transformGotoResult(alloc, .{ .object = loc }, null);
+    try std.testing.expectEqualStrings("/b.zig", json_utils.getString(result.object, "file").?);
+    try std.testing.expectEqual(@as(i64, 7), json_utils.getInteger(result.object, "line").?);
+}
+
+test "transformReferencesResult — empty array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const arr = std.json.Array.init(alloc);
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, null);
+    const locations = json_utils.getArray(result.object, "locations").?;
+    try std.testing.expectEqual(@as(usize, 0), locations.len);
+}
+
+test "transformReferencesResult — multiple locations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var arr = std.json.Array.init(alloc);
+    // Add two locations
+    for ([_]struct { line: i64, file: []const u8 }{
+        .{ .line = 1, .file = "file:///a.zig" },
+        .{ .line = 5, .file = "file:///b.zig" },
+    }) |loc_data| {
+        var start = ObjectMap.init(alloc);
+        try start.put("line", json_utils.jsonInteger(loc_data.line));
+        try start.put("character", json_utils.jsonInteger(0));
+        var range = ObjectMap.init(alloc);
+        try range.put("start", .{ .object = start });
+        var loc = ObjectMap.init(alloc);
+        try loc.put("uri", json_utils.jsonString(loc_data.file));
+        try loc.put("range", .{ .object = range });
+        try arr.append(.{ .object = loc });
+    }
+
+    const result = try transformReferencesResult(alloc, .{ .array = arr }, null);
+    const locations = json_utils.getArray(result.object, "locations").?;
+    try std.testing.expectEqual(@as(usize, 2), locations.len);
+    try std.testing.expectEqualStrings("/a.zig", json_utils.getString(locations[0].object, "file").?);
+    try std.testing.expectEqualStrings("/b.zig", json_utils.getString(locations[1].object, "file").?);
+}
+
+test "transformFormattingResult — text edits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(0));
+    try start.put("character", json_utils.jsonInteger(0));
+    var end_pos = ObjectMap.init(alloc);
+    try end_pos.put("line", json_utils.jsonInteger(0));
+    try end_pos.put("character", json_utils.jsonInteger(5));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end_pos });
+    var edit = ObjectMap.init(alloc);
+    try edit.put("range", .{ .object = range });
+    try edit.put("newText", json_utils.jsonString("hello"));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = edit });
+
+    const result = try transformFormattingResult(alloc, .{ .array = arr });
+    const edits = json_utils.getArray(result.object, "edits").?;
+    try std.testing.expectEqual(@as(usize, 1), edits.len);
+    try std.testing.expectEqualStrings("hello", json_utils.getString(edits[0].object, "new_text").?);
+    try std.testing.expectEqual(@as(i64, 0), json_utils.getInteger(edits[0].object, "start_line").?);
+    try std.testing.expectEqual(@as(i64, 5), json_utils.getInteger(edits[0].object, "end_column").?);
+}
+
+test "transformFormattingResult — non-array returns null" {
+    const alloc = std.testing.allocator;
+    const result = try transformFormattingResult(alloc, .null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformInlayHintsResult — string label" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var pos = ObjectMap.init(alloc);
+    try pos.put("line", json_utils.jsonInteger(4));
+    try pos.put("character", json_utils.jsonInteger(10));
+    var hint = ObjectMap.init(alloc);
+    try hint.put("position", .{ .object = pos });
+    try hint.put("label", json_utils.jsonString(": i32"));
+    try hint.put("kind", json_utils.jsonInteger(1));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = hint });
+
+    const result = try transformInlayHintsResult(alloc, .{ .array = arr });
+    const hints = json_utils.getArray(result.object, "hints").?;
+    try std.testing.expectEqual(@as(usize, 1), hints.len);
+    try std.testing.expectEqualStrings(": i32", json_utils.getString(hints[0].object, "label").?);
+    try std.testing.expectEqualStrings("type", json_utils.getString(hints[0].object, "kind").?);
+    try std.testing.expectEqual(@as(i64, 4), json_utils.getInteger(hints[0].object, "line").?);
+}
+
+test "transformInlayHintsResult — label parts array concatenation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build label parts: [{value: ": "}, {value: "i32"}]
+    var part1 = ObjectMap.init(alloc);
+    try part1.put("value", json_utils.jsonString(": "));
+    var part2 = ObjectMap.init(alloc);
+    try part2.put("value", json_utils.jsonString("i32"));
+    var parts = std.json.Array.init(alloc);
+    try parts.append(.{ .object = part1 });
+    try parts.append(.{ .object = part2 });
+
+    var pos = ObjectMap.init(alloc);
+    try pos.put("line", json_utils.jsonInteger(0));
+    try pos.put("character", json_utils.jsonInteger(5));
+    var hint = ObjectMap.init(alloc);
+    try hint.put("position", .{ .object = pos });
+    try hint.put("label", .{ .array = parts });
+    try hint.put("kind", json_utils.jsonInteger(2));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = hint });
+
+    const result = try transformInlayHintsResult(alloc, .{ .array = arr });
+    const hints = json_utils.getArray(result.object, "hints").?;
+    try std.testing.expectEqual(@as(usize, 1), hints.len);
+    try std.testing.expectEqualStrings(": i32", json_utils.getString(hints[0].object, "label").?);
+    try std.testing.expectEqualStrings("parameter", json_utils.getString(hints[0].object, "kind").?);
+}
+
+test "transformInlayHintsResult — padding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var pos = ObjectMap.init(alloc);
+    try pos.put("line", json_utils.jsonInteger(0));
+    try pos.put("character", json_utils.jsonInteger(0));
+    var hint = ObjectMap.init(alloc);
+    try hint.put("position", .{ .object = pos });
+    try hint.put("label", json_utils.jsonString("i32"));
+    try hint.put("paddingLeft", .{ .bool = true });
+    try hint.put("paddingRight", .{ .bool = true });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = hint });
+
+    const result = try transformInlayHintsResult(alloc, .{ .array = arr });
+    const hints = json_utils.getArray(result.object, "hints").?;
+    try std.testing.expectEqualStrings(" i32 ", json_utils.getString(hints[0].object, "label").?);
+}
+
+test "transformInlayHintsResult — null returns null" {
+    const alloc = std.testing.allocator;
+    const result = try transformInlayHintsResult(alloc, .null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformLspResult — dispatches by method" {
+    const alloc = std.testing.allocator;
+    // Unknown method returns result as-is
+    const result = transformLspResult(alloc, "unknown_method", json_utils.jsonString("test"), null);
+    try std.testing.expectEqualStrings("test", result.string);
+}
+
+test "transformLspResult — goto_ prefix dispatches to goto" {
+    const alloc = std.testing.allocator;
+    // null input → goto handler returns null
+    const result = transformLspResult(alloc, "goto_definition", .null, null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformPickerSymbolResult — empty/null input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try transformPickerSymbolResult(alloc, .null, null);
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "transformPickerSymbolResult — DocumentSymbol format" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build: {"name": "main", "kind": 12, "range": {"start": {"line": 0, "character": 0}}}
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(0));
+    try start.put("character", json_utils.jsonInteger(0));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    var sym = ObjectMap.init(alloc);
+    try sym.put("name", json_utils.jsonString("main"));
+    try sym.put("kind", json_utils.jsonInteger(12));
+    try sym.put("range", .{ .object = range });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = sym });
+
+    const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, null);
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("main", json_utils.getString(items[0].object, "label").?);
+    try std.testing.expectEqualStrings("Function", json_utils.getString(items[0].object, "detail").?);
+}

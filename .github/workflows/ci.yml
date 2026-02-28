@@ -49,7 +49,12 @@ jobs:
         zls --version
     - uses: astral-sh/setup-uv@v5
     - name: Run E2E tests
-      run: uv run pytest -v
+      run: uv run pytest -v --junitxml=test-results.xml
+    - name: Test report
+      uses: mikepenz/action-junit-report@v4
+      if: always()
+      with:
+        report_paths: 'test-results.xml'
 
   ci-status:
     name: CI Status
