@@ -351,8 +351,8 @@ pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []c
 /// Caller's arena allocator owns all memory.
 fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
     const argv: []const []const u8 = &.{
-        "rg", "--vimgrep", "--max-count", "5", "--max-columns", "200",
-        "--max-filesize", "1M", "--color", "never", "--", pattern,
+        "rg",             "--vimgrep", "--max-count", "5",     "--max-columns", "200",
+        "--max-filesize", "1M",        "--color",     "never", "--",            pattern,
     };
     var child = std.process.Child.init(argv, alloc);
     child.cwd = cwd;

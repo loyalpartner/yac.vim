@@ -16,7 +16,7 @@ jobs:
       with:
         version: 0.15.2
     - name: Check formatting
-      run: zig fmt --check src/*.zig
+      run: zig fmt --check src/
     - name: Build
       run: zig build
     - name: Unit tests
@@ -24,8 +24,8 @@ jobs:
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
-        name: lsp-bridge
-        path: zig-out/bin/lsp-bridge
+        name: yacd
+        path: zig-out/bin/yacd
 
   e2e:
     name: E2E Tests
@@ -39,17 +39,23 @@ jobs:
     - name: Download binary
       uses: actions/download-artifact@v4
       with:
-        name: lsp-bridge
+        name: yacd
         path: zig-out/bin
-    - run: chmod +x zig-out/bin/lsp-bridge
+    - run: chmod +x zig-out/bin/yacd
     - name: Install ZLS
       run: |
-        curl -L https://builds.zigtools.org/zls-linux-x86_64-0.15.0.tar.xz | tar -xJ
+        ZLS_TAG=$(curl -s https://api.github.com/repos/zigtools/zls/releases/latest | jq -r .tag_name)
+        curl -L "https://github.com/zigtools/zls/releases/download/${ZLS_TAG}/zls-x86_64-linux.tar.xz" | tar -xJ
         sudo mv zls /usr/local/bin/
         zls --version
     - uses: astral-sh/setup-uv@v5
     - name: Run E2E tests
-      run: uv run pytest -v
+      run: uv run pytest -v --junitxml=test-results.xml
+    - name: Test report
+      uses: mikepenz/action-junit-report@v4
+      if: always()
+      with:
+        report_paths: 'test-results.xml'
 
   ci-status:
     name: CI Status

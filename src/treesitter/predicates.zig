@@ -186,9 +186,9 @@ fn isUpperSnakeCase(text: []const u8) bool {
 
 fn isGoBuiltin(text: []const u8) bool {
     const builtins = [_][]const u8{
-        "append",  "cap",   "close", "complex", "copy",
-        "delete",  "imag",  "len",   "make",    "new",
-        "panic",   "print", "println", "real",   "recover",
+        "append", "cap",   "close",   "complex", "copy",
+        "delete", "imag",  "len",     "make",    "new",
+        "panic",  "print", "println", "real",    "recover",
     };
     for (builtins) |b| {
         if (std.mem.eql(u8, text, b)) return true;

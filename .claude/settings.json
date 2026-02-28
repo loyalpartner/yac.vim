@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_FILE_PATHS\" in *.zig) zig fmt $CLAUDE_FILE_PATHS ;; esac",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

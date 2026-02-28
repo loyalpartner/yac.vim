@@ -13,193 +13,89 @@ call yac_test#setup()
 call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
-" Test 1: Get folding ranges
+" Feature probe: 检测 folding range 是否可用
 " ============================================================================
-call yac_test#log('INFO', 'Test 1: Get folding ranges')
-
-" 执行 folding range 命令
 YacFoldingRange
-call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
+let s:has_folds = 0
+call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 5000)
 
-" 检查 fold 是否被设置
-let fold_method = &foldmethod
-call yac_test#log('INFO', 'Fold method: ' . fold_method)
-
-" 检查是否有 fold
-let has_folds = 0
 for lnum in range(1, line('$'))
   if foldlevel(lnum) > 0
-    let has_folds = 1
+    let s:has_folds = 1
     break
   endif
 endfor
 
-call yac_test#log('INFO', 'Has folds: ' . has_folds)
-
-" ============================================================================
-" Test 2: Fold struct
-" ============================================================================
-call yac_test#log('INFO', 'Test 2: Fold struct')
-
-" 定位到 User struct
-call cursor(6, 1)
-let struct_fold = foldlevel('.')
-
-call yac_test#log('INFO', 'Struct fold level: ' . struct_fold)
-
-" 尝试关闭 fold
-if struct_fold > 0
-  normal! zc
-  call yac_test#log('INFO', 'Struct folded')
-
-  " 再打开
-  normal! zo
-  call yac_test#log('INFO', 'Struct unfolded')
+if !s:has_folds
+  call yac_test#log('INFO', 'Folding ranges not available from LSP, skipping fold tests')
+  call yac_test#skip('folding', 'Feature not available from LSP')
+  call yac_test#teardown()
+  call yac_test#end()
+  finish
 endif
 
-" ============================================================================
-" Test 3: Fold struct body
-" ============================================================================
-call yac_test#log('INFO', 'Test 3: Fold struct body')
-
-" 定位到 User struct body
-call cursor(6, 1)
-let struct_fold_inner = foldlevel('.')
-
-call yac_test#log('INFO', 'Struct body fold level: ' . struct_fold_inner)
+call yac_test#assert_true(1, 'Folding ranges are available')
 
 " ============================================================================
-" Test 4: Fold function
+" Test 1: Fold struct
 " ============================================================================
-call yac_test#log('INFO', 'Test 4: Fold function')
+call yac_test#run_case('Fold struct', {-> s:test_fold_struct()})
 
-" 定位到 create_user_map 函数
-call cursor(30, 1)
-let func_fold = foldlevel('.')
+function! s:test_fold_struct() abort
+  call cursor(6, 1)
+  let struct_fold = foldlevel('.')
+  call yac_test#assert_true(struct_fold > 0, 'Struct line should have fold level > 0')
 
-call yac_test#log('INFO', 'Function fold level: ' . func_fold)
-
-" ============================================================================
-" Test 5: Fold all
-" ============================================================================
-call yac_test#log('INFO', 'Test 5: Fold all')
-
-" 关闭所有 fold
-normal! zM
-
-" 统计可见行数
-let visible_lines = 0
-for lnum in range(1, line('$'))
-  if foldclosed(lnum) == -1 || foldclosed(lnum) == lnum
-    let visible_lines += 1
+  if struct_fold > 0
+    normal! zc
+    call yac_test#assert_true(foldclosed('.') >= 0, 'Struct should be foldable with zc')
+    normal! zo
+    call yac_test#assert_true(foldclosed('.') == -1, 'Struct should unfold with zo')
   endif
-endfor
-
-call yac_test#log('INFO', 'Visible lines after fold all: ' . visible_lines)
-
-" 打开所有 fold
-normal! zR
-
-call yac_test#log('INFO', 'All folds opened')
+endfunction
 
 " ============================================================================
-" Test 6: Nested folds
+" Test 2: Fold function
 " ============================================================================
-call yac_test#log('INFO', 'Test 6: Nested folds (method inside struct)')
+call yac_test#run_case('Fold function', {-> s:test_fold_function()})
 
-" impl 块内的方法应该有嵌套 fold
-call cursor(14, 1)  " pub fn init inside struct
-let method_fold = foldlevel('.')
-
-call yac_test#log('INFO', 'Method fold level (inside impl): ' . method_fold)
-
-" 如果 struct 是 level 1，method 应该是 level 2
-if method_fold > 0
-  call yac_test#log('INFO', 'Nested folding detected')
-endif
+function! s:test_fold_function() abort
+  call cursor(30, 1)
+  call yac_test#assert_true(foldlevel('.') > 0, 'Function line should have fold level > 0')
+endfunction
 
 " ============================================================================
-" Test 7: Fold persistence after modification
+" Test 3: Fold all / unfold all
 " ============================================================================
-call yac_test#log('INFO', 'Test 7: Fold after modification')
+call yac_test#run_case('Fold all', {-> s:test_fold_all()})
 
-let original = getline(1, '$')
+function! s:test_fold_all() abort
+  normal! zM
 
-" 获取初始 fold
-YacFoldingRange
-call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
+  let visible_lines = 0
+  for lnum in range(1, line('$'))
+    if foldclosed(lnum) == -1 || foldclosed(lnum) == lnum
+      let visible_lines += 1
+    endif
+  endfor
+  call yac_test#assert_true(visible_lines < line('$'), 'Fold all should reduce visible lines')
 
-" 修改文件
-normal! G
-normal! o
-execute "normal! ifn newFoldTest() void {"
-normal! o
-execute "normal! i    const x: i32 = 1;"
-normal! o
-execute "normal! i}"
-
-" 重新获取 fold
-YacFoldingRange
-call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
-
-" 新函数应该也能 fold
-call cursor(line('$') - 1, 1)
-let new_func_fold = foldlevel('.')
-
-call yac_test#log('INFO', 'New function fold level: ' . new_func_fold)
-
-" 恢复
-silent! %d
-call setline(1, original)
+  normal! zR
+endfunction
 
 " ============================================================================
-" Test 8: Fold with comments
+" Test 4: Nested folds
 " ============================================================================
-call yac_test#log('INFO', 'Test 8: Fold with doc comments')
+call yac_test#run_case('Nested folds', {-> s:test_nested_folds()})
 
-" 带有文档注释的函数
-" 检查 create_user_map (有 /// 注释)
-call cursor(29, 1)  " doc comment for createUserMap
-let doc_fold = foldlevel('.')
-
-call yac_test#log('INFO', 'Doc comment fold level: ' . doc_fold)
-
-" ============================================================================
-" Test 9: Module/mod folds
-" ============================================================================
-call yac_test#log('INFO', 'Test 9: Module folds')
-
-" test blocks
-call search('test "')
-if line('.') > 0
-  let test_mod_line = line('.')
-  let mod_fold = foldlevel(test_mod_line)
-  call yac_test#log('INFO', 'Test module fold level: ' . mod_fold)
-endif
-
-" ============================================================================
-" Test 10: Fold column display
-" ============================================================================
-call yac_test#log('INFO', 'Test 10: Fold column')
-
-" 启用 fold column 显示
-set foldcolumn=2
-call yac_test#log('INFO', 'Fold column enabled')
-
-" 刷新 folds
-YacFoldingRange
-call yac_test#wait_for({-> &foldmethod == 'manual' || foldlevel(1) > 0 || foldclosed(1) >= 0}, 3000)
-
-" 检查是否正确显示
-call yac_test#log('INFO', 'Fold column should show fold markers')
-
-" 恢复
-set foldcolumn=0
+function! s:test_nested_folds() abort
+  call cursor(14, 1)  " pub fn init inside struct
+  call yac_test#assert_true(foldlevel('.') >= 1, 'Method inside struct should be foldable')
+endfunction
 
 " ============================================================================
 " Cleanup
 " ============================================================================
-" 打开所有 fold
 normal! zR
 
 call yac_test#teardown()

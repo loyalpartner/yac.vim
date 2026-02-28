@@ -78,6 +78,51 @@ function! yac_test#end() abort
 endfunction
 
 " ----------------------------------------------------------------------------
+" 组合断言：等待 + 断言（消除样板代码）
+" ----------------------------------------------------------------------------
+
+" 等待条件满足，成功记录 PASS，超时记录 FAIL（含超时时间）
+function! yac_test#wait_assert(condition, timeout_ms, description) abort
+  let result = yac_test#wait_for(a:condition, a:timeout_ms)
+  if result
+    call s:record_pass(a:description)
+  else
+    call s:record_fail(a:description,
+          \ printf('Timed out after %dms', a:timeout_ms))
+  endif
+  return result
+endfunction
+
+" 等待条件满足，超时时仅记录 SKIP 而非 FAIL（用于可选功能探测）
+function! yac_test#wait_or_skip(condition, timeout_ms, description) abort
+  let result = yac_test#wait_for(a:condition, a:timeout_ms)
+  if !result
+    call yac_test#skip(a:description, printf('Not available (waited %dms)', a:timeout_ms))
+  endif
+  return result
+endfunction
+
+" ----------------------------------------------------------------------------
+" 测试用例包装器
+" ----------------------------------------------------------------------------
+
+" 运行单个测试用例，自动捕获异常
+" Func: Funcref 或字符串表达式（字符串会在调用者脚本上下文中 execute）
+function! yac_test#run_case(name, Func) abort
+  call s:log('INFO', 'Test: ' . a:name)
+  call popup_clear()
+  try
+    if type(a:Func) == v:t_string
+      execute 'call ' . a:Func
+    else
+      call a:Func()
+    endif
+  catch
+    call s:record_fail(a:name, 'Exception: ' . v:exception . ' at ' . v:throwpoint)
+  endtry
+endfunction
+
+" ----------------------------------------------------------------------------
 " 断言函数
 " ----------------------------------------------------------------------------
 

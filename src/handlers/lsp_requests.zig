@@ -24,9 +24,9 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     };
     const content_to_use = json.getString(obj, "text") orelse
         (std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
-        log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
-        return .{ .empty = {} };
-    });
+            log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
+            return .{ .empty = {} };
+        });
 
     if (ctx.registry.isInitializing(lsp_ctx.client_key)) {
         // Queue for replay after initialization completes

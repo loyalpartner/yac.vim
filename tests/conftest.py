@@ -26,6 +26,9 @@ class SuiteResult:
     duration: float = 0.0
     success: bool = False
     output: str = ""
+    formatted_failures: str = ""
+    yacd_log: str = ""
+    vim_log: str = ""
 
 
 class VimRunner:
@@ -79,6 +82,10 @@ class VimRunner:
 
         workspace = self._make_workspace()
 
+        # Per-test runtime dir so each yacd writes its own log
+        runtime_dir = workspace / "run"
+        runtime_dir.mkdir()
+
         start_time = time.time()
         output_file = Path(f"/tmp/yac_test_{test_name}_{os.getpid()}.txt")
 
@@ -97,6 +104,11 @@ class VimRunner:
 
         env = os.environ.copy()
         env["YAC_TEST_OUTPUT"] = str(output_file)
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+
+        # Per-test vim debug log
+        vim_debug_log = workspace / "yac-vim-debug.log"
+        env["YAC_DEBUG_LOG"] = str(vim_debug_log)
 
         try:
             result = subprocess.run(
@@ -115,26 +127,39 @@ class VimRunner:
         except subprocess.TimeoutExpired:
             if output_file.exists():
                 output_file.unlink()
-            return SuiteResult(
+            suite = SuiteResult(
                 suite=test_name,
                 failed=1,
                 duration=timeout,
                 output=f"Test timed out after {timeout}s",
             )
+            suite.yacd_log = self._collect_log(runtime_dir / "yacd.log")
+            suite.vim_log = self._collect_log(vim_debug_log)
+            shutil.rmtree(workspace, ignore_errors=True)
+            return suite
         except Exception as e:
             if output_file.exists():
                 output_file.unlink()
+            shutil.rmtree(workspace, ignore_errors=True)
             return SuiteResult(
                 suite=test_name,
                 failed=1,
                 duration=time.time() - start_time,
                 output=str(e),
             )
-        finally:
-            shutil.rmtree(workspace, ignore_errors=True)
 
         duration = time.time() - start_time
-        return self._parse_output(test_name, output, duration)
+        suite_result = self._parse_output(test_name, output, duration)
+        if not suite_result.success:
+            print(f"\n  [debug] workspace preserved: {workspace}")
+            suite_result.formatted_failures = self._format_failures(
+                suite_result.tests
+            )
+            suite_result.yacd_log = self._collect_log(runtime_dir / "yacd.log")
+            suite_result.vim_log = self._collect_log(vim_debug_log)
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
+        return suite_result
 
     def _parse_output(self, suite: str, output: str, duration: float) -> SuiteResult:
         match = re.search(r"::YAC_TEST_RESULT::(.+)$", output, re.MULTILINE)
@@ -165,6 +190,26 @@ class VimRunner:
             output=output,
         )
 
+    def _format_failures(self, tests: list) -> str:
+        """Extract a structured report of failed tests."""
+        lines = []
+        for t in tests:
+            if t.get("status") == "fail":
+                lines.append(f"  FAIL: {t['name']}")
+                lines.append(f"        {t.get('reason', '')}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _collect_log(path: Path, tail: int = 80) -> str:
+        """Read last `tail` lines from a log file, return empty string if missing."""
+        if not path.exists():
+            return ""
+        try:
+            lines = path.read_text().splitlines()
+            return "\n".join(lines[-tail:])
+        except Exception:
+            return ""
+
     def list_tests(self) -> list[str]:
         return sorted(f.stem for f in self.test_dir.glob("test_*.vim"))
 
@@ -176,6 +221,6 @@ def vim_runner():
 
 @pytest.fixture(scope="session")
 def check_bridge():
-    bridge = PROJECT_ROOT / "zig-out" / "bin" / "lsp-bridge"
+    bridge = PROJECT_ROOT / "zig-out" / "bin" / "yacd"
     if not bridge.exists():
-        pytest.skip("lsp-bridge not built, run 'zig build' first")
+        pytest.skip("yacd not built, run 'zig build' first")
