@@ -3781,7 +3781,6 @@ endfunction
 
 " Debounce timer for ts highlights
 let s:ts_hl_timer = -1
-let s:ts_hl_invalidate_timer = -1
 let s:ts_hl_last_range = ''
 let s:ts_prop_types_created = {}
 let s:ts_hl_request_seq = 0
@@ -3959,31 +3958,15 @@ function! yac#ts_highlights_detach() abort
   call s:ts_highlights_reset_coverage()
 endfunction
 
-" Debounced invalidate for insert mode — waits until typing pauses.
-" During typing, old props auto-track positions so highlights stay correct.
-" Only refreshes when the user pauses, avoiding white-flash on new chars.
-function! yac#ts_highlights_invalidate_debounced() abort
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  if s:ts_hl_invalidate_timer != -1
-    call timer_stop(s:ts_hl_invalidate_timer)
-  endif
-  let s:ts_hl_invalidate_timer = timer_start(200, {-> yac#ts_highlights_invalidate()})
-endfunction
 
 function! yac#ts_highlights_invalidate() abort
   if !get(b:, 'yac_ts_highlights_enabled', 0)
     return
   endif
-  " Cancel pending timers — they would use stale tree state
+  " Cancel pending debounce timer — it would use stale tree state
   if s:ts_hl_timer != -1
     call timer_stop(s:ts_hl_timer)
     let s:ts_hl_timer = -1
-  endif
-  if s:ts_hl_invalidate_timer != -1
-    call timer_stop(s:ts_hl_invalidate_timer)
-    let s:ts_hl_invalidate_timer = -1
   endif
   " Flush pending did_change so daemon's tree-sitter tree is up to date
   " before we request highlights. Same pattern as yac#complete().
