@@ -116,6 +116,7 @@ class VimRunner:
         except subprocess.TimeoutExpired:
             if output_file.exists():
                 output_file.unlink()
+            shutil.rmtree(workspace, ignore_errors=True)
             return SuiteResult(
                 suite=test_name,
                 failed=1,
@@ -125,6 +126,7 @@ class VimRunner:
         except Exception as e:
             if output_file.exists():
                 output_file.unlink()
+            shutil.rmtree(workspace, ignore_errors=True)
             return SuiteResult(
                 suite=test_name,
                 failed=1,

@@ -2922,6 +2922,10 @@ function! yac#picker_is_open() abort
   return s:picker.input_popup != -1
 endfunction
 
+function! yac#picker_close() abort
+  call s:picker_close()
+endfunction
+
 function! yac#picker_open(...) abort
   let opts = a:0 ? a:1 : {}
   if s:picker.input_popup != -1
