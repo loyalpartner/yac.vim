@@ -251,6 +251,48 @@ pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]c
     return .{ .object = result_obj };
 }
 
+/// Transform TextEdit[] (formatting response) into {edits: [{start_line, start_column, end_line, end_column, new_text}]}.
+pub fn transformFormattingResult(alloc: Allocator, result: Value) !Value {
+    const items = switch (result) {
+        .array => |a| a.items,
+        else => return .null,
+    };
+
+    var edits = std.json.Array.init(alloc);
+    for (items) |item| {
+        const edit = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const range_val = edit.get("range") orelse continue;
+        const range_obj = switch (range_val) {
+            .object => |o| o,
+            else => continue,
+        };
+        const start_obj = switch (range_obj.get("start") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const end_obj = switch (range_obj.get("end") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const new_text = json_utils.getString(edit, "newText") orelse "";
+
+        var edit_obj = ObjectMap.init(alloc);
+        try edit_obj.put("start_line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse 0));
+        try edit_obj.put("start_column", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse 0));
+        try edit_obj.put("end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse 0));
+        try edit_obj.put("end_column", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse 0));
+        try edit_obj.put("new_text", json_utils.jsonString(new_text));
+        try edits.append(.{ .object = edit_obj });
+    }
+
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("edits", .{ .array = edits });
+    return .{ .object = result_obj };
+}
+
 /// Transform an LSP response into the format Vim expects, dispatching by method name.
 pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
     if (std.mem.startsWith(u8, method, "goto_")) {
@@ -261,6 +303,9 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     }
     if (std.mem.eql(u8, method, "references")) {
         return transformReferencesResult(alloc, result, ssh_host) catch .null;
+    }
+    if (std.mem.eql(u8, method, "formatting") or std.mem.eql(u8, method, "range_formatting")) {
+        return transformFormattingResult(alloc, result) catch .null;
     }
 
     return result;

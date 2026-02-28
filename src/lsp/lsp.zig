@@ -181,6 +181,10 @@ pub fn isQueryMethod(method: []const u8) bool {
         "inlay_hints",
         "folding_range",
         "call_hierarchy",
+        "type_hierarchy",
+        "formatting",
+        "range_formatting",
+        "signature_help",
         "picker_query",
     };
     for (query_methods) |m| {
@@ -203,6 +207,10 @@ test "isQueryMethod - query methods return true" {
     try std.testing.expect(isQueryMethod("inlay_hints"));
     try std.testing.expect(isQueryMethod("folding_range"));
     try std.testing.expect(isQueryMethod("call_hierarchy"));
+    try std.testing.expect(isQueryMethod("type_hierarchy"));
+    try std.testing.expect(isQueryMethod("formatting"));
+    try std.testing.expect(isQueryMethod("range_formatting"));
+    try std.testing.expect(isQueryMethod("signature_help"));
 }
 
 test "isQueryMethod - non-query methods return false" {

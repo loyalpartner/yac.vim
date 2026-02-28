@@ -22,28 +22,23 @@ call cursor(6, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
-" 触发 hover
+" 清掉残留 popup（如 toast），然后触发 hover
+call yac_test#clear_popups()
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_hover_popup(3000)
 
-" 检查是否有 popup 出现
-let popups = popup_list()
-if !empty(popups)
+" 检查 hover popup 内容（精确定位，不会拿到 toast）
+let content = yac_test#get_hover_content()
+if !empty(content)
   call yac_test#log('INFO', 'Popup appeared for User struct')
-  " 获取 popup 内容
-  let popup_id = popups[0]
-  let bufnr = winbufnr(popup_id)
-  if bufnr > 0
-    let content = join(getbufline(bufnr, 1, '$'), "\n")
-    call yac_test#assert_contains(content, 'User', 'Hover should contain "User"')
-    call yac_test#assert_contains(content, 'struct', 'Hover should mention "struct"')
-  endif
+  call yac_test#assert_contains(content, 'User', 'Hover should contain "User"')
+  call yac_test#assert_contains(content, 'struct', 'Hover should mention "struct"')
 else
-  call yac_test#log('INFO', 'No popup (hover may use echo instead)')
+  call yac_test#log('INFO', 'No hover popup (may use echo instead)')
 endif
 
 " 关闭 popup
-call popup_clear()
+call yac_test#clear_popups()
 
 " ============================================================================
 " Test 2: Hover on function
@@ -55,22 +50,18 @@ call cursor(19, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
+call yac_test#clear_popups()
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_hover_popup(3000)
 
-let popups = popup_list()
-if !empty(popups)
+let content = yac_test#get_hover_content()
+if !empty(content)
   call yac_test#log('INFO', 'Popup appeared for getName')
-  let popup_id = popups[0]
-  let bufnr = winbufnr(popup_id)
-  if bufnr > 0
-    let content = join(getbufline(bufnr, 1, '$'), "\n")
-    " 验证函数签名
-    call yac_test#assert_match(content, 'fn\|pub', 'Hover should show function signature')
-  endif
+  " 验证函数签名
+  call yac_test#assert_match(content, 'fn\|pub', 'Hover should show function signature')
 endif
 
-call popup_clear()
+call yac_test#clear_popups()
 
 " ============================================================================
 " Test 3: Hover on variable
@@ -82,22 +73,18 @@ call cursor(31, 13)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
+call yac_test#clear_popups()
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_hover_popup(3000)
 
-let popups = popup_list()
-if !empty(popups)
+let content = yac_test#get_hover_content()
+if !empty(content)
   call yac_test#log('INFO', 'Popup appeared for users variable')
-  let popup_id = popups[0]
-  let bufnr = winbufnr(popup_id)
-  if bufnr > 0
-    let content = join(getbufline(bufnr, 1, '$'), "\n")
-    " 应该显示 AutoHashMap 类型
-    call yac_test#assert_contains(content, 'AutoHashMap', 'Hover should show AutoHashMap type')
-  endif
+  " 应该显示 AutoHashMap 类型
+  call yac_test#assert_contains(content, 'AutoHashMap', 'Hover should show AutoHashMap type')
 endif
 
-call popup_clear()
+call yac_test#clear_popups()
 
 " ============================================================================
 " Test 4: Hover on doc comment
@@ -109,21 +96,17 @@ call cursor(30, 8)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
+call yac_test#clear_popups()
 YacHover
-call yac_test#wait_popup(3000)
+call yac_test#wait_hover_popup(3000)
 
-let popups = popup_list()
-if !empty(popups)
-  let popup_id = popups[0]
-  let bufnr = winbufnr(popup_id)
-  if bufnr > 0
-    let content = join(getbufline(bufnr, 1, '$'), "\n")
-    " 应该显示文档注释
-    call yac_test#assert_contains(content, 'Create user map', 'Hover should show doc comment')
-  endif
+let content = yac_test#get_hover_content()
+if !empty(content)
+  " 应该显示文档注释
+  call yac_test#assert_contains(content, 'Create user map', 'Hover should show doc comment')
 endif
 
-call popup_clear()
+call yac_test#clear_popups()
 
 " ============================================================================
 " Test 5: Hover on non-symbol (空白处)
@@ -133,12 +116,12 @@ call yac_test#log('INFO', 'Test 5: Hover on empty space')
 " 移到空行
 call cursor(3, 1)
 
+call yac_test#clear_popups()
 YacHover
 call yac_test#wait_no_popup(3000)
 
 " 空白处不应该有 hover
-let popups = popup_list()
-call yac_test#assert_true(empty(popups), 'No popup should appear on empty line')
+call yac_test#assert_true(yac#get_hover_popup_id() == -1, 'No popup should appear on empty line')
 
 " ============================================================================
 " Cleanup

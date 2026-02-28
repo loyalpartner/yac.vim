@@ -42,6 +42,8 @@ pub const LspRegistry = struct {
     pending_opens: std.StringHashMap(std.ArrayList(PendingOpen)),
     /// Languages where LSP server spawn has failed (to avoid repeat notifications)
     failed_spawns: std.StringHashMap(void),
+    /// Server capabilities from initialize response: client_key -> capabilities JSON
+    server_capabilities: std.StringHashMap(std.json.Parsed(Value)),
 
     pub fn init(allocator: Allocator) LspRegistry {
         return .{
@@ -51,6 +53,7 @@ pub const LspRegistry = struct {
             .next_id = 1,
             .pending_opens = std.StringHashMap(std.ArrayList(PendingOpen)).init(allocator),
             .failed_spawns = std.StringHashMap(void).init(allocator),
+            .server_capabilities = std.StringHashMap(std.json.Parsed(Value)).init(allocator),
         };
     }
 
@@ -69,6 +72,13 @@ pub const LspRegistry = struct {
             while (fsi.next()) |key| self.allocator.free(key.*);
         }
         self.failed_spawns.deinit();
+        {
+            var csi = self.server_capabilities.iterator();
+            while (csi.next()) |entry| {
+                entry.value_ptr.*.deinit();
+            }
+        }
+        self.server_capabilities.deinit();
     }
 
     /// Detect language from file path extension.
@@ -183,11 +193,36 @@ pub const LspRegistry = struct {
         return .{ .client = client, .client_key = key };
     }
 
-    /// Handle an initialize response: send 'initialized', then replay queued didOpens.
-    pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8) !void {
+    /// Handle an initialize response: store capabilities, send 'initialized', then replay queued didOpens.
+    pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8, result: Value) !void {
         _ = self.pending_init.remove(client_key);
         const client = self.clients.get(client_key) orelse return;
 
+        // Store server capabilities from initialize result
+        if (result == .object) {
+            if (result.object.get("capabilities")) |caps| {
+                // Deep-copy capabilities by serializing and re-parsing
+                const serialized = json.stringifyAlloc(self.allocator, caps) catch {
+                    return try self.finishInit(client, client_key);
+                };
+                defer self.allocator.free(serialized);
+                const parsed = json.parse(self.allocator, serialized) catch |e| {
+                    log.err("Failed to parse capabilities: {any}", .{e});
+                    return try self.finishInit(client, client_key);
+                };
+                // Use the stable key from the clients map
+                const stable_key = self.clients.getKey(client_key) orelse client_key;
+                self.server_capabilities.put(stable_key, parsed) catch |e| {
+                    log.err("Failed to store capabilities: {any}", .{e});
+                    parsed.deinit();
+                };
+            }
+        }
+
+        try self.finishInit(client, client_key);
+    }
+
+    fn finishInit(self: *LspRegistry, client: *LspClient, client_key: []const u8) !void {
         try client.sendInitialized();
         log.info("LSP initialized: {s}", .{client_key});
 
@@ -254,6 +289,25 @@ pub const LspRegistry = struct {
     /// Get the init request ID for a client (if initializing).
     pub fn getInitRequestId(self: *LspRegistry, client_key: []const u8) ?u32 {
         return self.pending_init.get(client_key);
+    }
+
+    /// Check if a server supports a given capability.
+    /// capability_name maps to the top-level key in ServerCapabilities, e.g.:
+    /// "documentFormattingProvider", "signatureHelpProvider", "typeHierarchyProvider"
+    pub fn serverSupports(self: *LspRegistry, client_key: []const u8, capability_name: []const u8) bool {
+        const stable_key = self.clients.getKey(client_key) orelse return true;
+        const parsed = self.server_capabilities.get(stable_key) orelse return true; // assume yes if unknown
+        const caps = switch (parsed.value) {
+            .object => |o| o,
+            else => return true,
+        };
+        const val = caps.get(capability_name) orelse return false;
+        return switch (val) {
+            .bool => |b| b,
+            .object => true, // e.g. {triggerCharacters: [...]} means supported
+            .null => false,
+            else => true,
+        };
     }
 
     /// Shutdown all clients.

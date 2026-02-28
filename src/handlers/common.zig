@@ -111,15 +111,12 @@ pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool)
 
 /// Build textDocument/position params for LSP.
 pub fn buildTextDocumentPosition(allocator: Allocator, uri: []const u8, line: u32, column: u32) !Value {
-    var td = ObjectMap.init(allocator);
-    try td.put("uri", json.jsonString(uri));
-
     var pos = ObjectMap.init(allocator);
     try pos.put("line", json.jsonInteger(@intCast(line)));
     try pos.put("character", json.jsonInteger(@intCast(column)));
 
     var params = ObjectMap.init(allocator);
-    try params.put("textDocument", .{ .object = td });
+    try params.put("textDocument", try buildTextDocumentValue(allocator, uri));
     try params.put("position", .{ .object = pos });
     return .{ .object = params };
 }
@@ -138,13 +135,17 @@ pub fn buildRange(allocator: Allocator, start_line: u32, start_col: u32, end_lin
     return .{ .object = range };
 }
 
-/// Build textDocument identifier params for LSP.
-pub fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
+/// Build a textDocument JSON value ({uri: ...}) for embedding in LSP params.
+pub fn buildTextDocumentValue(allocator: Allocator, uri: []const u8) !Value {
     var td = ObjectMap.init(allocator);
     try td.put("uri", json.jsonString(uri));
+    return .{ .object = td };
+}
 
+/// Build textDocument identifier params for LSP ({textDocument: {uri: ...}}).
+pub fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
     var params = ObjectMap.init(allocator);
-    try params.put("textDocument", .{ .object = td });
+    try params.put("textDocument", try buildTextDocumentValue(allocator, uri));
     return .{ .object = params };
 }
 
@@ -154,6 +155,16 @@ pub fn vimEx(ctx: *HandlerContext, command: []const u8) !void {
     defer ctx.allocator.free(encoded);
     try ctx.client_stream.writeAll(encoded);
     try ctx.client_stream.writeAll("\n");
+}
+
+/// Check if the server supports a capability; if not, send a toast and return true (= unsupported).
+pub fn checkUnsupported(ctx: *HandlerContext, client_key: []const u8, capability: []const u8, feature_name: []const u8) bool {
+    if (!ctx.registry.serverSupports(client_key, capability)) {
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Server does not support {s}')", .{feature_name}) catch return true;
+        vimEx(ctx, msg) catch {};
+        return true;
+    }
+    return false;
 }
 
 /// Send a Vim call_async command.

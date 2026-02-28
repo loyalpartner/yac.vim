@@ -225,7 +225,7 @@ function! yac_test#wait_lsp_ready(timeout_ms) abort
 
   call s:log('INFO', 'Probing LSP readiness...')
 
-  " 探测：发送 hover 请求，等待 popup 出现
+  " 探测：发送 hover 请求，等待 hover popup 出现（排除 toast 干扰）
   let l:ready = 0
   let l:elapsed = 0
   let l:interval = 500
@@ -235,8 +235,8 @@ function! yac_test#wait_lsp_ready(timeout_ms) abort
     let l:save = getpos('.')
     call cursor(14, 12)
     silent! YacHover
-    " 给 LSP 一小段时间响应
-    let l:got_popup = yac_test#wait_for({-> !empty(popup_list())}, 2000)
+    " 等待 hover popup（精确判断，不被 toast 干扰）
+    let l:got_popup = yac_test#wait_for({-> yac#get_hover_popup_id() != -1}, 2000)
     call popup_clear()
     call setpos('.', l:save)
 
@@ -304,6 +304,41 @@ endfunction
 " 等待 popup 关闭
 function! yac_test#wait_no_popup(timeout_ms) abort
   return yac_test#wait_for({-> empty(popup_list())}, a:timeout_ms)
+endfunction
+
+" 等待 hover popup 出现（排除 toast 通知干扰）
+function! yac_test#wait_hover_popup(timeout_ms) abort
+  return yac_test#wait_for({-> yac#get_hover_popup_id() != -1}, a:timeout_ms)
+endfunction
+
+" 等待 picker 打开（精确判断，不被 toast 干扰）
+function! yac_test#wait_picker(timeout_ms) abort
+  return yac_test#wait_for({-> yac#picker_is_open()}, a:timeout_ms)
+endfunction
+
+" 等待 picker 关闭
+function! yac_test#wait_picker_closed(timeout_ms) abort
+  return yac_test#wait_for({-> !yac#picker_is_open()}, a:timeout_ms)
+endfunction
+
+" 清除所有 yac popup（包括重置内部 popup id 状态）
+function! yac_test#clear_popups() abort
+  call popup_clear()
+  silent! call yac#close_hover()
+  silent! call yac#close_signature()
+endfunction
+
+" 获取 hover popup 内容（精确定位，不会拿到 toast 内容）
+function! yac_test#get_hover_content() abort
+  let l:pid = yac#get_hover_popup_id()
+  if l:pid == -1
+    return ''
+  endif
+  let l:bufnr = winbufnr(l:pid)
+  if l:bufnr <= 0
+    return ''
+  endif
+  return join(getbufline(l:bufnr, 1, '$'), "\n")
 endfunction
 
 " ----------------------------------------------------------------------------

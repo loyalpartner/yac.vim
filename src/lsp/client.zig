@@ -236,6 +236,21 @@ pub const LspClient = struct {
         try completion.put("dynamicRegistration", json.jsonBool(false));
         try text_doc.put("completion", .{ .object = completion });
 
+        // signatureHelp
+        var sig_help = ObjectMap.init(self.allocator);
+        try sig_help.put("dynamicRegistration", json.jsonBool(false));
+        var sig_trigger = std.json.Array.init(self.allocator);
+        try sig_trigger.append(json.jsonString("("));
+        try sig_trigger.append(json.jsonString(","));
+        var sig_info = ObjectMap.init(self.allocator);
+        try sig_info.put("documentationFormat", .{ .array = std.json.Array.init(self.allocator) });
+        var sig_param = ObjectMap.init(self.allocator);
+        try sig_param.put("labelOffsetSupport", json.jsonBool(true));
+        try sig_info.put("parameterInformation", .{ .object = sig_param });
+        try sig_info.put("activeParameterSupport", json.jsonBool(true));
+        try sig_help.put("signatureInformation", .{ .object = sig_info });
+        try text_doc.put("signatureHelp", .{ .object = sig_help });
+
         // hover
         var hover = ObjectMap.init(self.allocator);
         try hover.put("dynamicRegistration", json.jsonBool(false));
@@ -321,9 +336,7 @@ pub const LspClient = struct {
     /// Send initialized notification after receiving initialize response.
     pub fn sendInitialized(self: *LspClient) !void {
         self.state = .initialized;
-        var params = ObjectMap.init(self.allocator);
-        _ = &params;
-        try self.sendNotification("initialized", .{ .object = params });
+        try self.sendNotification("initialized", .{ .object = ObjectMap.init(self.allocator) });
     }
 
     /// Send shutdown request.

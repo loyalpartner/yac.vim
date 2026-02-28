@@ -512,7 +512,7 @@ const EventLoop = struct {
                     // Check if this is an initialize response
                     if (self.lsp.registry.getInitRequestId(client_key)) |init_id| {
                         if (resp.id == init_id) {
-                            self.lsp.registry.handleInitializeResponse(client_key) catch |e| {
+                            self.lsp.registry.handleInitializeResponse(client_key, resp.result) catch |e| {
                                 log.err("Failed to handle init response: {any}", .{e});
                             };
                             if (!self.lsp.isAnyLanguageIndexing()) {

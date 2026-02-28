@@ -22,9 +22,9 @@ call yac_test#log('INFO', 'Test 2: Picker open creates popups')
 " Open the picker
 YacPicker
 
-" Wait for popup to appear
-let popup_appeared = yac_test#wait_for('popup_list() != []', 3000)
-call yac_test#assert_true(popup_appeared, 'Picker popups should appear')
+" Wait for picker to appear (precise check, ignores toast popups)
+let picker_opened = yac_test#wait_picker(3000)
+call yac_test#assert_true(picker_opened, 'Picker popups should appear')
 
 " Check that we have at least one popup
 let popups = popup_list()
@@ -37,11 +37,10 @@ call yac_test#log('INFO', 'Test 3: Picker close via Esc')
 
 " Close the picker
 call feedkeys("\<Esc>", 'xt')
-sleep 200m
 
-" Verify popups are closed
-let popups_after = popup_list()
-call yac_test#assert_true(len(popups_after) == 0, 'All popups should be closed after Esc')
+" Wait for picker to close (precise check)
+let picker_closed = yac_test#wait_picker_closed(2000)
+call yac_test#assert_true(picker_closed, 'All popups should be closed after Esc')
 
 " ============================================================================
 " Test 4: Picker toggle (open then open again closes)
@@ -49,15 +48,13 @@ call yac_test#assert_true(len(popups_after) == 0, 'All popups should be closed a
 call yac_test#log('INFO', 'Test 4: Picker toggle')
 
 YacPicker
-let popup_appeared = yac_test#wait_for('popup_list() != []', 3000)
-call yac_test#assert_true(popup_appeared, 'Picker should open')
+let picker_opened = yac_test#wait_picker(3000)
+call yac_test#assert_true(picker_opened, 'Picker should open')
 
 " Call again to toggle off
 call yac#picker_open()
-sleep 200m
-
-let popups_after = popup_list()
-call yac_test#assert_true(len(popups_after) == 0, 'Picker should toggle off')
+let picker_closed = yac_test#wait_picker_closed(2000)
+call yac_test#assert_true(picker_closed, 'Picker should toggle off')
 
 " ============================================================================
 " Done

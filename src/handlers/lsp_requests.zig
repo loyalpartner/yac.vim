@@ -75,6 +75,30 @@ fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const 
     return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
 }
 
+/// Like sendPositionRequest, but first checks that the server advertises the given capability.
+fn sendCapabilityCheckedPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8, capability: []const u8, feature_name: []const u8) !DispatchResult {
+    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, capability, feature_name)) return .{ .empty = {} };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
+    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+
+    const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
+    const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+}
+
 pub fn handleGotoDefinition(ctx: *HandlerContext, params: Value) !DispatchResult {
     return sendPositionRequest(ctx, params, "textDocument/definition");
 }
@@ -171,15 +195,11 @@ pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
     const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
     const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
 
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(lsp_ctx.uri));
-
     var context_obj = ObjectMap.init(ctx.allocator);
-    const diag_array = std.json.Array.init(ctx.allocator);
-    try context_obj.put("diagnostics", .{ .array = diag_array });
+    try context_obj.put("diagnostics", .{ .array = std.json.Array.init(ctx.allocator) });
 
     var lsp_params = ObjectMap.init(ctx.allocator);
-    try lsp_params.put("textDocument", .{ .object = td });
+    try lsp_params.put("textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri));
     try lsp_params.put("range", try common.buildRange(ctx.allocator, line, column, line, column));
     try lsp_params.put("context", .{ .object = context_obj });
 
@@ -216,11 +236,8 @@ pub fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
     const start_line: u32 = @intCast(json.getInteger(obj, "start_line") orelse 0);
     const end_line: u32 = @intCast(json.getInteger(obj, "end_line") orelse 100);
 
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(lsp_ctx.uri));
-
     var lsp_params = ObjectMap.init(ctx.allocator);
-    try lsp_params.put("textDocument", .{ .object = td });
+    try lsp_params.put("textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri));
     try lsp_params.put("range", try common.buildRange(ctx.allocator, start_line, 0, end_line, 0));
 
     const request_id = try lsp_ctx.client.sendRequest("textDocument/inlayHint", .{ .object = lsp_params });
@@ -243,6 +260,80 @@ pub fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 pub fn handleCallHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
     return sendPositionRequest(ctx, params, "textDocument/prepareCallHierarchy");
+}
+
+/// Build LSP FormattingOptions from Vim params (tab_size, insert_spaces).
+fn buildFormattingOptions(allocator: std.mem.Allocator, obj: ObjectMap) !Value {
+    const tab_size: i64 = json.getInteger(obj, "tab_size") orelse 4;
+    const insert_spaces = if (obj.get("insert_spaces")) |v| switch (v) {
+        .bool => |b| b,
+        else => true,
+    } else true;
+
+    var options = ObjectMap.init(allocator);
+    try options.put("tabSize", json.jsonInteger(tab_size));
+    try options.put("insertSpaces", json.jsonBool(insert_spaces));
+    return .{ .object = options };
+}
+
+pub fn handleFormatting(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentFormattingProvider", "formatting")) return .{ .empty = {} };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    var lsp_params = ObjectMap.init(ctx.allocator);
+    try lsp_params.put("textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri));
+    try lsp_params.put("options", try buildFormattingOptions(ctx.allocator, obj));
+
+    const request_id = try lsp_ctx.client.sendRequest("textDocument/formatting", .{ .object = lsp_params });
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+}
+
+pub fn handleRangeFormatting(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentRangeFormattingProvider", "range formatting")) return .{ .empty = {} };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const start_line: u32 = @intCast(json.getInteger(obj, "start_line") orelse 0);
+    const start_col: u32 = @intCast(json.getInteger(obj, "start_column") orelse 0);
+    const end_line: u32 = @intCast(json.getInteger(obj, "end_line") orelse 0);
+    const end_col: u32 = @intCast(json.getInteger(obj, "end_column") orelse 0);
+
+    var lsp_params = ObjectMap.init(ctx.allocator);
+    try lsp_params.put("textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri));
+    try lsp_params.put("options", try buildFormattingOptions(ctx.allocator, obj));
+    try lsp_params.put("range", try common.buildRange(ctx.allocator, start_line, start_col, end_line, end_col));
+
+    const request_id = try lsp_ctx.client.sendRequest("textDocument/rangeFormatting", .{ .object = lsp_params });
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+}
+
+pub fn handleSignatureHelp(ctx: *HandlerContext, params: Value) !DispatchResult {
+    return sendCapabilityCheckedPositionRequest(ctx, params, "textDocument/signatureHelp", "signatureHelpProvider", "signature help");
+}
+
+pub fn handleTypeHierarchy(ctx: *HandlerContext, params: Value) !DispatchResult {
+    return sendCapabilityCheckedPositionRequest(ctx, params, "textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy");
 }
 
 pub fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {

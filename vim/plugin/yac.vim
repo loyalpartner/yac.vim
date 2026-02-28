@@ -42,6 +42,11 @@ command! YacDocumentSymbols call yac#document_symbols()
 command! YacFoldingRange   call yac#folding_range()
 command! YacCodeAction    call yac#code_action()
 command! -nargs=+ YacExecuteCommand call yac#execute_command(<f-args>)
+command! YacFormat          call yac#format()
+command! -range YacRangeFormat call yac#range_format()
+command! YacSignatureHelp   call yac#signature_help()
+command! YacTypeHierarchySupertypes call yac#type_hierarchy_supertypes()
+command! YacTypeHierarchySubtypes call yac#type_hierarchy_subtypes()
 command! -nargs=? YacWillSaveWaitUntil call yac#will_save_wait_until(<args>)
 command! YacOpenLog        call yac#open_log()
 command! YacToggleDiagnosticVirtualText call yac#toggle_diagnostic_virtual_text()
@@ -71,6 +76,10 @@ nnoremap <silent> <leader>co :YacCallHierarchyOutgoing<CR>
 nnoremap <silent> <leader>s :YacDocumentSymbols<CR>
 nnoremap <silent> <leader>f :YacFoldingRange<CR>
 nnoremap <silent> <leader>ca :YacCodeAction<CR>
+nnoremap <silent> <leader>fm :YacFormat<CR>
+xnoremap <silent> <leader>fm :YacRangeFormat<CR>
+nnoremap <silent> <leader>ts :YacTypeHierarchySupertypes<CR>
+nnoremap <silent> <leader>tt :YacTypeHierarchySubtypes<CR>
 nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 nnoremap <silent> <C-p> :YacPicker<CR>
 nnoremap <silent> g/ :YacGrep<CR>
@@ -140,8 +149,8 @@ if get(g:, 'yac_auto_start', 1)
     autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
     autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif
     autocmd BufUnload * if s:not_preview_loading() | call yac#did_close() | endif
-    autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | endif
-    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | endif
+    autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
+    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | endif
     autocmd VimLeave * call yac#daemon_stop()
   augroup END
 endif
