@@ -33,8 +33,9 @@ command! YacImplementation call yac#goto_implementation()
 command! YacHover          call yac#hover()
 command! YacComplete       call yac#complete()
 command! YacReferences     call yac#references()
-command! YacInlayHints     call yac#inlay_hints()
-command! YacClearInlayHints call yac#clear_inlay_hints()
+command! YacInlayHints       call yac#inlay_hints()
+command! YacClearInlayHints  call yac#clear_inlay_hints()
+command! YacInlayHintsToggle call yac#inlay_hints_toggle()
 command! -nargs=? YacRename call yac#rename(<args>)
 command! YacCallHierarchyIncoming call yac#call_hierarchy_incoming()
 command! YacCallHierarchyOutgoing call yac#call_hierarchy_outgoing()
@@ -80,6 +81,7 @@ nnoremap <silent> <leader>fm :YacFormat<CR>
 xnoremap <silent> <leader>fm :YacRangeFormat<CR>
 nnoremap <silent> <leader>ts :YacTypeHierarchySupertypes<CR>
 nnoremap <silent> <leader>tt :YacTypeHierarchySubtypes<CR>
+nnoremap <silent> <leader>ih :YacInlayHintsToggle<CR>
 nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
 nnoremap <silent> <C-p> :YacPicker<CR>
 nnoremap <silent> g/ :YacGrep<CR>
@@ -150,7 +152,8 @@ if get(g:, 'yac_auto_start', 1)
     autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif
     autocmd BufUnload * if s:not_preview_loading() | call yac#did_close() | endif
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
-    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | endif
+    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | call yac#inlay_hints_on_insert_leave() | endif
+    autocmd InsertEnter * if s:not_preview_loading() | call yac#inlay_hints_on_insert_enter() | endif
     autocmd VimLeave * call yac#daemon_stop()
   augroup END
 endif
