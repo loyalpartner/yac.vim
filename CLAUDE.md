@@ -29,6 +29,10 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
 See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 
+## Exploratory Tasks
+
+When requirements are unclear, don't spend excessive time analyzing. Write the simplest compilable minimal implementation first, so I can see the result and decide the direction. Read at most 3 files before starting to code during exploration.
+
 ## Known LSP Limitations
 
 - **zls 0.15**: `workspaceSymbolProvider: false` — `workspace/symbol` returns `null` (unimplemented)
