@@ -75,6 +75,9 @@ pub const LangState = struct {
         if (self.folds) |q| q.destroy();
         if (self.textobjects) |q| q.destroy();
         if (self.highlights) |q| q.destroy();
+        // Detach the shared WasmStore before destroying the parser,
+        // otherwise ts_parser_delete will free the store (double-free).
+        _ = self.parser.takeWasmStore();
         self.parser.destroy();
     }
 };
