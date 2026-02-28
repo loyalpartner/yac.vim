@@ -111,7 +111,7 @@ hi def link YacTsProperty            Identifier
 let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
 let s:log_file = ''
-let s:debug_log_file = '/tmp/yac-vim-debug.log'
+let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-debug.log'
 let s:hover_popup_id = -1
 
 " 补全状态 - 分离数据和显示
