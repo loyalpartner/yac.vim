@@ -384,7 +384,10 @@ const EventLoop = struct {
         // Defer query methods while the relevant LSP server is indexing
         if (vim_id != null and lsp_mod.isQueryMethod(method)) {
             const lang = blk: {
-                const obj = switch (params) { .object => |o| o, else => break :blk null };
+                const obj = switch (params) {
+                    .object => |o| o,
+                    else => break :blk null,
+                };
                 const file = json_utils.getString(obj, "file") orelse break :blk null;
                 break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
             };
@@ -421,9 +424,7 @@ const EventLoop = struct {
                     .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
                     .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
                     .respond => |v| self.sendVimResponseTo(cid, alloc, vim_id, v),
-                    .query_buffers => self.sendVimExprTo(cid, alloc, vim_id,
-                        "map(getbufinfo({'buflisted':1}), {_, b -> b.name})",
-                        .picker_buffers),
+                    .query_buffers => self.sendVimExprTo(cid, alloc, vim_id, "map(getbufinfo({'buflisted':1}), {_, b -> b.name})", .picker_buffers),
                 }
             },
             .empty => {
@@ -758,7 +759,6 @@ const EventLoop = struct {
         const client = self.clients.get(cid) orelse return;
         vim_out.sendVimError(alloc, client.stream, vim_id, message);
     }
-
 };
 
 pub fn main() !void {
