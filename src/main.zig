@@ -534,13 +534,13 @@ const EventLoop = struct {
                             log.err("LSP error for request {d} ({s}): {any}", .{ resp.id, pending.method, err_val });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
                         } else {
-                            log.debug("LSP response [{d}]: {s} -> Vim[{d}]", .{ resp.id, pending.method, pending.client_id });
                             const transformed = lsp_transform.transformLspResult(
                                 arena.allocator(),
                                 pending.method,
                                 resp.result,
                                 pending.ssh_host,
                             );
+                            log.debug("LSP response [{d}]: {s} -> Vim[{d}] (null={any})", .{ resp.id, pending.method, pending.client_id, transformed == .null });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, transformed);
                         }
                     } else {

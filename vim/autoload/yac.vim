@@ -342,7 +342,6 @@ function! s:request(method, params, callback_func) abort
       \ a:method,
       \ fnamemodify(get(a:params, 'file', ''), ':t'),
       \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
-    call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 使用指定的回调函数
     call ch_sendexpr(l:ch, jsonrpc_msg, {'callback': a:callback_func})
@@ -366,7 +365,6 @@ function! s:notify(method, params) abort
       \ a:method,
       \ fnamemodify(get(a:params, 'file', ''), ':t'),
       \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
-    call s:debug_log(printf('[JSON]: %s', string(jsonrpc_msg)))
 
     " 发送通知（不需要回调）
     call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
@@ -772,9 +770,13 @@ function! yac#will_save_wait_until(...) abort
     \ }, 's:handle_will_save_wait_until_response')
 endfunction
 
-function! yac#did_close() abort
+function! yac#did_close(...) abort
+  let l:file = a:0 >= 1 ? a:1 : expand('%:p')
+  if empty(l:file)
+    return
+  endif
   call s:notify('did_close', {
-    \   'file': expand('%:p'),
+    \   'file': l:file,
     \   'line': 0,
     \   'column': 0
     \ })
