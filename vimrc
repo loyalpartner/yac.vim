@@ -1,5 +1,5 @@
-" vimrc for yac-bridge plugin
-" 基础配置用于测试 yac-bridge 插件
+" vimrc for yac plugin
+" 基础配置用于测试 yac 插件
 
 " 基础设置
 set nocompatible
@@ -20,11 +20,11 @@ set softtabstop=4
 syntax enable
 filetype plugin indent on
 
-" 加载 yac-bridge 插件
+" 加载 yac 插件
 set runtimepath+=vim
 
-" yac-bridge 配置
-let g:lsp_bridge_command = ['./zig-out/bin/lsp-bridge']
+" yac 配置
+let g:lsp_bridge_command = ['./zig-out/bin/yacd']
 let g:lsp_bridge_auto_start = 1
 let g:lsp_bridge_debug = 1
 
@@ -46,7 +46,7 @@ nnoremap <silent> <leader>lq :YacStop<CR>
 " 调试信息
 function! YacBridgeStatus()
   echo "yac-bridge command: " . string(g:lsp_bridge_command)
-  echo "yac-bridge binary exists: " . (executable('./zig-out/bin/lsp-bridge') ? 'YES' : 'NO')
+  echo "yacd binary exists: " . (executable('./zig-out/bin/yacd') ? 'YES' : 'NO')
 endfunction
 
 command! YacStatus call YacBridgeStatus()

@@ -194,6 +194,6 @@ def vim_runner():
 
 @pytest.fixture(scope="session")
 def check_bridge():
-    bridge = PROJECT_ROOT / "zig-out" / "bin" / "lsp-bridge"
+    bridge = PROJECT_ROOT / "zig-out" / "bin" / "yacd"
     if not bridge.exists():
-        pytest.skip("lsp-bridge not built, run 'zig build' first")
+        pytest.skip("yacd not built, run 'zig build' first")
