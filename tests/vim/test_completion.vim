@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 15000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: Method completion (User.)
@@ -29,11 +29,11 @@ let s:method_elapsed = 0
 while s:method_elapsed < 20000
   call popup_clear()
   YacComplete
-  if yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
+  if yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 2000)
     let s:method_ok = 1
     break
   endif
-  let s:method_elapsed += 3000
+  let s:method_elapsed += 2000
 endwhile
 
 if s:method_ok
@@ -58,7 +58,7 @@ normal! O
 execute "normal! iconst x = @import(\"s"
 
 YacComplete
-call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 5000)
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups) || pumvisible()
@@ -82,7 +82,7 @@ call cursor(45, 1)
 normal! O
 execute "normal! i    const name = us"
 YacComplete
-call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 5000)
+call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
 if !empty(popups) || pumvisible()
@@ -304,13 +304,13 @@ let s:dot_elapsed = 0
 while s:dot_elapsed < 10000
   call popup_clear()
   YacComplete
-  if yac_test#wait_for({-> !empty(popup_list())}, 3000)
+  if yac_test#wait_for({-> !empty(popup_list())}, 2000)
     let s:dot_ok = 1
     " 收集补全项
     let s:dot_items = yac#get_completion_state().items
     break
   endif
-  let s:dot_elapsed += 3000
+  let s:dot_elapsed += 2000
 endwhile
 
 call yac_test#log('INFO', printf('10a: std. popup=%d items=%d', s:dot_ok, len(s:dot_items)))
@@ -334,12 +334,12 @@ let s:ctx_elapsed = 0
 while s:ctx_elapsed < 10000
   call popup_clear()
   YacComplete
-  if yac_test#wait_for({-> !empty(popup_list())}, 3000)
+  if yac_test#wait_for({-> !empty(popup_list())}, 2000)
     let s:ctx_ok = 1
     let s:ctx_items = yac#get_completion_state().items
     break
   endif
-  let s:ctx_elapsed += 3000
+  let s:ctx_elapsed += 2000
 endwhile
 
 call yac_test#log('INFO', printf('10b: const x = std. popup=%d items=%d', s:ctx_ok, len(s:ctx_items)))

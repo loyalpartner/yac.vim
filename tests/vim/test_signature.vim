@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 15000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
 " Test 1: ( triggers signature help
@@ -26,15 +26,15 @@ execute "normal! i    const m = createUserMap("
 " 签名帮助是 100ms debounce + LSP 请求，需要等待
 let s:sig_ok = 0
 let s:sig_elapsed = 0
-while s:sig_elapsed < 15000
+while s:sig_elapsed < 10000
   call popup_clear()
   " 手动触发签名帮助（模拟 TextChangedI 调用）
   call yac#signature_help()
-  if yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 5000)
+  if yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 2000)
     let s:sig_ok = 1
     break
   endif
-  let s:sig_elapsed += 3000
+  let s:sig_elapsed += 2000
 endwhile
 
 if s:sig_ok
@@ -60,14 +60,14 @@ execute "normal! i    const u = User.init("
 
 let s:sig_ok2 = 0
 let s:sig_elapsed2 = 0
-while s:sig_elapsed2 < 15000
+while s:sig_elapsed2 < 10000
   call popup_clear()
   call yac#signature_help()
-  if yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 5000)
+  if yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 2000)
     let s:sig_ok2 = 1
     break
   endif
-  let s:sig_elapsed2 += 3000
+  let s:sig_elapsed2 += 2000
 endwhile
 
 if s:sig_ok2
@@ -98,14 +98,14 @@ execute "normal! i    const m = createUserMap"
 " 先触发补全（输入了 createUserMap，前缀足够长）
 let s:comp_ok = 0
 let s:comp_elapsed = 0
-while s:comp_elapsed < 15000
+while s:comp_elapsed < 10000
   call popup_clear()
   YacComplete
-  if yac_test#wait_for({-> yac#get_completion_state().popup_id != -1}, 3000)
+  if yac_test#wait_for({-> yac#get_completion_state().popup_id != -1}, 2000)
     let s:comp_ok = 1
     break
   endif
-  let s:comp_elapsed += 3000
+  let s:comp_elapsed += 2000
 endwhile
 
 call yac_test#log('INFO', printf('Completion popup appeared: %d', s:comp_ok))
@@ -127,7 +127,7 @@ if s:comp_ok
   " 注意：在测试环境 mode()='c'，signature_help_trigger 会因 mode check 返回
   " 所以直接调用 yac#signature_help() 模拟
   call yac#signature_help()
-  let s:sig_appeared = yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 5000)
+  let s:sig_appeared = yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 3000)
   call yac_test#assert_true(s:sig_appeared,
     \ 'Signature popup should appear after ( when completion was open')
 else

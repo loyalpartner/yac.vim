@@ -37,14 +37,14 @@ bdelete!
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: Rapid successive requests')
 
-call yac_test#open_test_file('test_data/src/main.zig', 15000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 call cursor(14, 12)
 for i in range(1, 5)
   YacHover
 endfor
 
-call yac_test#wait_assert({-> !empty(popup_list())}, 5000,
+call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
   \ 'At least one popup should appear after rapid hover requests')
 call popup_clear()
 
@@ -79,7 +79,7 @@ let start_line = line('.')
 let start_col = col('.')
 
 YacDefinition
-call yac_test#wait_cursor_move(start_line, start_col, 5000)
+call yac_test#wait_cursor_move(start_line, start_col, 3000)
 
 let end_buf = bufnr('%')
 call yac_test#assert_true(end_buf != start_buf || line('.') != start_line,
@@ -125,7 +125,7 @@ let buf2 = bufnr('%')
 execute 'buffer ' . buf1
 call cursor(14, 12)
 YacHover
-call yac_test#wait_assert({-> !empty(popup_list())}, 5000,
+call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
   \ 'Hover should work after buffer switch')
 call popup_clear()
 
@@ -165,12 +165,12 @@ endif
 
 if exists(':YacStart')
   YacStart
-  call yac_test#open_test_file('test_data/src/main.zig', 15000)
+  call yac_test#open_test_file('test_data/src/main.zig', 8000)
 endif
 
 call cursor(14, 12)
 YacHover
-call yac_test#wait_assert({-> !empty(popup_list())}, 5000,
+call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
   \ 'Hover should work after YacStop/YacStart')
 call popup_clear()
 

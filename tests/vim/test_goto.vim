@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 15000)
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " LSP ready wait is handled inside open_test_file via wait_lsp_ready
 
@@ -32,7 +32,7 @@ call yac_test#log('INFO', 'Start: line=' . start_line . ', col=' . start_col . '
 YacDefinition
 
 " 等待光标移动（最多 5 秒）
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -60,7 +60,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 YacDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -86,7 +86,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 YacDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -109,7 +109,7 @@ call search('init', 'c', line('.'))
 let start_line = line('.')
 
 YacDeclaration
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -134,7 +134,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacTypeDefinition
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
@@ -159,7 +159,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'init', 'Cursor should be on "init"')
 
 YacImplementation
-let moved = yac_test#wait_line_change(start_line, 5000)
+let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
   let end_line = line('.')
