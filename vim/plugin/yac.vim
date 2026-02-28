@@ -150,6 +150,7 @@ if get(g:, 'yac_auto_start', 1)
     autocmd BufWritePre * if s:not_preview_loading() | call yac#will_save(1) | endif
     autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
     autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif
+    autocmd TextChanged * if s:not_preview_loading() | call yac#inlay_hints_on_text_changed() | endif
     autocmd BufUnload * if s:not_preview_loading() | call yac#did_close() | endif
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
     autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | call yac#inlay_hints_on_insert_leave() | endif

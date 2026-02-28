@@ -461,13 +461,14 @@ function! yac#references() abort
 endfunction
 
 function! yac#inlay_hints() abort
+  let l:bufnr = bufnr('%')
   call s:request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
     \   'start_line': line('w0') - 1,
     \   'end_line': line('w$')
-    \ }, 's:handle_inlay_hints_response')
+    \ }, {ch, resp -> s:handle_inlay_hints_response(ch, resp, l:bufnr)})
 endfunction
 
 " InsertLeave → show hints if enabled for this buffer
@@ -482,6 +483,13 @@ function! yac#inlay_hints_on_insert_enter() abort
   if get(b:, 'yac_inlay_hints', 0)
     call s:clear_inlay_hints()
   endif
+endfunction
+
+" TextChanged → clear stale hints and refresh (normal mode edits like dd, p, u)
+function! yac#inlay_hints_on_text_changed() abort
+  if !get(b:, 'yac_inlay_hints', 0) | return | endif
+  call s:clear_inlay_hints()
+  call yac#inlay_hints()
 endfunction
 
 function! yac#inlay_hints_toggle() abort
@@ -938,8 +946,13 @@ function! s:handle_references_response(channel, response) abort
 endfunction
 
 " inlay_hints 响应处理器
-function! s:handle_inlay_hints_response(channel, response) abort
+function! s:handle_inlay_hints_response(channel, response, ...) abort
   call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
+
+  " Discard if response arrived for a different buffer than current
+  if a:0 > 0 && a:1 != bufnr('%')
+    return
+  endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'hints')
     call s:show_inlay_hints(a:response.hints)
