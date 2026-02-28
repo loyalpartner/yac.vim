@@ -25,6 +25,10 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 - Vim channel protocol: https://vimhelp.org/channel.txt.html
 - Vim popup API: https://vimhelp.org/popup.txt.html
 
+## Adding Language Plugins
+
+See [docs/new-language-plugin.md](docs/new-language-plugin.md)
+
 ## Known LSP Limitations
 
 - **zls 0.15**: `workspaceSymbolProvider: false` — `workspace/symbol` returns `null` (unimplemented)

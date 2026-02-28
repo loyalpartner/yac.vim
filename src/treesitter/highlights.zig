@@ -197,6 +197,13 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "attribute", "YacTsAttribute" },
         .{ "constructor", "YacTsConstructor" },
         .{ "property", "YacTsProperty" },
+        // Additional captures used by Zed highlights
+        .{ "namespace", "YacTsModule" },
+        .{ "lifetime", "YacTsLabel" },
+        .{ "function.decorator", "YacTsAttribute" },
+        .{ "function.method.call", "YacTsFunctionCall" },
+        .{ "type.class", "YacTsType" },
+        .{ "type.interface", "YacTsType" },
         // Legacy capture names (pre-nvim-treesitter 1.0 convention)
         .{ "parameter", "YacTsVariableParameter" },
         .{ "field", "YacTsProperty" },
