@@ -1,6 +1,6 @@
 {
   "hooks": {
-    "postToolUse": [
+    "PostToolUse": [
       {
         "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
