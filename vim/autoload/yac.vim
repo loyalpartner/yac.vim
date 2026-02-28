@@ -461,11 +461,44 @@ function! yac#references() abort
 endfunction
 
 function! yac#inlay_hints() abort
+  let l:bufnr = bufnr('%')
   call s:request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
-    \   'column': 0
-    \ }, 's:handle_inlay_hints_response')
+    \   'column': 0,
+    \   'start_line': line('w0') - 1,
+    \   'end_line': line('w$')
+    \ }, {ch, resp -> s:handle_inlay_hints_response(ch, resp, l:bufnr)})
+endfunction
+
+" InsertLeave → show hints if enabled for this buffer
+function! yac#inlay_hints_on_insert_leave() abort
+  if get(b:, 'yac_inlay_hints', 0)
+    call yac#inlay_hints()
+  endif
+endfunction
+
+" InsertEnter → clear hints
+function! yac#inlay_hints_on_insert_enter() abort
+  if get(b:, 'yac_inlay_hints', 0)
+    call s:clear_inlay_hints()
+  endif
+endfunction
+
+" TextChanged → clear stale hints and refresh (normal mode edits like dd, p, u)
+function! yac#inlay_hints_on_text_changed() abort
+  if !get(b:, 'yac_inlay_hints', 0) | return | endif
+  call s:clear_inlay_hints()
+  call yac#inlay_hints()
+endfunction
+
+function! yac#inlay_hints_toggle() abort
+  let b:yac_inlay_hints = !get(b:, 'yac_inlay_hints', 0)
+  if b:yac_inlay_hints
+    call yac#inlay_hints()
+  else
+    call s:clear_inlay_hints()
+  endif
 endfunction
 
 function! yac#rename(...) abort
@@ -913,8 +946,13 @@ function! s:handle_references_response(channel, response) abort
 endfunction
 
 " inlay_hints 响应处理器
-function! s:handle_inlay_hints_response(channel, response) abort
+function! s:handle_inlay_hints_response(channel, response, ...) abort
   call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
+
+  " Discard if response arrived for a different buffer than current
+  if a:0 > 0 && a:1 != bufnr('%')
+    return
+  endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'hints')
     call s:show_inlay_hints(a:response.hints)
@@ -2304,94 +2342,64 @@ let s:inlay_hints = {}
 
 " 显示inlay hints
 function! s:show_inlay_hints(hints) abort
-  " 清除当前buffer的旧hints
   call s:clear_inlay_hints()
-
-  if empty(a:hints)
-    call yac#toast('No inlay hints available')
-    return
-  endif
-
-  " 存储hints并显示
+  if empty(a:hints) | return | endif
   let s:inlay_hints[bufnr('%')] = a:hints
   call s:render_inlay_hints()
-
-  call yac#toast('Showing ' . len(a:hints) . ' inlay hints')
 endfunction
 
 " 清除inlay hints
 function! s:clear_inlay_hints() abort
   let bufnr = bufnr('%')
   if has_key(s:inlay_hints, bufnr)
-    " 清除文本属性（Vim 8.1+）
     if exists('*prop_remove')
-      " 清除所有inlay hint相关的文本属性
       try
         call prop_remove({'type': 'inlay_hint_type', 'bufnr': bufnr, 'all': 1})
         call prop_remove({'type': 'inlay_hint_parameter', 'bufnr': bufnr, 'all': 1})
+        call prop_remove({'type': 'inlay_hint_other', 'bufnr': bufnr, 'all': 1})
       catch
-        " 如果属性类型不存在，忽略错误
       endtry
     endif
-
-    " 清除所有匹配项（降级模式）
-    call clearmatches()
     unlet s:inlay_hints[bufnr]
   endif
 endfunction
 
 " 公开接口：清除inlay hints
 function! yac#clear_inlay_hints() abort
+  let b:yac_inlay_hints = 0
   call s:clear_inlay_hints()
-  call yac#toast('Inlay hints cleared')
 endfunction
 
 " 渲染inlay hints到buffer
 function! s:render_inlay_hints() abort
   let bufnr = bufnr('%')
-  if !has_key(s:inlay_hints, bufnr)
+  if !has_key(s:inlay_hints, bufnr) || !exists('*prop_type_add')
     return
   endif
 
-  " 定义highlight组
-  if !hlexists('InlayHintType')
-    highlight InlayHintType ctermfg=8 ctermbg=NONE gui=italic guifg=#888888 guibg=NONE
-  endif
-  if !hlexists('InlayHintParameter')
-    highlight InlayHintParameter ctermfg=6 ctermbg=NONE gui=italic guifg=#008080 guibg=NONE
-  endif
+  " Ensure highlight groups exist
+  highlight default InlayHintType ctermfg=8 gui=italic guifg=#888888
+  highlight default InlayHintParameter ctermfg=6 gui=italic guifg=#008080
+  highlight default link InlayHintOther InlayHintType
 
-  " 为每个hint添加virtual text（如果支持的话）
+  " Ensure prop types exist (once per Vim session)
+  for kind in ['type', 'parameter', 'other']
+    let hl = kind ==# 'type' ? 'InlayHintType' :
+          \ kind ==# 'parameter' ? 'InlayHintParameter' : 'InlayHintOther'
+    try | call prop_type_add('inlay_hint_' . kind, {'highlight': hl}) | catch /E969/ | endtry
+  endfor
+
   for hint in s:inlay_hints[bufnr]
-    let line_num = hint.line + 1  " Convert to 1-based
+    let line_num = hint.line + 1
     let col_num = hint.column + 1
-    let text = hint.label
-    let hl_group = hint.kind == 'type' ? 'InlayHintType' : 'InlayHintParameter'
-
-    " 使用文本属性（Vim 8.1+）显示inlay hints
-    if exists('*prop_type_add')
-      " 确保属性类型存在
-      try
-        call prop_type_add('inlay_hint_' . hint.kind, {'highlight': hl_group})
-      catch /E969/
-        " 属性类型已存在，忽略错误
-      endtry
-
-      " 添加文本属性
-      try
-        call prop_add(line_num, col_num, {
-          \ 'type': 'inlay_hint_' . hint.kind,
-          \ 'text': text,
-          \ 'bufnr': bufnr
-          \ })
-      catch
-        " 添加失败，可能是位置无效
-      endtry
-    else
-      " 降级到使用matchaddpos（不如text properties好，但总比没有强）
-      let pattern = '\%' . line_num . 'l\%' . col_num . 'c'
-      call matchadd(hl_group, pattern)
-    endif
+    try
+      call prop_add(line_num, col_num, {
+        \ 'type': 'inlay_hint_' . hint.kind,
+        \ 'text': hint.label,
+        \ 'bufnr': bufnr
+        \ })
+    catch
+    endtry
   endfor
 endfunction
 

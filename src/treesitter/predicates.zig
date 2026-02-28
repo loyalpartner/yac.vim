@@ -32,6 +32,8 @@ pub fn evaluatePredicates(
             if (!evalEq(query, match, steps[pred_start..pred_end], source)) return false;
         } else if (std.mem.eql(u8, pred_name, "any-of?")) {
             if (!evalAnyOf(query, match, steps[pred_start..pred_end], source)) return false;
+        } else if (std.mem.eql(u8, pred_name, "has-ancestor?")) {
+            if (!evalHasAncestor(query, match, steps[pred_start..pred_end])) return false;
         } else if (std.mem.eql(u8, pred_name, "set!")) {
             // Metadata-only, skip
             continue;
@@ -102,6 +104,41 @@ fn evalAnyOf(
         if (std.mem.eql(u8, text, candidate)) return true;
     }
     return false;
+}
+
+/// #has-ancestor? @capture "node_type1" "node_type2" ...
+/// Returns true if any ancestor of the captured node matches one of the given types.
+fn evalHasAncestor(
+    query: *const ts.Query,
+    match: ts.Query.Match,
+    steps: []const ts.Query.PredicateStep,
+) bool {
+    // steps: [pred_name, capture, type1, type2, ...]
+    if (steps.len < 3) return true;
+    if (steps[1].type != .capture) return true;
+
+    const capture_index = steps[1].value_id;
+    const node = getCaptureNode(match, capture_index) orelse return false;
+
+    var current = node.parent();
+    while (current) |cur| {
+        const kind = cur.kind();
+        for (steps[2..]) |step| {
+            if (step.type != .string) continue;
+            const ancestor_type = query.stringValueForId(step.value_id) orelse continue;
+            if (std.mem.eql(u8, kind, ancestor_type)) return true;
+        }
+        current = cur.parent();
+    }
+    return false;
+}
+
+/// Get the node for a capture within a match.
+fn getCaptureNode(match: ts.Query.Match, capture_index: u32) ?ts.Node {
+    for (match.captures) |cap| {
+        if (cap.index == capture_index) return cap.node;
+    }
+    return null;
 }
 
 /// Get the source text for a capture within a match.

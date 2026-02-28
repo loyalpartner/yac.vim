@@ -293,6 +293,92 @@ pub fn transformFormattingResult(alloc: Allocator, result: Value) !Value {
     return .{ .object = result_obj };
 }
 
+/// Transform LSP InlayHint[] into {hints: [{line, column, label, kind}]}.
+/// LSP InlayHint kind: 1=Type, 2=Parameter (or absent).
+pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
+    const items = switch (result) {
+        .array => |a| a.items,
+        else => return .null,
+    };
+
+    var hints = std.json.Array.init(alloc);
+    for (items) |item| {
+        const hint = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        // position: {line, character}
+        const pos_obj = switch (hint.get("position") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const line = json_utils.getInteger(pos_obj, "line") orelse continue;
+        const character = json_utils.getInteger(pos_obj, "character") orelse continue;
+
+        // label: string | InlayHintLabelPart[]
+        const label_val = hint.get("label") orelse continue;
+        const label: []const u8 = switch (label_val) {
+            .string => |s| s,
+            .array => |parts| blk: {
+                // Concatenate all label parts
+                var buf: std.ArrayListUnmanaged(u8) = .{};
+                for (parts.items) |part| {
+                    const part_obj = switch (part) {
+                        .object => |o| o,
+                        else => continue,
+                    };
+                    if (json_utils.getString(part_obj, "value")) |v| {
+                        buf.appendSlice(alloc, v) catch continue;
+                    }
+                }
+                break :blk buf.items;
+            },
+            else => continue,
+        };
+        if (label.len == 0) continue;
+
+        // kind: 1=Type, 2=Parameter (optional)
+        const kind_int = json_utils.getInteger(hint, "kind");
+        const kind_str: []const u8 = if (kind_int) |k| switch (k) {
+            1 => "type",
+            2 => "parameter",
+            else => "other",
+        } else "other";
+
+        // paddingLeft / paddingRight
+        const padding_left = if (hint.get("paddingLeft")) |v| switch (v) {
+            .bool => |b| b,
+            else => false,
+        } else false;
+        const padding_right = if (hint.get("paddingRight")) |v| switch (v) {
+            .bool => |b| b,
+            else => false,
+        } else false;
+
+        // Build display text with padding
+        const display = if (padding_left and padding_right)
+            std.fmt.allocPrint(alloc, " {s} ", .{label}) catch label
+        else if (padding_left)
+            std.fmt.allocPrint(alloc, " {s}", .{label}) catch label
+        else if (padding_right)
+            std.fmt.allocPrint(alloc, "{s} ", .{label}) catch label
+        else
+            label;
+
+        var hint_obj = ObjectMap.init(alloc);
+        try hint_obj.put("line", json_utils.jsonInteger(line));
+        try hint_obj.put("column", json_utils.jsonInteger(character));
+        try hint_obj.put("label", json_utils.jsonString(display));
+        try hint_obj.put("kind", json_utils.jsonString(kind_str));
+        try hints.append(.{ .object = hint_obj });
+    }
+
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("hints", .{ .array = hints });
+    return .{ .object = result_obj };
+}
+
 /// Transform an LSP response into the format Vim expects, dispatching by method name.
 pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
     if (std.mem.startsWith(u8, method, "goto_")) {
@@ -306,6 +392,9 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     }
     if (std.mem.eql(u8, method, "formatting") or std.mem.eql(u8, method, "range_formatting")) {
         return transformFormattingResult(alloc, result) catch .null;
+    }
+    if (std.mem.eql(u8, method, "inlay_hints")) {
+        return transformInlayHintsResult(alloc, result) catch .null;
     }
 
     return result;
