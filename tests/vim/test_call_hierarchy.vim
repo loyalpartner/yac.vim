@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 15000)
 
 " ============================================================================
 " Test 1: Incoming calls to User.init

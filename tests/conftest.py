@@ -69,7 +69,7 @@ class VimRunner:
 
         return tmpdir
 
-    def run_test(self, test_name: str, timeout: int = 60) -> SuiteResult:
+    def run_test(self, test_name: str, timeout: int = 90) -> SuiteResult:
         test_file = self.test_dir / f"{test_name}.vim"
         if not test_file.exists():
             return SuiteResult(

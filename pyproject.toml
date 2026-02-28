@@ -12,7 +12,7 @@ dev-dependencies = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-n auto"
+addopts = "-n 2"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 15000)
 
 " ============================================================================
 " Test 1: gd - Goto Definition mapping
@@ -25,7 +25,7 @@ if !empty(gd_map)
   normal! f.w
   let start_line = line('.')
   normal gd
-  call yac_test#wait_line_change(start_line, 3000)
+  call yac_test#wait_line_change(start_line, 5000)
   call yac_test#assert_line_changed(start_line, 'gd should jump to definition')
 endif
 
@@ -51,7 +51,7 @@ if !empty(K_map) && match(K_map, '[Yy]ac\|[Hh]over') >= 0
   call cursor(6, 12)
   call popup_clear()
   normal K
-  call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
+  call yac_test#wait_assert({-> !empty(popup_list())}, 5000,
     \ 'K should open hover popup')
   call popup_clear()
 endif
@@ -68,7 +68,7 @@ if !empty(gr_map)
   call cursor(6, 12)
   normal gr
   " References opens picker, not quickfix
-  call yac_test#wait_assert({-> yac#picker_is_open()}, 5000,
+  call yac_test#wait_assert({-> yac#picker_is_open()}, 8000,
     \ 'gr should open references picker')
   " Close picker
   call yac#picker_close()

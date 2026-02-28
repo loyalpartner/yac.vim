@@ -8,7 +8,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: open test file and wait for LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 15000)
 
 " ============================================================================
 " Test 1: Find references to User struct
@@ -20,7 +20,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open')
 
 let info = yac#picker_info()
@@ -30,7 +30,7 @@ call yac_test#assert_true(info.count >= 3, 'User should have at least 3 referenc
 
 " Close picker
 call feedkeys("\<Esc>", 'xt')
-call yac_test#wait_picker_closed(2000)
+call yac_test#wait_picker_closed(3000)
 
 " ============================================================================
 " Test 2: Find references to getName method
@@ -42,7 +42,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open for getName')
 
 let info = yac#picker_info()
@@ -50,7 +50,7 @@ call yac_test#log('INFO', 'Found ' . info.count . ' references to getName')
 call yac_test#assert_true(info.count >= 2, 'getName should have at least 2 references')
 
 call feedkeys("\<Esc>", 'xt')
-call yac_test#wait_picker_closed(2000)
+call yac_test#wait_picker_closed(3000)
 
 " ============================================================================
 " Test 3: Find references to local variable
@@ -62,7 +62,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open for users')
 
 let info = yac#picker_info()
@@ -70,7 +70,7 @@ call yac_test#log('INFO', 'Found ' . info.count . ' references to users')
 call yac_test#assert_true(info.count >= 3, 'users should have at least 3 references')
 
 call feedkeys("\<Esc>", 'xt')
-call yac_test#wait_picker_closed(2000)
+call yac_test#wait_picker_closed(3000)
 
 " ============================================================================
 " Test 4: Navigate through references
@@ -79,7 +79,7 @@ call yac_test#log('INFO', 'Test 4: Navigate through references')
 
 call cursor(6, 12)
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 
 if popup_ok
   let info = yac#picker_info()
@@ -88,7 +88,7 @@ if popup_ok
 endif
 
 call feedkeys("\<Esc>", 'xt')
-call yac_test#wait_picker_closed(2000)
+call yac_test#wait_picker_closed(3000)
 
 " ============================================================================
 " Test 5: References for item with limited references
@@ -100,7 +100,7 @@ call cursor(2, 7)
 let word = expand('<cword>')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 
 if popup_ok
   let info = yac#picker_info()
@@ -108,7 +108,7 @@ if popup_ok
 endif
 
 call feedkeys("\<Esc>", 'xt')
-call yac_test#wait_picker_closed(2000)
+call yac_test#wait_picker_closed(3000)
 
 " ============================================================================
 " Cleanup

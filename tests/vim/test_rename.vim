@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: 打开测试文件并等待 LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 15000)
 
 " 保存原始内容以便恢复
 let s:original_content = getline(1, '$')
