@@ -27,6 +27,7 @@ set runtimepath+=vim
 let g:lsp_bridge_command = ['./zig-out/bin/yacd']
 let g:lsp_bridge_auto_start = 1
 let g:lsp_bridge_debug = 1
+let g:yac_debug = 1
 
 " 自动补全配置 (可以修改这些值进行测试)
 let g:yac_auto_complete = 1             " 1=启用, 0=禁用自动补全
