@@ -158,6 +158,7 @@ let s:picker = {
   \ 'input_text': '',
   \ 'pending_ctrl_r': 0,
   \ 'loading': 0,
+  \ 'saved_theme_file': v:null,
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
@@ -2976,6 +2977,7 @@ function! s:picker_mode_label() abort
   elseif m ==# 'workspace_symbol' | return 'Symbols'
   elseif m ==# 'document_symbol'  | return 'Document'
   elseif m ==# 'references'       | return 'References'
+  elseif m ==# 'theme'            | return 'Theme'
   else                             | return 'YacPicker'
   endif
 endfunction
@@ -3004,6 +3006,8 @@ function! s:picker_empty_message() abort
     return empty(query) ? '  (type to grep...)' : '  (no matches)'
   elseif m ==# 'workspace_symbol' || m ==# 'document_symbol'
     return '  (no symbols found)'
+  elseif m ==# 'theme'
+    return '  (no themes found in ~/.config/yac/themes/)'
   endif
   return '  (no results)'
 endfunction
@@ -3147,18 +3151,18 @@ function! s:picker_get_text() abort
   return s:picker.input_text
 endfunction
 
-" Check if text starts with a mode prefix character (>, @, #).
+" Check if text starts with a mode prefix character (>, @, #, %).
 function! s:picker_has_prefix(text) abort
-  return !empty(a:text) && (a:text[0] ==# '>' || a:text[0] ==# '@' || a:text[0] ==# '#')
+  return !empty(a:text) && (a:text[0] ==# '>' || a:text[0] ==# '@' || a:text[0] ==# '#' || a:text[0] ==# '%')
 endfunction
 
 " Set the picker input text and refresh the buffer display + cursor.
-" When text starts with a mode prefix (>, @, #), replace the prompt '>' with
+" When text starts with a mode prefix (>, @, #, %), replace the prompt '>' with
 " the prefix char and display the rest as the query — e.g. input '>foo'
 " shows '> foo ' with the '>' colored by YacPickerPrefix.
 function! s:picker_set_text(text) abort
   let s:picker.input_text = a:text
-  let has_prefix = !empty(a:text) && (a:text[0] ==# '>' || a:text[0] ==# '@' || a:text[0] ==# '#')
+  let has_prefix = s:picker_has_prefix(a:text)
   if has_prefix
     call setbufline(winbufnr(s:picker.input_popup), 1, a:text[0] . ' ' . a:text[1:] . ' ')
   else
@@ -3331,6 +3335,9 @@ function! s:picker_on_input_changed() abort
     if text =~# '^@' && !empty(s:picker.all_locations)
       " Document symbol cache is warm — filter locally
       let s:picker.timer_id = timer_start(30, function('s:picker_filter_doc_symbols_timer'))
+    elseif text =~# '^%'
+      " Theme selection — filter locally, no daemon needed
+      let s:picker.timer_id = timer_start(30, function('s:picker_filter_themes_timer'))
     elseif text =~# '^>'
       let s:picker.timer_id = timer_start(200, function('s:picker_send_query'))
     else
@@ -3359,6 +3366,9 @@ function! s:picker_send_query(timer_id) abort
   elseif text =~# '^@'
     let mode = 'document_symbol'
     let query = text[1:]
+  elseif text =~# '^%'
+    let mode = 'theme'
+    let query = text[1:]
   endif
 
   " Clear doc symbol cache when leaving document_symbol mode
@@ -3370,6 +3380,12 @@ function! s:picker_send_query(timer_id) abort
 
   if mode ==# 'grep' && empty(query)
     call s:picker_update_results([])
+    return
+  endif
+
+  " Theme mode: filter locally, no daemon needed
+  if mode ==# 'theme'
+    call s:picker_filter_themes(query)
     return
   endif
 
@@ -3429,6 +3445,30 @@ function! s:picker_filter_doc_symbols_timer(timer_id) abort
   call s:picker_apply_doc_symbol_filter(query)
 endfunction
 
+function! s:picker_filter_themes_timer(timer_id) abort
+  let s:picker.timer_id = -1
+  if s:picker.input_popup == -1 | return | endif
+  let text = s:picker_get_text()
+  let query = text =~# '^%' ? text[1:] : ''
+  let s:picker.mode = 'theme'
+  call s:picker_filter_themes(query)
+endfunction
+
+function! s:picker_filter_themes(query) abort
+  " Save original theme on first entry into theme mode
+  if s:picker.saved_theme_file is v:null
+    let s:picker.saved_theme_file = yac_theme#saved_file()
+  endif
+  let all = yac_theme#list()
+  if empty(a:query)
+    let items = all
+  else
+    let pat = tolower(a:query)
+    let items = filter(all, 'stridx(tolower(get(v:val, "label", "")), pat) >= 0')
+  endif
+  call s:picker_update_results(items)
+endfunction
+
 function! s:picker_has_locations(mode) abort
   return a:mode ==# 'workspace_symbol' || a:mode ==# 'document_symbol' || a:mode ==# 'grep'
 endfunction
@@ -3485,6 +3525,8 @@ function! s:picker_render_results() abort
       if s:picker.mode ==# 'grep'
         let prefix = printf('  %s:%*d: ', fnamemodify(detail, ':.'), s:picker.lnum_width, get(item, 'line', 0) + 1)
         call add(lines, prefix . label)
+      elseif s:picker.mode ==# 'theme'
+        call add(lines, '  ' . label)
       else
         let label = fnamemodify(label, ':.')
         let prefix = s:picker.lnum_width > 0
@@ -3540,7 +3582,9 @@ function! s:picker_select_next() abort
   else
     let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
     call s:picker_highlight_selected()
-    if s:picker.preview
+    if s:picker.mode ==# 'theme'
+      call s:picker_preview_theme()
+    elseif s:picker.preview
       call s:picker_preview()
     endif
   endif
@@ -3553,7 +3597,9 @@ function! s:picker_select_prev() abort
   else
     let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
     call s:picker_highlight_selected()
-    if s:picker.preview
+    if s:picker.mode ==# 'theme'
+      call s:picker_preview_theme()
+    elseif s:picker.preview
       call s:picker_preview()
     endif
   endif
@@ -3585,6 +3631,12 @@ function! s:picker_advance_past_header(direction) abort
   endwhile
 endfunction
 
+function! s:picker_preview_theme() abort
+  if s:picker.selected < 0 || s:picker.selected >= len(s:picker.items) | return | endif
+  let item = s:picker.items[s:picker.selected]
+  call yac_theme#apply_file(get(item, 'file', ''))
+endfunction
+
 function! s:picker_accept() abort
   if empty(s:picker.items)
     call s:picker_close()
@@ -3596,6 +3648,14 @@ function! s:picker_accept() abort
 
   if s:picker.mode ==# 'references'
     " Preview already placed cursor, just close without restore
+    call s:picker_close_popups()
+    return
+  endif
+
+  if s:picker.mode ==# 'theme'
+    " Theme already applied via preview; persist and close
+    call yac_theme#apply_file(get(item, 'file', ''))
+    call yac_theme#save_selection(get(item, 'file', ''))
     call s:picker_close_popups()
     return
   endif
@@ -3641,6 +3701,11 @@ function! s:picker_accept() abort
 endfunction
 
 function! s:picker_close() abort
+  " Theme mode cancel: restore original theme
+  if s:picker.mode ==# 'theme' && s:picker.saved_theme_file isnot v:null
+    call yac_theme#apply_file(s:picker.saved_theme_file)
+  endif
+
   let needs_restore = s:picker.preview
   let orig_file = s:picker.orig_file
   let orig_lnum = s:picker.orig_lnum
@@ -3690,6 +3755,7 @@ function! s:picker_close_popups() abort
   let s:picker.orig_file = ''
   let s:picker.orig_lnum = 0
   let s:picker.orig_col = 0
+  let s:picker.saved_theme_file = v:null
 endfunction
 
 " === Tree-sitter Integration ===

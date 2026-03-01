@@ -63,6 +63,9 @@ command! YacTsSymbols             call yac#ts_symbols()
 command! YacTsHighlightsEnable    call yac#ts_highlights_enable()
 command! YacTsHighlightsDisable   call yac#ts_highlights_disable()
 command! YacTsHighlightsToggle    call yac#ts_highlights_toggle()
+command! YacThemePicker           call yac#picker_open({'initial': '%'})
+command! YacThemeDefault          call yac_theme#apply_default() | call yac_theme#save_selection('')
+command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>) | call yac_theme#save_selection(<q-args>)
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
@@ -168,4 +171,11 @@ augroup yac_ts_highlights
   autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
   autocmd InsertLeave * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
   autocmd BufLeave * if s:not_preview_loading() | call yac#ts_highlights_detach() | endif
+augroup END
+
+" Load saved theme on startup; reapply after colorscheme changes
+call yac_theme#autoload()
+augroup yac_theme
+  autocmd!
+  autocmd ColorScheme * call yac_theme#autoload()
 augroup END
