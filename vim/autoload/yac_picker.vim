@@ -1271,7 +1271,7 @@ call yac_picker#register_mode({
   \ 'label': 'Theme',
   \ 'debounce': 30,
   \ 'local': 1,
-  \ 'daemon_mode': '',
+  \ 'daemon_mode': 'theme',
   \ 'query_fn': function('s:query_themes'),
   \ 'accept_fn': function('s:accept_theme'),
   \ 'grouped': 0,
