@@ -3849,9 +3849,10 @@ endfunction
 let s:ts_hl_timer = -1
 let s:ts_hl_last_range = ''
 let s:ts_prop_types_created = {}
-let s:ts_hl_request_seq = 0
+" NOTE: seq is per-buffer (b:yac_ts_hl_seq) so buffer switches don't
+" discard in-flight responses for the previous buffer.
 
-function! yac#ts_highlights_request() abort
+function! yac#ts_highlights_request(...) abort
   if !get(b:, 'yac_ts_highlights_enabled', 0)
     return
   endif
@@ -3865,17 +3866,33 @@ function! yac#ts_highlights_request() abort
     return
   endif
 
-  " Compute the request range: expand covered range to include visible area
-  " with padding so small scrolls don't trigger new requests
   let l:pad = max([line('w$') - line('w0'), 20])
-  if l:cov_lo < 0
-    " First request — cover visible + padding
-    let l:req_lo = max([0, l:vis_lo - l:pad])
-    let l:req_hi = l:vis_hi + l:pad
-  else
-    " Incremental — only request uncovered region, but expand coverage
-    let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
-    let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
+  let l:is_scroll = 0
+
+  " Scroll mode: only request the uncovered delta direction
+  if a:0 > 0 && a:1 ==# 'scroll' && l:cov_lo >= 0
+    let l:need_up   = l:vis_lo < l:cov_lo
+    let l:need_down = l:vis_hi > l:cov_hi
+    if l:need_down && !l:need_up
+      let l:req_lo = l:cov_hi
+      let l:req_hi = l:vis_hi + l:pad
+      let l:is_scroll = 1
+    elseif l:need_up && !l:need_down
+      let l:req_lo = max([0, l:vis_lo - l:pad])
+      let l:req_hi = l:cov_lo
+      let l:is_scroll = 1
+    endif
+    " Both directions exceeded (big jump) → fall through to full request
+  endif
+
+  if !l:is_scroll
+    if l:cov_lo < 0
+      let l:req_lo = max([0, l:vis_lo - l:pad])
+      let l:req_hi = l:vis_hi + l:pad
+    else
+      let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
+      let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
+    endif
   endif
 
   let l:params = {
@@ -3887,64 +3904,89 @@ function! yac#ts_highlights_request() abort
     let l:params.text = join(getline(1, '$'), "\n")
     let b:yac_ts_hl_parsed = 1
   endif
-  let s:ts_hl_request_seq += 1
-  let l:seq = s:ts_hl_request_seq
   let l:bufnr = bufnr('%')
+  let l:seq = get(b:, 'yac_ts_hl_seq', 0) + 1
+  let b:yac_ts_hl_seq = l:seq
   call s:request('ts_highlights', l:params,
-    \ {ch, resp -> s:handle_ts_highlights_response(ch, resp, l:seq, l:bufnr)})
+    \ {ch, resp -> s:handle_ts_highlights_response(
+    \     ch, resp, l:seq, l:bufnr, l:is_scroll)})
 endfunction
 
-function! s:handle_ts_highlights_response(channel, response, seq, bufnr) abort
+function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scroll) abort
   if type(a:response) != v:t_dict
         \ || !has_key(a:response, 'highlights')
         \ || !has_key(a:response, 'range')
     return
   endif
-  " Discard stale responses — a newer request has been sent
-  if a:seq != s:ts_hl_request_seq
+  " Per-buffer seq: discard stale responses for THIS buffer, but don't
+  " discard responses just because the user switched to another buffer.
+  if a:seq != getbufvar(a:bufnr, 'yac_ts_hl_seq', 0)
     return
   endif
-  " Discard if buffer changed (user switched to another buffer)
-  if a:bufnr != bufnr('%')
+  " Buffer may have been wiped
+  if !bufexists(a:bufnr)
     return
   endif
 
-  " Double-buffering: apply new props FIRST, then remove old props.
-  " This avoids a visible gap where highlights disappear before new ones arrive.
   let l:bufnr = a:bufnr
-  let l:old_gen = get(b:, 'yac_ts_hl_gen', 0)
-  let l:new_gen = 1 - l:old_gen
-  let l:old_types = get(b:, 'yac_ts_hl_prop_types', [])
-  let l:new_types = []
 
-  " Step 1: Apply new highlights
-  for [group, positions] in items(a:response.highlights)
-    let l:prop_type = 'yac_ts_' . l:new_gen . '_' . group
-    call s:ensure_ts_prop_type(l:prop_type, group)
-    call add(l:new_types, l:prop_type)
-    for pos in positions
-      " pos = [line, col, len] (1-indexed)
-      try
-        call prop_add(pos[0], pos[1], {
-              \ 'type': l:prop_type,
-              \ 'length': pos[2],
-              \ 'bufnr': l:bufnr
-              \ })
-      catch
-      endtry
+  if a:is_scroll
+    " Scroll path: append delta props to current generation (no flip)
+    let l:gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
+    let l:cur_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
+    let l:new_types = s:ts_apply_highlights(l:gen, a:response.highlights, l:bufnr)
+    " Merge new types into existing list (avoid duplicates from prior scrolls)
+    for l:t in l:new_types
+      if index(l:cur_types, l:t) < 0
+        call add(l:cur_types, l:t)
+      endif
     endfor
-  endfor
+    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:cur_types)
+    call setbufvar(l:bufnr, 'yac_ts_hl_lo',
+          \ min([getbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0]), a:response.range[0]]))
+    call setbufvar(l:bufnr, 'yac_ts_hl_hi',
+          \ max([getbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1]), a:response.range[1]]))
+  else
+    " Edit path: double-buffered full replacement
+    let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
+    let l:new_gen = 1 - l:old_gen
+    let l:old_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
 
-  " Step 2: Remove old generation props
-  for prop_type in l:old_types
-    silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-  endfor
+    let l:new_types = s:ts_apply_highlights(l:new_gen, a:response.highlights, l:bufnr)
 
-  " Update state
-  let b:yac_ts_hl_gen = l:new_gen
-  let b:yac_ts_hl_prop_types = l:new_types
-  let b:yac_ts_hl_lo = a:response.range[0]
-  let b:yac_ts_hl_hi = a:response.range[1]
+    for prop_type in l:old_types
+      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
+    endfor
+
+    call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
+    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
+    call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
+    call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
+  endif
+endfunction
+
+" Apply highlight groups for a given generation. Returns the list of
+" prop type names that were created/used.
+function! s:ts_apply_highlights(gen, highlights, bufnr) abort
+  let l:types = []
+  for [group, positions] in items(a:highlights)
+    let l:prop_type = 'yac_ts_' . a:gen . '_' . group
+    call s:ensure_ts_prop_type(l:prop_type, group)
+    call add(l:types, l:prop_type)
+    call s:ts_add_props(l:prop_type, positions, a:bufnr)
+  endfor
+  return l:types
+endfunction
+
+" Batch-add text properties.  Positions arrive from Zig already in
+" [lnum, col, end_lnum, end_col] format ready for prop_add_list.
+function! s:ts_add_props(prop_type, positions, bufnr) abort
+  if !empty(a:positions)
+    try
+      call prop_add_list({'type': a:prop_type, 'bufnr': a:bufnr}, a:positions)
+    catch
+    endtry
+  endif
 endfunction
 
 " Ensure a prop type exists for the given highlight group
@@ -4015,13 +4057,14 @@ function! yac#ts_highlights_debounce() abort
   if s:ts_hl_timer != -1
     call timer_stop(s:ts_hl_timer)
   endif
-  let s:ts_hl_timer = timer_start(30, {-> yac#ts_highlights_request()})
+  let s:ts_hl_timer = timer_start(30, {-> yac#ts_highlights_request('scroll')})
 endfunction
 
-" Clear window matches on BufLeave so they don't bleed into other buffers.
-" Coverage is reset so BufEnter will re-request.
+" On BufLeave, reset the debounce fingerprint so BufEnter will re-check
+" coverage.  Text properties are buffer-bound (via bufnr) and don't bleed
+" into other buffers, so we keep them and the coverage metadata intact.
 function! yac#ts_highlights_detach() abort
-  call s:ts_highlights_reset_coverage()
+  let s:ts_hl_last_range = ''
 endfunction
 
 

@@ -106,10 +106,15 @@ pub fn extractHighlights(
     var groups = std.StringHashMap(std.json.Array).init(allocator);
 
     for (entries.items) |entry| {
+        // Output [lnum, col, end_lnum, end_col] — ready for Vim prop_add_list
+        const lnum = @as(i64, @intCast(entry.row)) + 1;
+        const col_1 = @as(i64, @intCast(entry.col)) + 1;
         var pos = std.json.Array.init(allocator);
-        try pos.append(json.jsonInteger(@as(i64, @intCast(entry.row)) + 1));
-        try pos.append(json.jsonInteger(@as(i64, @intCast(entry.col)) + 1));
-        try pos.append(json.jsonInteger(@intCast(entry.length)));
+        try pos.ensureTotalCapacity(4);
+        pos.appendAssumeCapacity(json.jsonInteger(lnum));
+        pos.appendAssumeCapacity(json.jsonInteger(col_1));
+        pos.appendAssumeCapacity(json.jsonInteger(lnum));
+        pos.appendAssumeCapacity(json.jsonInteger(col_1 + @as(i64, @intCast(entry.length))));
 
         const gop = try groups.getOrPut(entry.group_name);
         if (!gop.found_existing) {
@@ -118,7 +123,7 @@ pub fn extractHighlights(
         try gop.value_ptr.append(.{ .array = pos });
     }
 
-    // Build result: {"highlights": {"GroupName": [[l,c,len], ...], ...}}
+    // Build result: {"highlights": {"GroupName": [[l,c,l,end_c], ...], ...}}
     var hl_obj = ObjectMap.init(allocator);
     var it = groups.iterator();
     while (it.next()) |entry| {
@@ -248,7 +253,6 @@ fn isIdentStart(c: u8) bool {
 fn isIdentCont(c: u8) bool {
     return isIdentStart(c) or (c >= '0' and c <= '9');
 }
-
 
 /// Calculate the length (in columns) from the start of a given row to the end of the line,
 /// given a node's start byte and start point as reference.
