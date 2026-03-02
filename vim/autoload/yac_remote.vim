@@ -14,8 +14,8 @@ function! yac_remote#enhanced_lsp_start() abort
   if l:filepath =~# '^s\(cp\|sh\)://'
     echo "SSH file detected: " . l:filepath
     call s:start_ssh_master_mode(l:filepath)
-  else
-    " Local file - use standard mode
+  elseif get(b:, 'yac_lsp_supported', 0)
+    " Local LSP file - use standard mode
     call yac#start()
     call yac#open_file()
   endif

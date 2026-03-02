@@ -110,6 +110,7 @@ hi def link YacTsProperty            Identifier
 " 连接池管理 - daemon socket mode
 let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
+let s:daemon_started = 0
 let s:log_file = ''
 let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-debug.log'
 let s:hover_popup_id = -1
@@ -279,8 +280,11 @@ function! s:ensure_connection() abort
     return l:ch
   endif
 
-  " 启动 daemon 并重试
-  call s:start_daemon()
+  " 启动 daemon 并重试（防止重复启动）
+  if !s:daemon_started
+    let s:daemon_started = 1
+    call s:start_daemon()
+  endif
   for i in range(20)
     sleep 100m
     let l:ch = s:try_connect(l:sock)
@@ -1187,6 +1191,7 @@ endfunction
 
 " 处理 channel 关闭回调
 function! s:handle_close(channel) abort
+  let s:daemon_started = 0
   call s:cleanup_dead_connections()
 endfunction
 

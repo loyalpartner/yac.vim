@@ -15,6 +15,8 @@
 " - empty {}: `hi! clear YacTsXxx` (reset to NONE)
 " - missing group: keep current setting
 
+let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
+
 " All YacTs* highlight group names (sync with yac.vim:69-108)
 let s:TS_GROUPS = [
   \ 'YacTsVariable', 'YacTsVariableParameter', 'YacTsVariableBuiltin',
@@ -85,19 +87,32 @@ endfunction
 " List available themes: [{'label': name, 'file': path}, ...]
 function! yac_theme#list() abort
   let items = [{'label': '[default]', 'file': ''}]
-  let dir = yac_theme#theme_dir()
-  if !isdirectory(dir)
-    return items
+  " 先加载内置主题（插件自带）
+  let builtin_dir = s:plugin_root . '/themes'
+  if isdirectory(builtin_dir)
+    for f in sort(glob(builtin_dir . '/*.json', 0, 1))
+      try
+        let data = json_decode(join(readfile(f), "\n"))
+        let name = get(data, 'name', fnamemodify(f, ':t:r'))
+      catch
+        let name = fnamemodify(f, ':t:r')
+      endtry
+      call add(items, {'label': name, 'file': f})
+    endfor
   endif
-  for f in sort(glob(dir . '/*.json', 0, 1))
-    try
-      let data = json_decode(join(readfile(f), "\n"))
-      let name = get(data, 'name', fnamemodify(f, ':t:r'))
-    catch
-      let name = fnamemodify(f, ':t:r')
-    endtry
-    call add(items, {'label': name, 'file': f})
-  endfor
+  " 再加载用户自定义主题
+  let user_dir = yac_theme#theme_dir()
+  if isdirectory(user_dir)
+    for f in sort(glob(user_dir . '/*.json', 0, 1))
+      try
+        let data = json_decode(join(readfile(f), "\n"))
+        let name = get(data, 'name', fnamemodify(f, ':t:r'))
+      catch
+        let name = fnamemodify(f, ':t:r')
+      endtry
+      call add(items, {'label': name, 'file': f})
+    endfor
+  endif
   return items
 endfunction
 
