@@ -5,17 +5,23 @@
 ```bash
 zig build                        # debug build
 zig build -Doptimize=ReleaseFast # release build
-zig build test                   # run Zig tests
-uv run pytest                    # run Python tests
+zig build test                   # run Zig unit tests
+uv run pytest                    # run E2E tests (tests/test_e2e.py)
 ```
+
+**Always run tests after every code change. No exceptions.**
 
 ## Architecture
 
 VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
-- `vim/autoload/yac.vim` — all Vim-side logic
-- `src/` — Zig daemon
+- `vim/autoload/yac.vim` — Vim-side logic
+- `src/main.zig` — entry point, EventLoop
+- `src/queue.zig` — async pipeline (InQueue/OutQueue/WorkItem)
 - `src/handlers/` — per-feature request handlers
+- `src/handlers.zig` — request dispatch
+- `src/lsp/` — LSP client, registry, protocol
+- `src/treesitter/` — Tree-sitter parsing
 - `src/lsp_transform.zig` — LSP response → Vim format
 
 ## Reference
@@ -38,6 +44,10 @@ When fixing a bug, always write a test to reproduce it first. If the test cannot
 ## Exploratory Tasks
 
 When requirements are unclear, don't spend excessive time analyzing. Write the simplest compilable minimal implementation first, so I can see the result and decide the direction. Read at most 3 files before starting to code during exploration.
+
+## Task Tracking
+
+Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 
 ## Known LSP Limitations
 

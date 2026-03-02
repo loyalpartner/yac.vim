@@ -123,6 +123,51 @@ pub fn symbolKindName(kind: ?i64) []const u8 {
     };
 }
 
+/// Recursively collect DocumentSymbol entries into `items`, expanding children.
+fn collectDocumentSymbols(
+    alloc: Allocator,
+    arr: []const Value,
+    items: *std.json.Array,
+    file: []const u8,
+    depth: i64,
+) !void {
+    for (arr) |sym_val| {
+        const sym = switch (sym_val) {
+            .object => |o| o,
+            else => continue,
+        };
+        const name = json_utils.getString(sym, "name") orelse continue;
+        const kind_int = json_utils.getInteger(sym, "kind");
+        const kind_name = symbolKindName(kind_int);
+        // Use LSP detail if present (e.g. type annotation), fall back to kind name
+        const lsp_detail = json_utils.getString(sym, "detail");
+
+        var pos: Position = .{ .line = 0, .column = 0 };
+        const range_val = sym.get("selectionRange") orelse sym.get("range");
+        if (range_val) |rv| {
+            if (extractStartPosition(rv)) |p| pos = p;
+        }
+
+        var item = ObjectMap.init(alloc);
+        try item.put("label", json_utils.jsonString(name));
+        try item.put("detail", json_utils.jsonString(lsp_detail orelse ""));
+        try item.put("file", json_utils.jsonString(file));
+        try item.put("line", json_utils.jsonInteger(pos.line));
+        try item.put("column", json_utils.jsonInteger(pos.column));
+        try item.put("depth", json_utils.jsonInteger(depth));
+        try item.put("kind", json_utils.jsonString(kind_name));
+        try items.append(.{ .object = item });
+
+        // Recurse into children
+        if (sym.get("children")) |children_val| {
+            switch (children_val) {
+                .array => |ca| try collectDocumentSymbols(alloc, ca.items, items, file, depth + 1),
+                else => {},
+            }
+        }
+    }
+}
+
 /// Transform workspace/symbol or documentSymbol LSP results into picker format.
 pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[]const u8) !Value {
     const arr: []const Value = switch (result) {
@@ -131,50 +176,62 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
         else => &.{},
     };
 
-    var items = std.json.Array.init(alloc);
-    for (arr) |sym_val| {
-        const sym = switch (sym_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const name = json_utils.getString(sym, "name") orelse continue;
-        const kind_int = json_utils.getInteger(sym, "kind");
-        const container = json_utils.getString(sym, "containerName");
-        const detail = if (container) |c|
-            std.fmt.allocPrint(alloc, "{s} ({s})", .{ symbolKindName(kind_int), c }) catch ""
-        else
-            symbolKindName(kind_int);
-
-        // Extract location — handle both SymbolInformation (has "location")
-        // and DocumentSymbol (has "range"/"selectionRange" at top level, no "location")
-        var file: []const u8 = "";
-        var pos: Position = .{ .line = 0, .column = 0 };
-        if (json_utils.getObject(sym, "location")) |loc| {
-            // SymbolInformation format (workspace/symbol)
-            if (json_utils.getString(loc, "uri")) |uri| {
-                file = lsp_registry_mod.uriToFilePath(uri) orelse "";
-                if (ssh_host) |host| {
-                    file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
-                }
-            }
-            if (loc.get("range")) |range_val| {
-                if (extractStartPosition(range_val)) |p| pos = p;
-            }
-        } else {
-            // DocumentSymbol format (textDocument/documentSymbol) — range at top level
-            const range_val = sym.get("selectionRange") orelse sym.get("range");
-            if (range_val) |rv| {
-                if (extractStartPosition(rv)) |p| pos = p;
+    // Detect format by checking first object: DocumentSymbol has no "location" field.
+    const is_doc_symbol = blk: {
+        for (arr) |sym_val| {
+            switch (sym_val) {
+                .object => |o| break :blk o.get("location") == null,
+                else => {},
             }
         }
+        break :blk false;
+    };
 
-        var item = ObjectMap.init(alloc);
-        try item.put("label", json_utils.jsonString(name));
-        try item.put("detail", json_utils.jsonString(detail));
-        try item.put("file", json_utils.jsonString(file));
-        try item.put("line", json_utils.jsonInteger(pos.line));
-        try item.put("column", json_utils.jsonInteger(pos.column));
-        try items.append(.{ .object = item });
+    var items = std.json.Array.init(alloc);
+
+    if (is_doc_symbol) {
+        // DocumentSymbol format (textDocument/documentSymbol) — recurse into children
+        try collectDocumentSymbols(alloc, arr, &items, "", 0);
+    } else {
+        // SymbolInformation format (workspace/symbol) — flat list with location
+        for (arr) |sym_val| {
+            const sym = switch (sym_val) {
+                .object => |o| o,
+                else => continue,
+            };
+            const name = json_utils.getString(sym, "name") orelse continue;
+            const kind_int = json_utils.getInteger(sym, "kind");
+            const kind_name = symbolKindName(kind_int);
+            const container = json_utils.getString(sym, "containerName");
+            const detail = if (container) |c|
+                std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
+            else
+                kind_name;
+
+            var file: []const u8 = "";
+            var pos: Position = .{ .line = 0, .column = 0 };
+            if (json_utils.getObject(sym, "location")) |loc| {
+                if (json_utils.getString(loc, "uri")) |uri| {
+                    file = lsp_registry_mod.uriToFilePath(uri) orelse "";
+                    if (ssh_host) |host| {
+                        file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
+                    }
+                }
+                if (loc.get("range")) |range_val| {
+                    if (extractStartPosition(range_val)) |p| pos = p;
+                }
+            }
+
+            var item = ObjectMap.init(alloc);
+            try item.put("label", json_utils.jsonString(name));
+            try item.put("detail", json_utils.jsonString(detail));
+            try item.put("file", json_utils.jsonString(file));
+            try item.put("line", json_utils.jsonInteger(pos.line));
+            try item.put("column", json_utils.jsonInteger(pos.column));
+            try item.put("depth", json_utils.jsonInteger(0));
+            try item.put("kind", json_utils.jsonString(kind_name));
+            try items.append(.{ .object = item });
+        }
     }
 
     var result_obj = ObjectMap.init(alloc);
@@ -731,23 +788,42 @@ test "transformPickerSymbolResult — DocumentSymbol format" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Build: {"name": "main", "kind": 12, "range": {"start": {"line": 0, "character": 0}}}
-    var start = ObjectMap.init(alloc);
-    try start.put("line", json_utils.jsonInteger(0));
-    try start.put("character", json_utils.jsonInteger(0));
-    var range = ObjectMap.init(alloc);
-    try range.put("start", .{ .object = start });
-    var sym = ObjectMap.init(alloc);
-    try sym.put("name", json_utils.jsonString("main"));
-    try sym.put("kind", json_utils.jsonInteger(12));
-    try sym.put("range", .{ .object = range });
+    // sym1: no LSP detail → detail field should be ""
+    var start1 = ObjectMap.init(alloc);
+    try start1.put("line", json_utils.jsonInteger(0));
+    try start1.put("character", json_utils.jsonInteger(0));
+    var range1 = ObjectMap.init(alloc);
+    try range1.put("start", .{ .object = start1 });
+    var sym1 = ObjectMap.init(alloc);
+    try sym1.put("name", json_utils.jsonString("main"));
+    try sym1.put("kind", json_utils.jsonInteger(12));
+    try sym1.put("range", .{ .object = range1 });
+
+    // sym2: with LSP detail (e.g. type annotation) → detail field should be the LSP value
+    var start2 = ObjectMap.init(alloc);
+    try start2.put("line", json_utils.jsonInteger(5));
+    try start2.put("character", json_utils.jsonInteger(0));
+    var range2 = ObjectMap.init(alloc);
+    try range2.put("start", .{ .object = start2 });
+    var sym2 = ObjectMap.init(alloc);
+    try sym2.put("name", json_utils.jsonString("Allocator"));
+    try sym2.put("kind", json_utils.jsonInteger(14));
+    try sym2.put("detail", json_utils.jsonString("std.mem.Allocator"));
+    try sym2.put("range", .{ .object = range2 });
 
     var arr = std.json.Array.init(alloc);
-    try arr.append(.{ .object = sym });
+    try arr.append(.{ .object = sym1 });
+    try arr.append(.{ .object = sym2 });
 
     const result = try transformPickerSymbolResult(alloc, .{ .array = arr }, null);
     const items = json_utils.getArray(result.object, "items").?;
-    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    // sym1: no LSP detail → empty string
     try std.testing.expectEqualStrings("main", json_utils.getString(items[0].object, "label").?);
-    try std.testing.expectEqualStrings("Function", json_utils.getString(items[0].object, "detail").?);
+    try std.testing.expectEqualStrings("", json_utils.getString(items[0].object, "detail").?);
+    try std.testing.expectEqualStrings("Function", json_utils.getString(items[0].object, "kind").?);
+    // sym2: LSP detail preserved
+    try std.testing.expectEqualStrings("Allocator", json_utils.getString(items[1].object, "label").?);
+    try std.testing.expectEqualStrings("std.mem.Allocator", json_utils.getString(items[1].object, "detail").?);
+    try std.testing.expectEqualStrings("Constant", json_utils.getString(items[1].object, "kind").?);
 }

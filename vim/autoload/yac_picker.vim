@@ -30,10 +30,12 @@ let s:picker = {
   \ 'pending_ctrl_r': 0,
   \ 'loading': 0,
   \ 'saved_theme_file': v:null,
+  \ 'line_lengths': [],
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
 let s:picker_mru = []
+let s:prop_types_defined = 0
 
 " ============================================================================
 " Mode Registry
@@ -331,6 +333,49 @@ function! s:picker_update_title() abort
   call popup_setoptions(s:picker.input_popup, #{title: title})
 endfunction
 
+" Map symbol kind to the YacTs* highlight group so picker symbols match
+" the exact same colours used when editing code.
+function! s:ensure_prop_types() abort
+  if s:prop_types_defined | return | endif
+  for [l:name, l:hl] in [
+    \ ['YacPickerSelected',   'YacPickerSelected'],
+    \ ['YacTsFunction',       'YacTsFunction'],
+    \ ['YacTsFunctionMethod', 'YacTsFunctionMethod'],
+    \ ['YacTsType',           'YacTsType'],
+    \ ['YacTsVariable',       'YacTsVariable'],
+    \ ['YacTsConstant',       'YacTsConstant'],
+    \ ['YacTsVariableMember', 'YacTsVariableMember'],
+    \ ['YacTsModule',         'YacTsModule'],
+    \ ['YacTsKeywordFunction','YacTsKeywordFunction'],
+    \ ['YacTsString',         'YacTsString'],
+    \ ['YacPickerDetail',     'YacPickerDetail'],
+    \ ]
+    if empty(prop_type_get(l:name))
+      call prop_type_add(l:name, {'highlight': l:hl, 'combine': 1})
+    endif
+  endfor
+  let s:prop_types_defined = 1
+endfunction
+
+function! s:to_relative(path) abort
+  let abs = fnamemodify(a:path, ':p')
+  let cwd = fnamemodify(getcwd(), ':p')
+  if cwd[-1:] !=# '/'
+    let cwd .= '/'
+  endif
+  if abs[:len(cwd)-1] ==# cwd
+    return abs[len(cwd):]
+  endif
+  let abs_parts = filter(split(abs, '/'), 'v:val !=# ""')
+  let cwd_parts = filter(split(cwd, '/'), 'v:val !=# ""')
+  let i = 0
+  while i < len(abs_parts) && i < len(cwd_parts) && abs_parts[i] ==# cwd_parts[i]
+    let i += 1
+  endwhile
+  let rel_parts = repeat(['..'], len(cwd_parts) - i) + abs_parts[i:]
+  return empty(rel_parts) ? '.' : join(rel_parts, '/')
+endfunction
+
 function! s:picker_empty_message() abort
   let text = s:picker_get_text()
   let spec = s:current_mode_spec()
@@ -370,15 +415,19 @@ endfunction
 
 function! s:picker_resize_results(line_count) abort
   if s:picker.results_popup == -1 | return | endif
-  let h = max([3, min([15, a:line_count])])
+  " Height: fit content, but never overflow the screen below the popup.
+  let pos = popup_getpos(s:picker.results_popup)
+  let top = get(pos, 'line', float2nr(&lines * 0.2) + 2)
+  let max_h = max([3, &lines - top - 4])
+  let h = max([3, min([max_h, a:line_count])])
   call popup_setoptions(s:picker.results_popup, #{minheight: h, maxheight: h})
 endfunction
 
 function! s:picker_create_ui(opts) abort
   let title = get(a:opts, 'title', ' YacPicker ')
-  let width = float2nr(&columns * 0.6)
+  let width = min([float2nr(&columns * 0.6), 80])
   let col = float2nr((&columns - width) / 2)
-  let row = float2nr(&lines * 0.2)
+  let row = max([2, float2nr(&lines * 0.15)])
 
   " Input popup
   let input_buf = bufadd('')
@@ -406,14 +455,15 @@ function! s:picker_create_ui(opts) abort
     \ 'zindex': 100,
     \ })
 
-  " Results popup
+  " Results popup — initial height capped so bottom stays 4 lines from screen edge
+  let results_h = max([3, min([15, &lines - (row + 2) - 4])])
   let s:picker.results_popup = popup_create([], {
     \ 'line': row + 2,
     \ 'col': col,
     \ 'minwidth': width,
     \ 'maxwidth': width,
-    \ 'minheight': 15,
-    \ 'maxheight': 15,
+    \ 'minheight': results_h,
+    \ 'maxheight': results_h,
     \ 'border': [0, 1, 1, 1],
     \ 'borderchars': ['─', '│', '─', '│', '├', '┤', '╯', '╰'],
     \ 'borderhighlight': ['YacPickerBorder'],
@@ -426,11 +476,13 @@ function! s:picker_create_ui(opts) abort
   highlight default link YacPickerBorder Comment
   highlight default link YacPickerInput Normal
   highlight default link YacPickerNormal Normal
-  highlight default link YacPickerSelected CursorLine
+  highlight default YacPickerSelected term=underline cterm=underline gui=underline
   highlight default link YacPickerHeader Directory
   highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
   highlight default link YacPickerPrefix Function
   highlight default link YacPickerMatch Keyword
+  highlight default link YacPickerDetail Comment
+  highlight default YacPickerFilename term=bold cterm=bold gui=bold
 
   let s:picker.cursor_col = 0
   call s:picker_set_text('')
@@ -808,6 +860,8 @@ function! s:picker_render_results() abort
     return
   endif
   let lines = []
+  let fname_bold_positions = []
+  let fname_rel_cache = {}
   for i in range(len(s:picker.items))
     let item = s:picker.items[i]
     if get(item, 'is_header', 0)
@@ -822,24 +876,70 @@ function! s:picker_render_results() abort
         call add(lines, prefix . label)
       elseif s:picker.mode ==# 'theme'
         call add(lines, '  ' . label)
+      elseif s:picker.mode ==# 'document_symbol'
+        let depth  = get(item, 'depth', 0)
+        let indent = repeat('  ', depth + 1)
+        let pfx    = get(item, 'prefix', '')
+        let content = !empty(pfx)   ? (pfx . ' ' . label)
+                  \ : !empty(detail) ? (label . ' ' . detail)
+                  \ : label
+        call add(lines, indent . content)
       else
-        let rel = fnamemodify(label, ':.')
+        let rel = s:to_relative(label)
+        let fname_rel_cache[i] = rel
         let label = yac_picker#file_label(rel)
         let prefix = s:picker.lnum_width > 0
           \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
           \ : '  '
         call add(lines, !empty(detail) ? (prefix . label . '  ' . detail) : (prefix . label))
+        " Track filename position for bold (file mode only)
+        if s:picker.mode ==# 'file'
+          let pfx_len = len(prefix)
+          let fname_len = len(fnamemodify(rel, ':t'))
+          if fname_len > 0
+            call add(fname_bold_positions, [i + 1, pfx_len + 1, fname_len])
+          endif
+        endif
       endif
     endif
   endfor
   call popup_settext(s:picker.results_popup, lines)
+  let s:picker.line_lengths = map(copy(lines), 'len(v:val)')
   call s:picker_resize_results(len(lines))
+  let bufnr = winbufnr(s:picker.results_popup)
   call win_execute(s:picker.results_popup, 'call clearmatches()')
   for i in range(len(s:picker.items))
     if get(s:picker.items[i], 'is_header', 0)
       call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerHeader", [' . (i + 1) . '], 10)')
     endif
   endfor
+  " document_symbol: apply text-property highlights (supports underline+colour stacking)
+  if s:picker.mode ==# 'document_symbol'
+    call s:ensure_prop_types()
+    let lnum = 1
+    for item in s:picker.items
+      let depth = get(item, 'depth', 0)
+      let indent_bytes = 2 * (depth + 1)
+      for hl in get(item, 'highlights', [])
+        let byte_col = indent_bytes + hl.col + 1
+        if hl.len > 0
+          call prop_add(lnum, byte_col, {'type': hl.hl, 'length': hl.len, 'bufnr': bufnr})
+        endif
+      endfor
+      let lnum += 1
+    endfor
+  endif
+  " file mode: bold the filename portion of each result line
+  if s:picker.mode ==# 'file' && !empty(fname_bold_positions)
+    let j = 0
+    let bold_cmds = []
+    while j < len(fname_bold_positions)
+      call add(bold_cmds, 'call matchaddpos("YacPickerFilename", '
+        \ . string(fname_bold_positions[j : j + 7]) . ', 8)')
+      let j += 8
+    endwhile
+    call win_execute(s:picker.results_popup, join(bold_cmds, ' | '))
+  endif
   let text = s:picker_get_text()
   let query = s:picker.mode ==# 'file' ? text : (len(text) > 1 ? text[1:] : '')
   if !empty(query)
@@ -854,7 +954,7 @@ function! s:picker_render_results() abort
       for i in range(len(s:picker.items))
         let item = s:picker.items[i]
         if get(item, 'is_header', 0) | continue | endif
-        let rel = fnamemodify(get(item, 'label', ''), ':.')
+        let rel = get(fname_rel_cache, i, s:to_relative(get(item, 'label', '')))
         for col in yac_picker#file_match_cols(rel, query_lower, pfx)
           call add(positions, [i + 1, col, 1])
         endfor
@@ -882,9 +982,13 @@ function! s:picker_highlight_selected() abort
   if s:picker.results_popup == -1 || empty(s:picker.items)
     return
   endif
-  call win_execute(s:picker.results_popup, 'silent! call matchdelete(102)')
+  call s:ensure_prop_types()
+  let bufnr = winbufnr(s:picker.results_popup)
+  call prop_remove({'type': 'YacPickerSelected', 'all': 1, 'bufnr': bufnr})
   if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
-    call win_execute(s:picker.results_popup, 'call matchaddpos("YacPickerSelected", [' . (s:picker.selected + 1) . '], 5, 102)')
+    let lnum = s:picker.selected + 1
+    let line_len = get(s:picker.line_lengths, s:picker.selected, 1)
+    call prop_add(lnum, 1, {'type': 'YacPickerSelected', 'length': max([1, line_len]), 'bufnr': bufnr})
   endif
   let pos = popup_getpos(s:picker.results_popup)
   let visible = get(pos, 'core_height', 15)
