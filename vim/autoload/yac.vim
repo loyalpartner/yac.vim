@@ -2548,23 +2548,62 @@ function! s:apply_folding_ranges(ranges) abort
     return
   endif
 
-  " 设置折叠方法为手动并清除现有折叠
-  setlocal foldmethod=manual
-  normal! zE
+  let nlines = line('$')
 
-  " 应用每个折叠范围
-  for range in a:ranges
-    " 转换为1-based行号
-    let start_line = range.start_line + 1
-    let end_line = range.end_line + 1
+  " 过滤有效 range
+  let valid = filter(copy(a:ranges), {_, r ->
+    \ r.start_line + 1 >= 1 && r.end_line + 1 <= nlines && r.start_line < r.end_line})
 
-    " 确保行号有效
-    if start_line >= 1 && end_line <= line('$') && start_line < end_line
-      execute start_line . ',' . end_line . 'fold'
+  " 按 start_line 升序、end_line 降序排列（同 start 时大 range 在前）
+  call sort(valid, {a, b ->
+    \ a.start_line != b.start_line
+    \ ? a.start_line - b.start_line
+    \ : b.end_line - a.end_line})
+
+  " 去除冗余 range：若某 range 与栈顶 range 的 start/end 均相差 ≤1，
+  " 视为同一折叠层（如函数整体 vs 函数体），跳过该 range。
+  let filtered = []
+  let stack = []
+  for r in valid
+    while !empty(stack) && stack[-1].end_line < r.start_line
+      call remove(stack, -1)
+    endwhile
+    if !empty(stack)
+      let top = stack[-1]
+      if abs(r.start_line - top.start_line) <= 1 && abs(r.end_line - top.end_line) <= 1
+        continue
+      endif
     endif
+    call add(filtered, r)
+    call add(stack, r)
   endfor
 
-  call yac#toast('Applied ' . len(a:ranges) . ' folding ranges')
+  " 差分数组原地前缀和求每行层级
+  let levels = repeat([0], nlines + 2)
+  for r in filtered
+    let levels[r.start_line + 1] += 1
+    let levels[r.end_line + 2] -= 1
+  endfor
+  let cur = 0
+  for lnum in range(1, nlines)
+    let cur += levels[lnum]
+    let levels[lnum] = cur
+  endfor
+
+  let b:yac_fold_levels = levels
+  setlocal foldmethod=expr
+  setlocal foldexpr=yac#foldexpr(v:lnum)
+
+  call yac#toast('Applied ' . len(filtered) . ' folding ranges')
+endfunction
+
+function! yac#foldexpr(lnum) abort
+  return get(b:yac_fold_levels, a:lnum, 0)
+endfunction
+
+" 测试入口：直接注入 mock ranges，供单元测试调用
+function! yac#apply_folding_ranges_test(ranges) abort
+  call s:apply_folding_ranges(a:ranges)
 endfunction
 
 " === Code Actions 功能 ===

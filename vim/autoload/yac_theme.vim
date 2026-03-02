@@ -84,35 +84,24 @@ function! yac_theme#theme_dir() abort
   return expand('~/.config/yac/themes')
 endfunction
 
+function! s:collect_themes(dir, items) abort
+  if !isdirectory(a:dir) | return | endif
+  for f in sort(glob(a:dir . '/*.json', 0, 1))
+    try
+      let data = json_decode(join(readfile(f), "\n"))
+      let name = get(data, 'name', fnamemodify(f, ':t:r'))
+    catch
+      let name = fnamemodify(f, ':t:r')
+    endtry
+    call add(a:items, {'label': name, 'file': f})
+  endfor
+endfunction
+
 " List available themes: [{'label': name, 'file': path}, ...]
 function! yac_theme#list() abort
   let items = [{'label': '[default]', 'file': ''}]
-  " 先加载内置主题（插件自带）
-  let builtin_dir = s:plugin_root . '/themes'
-  if isdirectory(builtin_dir)
-    for f in sort(glob(builtin_dir . '/*.json', 0, 1))
-      try
-        let data = json_decode(join(readfile(f), "\n"))
-        let name = get(data, 'name', fnamemodify(f, ':t:r'))
-      catch
-        let name = fnamemodify(f, ':t:r')
-      endtry
-      call add(items, {'label': name, 'file': f})
-    endfor
-  endif
-  " 再加载用户自定义主题
-  let user_dir = yac_theme#theme_dir()
-  if isdirectory(user_dir)
-    for f in sort(glob(user_dir . '/*.json', 0, 1))
-      try
-        let data = json_decode(join(readfile(f), "\n"))
-        let name = get(data, 'name', fnamemodify(f, ':t:r'))
-      catch
-        let name = fnamemodify(f, ':t:r')
-      endtry
-      call add(items, {'label': name, 'file': f})
-    endfor
-  endif
+  call s:collect_themes(s:plugin_root . '/themes', items)
+  call s:collect_themes(yac_theme#theme_dir(), items)
   return items
 endfunction
 
