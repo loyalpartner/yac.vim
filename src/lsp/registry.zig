@@ -37,7 +37,7 @@ pub const LspRegistry = struct {
     /// Requests waiting for initialization to complete: client_key -> init request ID
     pending_init: std.StringHashMap(u32),
     /// Global request ID counter (shared across all clients to avoid collisions)
-    next_id: u32,
+    next_id: std.atomic.Value(u32),
     /// Files opened during initialization, replayed after initialized
     pending_opens: std.StringHashMap(std.ArrayList(PendingOpen)),
     /// Languages where LSP server spawn has failed (to avoid repeat notifications)
@@ -50,7 +50,7 @@ pub const LspRegistry = struct {
             .allocator = allocator,
             .clients = std.StringHashMap(*LspClient).init(allocator),
             .pending_init = std.StringHashMap(u32).init(allocator),
-            .next_id = 1,
+            .next_id = std.atomic.Value(u32).init(1),
             .pending_opens = std.StringHashMap(std.ArrayList(PendingOpen)).init(allocator),
             .failed_spawns = std.StringHashMap(void).init(allocator),
             .server_capabilities = std.StringHashMap(std.json.Parsed(Value)).init(allocator),

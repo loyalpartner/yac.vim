@@ -4,6 +4,7 @@ const std = @import("std");
 // Logging - writes to a fixed daemon log file, never to stdout (that's Vim's channel)
 // ============================================================================
 
+var log_mutex: std.Thread.Mutex = .{};
 var log_file: ?std.fs.File = null;
 
 /// Compute the daemon log path: $XDG_RUNTIME_DIR/yacd.log or /tmp/yacd-$USER.log
@@ -33,6 +34,8 @@ pub fn deinit() void {
 }
 
 fn writeLog(level: []const u8, comptime fmt: []const u8, args: anytype) void {
+    log_mutex.lock();
+    defer log_mutex.unlock();
     const f = log_file orelse return;
     var buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);

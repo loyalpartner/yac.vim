@@ -5,6 +5,7 @@ const registry_mod = @import("../lsp/registry.zig");
 const LspClient = @import("../lsp/client.zig").LspClient;
 const log = @import("../log.zig");
 pub const treesitter_mod = @import("../treesitter/treesitter.zig");
+const queue_mod = @import("../queue.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -16,10 +17,15 @@ const LspRegistry = registry_mod.LspRegistry;
 // ============================================================================
 
 pub const HandlerContext = struct {
+    /// Arena allocator for request-scope temporary allocations.
     allocator: Allocator,
+    /// GPA allocator for allocations that must outlive the request (e.g. OutMessage bytes).
+    gpa_allocator: Allocator,
     registry: *LspRegistry,
     client_stream: std.net.Stream,
     ts: ?*treesitter_mod.TreeSitter = null,
+    /// Outgoing message queue — push OutMessages here instead of writing directly.
+    out_queue: *queue_mod.OutQueue,
 };
 
 /// Result of dispatching a handler.
@@ -149,12 +155,18 @@ pub fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value
     return .{ .object = params };
 }
 
-/// Send a Vim ex command.
+/// Send a Vim ex command via the out_queue (non-blocking; drops if queue full).
 pub fn vimEx(ctx: *HandlerContext, command: []const u8) !void {
     const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .ex = .{ .command = command } });
     defer ctx.allocator.free(encoded);
-    try ctx.client_stream.writeAll(encoded);
-    try ctx.client_stream.writeAll("\n");
+    // GPA-allocate bytes including newline so they survive past the arena.
+    const msg = try ctx.gpa_allocator.alloc(u8, encoded.len + 1);
+    @memcpy(msg[0..encoded.len], encoded);
+    msg[encoded.len] = '\n';
+    if (!ctx.out_queue.push(.{ .stream = ctx.client_stream, .bytes = msg })) {
+        ctx.gpa_allocator.free(msg);
+        log.warn("vimEx: out queue full, dropping command", .{});
+    }
 }
 
 /// Check if the server supports a capability; if not, send a toast and return true (= unsupported).
@@ -167,13 +179,18 @@ pub fn checkUnsupported(ctx: *HandlerContext, client_key: []const u8, capability
     return false;
 }
 
-/// Send a Vim call_async command.
+/// Send a Vim call_async command via the out_queue (non-blocking; drops if queue full).
 pub fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
     const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .call_async = .{
         .func = func,
         .args = args,
     } });
     defer ctx.allocator.free(encoded);
-    try ctx.client_stream.writeAll(encoded);
-    try ctx.client_stream.writeAll("\n");
+    const msg = try ctx.gpa_allocator.alloc(u8, encoded.len + 1);
+    @memcpy(msg[0..encoded.len], encoded);
+    msg[encoded.len] = '\n';
+    if (!ctx.out_queue.push(.{ .stream = ctx.client_stream, .bytes = msg })) {
+        ctx.gpa_allocator.free(msg);
+        log.warn("vimCallAsync: out queue full, dropping call", .{});
+    }
 }

@@ -185,7 +185,8 @@ pub fn isQueryMethod(method: []const u8) bool {
         "formatting",
         "range_formatting",
         "signature_help",
-        "picker_query",
+        // picker_query is intentionally excluded: the file/grep picker does not
+        // depend on LSP initialization and must never be deferred during indexing.
     };
     for (query_methods) |m| {
         if (std.mem.eql(u8, method, m)) return true;
@@ -222,4 +223,6 @@ test "isQueryMethod - non-query methods return false" {
     try std.testing.expect(!isQueryMethod("diagnostics"));
     try std.testing.expect(!isQueryMethod("execute_command"));
     try std.testing.expect(!isQueryMethod("unknown_method"));
+    // picker does not depend on LSP, must never be deferred during indexing
+    try std.testing.expect(!isQueryMethod("picker_query"));
 }

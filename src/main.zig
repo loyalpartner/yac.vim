@@ -6,12 +6,12 @@ const handlers_mod = @import("handlers.zig");
 const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 const lsp_transform = @import("lsp/transform.zig");
-const vim_out = @import("vim.zig");
 const clients_mod = @import("clients.zig");
 const requests_mod = @import("requests.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const progress_mod = @import("progress.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
+const queue_mod = @import("queue.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -60,6 +60,14 @@ const EventLoop = struct {
     picker: picker_mod.Picker,
     /// Tree-sitter state
     ts: treesitter_mod.TreeSitter,
+    /// Protects all shared mutable state when accessed from worker threads.
+    state_lock: std.Thread.Mutex = .{},
+    /// Work queue for general (non-TS) requests: reader thread → worker threads.
+    in_general: queue_mod.InQueue = .{},
+    /// Work queue for tree-sitter requests: reader thread → TS thread.
+    in_ts: queue_mod.InQueue = .{},
+    /// Outgoing message queue: worker/main threads → writer thread.
+    out_queue: queue_mod.OutQueue = .{},
 
     const DeferredRequest = lsp_mod.Lsp.DeferredRequest;
 
@@ -222,7 +230,35 @@ const EventLoop = struct {
         }
     }
 
+    // ====================================================================
+    // Thread loops
+    // ====================================================================
+
+    /// Generic queue consumer: pops WorkItems, acquires state_lock, dispatches each one.
+    /// Used by both general worker threads and the TS thread.
+    fn queueLoop(self: *EventLoop, queue: *queue_mod.InQueue) void {
+        while (queue.pop()) |item| {
+            defer item.deinit(self.allocator);
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            self.state_lock.lock();
+            defer self.state_lock.unlock();
+            self.handleWorkItem(item, arena.allocator());
+        }
+    }
+
+    /// Writer thread: drains the out_queue and writes messages to Vim clients.
+    fn writerLoop(self: *EventLoop) void {
+        while (self.out_queue.pop()) |msg| {
+            defer msg.deinit(self.allocator);
+            msg.stream.writeAll(msg.bytes) catch |e| {
+                log.err("Writer: socket write failed: {any}", .{e});
+            };
+        }
+    }
+
     /// Main event loop using poll().
+    /// Spawns worker, TS, and writer threads; runs the poll loop; then joins all threads.
     fn run(self: *EventLoop) !void {
         var buf: [8192]u8 = undefined;
 
@@ -230,33 +266,64 @@ const EventLoop = struct {
         // Set idle deadline since we start with no clients
         self.idle_deadline = std.time.nanoTimestamp() + IDLE_TIMEOUT_NS;
 
+        // Spawn background threads.
+        const num_workers = 4;
+        var worker_threads: [num_workers]std.Thread = undefined;
+        for (&worker_threads) |*t| {
+            t.* = try std.Thread.spawn(.{}, queueLoop, .{ self, &self.in_general });
+        }
+        const ts_thread = try std.Thread.spawn(.{}, queueLoop, .{ self, &self.in_ts });
+        const writer_thread = try std.Thread.spawn(.{}, writerLoop, .{self});
+
+        defer {
+            // Drain work queues first, then drain the out_queue.
+            self.in_general.close();
+            self.in_ts.close();
+            for (worker_threads) |t| t.join();
+            ts_thread.join();
+            self.out_queue.close();
+            writer_thread.join();
+        }
+
         while (true) {
-            // Build poll fd list: listener + all client fds + all LSP stdout fds
+            // Build poll fd list under lock (accesses clients, lsp.registry, picker).
             var poll_fds: std.ArrayList(std.posix.pollfd) = .{};
             defer poll_fds.deinit(self.allocator);
             var poll_client_keys: std.ArrayList([]const u8) = .{};
             defer poll_client_keys.deinit(self.allocator);
-
-            // Collect client IDs in fd order for indexing
             var client_id_order: std.ArrayList(ClientId) = .{};
             defer client_id_order.deinit(self.allocator);
 
-            const poll_setup = try self.buildPollFds(&poll_fds, &poll_client_keys, &client_id_order);
+            self.state_lock.lock();
+            const poll_setup = self.buildPollFds(&poll_fds, &poll_client_keys, &client_id_order) catch |e| {
+                self.state_lock.unlock();
+                log.err("buildPollFds failed: {any}", .{e});
+                continue;
+            };
+            const poll_timeout = self.pollTimeout();
+            self.state_lock.unlock();
 
-            const ready = std.posix.poll(poll_fds.items, self.pollTimeout()) catch |e| {
+            // poll() without the lock so workers can run concurrently.
+            const ready = std.posix.poll(poll_fds.items, poll_timeout) catch |e| {
                 log.err("poll failed: {any}", .{e});
                 continue;
             };
 
             if (ready == 0) {
-                if (self.shouldExitIdle()) break;
+                self.state_lock.lock();
+                const should_exit = self.shouldExitIdle();
+                self.state_lock.unlock();
+                if (should_exit) break;
                 continue;
             }
 
+            // Process ready fds under lock.
+            self.state_lock.lock();
             self.handleListener(poll_fds.items);
             self.handleClientFds(poll_fds.items, poll_setup.client_count, client_id_order.items, buf[0..]);
             self.handleLspFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
             self.handlePickerFd(poll_fds.items, poll_setup.picker_fd_index);
+            self.state_lock.unlock();
         }
     }
 
@@ -301,7 +368,7 @@ const EventLoop = struct {
         }
     }
 
-    /// Process buffered input from a specific client.
+    /// Read completed lines from a client's buffer and route them to the work queues.
     fn processClientInput(self: *EventLoop, cid: ClientId) void {
         while (true) {
             const client = self.clients.get(cid) orelse break;
@@ -309,11 +376,34 @@ const EventLoop = struct {
 
             const line = client.read_buf.items[0..newline_pos];
             if (line.len > 0) {
-                self.handleVimLine(cid, line);
+                // GPA-allocate a copy of the line; ownership passes to WorkItem.
+                const raw_line = self.allocator.dupe(u8, line) catch |e| {
+                    log.err("OOM routing work item: {any}", .{e});
+                    // Skip this line, continue processing remaining buffer.
+                    const c2 = self.clients.get(cid) orelse break;
+                    const rem2 = c2.read_buf.items.len - newline_pos - 1;
+                    if (rem2 > 0) std.mem.copyForwards(u8, c2.read_buf.items[0..rem2], c2.read_buf.items[newline_pos + 1 ..]);
+                    c2.read_buf.shrinkRetainingCapacity(rem2);
+                    continue;
+                };
+
+                const item = queue_mod.WorkItem{
+                    .client_id = cid,
+                    .client_stream = client.stream,
+                    .raw_line = raw_line,
+                };
+                const routed = if (queue_mod.isTsMethod(line))
+                    self.in_ts.push(item)
+                else
+                    self.in_general.push(item);
+
+                if (!routed) {
+                    item.deinit(self.allocator);
+                    log.warn("Work queue full, dropping line from client {d}", .{cid});
+                }
             }
 
-            // Remove processed line from buffer
-            // Re-fetch client since handleVimLine could have removed it
+            // Remove processed line from buffer.
             const c = self.clients.get(cid) orelse break;
             const remaining = c.read_buf.items.len - newline_pos - 1;
             if (remaining > 0) {
@@ -323,15 +413,10 @@ const EventLoop = struct {
         }
     }
 
-    /// Handle a single JSON line from a Vim client.
-    fn handleVimLine(self: *EventLoop, cid: ClientId, line: []const u8) void {
-        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+    /// Handle a work item from the queue (called by worker threads under state_lock).
+    fn handleWorkItem(self: *EventLoop, item: queue_mod.WorkItem, alloc: Allocator) void {
+        const trimmed = std.mem.trim(u8, item.raw_line, &std.ascii.whitespace);
         if (trimmed.len == 0) return;
-
-        // Per-request arena allocator
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
 
         // Parse JSON
         const parsed = json_utils.parse(alloc, trimmed) catch |e| {
@@ -365,22 +450,22 @@ const EventLoop = struct {
 
         switch (msg) {
             .request => |r| {
-                log.debug("Vim[{d}] request [{d}]: {s}", .{ cid, r.id, r.method });
-                self.handleVimRequest(cid, alloc, r.id, r.method, r.params, trimmed);
+                log.debug("Vim[{d}] request [{d}]: {s}", .{ item.client_id, r.id, r.method });
+                self.handleVimRequest(item.client_id, alloc, r.id, r.method, r.params, trimmed, item.client_stream);
             },
             .notification => |n| {
-                log.debug("Vim[{d}] notification: {s}", .{ cid, n.method });
-                self.handleVimRequest(cid, alloc, null, n.method, n.params, trimmed);
+                log.debug("Vim[{d}] notification: {s}", .{ item.client_id, n.method });
+                self.handleVimRequest(item.client_id, alloc, null, n.method, n.params, trimmed, item.client_stream);
             },
-            .response => |r| {
-                log.debug("Vim[{d}] response [{d}]", .{ cid, r.id });
-                // Responses to Vim "call" commands (expr responses are intercepted above)
+            .response => {
+                // Responses to Vim "call" commands (expr responses intercepted above)
             },
         }
     }
 
     /// Handle a Vim request or notification.
-    fn handleVimRequest(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8) void {
+    /// client_stream is captured from the WorkItem at routing time.
+    fn handleVimRequest(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8, client_stream: std.net.Stream) void {
         // Defer query methods while the relevant LSP server is indexing
         if (vim_id != null and lsp_mod.isQueryMethod(method)) {
             const lang = blk: {
@@ -403,13 +488,13 @@ const EventLoop = struct {
             }
         }
 
-        const client = self.clients.get(cid) orelse return;
-
         var ctx = handlers_mod.HandlerContext{
             .allocator = alloc,
+            .gpa_allocator = self.allocator,
             .registry = &self.lsp.registry,
-            .client_stream = client.stream,
+            .client_stream = client_stream,
             .ts = &self.ts,
+            .out_queue = &self.out_queue,
         };
 
         const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {
@@ -678,6 +763,7 @@ const EventLoop = struct {
     }
 
     /// Flush deferred requests after LSP indexing completes.
+    /// Re-routes each deferred line back to the appropriate work queue.
     fn flushDeferredRequests(self: *EventLoop) void {
         var requests = self.lsp.takeDeferredRequests();
         defer {
@@ -686,27 +772,61 @@ const EventLoop = struct {
         }
 
         for (requests.items) |req| {
-            if (self.clients.contains(req.client_id)) {
-                self.handleVimLine(req.client_id, req.raw_line);
+            const client = self.clients.get(req.client_id) orelse continue;
+            // Duplicate raw_line since the defer block above frees the original.
+            const raw_line_copy = self.allocator.dupe(u8, req.raw_line) catch continue;
+            const item = queue_mod.WorkItem{
+                .client_id = req.client_id,
+                .client_stream = client.stream,
+                .raw_line = raw_line_copy,
+            };
+            // Re-apply the same routing logic as processClientInput.
+            const routed = if (queue_mod.isTsMethod(req.raw_line))
+                self.in_ts.push(item)
+            else
+                self.in_general.push(item);
+            if (!routed) {
+                item.deinit(self.allocator);
+                log.warn("Work queue full, dropping deferred request", .{});
             }
         }
     }
 
     // ====================================================================
-    // Send helpers — targeted to a specific client or broadcast to all
+    // Send helpers — push to out_queue instead of writing directly.
+    // All callers must hold state_lock when accessing clients map.
     // ====================================================================
+
+    /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
+    /// Drops the message silently if the queue is full (back-pressure).
+    fn pushToOutQueue(self: *EventLoop, stream: std.net.Stream, encoded: []const u8) void {
+        const msg_bytes = self.allocator.alloc(u8, encoded.len + 1) catch {
+            log.err("OOM: failed to allocate out message", .{});
+            return;
+        };
+        @memcpy(msg_bytes[0..encoded.len], encoded);
+        msg_bytes[encoded.len] = '\n';
+        if (!self.out_queue.push(.{ .stream = stream, .bytes = msg_bytes })) {
+            self.allocator.free(msg_bytes);
+            log.warn("Out queue full, dropping message", .{});
+        }
+    }
 
     /// Send a JSON-RPC response to a specific Vim client.
     fn sendVimResponseTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, result: Value) void {
         const id = vim_id orelse return;
         const client = self.clients.get(cid) orelse return;
-        vim_out.sendVimResponse(alloc, client.stream, id, result);
+        const encoded = vim.encodeJsonRpcResponse(alloc, @intCast(id), result) catch return;
+        defer alloc.free(encoded);
+        self.pushToOutQueue(client.stream, encoded);
     }
 
     /// Send a Vim ex command to a specific client.
     fn sendVimExTo(self: *EventLoop, cid: ClientId, alloc: Allocator, command: []const u8) void {
         const client = self.clients.get(cid) orelse return;
-        vim_out.sendVimEx(alloc, client.stream, command);
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        self.pushToOutQueue(client.stream, encoded);
     }
 
     /// Send an expr request to a specific Vim client and register a pending entry.
@@ -720,7 +840,7 @@ const EventLoop = struct {
         };
         const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
         defer alloc.free(encoded);
-        vim_out.writeMessage(client.stream, encoded);
+        self.pushToOutQueue(client.stream, encoded);
     }
 
     /// Handle the result of a daemon→Vim expr request.
@@ -751,14 +871,17 @@ const EventLoop = struct {
     fn broadcastRaw(self: *EventLoop, encoded: []const u8) void {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
-            vim_out.writeMessage(client_ptr.*.stream, encoded);
+            self.pushToOutQueue(client_ptr.*.stream, encoded);
         }
     }
 
     /// Send an error response to a specific Vim client.
     fn sendVimErrorTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, message: []const u8) void {
-        const client = self.clients.get(cid) orelse return;
-        vim_out.sendVimError(alloc, client.stream, vim_id, message);
+        if (vim_id) |id| {
+            var err_obj = ObjectMap.init(alloc);
+            err_obj.put("error", json_utils.jsonString(message)) catch return;
+            self.sendVimResponseTo(cid, alloc, id, .{ .object = err_obj });
+        }
     }
 };
 
