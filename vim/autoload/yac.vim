@@ -3992,7 +3992,11 @@ function! yac#ts_highlights_request(...) abort
       let l:is_scroll = 1
     elseif l:need_up && !l:need_down
       let l:req_lo = max([0, l:vis_lo - l:pad])
-      let l:req_hi = l:cov_lo
+      " Limit to visible area + pad (like scroll-down), not the full gap to cov_lo.
+      " Requesting all of [vis_lo..cov_lo] can be thousands of lines for G→gg on
+      " large files, causing a noticeable delay.  The gap is filled incrementally
+      " as the user scrolls back down.
+      let l:req_hi = min([l:cov_lo, l:vis_hi + l:pad])
       let l:is_scroll = 1
     endif
     " Both directions exceeded (big jump) → fall through to full request
@@ -4047,6 +4051,17 @@ function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scro
     " Scroll path: append delta props to current generation (no flip)
     let l:gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
     let l:cur_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
+    let l:old_lo = getbufvar(l:bufnr, 'yac_ts_hl_lo', -1)
+    let l:old_hi = getbufvar(l:bufnr, 'yac_ts_hl_hi', -1)
+    " Gap detection: if the new response doesn't connect to existing coverage,
+    " clear old props first so they don't duplicate when scrolling back to that area.
+    let l:is_gap = l:old_lo >= 0 && (a:response.range[1] < l:old_lo || a:response.range[0] > l:old_hi)
+    if l:is_gap
+      for l:t in l:cur_types
+        silent! call prop_remove({'type': l:t, 'bufnr': l:bufnr, 'all': 1})
+      endfor
+      let l:cur_types = []
+    endif
     let l:new_types = s:ts_apply_highlights(l:gen, a:response.highlights, l:bufnr)
     " Merge new types into existing list (avoid duplicates from prior scrolls)
     for l:t in l:new_types
@@ -4055,10 +4070,15 @@ function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scro
       endif
     endfor
     call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:cur_types)
-    call setbufvar(l:bufnr, 'yac_ts_hl_lo',
-          \ min([getbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0]), a:response.range[0]]))
-    call setbufvar(l:bufnr, 'yac_ts_hl_hi',
-          \ max([getbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1]), a:response.range[1]]))
+    if l:is_gap
+      call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
+      call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
+    else
+      call setbufvar(l:bufnr, 'yac_ts_hl_lo',
+            \ (l:old_lo < 0 ? a:response.range[0] : min([l:old_lo, a:response.range[0]])))
+      call setbufvar(l:bufnr, 'yac_ts_hl_hi',
+            \ (l:old_hi < 0 ? a:response.range[1] : max([l:old_hi, a:response.range[1]])))
+    endif
   else
     " Edit path: double-buffered full replacement
     let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)

@@ -246,6 +246,42 @@ call yac_test#assert_eq(s:sig33_after_del, s:sig34_orig,
   \ 'After deleting line above, shifted line should keep same highlight signature')
 
 " ============================================================================
+" Test 7: scroll-up 分支 — min() 参数错误回归测试
+"
+"   Bug: min(l:cov_lo, l:vis_hi + l:pad) → E118 (Vim min() 只接受 List)
+"        修复前: scroll-up 分支直接崩溃，line 1 无法得到高亮
+"        修复后: min([...]) 正常，请求发出，line 1 得到高亮
+"
+"   复现方法: 手动构造 cov_lo > vis_lo 场景强制进入 scroll-up 分支
+"   - disable 清除 props 和 coverage
+"   - 手动设置 cov_lo=20 cov_hi=last_line（模拟底部已渲染、顶部未渲染）
+"   - cursor 在 line 1 → need_up=1, need_down=0 → 必走 scroll-up 分支
+" ============================================================================
+call yac_test#log('INFO', 'Test 7: scroll-up branch min() regression (E118)')
+
+call s:reload_and_wait()
+
+" disable 会清除 props 和 coverage
+call yac#ts_highlights_disable()
+
+" 手动构造"底部已渲染、顶部未渲染"的 coverage 状态
+let b:yac_ts_highlights_enabled = 1
+let b:yac_ts_hl_lo = 20
+let b:yac_ts_hl_hi = line('$')
+
+" cursor 已在 line 1（reload_and_wait 后不移动，避免触发 CursorMoved）
+" vis_lo=0 < cov_lo=20，且 vis_hi <= cov_hi → scroll-up 分支
+
+" 直接调用 request('scroll')，绕过 debounce fingerprint 去重逻辑
+call yac#ts_highlights_request('scroll')
+
+" 修复前: E118 → 请求未发出 → line 1 无 props → 断言失败
+" 修复后: 请求正常发出 → line 1 得到高亮 → 断言通过
+call yac_test#wait_assert(
+  \ {-> !empty(s:get_ts_props(1))},
+  \ 3000, 'scroll-up: line 1 should get ts props after scroll-up request (E118 regression)')
+
+" ============================================================================
 " Cleanup
 " ============================================================================
 call yac#ts_highlights_disable()
