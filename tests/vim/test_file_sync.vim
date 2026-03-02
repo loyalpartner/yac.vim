@@ -131,7 +131,8 @@ call yac_test#log('INFO', 'Buffer closed, didClose should be sent')
 
 " 确保不影响其他 buffer
 edit! test_data/src/main.zig
-call cursor(6, 12)
+call yac#open_file()
+call cursor(14, 12)
 YacHover
 call yac_test#wait_popup(3000)
 

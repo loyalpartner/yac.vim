@@ -44,11 +44,12 @@ call yac_test#assert_true(!empty(gD_map), 'gD mapping should exist')
 call yac_test#log('INFO', 'Test 3: K mapping (Hover)')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 let K_map = maparg('K', 'n')
 call yac_test#assert_true(!empty(K_map), 'K mapping should exist')
 
 if !empty(K_map) && match(K_map, '[Yy]ac\|[Hh]over') >= 0
-  call cursor(6, 12)
+  call cursor(14, 12)
   call popup_clear()
   normal K
   call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
@@ -65,7 +66,7 @@ let gr_map = maparg('gr', 'n')
 call yac_test#assert_true(!empty(gr_map), 'gr mapping should exist')
 
 if !empty(gr_map)
-  call cursor(6, 12)
+  call cursor(14, 12)
   normal gr
   " References opens picker, not quickfix
   call yac_test#wait_assert({-> yac#picker_is_open()}, 5000,

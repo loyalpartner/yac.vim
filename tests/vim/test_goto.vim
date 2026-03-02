@@ -51,6 +51,7 @@ call yac_test#log('INFO', 'Test 2: Goto Definition - User struct')
 
 " 重新打开文件确保干净状态
 edit! test_data/src/main.zig
+call yac#open_file()
 
 " 定位到 process_user 函数参数中的 User (line 44)
 call cursor(44, 21)
@@ -77,6 +78,7 @@ endif
 call yac_test#log('INFO', 'Test 3: Goto Definition - getName method')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 
 " 定位到 process_user 中的 getName 调用 (line 45)
 call cursor(45, 25)
@@ -103,6 +105,7 @@ endif
 call yac_test#log('INFO', 'Test 4: Goto Declaration')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 
 call cursor(34, 5)
 call search('init', 'c', line('.'))
@@ -125,6 +128,7 @@ endif
 call yac_test#log('INFO', 'Test 5: Goto Type Definition')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 
 " 定位到 users 变量 (line 31)
 call cursor(31, 13)
@@ -150,6 +154,7 @@ endif
 call yac_test#log('INFO', 'Test 6: Goto Implementation (struct method)')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 
 " 定位到 init method (line 14)
 call cursor(14, 12)

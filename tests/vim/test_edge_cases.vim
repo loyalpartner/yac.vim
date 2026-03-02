@@ -73,7 +73,9 @@ call setline(1, original)
 call yac_test#log('INFO', 'Test 4: Cross-file navigation')
 
 edit! test_data/src/main.zig
-call cursor(2, 7)  " Allocator
+call yac#open_file()
+" cursor on RHS std.mem.Allocator (col 27 = 'A' of Allocator in assignment RHS)
+call cursor(2, 27)
 let start_buf = bufnr('%')
 let start_line = line('.')
 let start_col = col('.')
@@ -91,6 +93,7 @@ if end_buf != start_buf
 endif
 
 edit! test_data/src/main.zig
+call yac#open_file()
 
 " ============================================================================
 " Test 5: Invalid positions
@@ -114,6 +117,7 @@ call yac_test#assert_true(1, 'Goto in comment should not crash')
 call yac_test#log('INFO', 'Test 6: Multiple buffers with LSP')
 
 edit! test_data/src/main.zig
+call yac#open_file()
 let buf1 = bufnr('%')
 
 new
