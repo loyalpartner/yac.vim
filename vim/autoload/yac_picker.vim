@@ -61,277 +61,6 @@ function! yac_picker#get_modes() abort
   return s:modes
 endfunction
 
-" --- Built-in modes ---
-
-call yac_picker#register_mode({
-  \ 'prefix': '',
-  \ 'label': 'YacPicker',
-  \ 'debounce': 50,
-  \ 'local': 0,
-  \ 'daemon_mode': 'file',
-  \ 'query_fn': v:null,
-  \ 'accept_fn': v:null,
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no results)',
-  \ 'empty_query_msg': '  (type to search files...)',
-  \ })
-
-call yac_picker#register_mode({
-  \ 'prefix': '>',
-  \ 'label': 'Grep',
-  \ 'debounce': 200,
-  \ 'local': 0,
-  \ 'daemon_mode': 'grep',
-  \ 'query_fn': v:null,
-  \ 'accept_fn': v:null,
-  \ 'grouped': 1,
-  \ 'has_preview': 1,
-  \ 'empty_msg': '  (no matches)',
-  \ 'empty_query_msg': '  (type to grep...)',
-  \ })
-
-call yac_picker#register_mode({
-  \ 'prefix': '#',
-  \ 'label': 'Symbols',
-  \ 'debounce': 50,
-  \ 'local': 0,
-  \ 'daemon_mode': 'workspace_symbol',
-  \ 'query_fn': v:null,
-  \ 'accept_fn': v:null,
-  \ 'grouped': 0,
-  \ 'has_preview': 1,
-  \ 'empty_msg': '  (no symbols found)',
-  \ 'empty_query_msg': '  (no symbols found)',
-  \ })
-
-call yac_picker#register_mode({
-  \ 'prefix': '@',
-  \ 'label': 'Document',
-  \ 'debounce': 30,
-  \ 'local': 0,
-  \ 'daemon_mode': 'document_symbol',
-  \ 'query_fn': v:null,
-  \ 'accept_fn': v:null,
-  \ 'grouped': 0,
-  \ 'has_preview': 1,
-  \ 'empty_msg': '  (no symbols found)',
-  \ 'empty_query_msg': '  (no symbols found)',
-  \ })
-
-call yac_picker#register_mode({
-  \ 'prefix': '%',
-  \ 'label': 'Theme',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': '',
-  \ 'query_fn': function('s:query_themes'),
-  \ 'accept_fn': function('s:accept_theme'),
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no themes found in ~/.config/yac/themes/)',
-  \ 'empty_query_msg': '  (no themes found in ~/.config/yac/themes/)',
-  \ })
-
-" references mode is special — opened via yac_picker#open_references, not prefix
-let s:references_mode = {
-  \ 'prefix': '',
-  \ 'label': 'References',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': '',
-  \ 'query_fn': v:null,
-  \ 'accept_fn': v:null,
-  \ 'grouped': 1,
-  \ 'has_preview': 1,
-  \ 'empty_msg': '  (no results)',
-  \ 'empty_query_msg': '  (no results)',
-  \ }
-
-" Theme mode query/accept callbacks
-function! s:query_themes(query) abort
-  if s:picker.saved_theme_file is v:null
-    let s:picker.saved_theme_file = yac_theme#saved_file()
-  endif
-  let all = yac_theme#list()
-  if empty(a:query)
-    return all
-  endif
-  let pat = tolower(a:query)
-  return filter(all, 'stridx(tolower(get(v:val, "label", "")), pat) >= 0')
-endfunction
-
-function! s:accept_theme(item) abort
-  call yac_theme#apply_file(get(a:item, 'file', ''))
-  call yac_theme#save_selection(get(a:item, 'file', ''))
-  call s:picker_close_popups()
-endfunction
-
-" --- ! MRU mode ---
-call yac_picker#register_mode({
-  \ 'prefix': '!',
-  \ 'label': 'MRU',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': 'mru',
-  \ 'query_fn': function('s:query_mru'),
-  \ 'accept_fn': v:null,
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no recent files)',
-  \ 'empty_query_msg': '  (no recent files)',
-  \ })
-
-function! s:query_mru(query) abort
-  let items = []
-  for f in s:picker_mru
-    let rel = fnamemodify(f, ':.')
-    if empty(a:query) || stridx(tolower(rel), tolower(a:query)) >= 0
-      call add(items, {'label': rel, 'file': f})
-    endif
-    if len(items) >= 50 | break | endif
-  endfor
-  return items
-endfunction
-
-" For testing: inject MRU data
-function! yac_picker#test_set_mru(files) abort
-  let s:picker_mru = a:files
-endfunction
-
-" --- / Buffer search mode ---
-call yac_picker#register_mode({
-  \ 'prefix': '/',
-  \ 'label': 'Buffer',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': 'buffer_search',
-  \ 'query_fn': function('s:query_buffer'),
-  \ 'accept_fn': v:null,
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no matching lines)',
-  \ 'empty_query_msg': '  (type to search current buffer...)',
-  \ })
-
-function! s:query_buffer(query) abort
-  if empty(a:query) | return [] | endif
-  let bufnr = bufnr(s:picker.orig_file)
-  if bufnr == -1 | return [] | endif
-  let blines = getbufline(bufnr, 1, '$')
-  let items = []
-  let pat = tolower(a:query)
-  for i in range(len(blines))
-    if stridx(tolower(blines[i]), pat) >= 0
-      call add(items, {
-        \ 'label': blines[i],
-        \ 'file': s:picker.orig_file,
-        \ 'line': i,
-        \ 'column': stridx(tolower(blines[i]), pat),
-        \ })
-      if len(items) >= 200 | break | endif
-    endif
-  endfor
-  return items
-endfunction
-
-" --- ? Help mode ---
-call yac_picker#register_mode({
-  \ 'prefix': '?',
-  \ 'label': 'Help',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': 'help',
-  \ 'query_fn': function('s:query_help'),
-  \ 'accept_fn': function('s:accept_help'),
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no matching modes)',
-  \ 'empty_query_msg': '',
-  \ })
-
-function! s:query_help(query) abort
-  let items = []
-  for [prefix, spec] in items(s:modes)
-    let display = empty(prefix) ? '(default)' : prefix
-    let entry = {'label': display . '  ' . spec.label, 'prefix': prefix}
-    if empty(a:query) || stridx(tolower(entry.label), tolower(a:query)) >= 0
-      call add(items, entry)
-    endif
-  endfor
-  " Sort: non-empty prefixes first (alphabetical), then default
-  call sort(items, {a, b -> (empty(a.prefix) ? 'z' : a.prefix) < (empty(b.prefix) ? 'z' : b.prefix) ? -1 : 1})
-  return items
-endfunction
-
-function! s:accept_help(item) abort
-  let prefix = get(a:item, 'prefix', '')
-  call s:picker_close_popups()
-  " Re-open picker with selected prefix
-  call yac_picker#open({'initial': prefix})
-endfunction
-
-" --- : Command palette mode ---
-call yac_picker#register_mode({
-  \ 'prefix': ':',
-  \ 'label': 'Commands',
-  \ 'debounce': 30,
-  \ 'local': 1,
-  \ 'daemon_mode': 'commands',
-  \ 'query_fn': function('s:query_commands'),
-  \ 'accept_fn': function('s:accept_command'),
-  \ 'grouped': 0,
-  \ 'has_preview': 0,
-  \ 'empty_msg': '  (no matching commands)',
-  \ 'empty_query_msg': '',
-  \ })
-
-let s:yac_commands = [
-  \ {'label': 'Format', 'cmd': 'YacFormat'},
-  \ {'label': 'Rename', 'cmd': 'YacRename'},
-  \ {'label': 'Restart LSP', 'cmd': 'YacStop | YacStart'},
-  \ {'label': 'Code Action', 'cmd': 'YacCodeAction'},
-  \ {'label': 'Hover', 'cmd': 'YacHover'},
-  \ {'label': 'References', 'cmd': 'YacReferences'},
-  \ {'label': 'Definition', 'cmd': 'YacDefinition'},
-  \ {'label': 'Declaration', 'cmd': 'YacDeclaration'},
-  \ {'label': 'Type Definition', 'cmd': 'YacTypeDefinition'},
-  \ {'label': 'Implementation', 'cmd': 'YacImplementation'},
-  \ {'label': 'Document Symbols', 'cmd': 'YacDocumentSymbols'},
-  \ {'label': 'Signature Help', 'cmd': 'YacSignatureHelp'},
-  \ {'label': 'Inlay Hints Toggle', 'cmd': 'YacInlayHintsToggle'},
-  \ {'label': 'Folding Range', 'cmd': 'YacFoldingRange'},
-  \ {'label': 'Theme Picker', 'cmd': 'YacThemePicker'},
-  \ {'label': 'Debug Toggle', 'cmd': 'YacDebugToggle'},
-  \ {'label': 'Debug Status', 'cmd': 'YacDebugStatus'},
-  \ ]
-
-function! s:query_commands(query) abort
-  let items = []
-  " Yac built-in commands first
-  for entry in s:yac_commands
-    if empty(a:query) || stridx(tolower(entry.label), tolower(a:query)) >= 0
-      call add(items, {'label': entry.label, 'cmd': entry.cmd, 'is_yac': 1})
-    endif
-  endfor
-  " Vim commands
-  if !empty(a:query)
-    for cmd in getcompletion(a:query, 'command')
-      call add(items, {'label': cmd, 'cmd': cmd, 'is_yac': 0})
-      if len(items) >= 50 | break | endif
-    endfor
-  endif
-  return items
-endfunction
-
-function! s:accept_command(item) abort
-  let cmd = get(a:item, 'cmd', '')
-  call s:picker_close_popups()
-  if !empty(cmd)
-    execute cmd
-  endif
-endfunction
-
 " ============================================================================
 " MRU persistence
 " ============================================================================
@@ -1340,3 +1069,270 @@ function! s:picker_close_popups() abort
   let s:picker.orig_col = 0
   let s:picker.saved_theme_file = v:null
 endfunction
+
+" ============================================================================
+" Mode callback functions + registration (must be at end of file)
+" ============================================================================
+
+function! s:query_themes(query) abort
+  if s:picker.saved_theme_file is v:null
+    let s:picker.saved_theme_file = yac_theme#saved_file()
+  endif
+  let all = yac_theme#list()
+  if empty(a:query)
+    return all
+  endif
+  let pat = tolower(a:query)
+  return filter(all, 'stridx(tolower(get(v:val, "label", "")), pat) >= 0')
+endfunction
+
+function! s:accept_theme(item) abort
+  call yac_theme#apply_file(get(a:item, 'file', ''))
+  call yac_theme#save_selection(get(a:item, 'file', ''))
+  call s:picker_close_popups()
+endfunction
+
+function! s:query_mru(query) abort
+  let items = []
+  for f in s:picker_mru
+    let rel = fnamemodify(f, ':.')
+    if empty(a:query) || stridx(tolower(rel), tolower(a:query)) >= 0
+      call add(items, {'label': rel, 'file': f})
+    endif
+    if len(items) >= 50 | break | endif
+  endfor
+  return items
+endfunction
+
+function! yac_picker#test_set_mru(files) abort
+  let s:picker_mru = a:files
+endfunction
+
+function! s:query_buffer(query) abort
+  if empty(a:query) | return [] | endif
+  let bufnr = bufnr(s:picker.orig_file)
+  if bufnr == -1 | return [] | endif
+  let blines = getbufline(bufnr, 1, '$')
+  let items = []
+  let pat = tolower(a:query)
+  for i in range(len(blines))
+    if stridx(tolower(blines[i]), pat) >= 0
+      call add(items, {
+        \ 'label': blines[i],
+        \ 'file': s:picker.orig_file,
+        \ 'line': i,
+        \ 'column': stridx(tolower(blines[i]), pat),
+        \ })
+      if len(items) >= 200 | break | endif
+    endif
+  endfor
+  return items
+endfunction
+
+function! s:query_help(query) abort
+  let items = []
+  for [prefix, spec] in items(s:modes)
+    let display = empty(prefix) ? '(default)' : prefix
+    let entry = {'label': display . '  ' . spec.label, 'prefix': prefix}
+    if empty(a:query) || stridx(tolower(entry.label), tolower(a:query)) >= 0
+      call add(items, entry)
+    endif
+  endfor
+  " Sort: non-empty prefixes first (alphabetical), then default
+  call sort(items, {a, b -> (empty(a.prefix) ? 'z' : a.prefix) < (empty(b.prefix) ? 'z' : b.prefix) ? -1 : 1})
+  return items
+endfunction
+
+function! s:accept_help(item) abort
+  let prefix = get(a:item, 'prefix', '')
+  call s:picker_close_popups()
+  " Re-open picker with selected prefix
+  call yac_picker#open({'initial': prefix})
+endfunction
+
+function! s:query_commands(query) abort
+  let items = []
+  " Yac built-in commands first
+  for entry in s:yac_commands
+    if empty(a:query) || stridx(tolower(entry.label), tolower(a:query)) >= 0
+      call add(items, {'label': entry.label, 'cmd': entry.cmd, 'is_yac': 1})
+    endif
+  endfor
+  " Vim commands
+  if !empty(a:query)
+    for cmd in getcompletion(a:query, 'command')
+      call add(items, {'label': cmd, 'cmd': cmd, 'is_yac': 0})
+      if len(items) >= 50 | break | endif
+    endfor
+  endif
+  return items
+endfunction
+
+function! s:accept_command(item) abort
+  let cmd = get(a:item, 'cmd', '')
+  call s:picker_close_popups()
+  if !empty(cmd)
+    execute cmd
+  endif
+endfunction
+
+let s:references_mode = {
+  \ 'prefix': '',
+  \ 'label': 'References',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': '',
+  \ 'query_fn': v:null,
+  \ 'accept_fn': v:null,
+  \ 'grouped': 1,
+  \ 'has_preview': 1,
+  \ 'empty_msg': '  (no results)',
+  \ 'empty_query_msg': '  (no results)',
+  \ }
+
+let s:yac_commands = [
+  \ {'label': 'Format', 'cmd': 'YacFormat'},
+  \ {'label': 'Rename', 'cmd': 'YacRename'},
+  \ {'label': 'Restart LSP', 'cmd': 'YacStop | YacStart'},
+  \ {'label': 'Code Action', 'cmd': 'YacCodeAction'},
+  \ {'label': 'Hover', 'cmd': 'YacHover'},
+  \ {'label': 'References', 'cmd': 'YacReferences'},
+  \ {'label': 'Definition', 'cmd': 'YacDefinition'},
+  \ {'label': 'Declaration', 'cmd': 'YacDeclaration'},
+  \ {'label': 'Type Definition', 'cmd': 'YacTypeDefinition'},
+  \ {'label': 'Implementation', 'cmd': 'YacImplementation'},
+  \ {'label': 'Document Symbols', 'cmd': 'YacDocumentSymbols'},
+  \ {'label': 'Signature Help', 'cmd': 'YacSignatureHelp'},
+  \ {'label': 'Inlay Hints Toggle', 'cmd': 'YacInlayHintsToggle'},
+  \ {'label': 'Folding Range', 'cmd': 'YacFoldingRange'},
+  \ {'label': 'Theme Picker', 'cmd': 'YacThemePicker'},
+  \ {'label': 'Debug Toggle', 'cmd': 'YacDebugToggle'},
+  \ {'label': 'Debug Status', 'cmd': 'YacDebugStatus'},
+  \ ]
+
+call yac_picker#register_mode({
+  \ 'prefix': '',
+  \ 'label': 'YacPicker',
+  \ 'debounce': 50,
+  \ 'local': 0,
+  \ 'daemon_mode': 'file',
+  \ 'query_fn': v:null,
+  \ 'accept_fn': v:null,
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no results)',
+  \ 'empty_query_msg': '  (type to search files...)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '>',
+  \ 'label': 'Grep',
+  \ 'debounce': 200,
+  \ 'local': 0,
+  \ 'daemon_mode': 'grep',
+  \ 'query_fn': v:null,
+  \ 'accept_fn': v:null,
+  \ 'grouped': 1,
+  \ 'has_preview': 1,
+  \ 'empty_msg': '  (no matches)',
+  \ 'empty_query_msg': '  (type to grep...)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '#',
+  \ 'label': 'Symbols',
+  \ 'debounce': 50,
+  \ 'local': 0,
+  \ 'daemon_mode': 'workspace_symbol',
+  \ 'query_fn': v:null,
+  \ 'accept_fn': v:null,
+  \ 'grouped': 0,
+  \ 'has_preview': 1,
+  \ 'empty_msg': '  (no symbols found)',
+  \ 'empty_query_msg': '  (no symbols found)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '@',
+  \ 'label': 'Document',
+  \ 'debounce': 30,
+  \ 'local': 0,
+  \ 'daemon_mode': 'document_symbol',
+  \ 'query_fn': v:null,
+  \ 'accept_fn': v:null,
+  \ 'grouped': 0,
+  \ 'has_preview': 1,
+  \ 'empty_msg': '  (no symbols found)',
+  \ 'empty_query_msg': '  (no symbols found)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '%',
+  \ 'label': 'Theme',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': '',
+  \ 'query_fn': function('s:query_themes'),
+  \ 'accept_fn': function('s:accept_theme'),
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no themes found in ~/.config/yac/themes/)',
+  \ 'empty_query_msg': '  (no themes found in ~/.config/yac/themes/)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '!',
+  \ 'label': 'MRU',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': 'mru',
+  \ 'query_fn': function('s:query_mru'),
+  \ 'accept_fn': v:null,
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no recent files)',
+  \ 'empty_query_msg': '  (no recent files)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '/',
+  \ 'label': 'Buffer',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': 'buffer_search',
+  \ 'query_fn': function('s:query_buffer'),
+  \ 'accept_fn': v:null,
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no matching lines)',
+  \ 'empty_query_msg': '  (type to search current buffer...)',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': '?',
+  \ 'label': 'Help',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': 'help',
+  \ 'query_fn': function('s:query_help'),
+  \ 'accept_fn': function('s:accept_help'),
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no matching modes)',
+  \ 'empty_query_msg': '',
+  \ })
+
+call yac_picker#register_mode({
+  \ 'prefix': ':',
+  \ 'label': 'Commands',
+  \ 'debounce': 30,
+  \ 'local': 1,
+  \ 'daemon_mode': 'commands',
+  \ 'query_fn': function('s:query_commands'),
+  \ 'accept_fn': function('s:accept_command'),
+  \ 'grouped': 0,
+  \ 'has_preview': 0,
+  \ 'empty_msg': '  (no matching commands)',
+  \ 'empty_query_msg': '',
+  \ })
+
