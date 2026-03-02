@@ -454,3 +454,67 @@ test "fuzzyScore - case insensitive prefix" {
     try std.testing.expect(score >= 2000);
     try std.testing.expect(score < 5000);
 }
+
+test "filterAndSort - results sorted by descending score" {
+    const alloc = std.testing.allocator;
+    const items: []const []const u8 = &.{ "src/utils.zig", "src/main.zig", "src/picker.zig" };
+    const boost_files: []const []const u8 = &.{};
+    const indices = try filterAndSort(alloc, items, "main", boost_files);
+    defer alloc.free(indices);
+    // "main.zig" should be first (exact basename prefix match scores highest)
+    try std.testing.expectEqual(@as(usize, 1), indices[0]);
+    // Verify descending score order across all results
+    for (0..indices.len - 1) |i| {
+        const score_a = fuzzyScore(items[indices[i]], "main");
+        const score_b = fuzzyScore(items[indices[i + 1]], "main");
+        try std.testing.expect(score_a >= score_b);
+    }
+}
+
+test "filterAndSort - MRU boost ranks boosted items higher" {
+    const alloc = std.testing.allocator;
+    const items: []const []const u8 = &.{ "src/aaa.zig", "src/bbb.zig", "src/ccc.zig" };
+    // All three have similar fuzzy scores for pattern "zig", but boost "ccc.zig"
+    const boost_files: []const []const u8 = &.{"src/ccc.zig"};
+    const indices = try filterAndSort(alloc, items, "zig", boost_files);
+    defer alloc.free(indices);
+    try std.testing.expect(indices.len >= 3);
+    // Boosted file (index 2 = "src/ccc.zig") should appear first
+    try std.testing.expectEqual(@as(usize, 2), indices[0]);
+}
+
+test "filterAndSort - empty pattern returns recent files" {
+    const alloc = std.testing.allocator;
+    const items: []const []const u8 = &.{ "src/a.zig", "src/b.zig", "src/c.zig" };
+    const boost_files: []const []const u8 = &.{"src/b.zig"};
+    const indices = try filterAndSort(alloc, items, "", boost_files);
+    defer alloc.free(indices);
+    // Empty pattern gives score 1000 to all, boosted gets 6000
+    try std.testing.expect(indices.len == 3);
+    // Boosted file (index 1 = "src/b.zig") should be first
+    try std.testing.expectEqual(@as(usize, 1), indices[0]);
+}
+
+test "parseGrepLine - parses rg vimgrep output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const line = "src/main.zig:42:10:    const x = 5;";
+    const result = parseGrepLine(alloc, line) orelse {
+        return error.TestUnexpectedResult;
+    };
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.TestUnexpectedResult,
+    };
+    // file
+    try std.testing.expectEqualStrings("src/main.zig", json_utils.getString(obj, "file").?);
+    // line is 0-based (42 - 1 = 41)
+    try std.testing.expectEqual(@as(i64, 41), obj.get("line").?.integer);
+    // column is 0-based (10 - 1 = 9)
+    try std.testing.expectEqual(@as(i64, 9), obj.get("column").?.integer);
+    // label is the trimmed text
+    try std.testing.expectEqualStrings("const x = 5;", json_utils.getString(obj, "label").?);
+    // detail is the file path
+    try std.testing.expectEqualStrings("src/main.zig", json_utils.getString(obj, "detail").?);
+}
