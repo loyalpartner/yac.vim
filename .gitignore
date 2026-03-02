@@ -132,3 +132,7 @@ perf.data*
 # Backup files
 *.backup
 *.bck
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
