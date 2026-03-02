@@ -29,6 +29,12 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
 See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 
+## Bug Fix Workflow
+
+When fixing a bug, always write a test to reproduce it first. If the test cannot reproduce the bug, the testing infrastructure is incomplete — improve it first, then write the test, then fix.
+
+"Hard to test" (timing, UI, environment) is not a reason to skip tests; it's a signal to improve the test infrastructure.
+
 ## Exploratory Tasks
 
 When requirements are unclear, don't spend excessive time analyzing. Write the simplest compilable minimal implementation first, so I can see the result and decide the direction. Read at most 3 files before starting to code during exploration.

@@ -40,6 +40,8 @@
     "YacTsConstructor":          {"guifg": "#f9e2af", "ctermfg": "223"},
     "YacTsFunctionMacro":        {"guifg": "#89b4fa", "ctermfg": "111"},
     "YacTsFunctionMethod":       {"guifg": "#89b4fa", "ctermfg": "111"},
-    "YacTsProperty":             {"guifg": "#cdd6f4", "ctermfg": "189"}
+    "YacTsProperty":             {"guifg": "#cdd6f4", "ctermfg": "189"},
+    "YacPickerMatch":            {"link": "YacTsKeyword"},
+    "YacPickerPrefix":           {"link": "YacTsFunction"}
   }
 }

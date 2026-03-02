@@ -32,6 +32,9 @@ let s:TS_GROUPS = [
   \ 'YacTsCommentDocumentation', 'YacTsPunctuationBracket',
   \ 'YacTsPunctuationDelimiter', 'YacTsAttribute', 'YacTsConstructor',
   \ 'YacTsFunctionMacro', 'YacTsFunctionMethod', 'YacTsProperty',
+  \ 'YacPickerBorder', 'YacPickerInput', 'YacPickerNormal',
+  \ 'YacPickerSelected', 'YacPickerHeader', 'YacPickerCursor',
+  \ 'YacPickerPrefix', 'YacPickerMatch',
   \ ]
 
 " Default theme: mirrors yac.vim:69-108 hi def link definitions
@@ -76,6 +79,14 @@ let s:default_groups = {
   \ 'YacTsFunctionMacro':        {'link': 'Macro'},
   \ 'YacTsFunctionMethod':       {'link': 'Function'},
   \ 'YacTsProperty':             {'link': 'Identifier'},
+  \ 'YacPickerBorder':           {'link': 'Comment'},
+  \ 'YacPickerInput':            {'link': 'Normal'},
+  \ 'YacPickerNormal':           {'link': 'Normal'},
+  \ 'YacPickerSelected':         {'link': 'CursorLine'},
+  \ 'YacPickerHeader':           {'link': 'Directory'},
+  \ 'YacPickerCursor':           {'cterm': 'reverse', 'gui': 'reverse'},
+  \ 'YacPickerPrefix':           {'link': 'Function'},
+  \ 'YacPickerMatch':            {'link': 'Keyword'},
   \ }
 
 let s:current_theme = ''

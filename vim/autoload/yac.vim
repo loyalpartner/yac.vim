@@ -2960,6 +2960,47 @@ endfunction
 " ============================================================================
 
 " 打开 Picker 面板
+" Convert a relative path to the picker display label: 'fname  dir/'
+" Used by both the renderer and tests.
+function! yac#picker_file_label(rel) abort
+  let fname = fnamemodify(a:rel, ':t')
+  let dir = fnamemodify(a:rel, ':h')
+  let dir_part = dir ==# '.' || empty(dir) ? '' : dir . '/'
+  return empty(dir_part) ? fname : (fname . '  ' . dir_part)
+endfunction
+
+" Return 1-indexed display columns where query chars match in 'fname  dir/' format.
+" pfx = number of prefix chars (e.g. 2 for the leading '  ').
+" Exposed for unit testing.
+function! yac#picker_file_match_cols(rel, query, pfx) abort
+  let fname = fnamemodify(a:rel, ':t')
+  let dir = fnamemodify(a:rel, ':h')
+  let fname_len = len(fname)
+  let is_root = dir ==# '.' || empty(dir)
+  let dir_len = is_root ? 0 : len(dir)
+  let rel_lower = tolower(a:rel)
+  let query_lower = tolower(a:query)
+  let cols = []
+  let fi = 0
+  for qc in split(query_lower, '\zs')
+    let found = stridx(rel_lower, qc, fi)
+    if found >= 0
+      if is_root
+        let col = a:pfx + found + 1
+      elseif found < dir_len
+        let col = a:pfx + fname_len + found + 3
+      elseif found == dir_len
+        let col = a:pfx + fname_len + dir_len + 3
+      else
+        let col = a:pfx + found - dir_len
+      endif
+      call add(cols, col)
+      let fi = found + 1
+    endif
+  endfor
+  return cols
+endfunction
+
 function! yac#picker_info() abort
   return {'mode': s:picker.mode, 'count': len(s:picker.all_locations), 'items': len(s:picker.items)}
 endfunction
@@ -3145,8 +3186,8 @@ function! s:picker_create_ui(opts) abort
   highlight default link YacPickerSelected CursorLine
   highlight default link YacPickerHeader Directory
   highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
-  highlight default YacPickerPrefix ctermfg=Cyan gui=bold guifg=#56B6C2
-  highlight default YacPickerMatch ctermfg=Yellow gui=bold guifg=#E5C07B
+  highlight default link YacPickerPrefix Function
+  highlight default link YacPickerMatch Keyword
 
   let s:picker.cursor_col = 0
   call s:picker_set_text('')
@@ -3572,7 +3613,8 @@ function! s:picker_render_results() abort
       elseif s:picker.mode ==# 'theme'
         call add(lines, '  ' . label)
       else
-        let label = fnamemodify(label, ':.')
+        let rel = fnamemodify(label, ':.')
+        let label = yac#picker_file_label(rel)
         let prefix = s:picker.lnum_width > 0
           \ ? printf('  %*d: ', s:picker.lnum_width, get(item, 'line', 0) + 1)
           \ : '  '
@@ -3593,12 +3635,39 @@ function! s:picker_render_results() abort
   if !empty(query)
     if s:picker.mode ==# 'grep'
       let pat = '\c\V' . escape(query, '\')
+      call win_execute(s:picker.results_popup,
+        \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
+    elseif s:picker.mode ==# 'file'
+      " Scan full relative path; map each matched position to display column.
+      " Display format: '  fname  dir/'
+      " - fname at cols pfx+1 .. pfx+len(fname)
+      " - dir_part at cols pfx+len(fname)+3 .. (after the '  ' separator)
+      let query_lower = tolower(query)
+      let pfx = s:picker.lnum_width > 0 ? 2 + s:picker.lnum_width + 2 : 2
+      let positions = []
+      for i in range(len(s:picker.items))
+        let item = s:picker.items[i]
+        if get(item, 'is_header', 0) | continue | endif
+        let rel = fnamemodify(get(item, 'label', ''), ':.')
+        for col in yac#picker_file_match_cols(rel, query_lower, pfx)
+          call add(positions, [i + 1, col, 1])
+        endfor
+      endfor
+      let j = 0
+      let match_cmds = []
+      while j < len(positions)
+        call add(match_cmds, 'call matchaddpos("YacPickerMatch", ' . string(positions[j : j + 7]) . ', 15)')
+        let j += 8
+      endwhile
+      if !empty(match_cmds)
+        call win_execute(s:picker.results_popup, join(match_cmds, ' | '))
+      endif
     else
       let chars = join(uniq(sort(split(query, '\zs'))), '')
       let pat = '\c[' . escape(chars, '\]^-') . ']'
+      call win_execute(s:picker.results_popup,
+        \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
     endif
-    call win_execute(s:picker.results_popup,
-      \ 'call matchadd("YacPickerMatch", "' . escape(pat, '\"') . '", 15)')
   endif
   call s:picker_highlight_selected()
 endfunction
@@ -3615,8 +3684,8 @@ function! s:picker_highlight_selected() abort
   endif
   let pos = popup_getpos(s:picker.results_popup)
   let visible = get(pos, 'core_height', 15)
-  " selected is 0-indexed, firstline is 1-based
-  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, s:picker.selected - visible + 2])})
+  let lnum = s:picker.selected >= 0 ? s:picker.selected + 1 : 1
+  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, lnum - visible + 1])})
 endfunction
 
 function! s:picker_select_next() abort
