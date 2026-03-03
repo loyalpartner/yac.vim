@@ -61,16 +61,23 @@ pub fn loadUserConfigs(allocator: Allocator) ?[]LangConfig {
     return configs.toOwnedSlice(allocator) catch null;
 }
 
+/// Return the user config directory (e.g. ~/.config/yac). Caller owns the memory.
+pub fn getUserConfigDir(allocator: Allocator) ?[]const u8 {
+    if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg| {
+        return std.fmt.allocPrint(allocator, "{s}/yac", .{xdg}) catch null;
+    }
+    if (std.posix.getenv("HOME")) |home| {
+        return std.fmt.allocPrint(allocator, "{s}/.config/yac", .{home}) catch null;
+    }
+    return null;
+}
+
 /// Resolve the user config path: $XDG_CONFIG_HOME/yac/languages.json
 /// or $HOME/.config/yac/languages.json as fallback.
 fn resolveUserConfigPath(allocator: Allocator) ?[]const u8 {
-    if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg| {
-        return std.fmt.allocPrint(allocator, "{s}/yac/languages.json", .{xdg}) catch null;
-    }
-    if (std.posix.getenv("HOME")) |home| {
-        return std.fmt.allocPrint(allocator, "{s}/.config/yac/languages.json", .{home}) catch null;
-    }
-    return null;
+    const dir = getUserConfigDir(allocator) orelse return null;
+    defer allocator.free(dir);
+    return std.fmt.allocPrint(allocator, "{s}/languages.json", .{dir}) catch null;
 }
 
 fn loadFromFile(allocator: Allocator, path: []const u8, override_query_dir: ?[]const u8, configs: *std.ArrayList(LangConfig)) void {

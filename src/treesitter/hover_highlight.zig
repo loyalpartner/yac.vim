@@ -237,7 +237,7 @@ fn parseMarkdown(
 /// }
 pub fn extractHoverHighlights(
     allocator: Allocator,
-    ts_state: *const TreeSitter,
+    ts_state: *TreeSitter,
     markdown: []const u8,
     fallback_lang: []const u8,
 ) !Value {
@@ -291,7 +291,7 @@ pub fn extractHoverHighlights(
         // Use block language, fallback to buffer filetype for unlabeled blocks
         const effective_lang = if (blk.lang.len > 0) blk.lang else fallback_lang;
         if (effective_lang.len == 0) continue;
-        const lang_state = ts_state.findLangStateByName(effective_lang) orelse continue;
+        const lang_state = ts_state.findOrLoadLangState(effective_lang) orelse continue;
         const hl_query = lang_state.highlights orelse continue;
 
         // Trust tree-sitter's native error recovery

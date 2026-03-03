@@ -128,6 +128,8 @@ pub const TreeSitter = struct {
     dynamic_langs: std.StringHashMap(DynamicLang),
     buffers: std.StringHashMap(BufferTree),
     wasm_loader: WasmLoader,
+    /// Known language directories for lazy loading.
+    lang_dirs: std.ArrayListUnmanaged([]const u8),
 
     pub fn init(allocator: Allocator) TreeSitter {
         const wasm_loader = WasmLoader.init(allocator) catch |e| {
@@ -139,6 +141,7 @@ pub const TreeSitter = struct {
             .dynamic_langs = std.StringHashMap(DynamicLang).init(allocator),
             .buffers = std.StringHashMap(BufferTree).init(allocator),
             .wasm_loader = wasm_loader,
+            .lang_dirs = .{},
         };
 
         // Load languages from user config (~/.config/yac/languages.json)
@@ -163,11 +166,18 @@ pub const TreeSitter = struct {
         }
         self.dynamic_langs.deinit();
 
+        for (self.lang_dirs.items) |dir| self.allocator.free(dir);
+        self.lang_dirs.deinit(self.allocator);
+
         self.wasm_loader.deinit();
     }
 
     /// Load languages from user configuration (~/.config/yac/languages.json).
     fn loadUserLanguages(self: *TreeSitter) void {
+        // Record user config dir for lazy loading
+        if (lang_config.getUserConfigDir(self.allocator)) |dir| {
+            self.addLangDir(dir);
+        }
         const configs = lang_config.loadUserConfigs(self.allocator) orelse return;
         self.registerConfigs(configs);
     }
@@ -176,6 +186,7 @@ pub const TreeSitter = struct {
     /// Reads {lang_dir}/languages.json for grammar/extension info.
     /// Queries are loaded from {lang_dir}/queries/.
     pub fn loadFromDir(self: *TreeSitter, lang_dir: []const u8) void {
+        self.addLangDir(self.allocator.dupe(u8, lang_dir) catch return);
         const configs = lang_config.loadFromDir(self.allocator, lang_dir) orelse {
             log.warn("TreeSitter: no languages found in {s}", .{lang_dir});
             return;
@@ -233,6 +244,42 @@ pub const TreeSitter = struct {
         };
 
         log.info("TreeSitter: registered language '{s}'", .{config.name});
+    }
+
+    /// Add a language directory to the known list (deduplicating).
+    /// Takes ownership of the passed-in string.
+    fn addLangDir(self: *TreeSitter, dir: []const u8) void {
+        for (self.lang_dirs.items) |existing| {
+            if (std.mem.eql(u8, existing, dir)) {
+                self.allocator.free(dir);
+                return;
+            }
+        }
+        self.lang_dirs.append(self.allocator, dir) catch {
+            self.allocator.free(dir);
+        };
+    }
+
+    /// Look up a LangState by name, lazily loading from known directories if needed.
+    pub fn findOrLoadLangState(self: *TreeSitter, name: []const u8) ?*const LangState {
+        if (self.findLangStateByName(name)) |ls| return ls;
+
+        // Try loading from known directories
+        for (self.lang_dirs.items) |dir| {
+            const configs = lang_config.loadFromDir(self.allocator, dir) orelse continue;
+            defer {
+                for (configs) |c| c.deinit(self.allocator);
+                self.allocator.free(configs);
+            }
+            for (configs) |config| {
+                if (std.mem.eql(u8, config.name, name)) {
+                    self.registerLangConfig(config);
+                    if (self.findLangStateByName(name)) |ls| return ls;
+                }
+            }
+        }
+
+        return null;
     }
 
     // -- Public query API --
