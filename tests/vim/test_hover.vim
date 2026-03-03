@@ -171,6 +171,56 @@ endif
 call yac_test#clear_popups()
 
 " ============================================================================
+" Test 7: Hover on function — function name should be highlighted
+" ============================================================================
+call yac_test#log('INFO', 'Test 7: Hover function name highlighting')
+
+" 定位到 createUserMap 函数定义
+call cursor(30, 8)
+let word = expand('<cword>')
+call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
+
+call yac_test#clear_popups()
+YacHover
+call yac_test#wait_hover_popup(5000)
+
+let pid = yac#get_hover_popup_id()
+if pid == -1
+  call yac_test#log('INFO', 'No hover popup, skipping function highlight test')
+  call yac_test#skip('hover_fn_highlight', 'No hover popup appeared')
+else
+  let popup_bufnr = winbufnr(pid)
+  let popup_lines = getbufline(popup_bufnr, 1, '$')
+  call yac_test#log('INFO', 'Fn hover lines=' . len(popup_lines))
+  for i in range(min([5, len(popup_lines)]))
+    call yac_test#log('INFO', '  popup[' . (i+1) . ']: ' . popup_lines[i])
+  endfor
+
+  " 收集所有 prop types
+  let fn_props = 0
+  let all_groups = {}
+  for lnum in range(1, len(popup_lines))
+    let props = prop_list(lnum, {'bufnr': popup_bufnr})
+    for p in props
+      let ptype = get(p, 'type', '')
+      if ptype =~# '^yac_hover_'
+        let all_groups[ptype] = get(all_groups, ptype, 0) + 1
+        if ptype ==# 'yac_hover_YacTsFunction'
+          let fn_props += 1
+        endif
+      endif
+    endfor
+  endfor
+
+  call yac_test#log('INFO', 'Function hover prop groups: ' . string(all_groups))
+  call yac_test#log('INFO', 'YacTsFunction props: ' . fn_props)
+  call yac_test#assert_true(fn_props > 0,
+    \ 'Hover popup should have YacTsFunction property for function name')
+endif
+
+call yac_test#clear_popups()
+
+" ============================================================================
 " Cleanup
 " ============================================================================
 call yac_test#teardown()

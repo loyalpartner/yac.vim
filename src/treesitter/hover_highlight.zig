@@ -178,8 +178,7 @@ pub fn extractHoverHighlights(
     // Collapse consecutive blank lines and build output lines array.
     // Track the mapping from output index → original index for highlights.
     var lines_arr = std.json.Array.init(allocator);
-    var out_map = std.ArrayList(u32).init(allocator); // out_idx → orig_idx
-    defer out_map.deinit();
+    var out_map: std.ArrayListUnmanaged(u32) = .{}; // out_idx → orig_idx
     var prev_blank = false;
     for (parsed.lines.items, 0..) |line, orig_i| {
         const is_blank = std.mem.trim(u8, line, " \t").len == 0;
@@ -215,18 +214,21 @@ pub fn extractHoverHighlights(
         const lang_state = ts_state.findLangStateByName(blk.lang) orelse continue;
         const hl_query = lang_state.highlights orelse continue;
 
-        // Parse the code block text
-        const tree = lang_state.parser.parseString(blk.content, null) orelse continue;
+        // Append "\n{}" to help tree-sitter parse incomplete code fragments
+        // (e.g. function signatures without body from zls plaintext hover).
+        // Only the original line range is used for highlights.
+        const patched = try std.fmt.allocPrint(allocator, "{s}\n{{}}", .{blk.content});
+        const tree = lang_state.parser.parseString(patched, null) orelse continue;
         defer tree.destroy();
 
-        // Extract highlights (0-based within the code block)
+        // Extract highlights only for original lines (exclude the patched "{}").
         const hl_val = highlights_mod.extractHighlights(
             allocator,
             hl_query,
             tree,
-            blk.content,
+            patched,
             0,
-            blk.line_count + 1,
+            blk.line_count,
         ) catch continue;
 
         // Extract the highlights object and shift line numbers
