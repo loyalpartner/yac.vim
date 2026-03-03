@@ -509,9 +509,9 @@ function! yac#document_symbols() abort
 endfunction
 
 function! yac#folding_range() abort
-  call s:request('folding_range', {
+  call s:request('ts_folding', {
     \   'file': expand('%:p')
-    \ }, 's:handle_folding_range_response')
+    \ }, 's:handle_ts_folding_response')
 endfunction
 
 function! yac#code_action() abort
@@ -957,27 +957,10 @@ function! s:handle_document_symbols_response(channel, response) abort
   endif
 endfunction
 
-" folding_range 响应处理器
-function! s:handle_folding_range_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: folding_range response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'ranges') && !empty(a:response.ranges)
-    call s:apply_folding_ranges(a:response.ranges)
-  else
-    " Fallback to tree-sitter folding
-    call s:debug_log('[FALLBACK]: LSP folding empty, trying tree-sitter')
-    call s:request('ts_folding', {
-      \   'file': expand('%:p')
-      \ }, 's:handle_ts_folding_response')
-  endif
-endfunction
-
 function! s:handle_ts_folding_response(channel, response) abort
   call s:debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
-  else
-    call yac#toast('No folding ranges available')
   endif
 endfunction
 
@@ -1133,6 +1116,11 @@ function! s:handle_file_open_response(channel, response) abort
     let s:log_file = a:response.log_file
     " Silent init - log file path available via :YacDebugStatus
     call s:debug_log('yacd initialized with log: ' . s:log_file)
+  endif
+
+  " 文件已解析完成，自动触发折叠指示器（内容变化前只触发一次）
+  if get(b:, 'yac_lsp_supported', 0) && !exists('b:yac_fold_levels')
+    call yac#folding_range()
   endif
 endfunction
 
@@ -2436,14 +2424,64 @@ function! s:apply_folding_ranges(ranges) abort
   endfor
 
   let b:yac_fold_levels = levels
+  let b:yac_fold_start_lines = map(copy(filtered), {_, r -> r.start_line + 1})
+  let b:yac_fold_start_set = {}
+  for lnum in b:yac_fold_start_lines
+    let b:yac_fold_start_set[lnum] = 1
+  endfor
   setlocal foldmethod=expr
   setlocal foldexpr=yac#foldexpr(v:lnum)
+  setlocal foldtext=yac#foldtext()
+  setlocal foldlevel=99
+  if has('patch-8.2.1516') && &l:fillchars !~# 'fold: '
+    let l:fc = substitute(&l:fillchars, ',\?fold:[^,]*', '', 'g')
+    let l:fc = substitute(l:fc, '^,\+', '', '')
+    let &l:fillchars = (empty(l:fc) ? '' : l:fc . ',') . 'fold: '
+  endif
+  setlocal foldcolumn=0
 
-  call yac#toast('Applied ' . len(filtered) . ' folding ranges')
+  call yac#update_fold_signs()
 endfunction
 
 function! yac#foldexpr(lnum) abort
-  return get(b:yac_fold_levels, a:lnum, 0)
+  if !exists('b:yac_fold_levels')
+    return 0
+  endif
+  let level = get(b:yac_fold_levels, a:lnum, 0)
+  if level > 0 && has_key(b:yac_fold_start_set, a:lnum)
+    return '>' . level
+  endif
+  return level
+endfunction
+
+function! yac#foldtext() abort
+  let line = getline(v:foldstart)
+  let hidden = max([v:foldend - v:foldstart, 1])
+  return line . '  ' . hidden . ' lines'
+endfunction
+
+function! yac#update_fold_signs() abort
+  if !exists('b:yac_fold_start_lines')
+    return
+  endif
+  let l:state = {}
+  for lnum in b:yac_fold_start_lines
+    let l:state[lnum] = foldclosed(lnum) != -1 ? 'yac_fold_closed' : 'yac_fold_open'
+  endfor
+  if l:state ==# get(b:, 'yac_fold_sign_cache', {})
+    return
+  endif
+  if !exists('s:fold_signs_defined')
+    call sign_define('yac_fold_open',   {'text': '▾', 'texthl': 'FoldColumn'})
+    call sign_define('yac_fold_closed', {'text': '▸', 'texthl': 'FoldColumn'})
+    let s:fold_signs_defined = 1
+  endif
+  let bufnr = bufnr('%')
+  call sign_unplace('yac_folds', {'buffer': bufnr})
+  for [lnum, name] in items(l:state)
+    call sign_place(0, 'yac_folds', name, bufnr, {'lnum': lnum})
+  endfor
+  let b:yac_fold_sign_cache = l:state
 endfunction
 
 " 测试入口：直接注入 mock ranges，供单元测试调用

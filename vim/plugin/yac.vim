@@ -162,6 +162,13 @@ if get(g:, 'yac_auto_start', 1)
   augroup END
 endif
 
+if get(g:, 'yac_auto_start', 1)
+  augroup yac_folds
+    autocmd!
+    autocmd CursorHold * if s:not_preview_loading() && exists('b:yac_fold_start_lines') | call yac#update_fold_signs() | endif
+  augroup END
+endif
+
 " Tree-sitter highlights autocommands
 " Use * pattern — handlers check per-buffer enablement
 augroup yac_ts_highlights
