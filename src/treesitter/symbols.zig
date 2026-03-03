@@ -167,6 +167,8 @@ pub fn extractPickerSymbols(
         var effective_detail: []const u8 = "";
         if (std.mem.eql(u8, k, "Function") or std.mem.eql(u8, k, "Method")) {
             prefix_str = try buildFunctionDetail(allocator, node);
+        } else if (std.mem.eql(u8, k, "Test")) {
+            prefix_str = "test";
         } else if (std.mem.eql(u8, k, "Struct")) {
             effective_detail = try buildContainerDetail(allocator, node, "struct");
         } else if (std.mem.eql(u8, k, "Enum")) {
