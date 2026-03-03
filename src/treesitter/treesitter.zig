@@ -140,9 +140,6 @@ pub const TreeSitter = struct {
             .wasm_loader = wasm_loader,
         };
 
-        // Load built-in languages bundled with the executable
-        self.loadBuiltinLanguages();
-
         // Load languages from user config (~/.config/yac/languages.json)
         self.loadUserLanguages();
 
@@ -166,31 +163,6 @@ pub const TreeSitter = struct {
         self.dynamic_langs.deinit();
 
         self.wasm_loader.deinit();
-    }
-
-    /// Load all built-in languages shipped alongside the executable.
-    /// Expects: {exe_dir}/../../languages/{lang_name}/ layout.
-    fn loadBuiltinLanguages(self: *TreeSitter) void {
-        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const exe_path = std.fs.selfExePath(&exe_buf) catch return;
-        const exe_dir = std.fs.path.dirname(exe_path) orelse return;
-
-        // exe_dir = {yac_root}/zig-out/bin  →  languages = {yac_root}/languages
-        const rel = std.fmt.allocPrint(self.allocator, "{s}/../../languages", .{exe_dir}) catch return;
-        defer self.allocator.free(rel);
-        const abs = std.fs.realpathAlloc(self.allocator, rel) catch return;
-        defer self.allocator.free(abs);
-
-        var dir = std.fs.openDirAbsolute(abs, .{ .iterate = true }) catch return;
-        defer dir.close();
-
-        var it = dir.iterate();
-        while (it.next() catch null) |entry| {
-            if (entry.kind != .directory) continue;
-            const lang_dir = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ abs, entry.name }) catch continue;
-            defer self.allocator.free(lang_dir);
-            self.loadFromDir(lang_dir);
-        }
     }
 
     /// Load languages from user configuration (~/.config/yac/languages.json).

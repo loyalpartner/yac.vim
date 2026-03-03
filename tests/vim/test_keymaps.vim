@@ -66,7 +66,8 @@ let gr_map = maparg('gr', 'n')
 call yac_test#assert_true(!empty(gr_map), 'gr mapping should exist')
 
 if !empty(gr_map)
-  call cursor(14, 12)
+  " Position on 'User' type (line 6, col 11) which has many references
+  call cursor(6, 11)
   normal gr
   " References opens picker, not quickfix
   call yac_test#wait_assert({-> yac#picker_is_open()}, 5000,
