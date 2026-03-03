@@ -349,12 +349,13 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, cap_name, entry[0])) return entry[1];
     }
 
-    // Fallback: strip last ".component" and try parent
-    // e.g. "keyword.directive" → try "keyword"
-    if (std.mem.lastIndexOfScalar(u8, cap_name, '.')) |dot| {
-        const parent = cap_name[0..dot];
+    // Fallback: walk up dot-separated hierarchy for longest match
+    // e.g. "keyword.control.flow" → try "keyword.control" → try "keyword"
+    var remaining = cap_name;
+    while (std.mem.lastIndexOfScalar(u8, remaining, '.')) |dot| {
+        remaining = remaining[0..dot];
         inline for (map) |entry| {
-            if (std.mem.eql(u8, parent, entry[0])) return entry[1];
+            if (std.mem.eql(u8, remaining, entry[0])) return entry[1];
         }
     }
 
@@ -379,4 +380,8 @@ test "captureToGroup fallback to parent" {
     try std.testing.expectEqualStrings("YacTsFunction", captureToGroup("function.special").?);
     // "totally.unknown" → "totally" not in map → null
     try std.testing.expect(captureToGroup("totally.unknown") == null);
+    // Multi-level fallback: "keyword.control.flow.return" → "keyword.control" → YacTsKeywordConditional
+    try std.testing.expectEqualStrings("YacTsKeywordConditional", captureToGroup("keyword.control.flow.return").?);
+    // Multi-level fallback: "function.method.call.special" → "function.method.call" → YacTsFunctionCall
+    try std.testing.expectEqualStrings("YacTsFunctionCall", captureToGroup("function.method.call.special").?);
 }
