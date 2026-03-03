@@ -165,14 +165,50 @@ pub fn extractHoverHighlights(
 ) !Value {
     const parsed = try parseMarkdown(allocator, markdown);
 
-    // Build lines JSON array
+    // Build a set of line indices that belong to code blocks
+    var code_lines = std.AutoHashMap(u32, void).init(allocator);
+    defer code_lines.deinit();
+    for (parsed.blocks.items) |blk| {
+        var i: u32 = 0;
+        while (i < blk.line_count) : (i += 1) {
+            try code_lines.put(blk.start_line + i, {});
+        }
+    }
+
+    // Collapse consecutive blank lines and build output lines array.
+    // Track the mapping from output index → original index for highlights.
     var lines_arr = std.json.Array.init(allocator);
-    for (parsed.lines.items) |line| {
+    var out_map = std.ArrayList(u32).init(allocator); // out_idx → orig_idx
+    defer out_map.deinit();
+    var prev_blank = false;
+    for (parsed.lines.items, 0..) |line, orig_i| {
+        const is_blank = std.mem.trim(u8, line, " \t").len == 0;
+        const is_code = code_lines.contains(@intCast(orig_i));
+        // Collapse consecutive blank lines outside code blocks
+        if (is_blank and prev_blank and !is_code) continue;
+        prev_blank = is_blank;
         try lines_arr.append(json.jsonString(line));
+        try out_map.append(allocator, @intCast(orig_i));
+    }
+
+    // Rebuild code_lines with output indices for shift calculations
+    var code_out_lines = std.AutoHashMap(u32, void).init(allocator);
+    defer code_out_lines.deinit();
+    for (out_map.items, 0..) |orig_idx, out_i| {
+        if (code_lines.contains(orig_idx)) {
+            try code_out_lines.put(@intCast(out_i), {});
+        }
     }
 
     // Merge all code block highlights into a single dict
     var merged_groups = std.StringHashMap(std.json.Array).init(allocator);
+
+    // Build orig→out line index mapping for shifting code block highlights
+    var orig_to_out = std.AutoHashMap(u32, u32).init(allocator);
+    defer orig_to_out.deinit();
+    for (out_map.items, 0..) |orig_idx, out_i| {
+        try orig_to_out.put(orig_idx, @intCast(out_i));
+    }
 
     for (parsed.blocks.items) |blk| {
         if (blk.lang.len == 0) continue;
@@ -204,7 +240,7 @@ pub fn extractHoverHighlights(
             else => continue,
         };
 
-        // Merge into merged_groups with line offset
+        // Merge into merged_groups with line offset mapped to output indices
         var git = groups.iterator();
         while (git.next()) |entry| {
             const positions = switch (entry.value_ptr.*) {
@@ -224,18 +260,46 @@ pub fn extractHoverHighlights(
                 };
                 if (pos.items.len < 4) continue;
 
-                // Shift line numbers: [lnum, col, end_lnum, end_col]
-                // lnum and end_lnum are 1-based from extractHighlights,
-                // add start_line (0-based) to get popup-global 1-based lnum
+                // lnum/end_lnum are 1-based from extractHighlights.
+                // Convert: (1-based hl lnum) → (0-based orig) → (0-based out) → (1-based out)
+                const orig_lnum: u32 = @intCast(pos.items[0].integer - 1 + @as(i64, blk.start_line));
+                const orig_end: u32 = @intCast(pos.items[2].integer - 1 + @as(i64, blk.start_line));
+                const out_lnum = orig_to_out.get(orig_lnum) orelse continue;
+                const out_end = orig_to_out.get(orig_end) orelse continue;
+
                 var shifted = std.json.Array.init(allocator);
                 try shifted.ensureTotalCapacity(4);
-                shifted.appendAssumeCapacity(json.jsonInteger(pos.items[0].integer + @as(i64, blk.start_line)));
+                shifted.appendAssumeCapacity(json.jsonInteger(@as(i64, out_lnum) + 1));
                 shifted.appendAssumeCapacity(pos.items[1]);
-                shifted.appendAssumeCapacity(json.jsonInteger(pos.items[2].integer + @as(i64, blk.start_line)));
+                shifted.appendAssumeCapacity(json.jsonInteger(@as(i64, out_end) + 1));
                 shifted.appendAssumeCapacity(pos.items[3]);
                 try gop.value_ptr.append(.{ .array = shifted });
             }
         }
+    }
+
+    // Add YacTsComment highlights for non-code-block, non-empty lines (doc text)
+    for (out_map.items, 0..) |_, out_i| {
+        if (code_out_lines.contains(@intCast(out_i))) continue;
+        const line_str = switch (lines_arr.items[out_i]) {
+            .string => |s| s,
+            else => continue,
+        };
+        if (std.mem.trim(u8, line_str, " \t").len == 0) continue;
+
+        const lnum_1: i64 = @as(i64, @intCast(out_i)) + 1;
+        var pos = std.json.Array.init(allocator);
+        try pos.ensureTotalCapacity(4);
+        pos.appendAssumeCapacity(json.jsonInteger(lnum_1));
+        pos.appendAssumeCapacity(json.jsonInteger(1));
+        pos.appendAssumeCapacity(json.jsonInteger(lnum_1));
+        pos.appendAssumeCapacity(json.jsonInteger(@as(i64, @intCast(line_str.len)) + 1));
+
+        const gop = try merged_groups.getOrPut("YacTsComment");
+        if (!gop.found_existing) {
+            gop.value_ptr.* = std.json.Array.init(allocator);
+        }
+        try gop.value_ptr.append(.{ .array = pos });
     }
 
     // Build highlights JSON object
