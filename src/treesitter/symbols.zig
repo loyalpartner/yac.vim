@@ -97,6 +97,9 @@ pub fn extractPickerSymbols(
     cursor.exec(query, tree.rootNode());
 
     var items = std.json.Array.init(allocator);
+    // Track which impl blocks (by start row) have already been emitted as headers.
+    var seen_impl_rows = std.AutoHashMap(u32, void).init(allocator);
+    defer seen_impl_rows.deinit();
 
     while (cursor.nextMatch()) |match| {
         var name_text: ?[]const u8 = null;
@@ -104,6 +107,8 @@ pub fn extractPickerSymbols(
         var kind: ?[]const u8 = null;
         var outer_node: ?ts.Node = null;
         var name_node: ?ts.Node = null;
+        var impl_type_node: ?ts.Node = null;
+        var impl_type_text: ?[]const u8 = null;
 
         for (match.captures) |cap| {
             const cap_name = query.captureNameForId(cap.index) orelse continue;
@@ -112,6 +117,9 @@ pub fn extractPickerSymbols(
                 name_node = cap.node;
             } else if (std.mem.eql(u8, cap_name, "detail")) {
                 detail_text = nodeText(cap.node, source);
+            } else if (std.mem.eql(u8, cap_name, "impl_type")) {
+                impl_type_node = cap.node;
+                impl_type_text = nodeText(cap.node, source);
             } else if (captureToKind(cap_name)) |k| {
                 kind = k;
                 outer_node = cap.node;
@@ -122,15 +130,42 @@ pub fn extractPickerSymbols(
         const k = kind orelse continue;
         const node = outer_node orelse continue;
 
+        // For methods: emit an impl block header on first encounter, then indent at depth=1.
+        var depth: i64 = 0;
+        if (std.mem.eql(u8, k, "Method")) {
+            if (impl_type_node) |inode| {
+                // @impl_type is a type_identifier; its parent is the impl_item.
+                const impl_node = inode.parent() orelse inode;
+                const impl_row = impl_node.startPoint().row;
+                if (!seen_impl_rows.contains(impl_row)) {
+                    try seen_impl_rows.put(impl_row, {});
+                    const itype_name = impl_type_text orelse "impl";
+                    const impl_hl = try buildItemHighlights(allocator, "Interface", "impl", itype_name, "");
+                    const impl_start = impl_node.startPoint();
+                    var hdr = ObjectMap.init(allocator);
+                    try hdr.put("label", json.jsonString(itype_name));
+                    try hdr.put("prefix", json.jsonString("impl"));
+                    try hdr.put("detail", json.jsonString(""));
+                    try hdr.put("kind", json.jsonString("Interface"));
+                    try hdr.put("depth", json.jsonInteger(0));
+                    try hdr.put("line", json.jsonInteger(@intCast(impl_start.row)));
+                    try hdr.put("column", json.jsonInteger(@intCast(impl_start.column)));
+                    try hdr.put("highlights", .{ .array = impl_hl });
+                    try items.append(.{ .object = hdr });
+                }
+            }
+            depth = 1;
+        }
+
         const pos_node = name_node orelse node;
         const start = pos_node.startPoint();
 
-        // Functions: prefix = "fn" / "pub fn" / … shown BEFORE the name.
+        // Functions/Methods: prefix = "fn" / "pub fn" / … shown BEFORE the name.
         // Containers: detail = "struct {" / "pub enum {" shown after the name.
         // Variables/modules: detail = captured @detail text.
         var prefix_str: []const u8 = "";
         var effective_detail: []const u8 = "";
-        if (std.mem.eql(u8, k, "Function")) {
+        if (std.mem.eql(u8, k, "Function") or std.mem.eql(u8, k, "Method")) {
             prefix_str = try buildFunctionDetail(allocator, node);
         } else if (std.mem.eql(u8, k, "Struct")) {
             effective_detail = try buildContainerDetail(allocator, node, "struct");
@@ -149,7 +184,7 @@ pub fn extractPickerSymbols(
         try item.put("prefix", json.jsonString(prefix_str));
         try item.put("detail", json.jsonString(effective_detail));
         try item.put("kind", json.jsonString(k));
-        try item.put("depth", json.jsonInteger(0));
+        try item.put("depth", json.jsonInteger(depth));
         try item.put("line", json.jsonInteger(@intCast(start.row)));
         try item.put("column", json.jsonInteger(@intCast(start.column)));
         try item.put("highlights", .{ .array = highlights });
