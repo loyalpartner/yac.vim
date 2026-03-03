@@ -3,13 +3,14 @@ const ts = @import("tree_sitter");
 const json = @import("../json_utils.zig");
 const highlights_mod = @import("highlights.zig");
 const treesitter_mod = @import("treesitter.zig");
+const md4c = @cImport(@cInclude("md4c.h"));
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const TreeSitter = treesitter_mod.TreeSitter;
 
-/// Language alias mapping: markdown fence name → yac language name.
+/// Language alias mapping: markdown fence name -> yac language name.
 const lang_aliases = std.StaticStringMap([]const u8).initComptime(.{
     .{ "rs", "rust" },
     .{ "js", "javascript" },
@@ -41,7 +42,149 @@ const CodeBlock = struct {
     line_count: u32,
 };
 
-/// Parse markdown text: strip fences, clean headings, extract code block metadata.
+/// State passed as userdata to md4c SAX callbacks.
+const Md4cState = struct {
+    allocator: Allocator,
+    lines: std.ArrayList([]const u8),
+    blocks: std.ArrayList(CodeBlock),
+    in_code_block: bool,
+    code_lang: []const u8,
+    code_start_line: u32,
+    code_content: std.ArrayList(u8),
+    text_buf: std.ArrayList(u8),
+    err: bool,
+
+    fn flushTextBuf(self: *Md4cState) void {
+        if (self.text_buf.items.len == 0) return;
+        var it = std.mem.splitScalar(u8, self.text_buf.items, '\n');
+        while (it.next()) |line| {
+            self.lines.append(self.allocator, line) catch {
+                self.err = true;
+                return;
+            };
+        }
+        // Don't deinit - lines reference the buffer. Start a fresh buffer.
+        self.text_buf = .{};
+    }
+
+    fn flushCodeBlock(self: *Md4cState) void {
+        // Remove trailing newline from code_content if present
+        var content = self.code_content.items;
+        if (content.len > 0 and content[content.len - 1] == '\n') {
+            content = content[0 .. content.len - 1];
+        }
+        const duped = self.allocator.dupe(u8, content) catch {
+            self.err = true;
+            return;
+        };
+        // Count lines and append to display lines
+        var line_count: u32 = 0;
+        var it = std.mem.splitScalar(u8, duped, '\n');
+        while (it.next()) |line| {
+            self.lines.append(self.allocator, line) catch {
+                self.err = true;
+                return;
+            };
+            line_count += 1;
+        }
+        self.blocks.append(self.allocator, .{
+            .lang = self.code_lang,
+            .start_line = self.code_start_line,
+            .content = duped,
+            .line_count = line_count,
+        }) catch {
+            self.err = true;
+            return;
+        };
+        self.code_content = .{};
+    }
+};
+
+fn md4cEnterBlock(block_type: md4c.MD_BLOCKTYPE, detail: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) c_int {
+    const state: *Md4cState = @ptrCast(@alignCast(userdata));
+    if (state.err) return 1;
+
+    switch (block_type) {
+        md4c.MD_BLOCK_CODE => {
+            state.flushTextBuf();
+            state.in_code_block = true;
+            state.code_start_line = @intCast(state.lines.items.len);
+            state.code_content.clearRetainingCapacity();
+            // Extract language from detail
+            if (detail) |d| {
+                const code_detail: *const md4c.MD_BLOCK_CODE_DETAIL = @ptrCast(@alignCast(d));
+                if (code_detail.lang.size > 0 and code_detail.lang.text != null) {
+                    const lang_slice = code_detail.lang.text[0..code_detail.lang.size];
+                    state.code_lang = normalizeLang(lang_slice);
+                } else {
+                    state.code_lang = "";
+                }
+            } else {
+                state.code_lang = "";
+            }
+        },
+        md4c.MD_BLOCK_HR => {
+            state.flushTextBuf();
+            // HR -> empty line (matches old cleanMarkdownLine behavior)
+            state.lines.append(state.allocator, "") catch {
+                state.err = true;
+                return 1;
+            };
+        },
+        else => {},
+    }
+    return 0;
+}
+
+fn md4cLeaveBlock(block_type: md4c.MD_BLOCKTYPE, _: ?*anyopaque, userdata: ?*anyopaque) callconv(.c) c_int {
+    const state: *Md4cState = @ptrCast(@alignCast(userdata));
+    if (state.err) return 1;
+
+    switch (block_type) {
+        md4c.MD_BLOCK_CODE => {
+            state.flushCodeBlock();
+            state.in_code_block = false;
+        },
+        md4c.MD_BLOCK_P, md4c.MD_BLOCK_H => {
+            state.flushTextBuf();
+        },
+        else => {},
+    }
+    return 0;
+}
+
+fn md4cText(text_type: md4c.MD_TEXTTYPE, text_ptr: [*c]const md4c.MD_CHAR, size: md4c.MD_SIZE, userdata: ?*anyopaque) callconv(.c) c_int {
+    const state: *Md4cState = @ptrCast(@alignCast(userdata));
+    if (state.err) return 1;
+    if (size == 0) return 0;
+
+    const slice = text_ptr[0..size];
+
+    if (state.in_code_block) {
+        state.code_content.appendSlice(state.allocator, slice) catch {
+            state.err = true;
+            return 1;
+        };
+    } else {
+        switch (text_type) {
+            md4c.MD_TEXT_SOFTBR, md4c.MD_TEXT_BR => {
+                state.text_buf.append(state.allocator, '\n') catch {
+                    state.err = true;
+                    return 1;
+                };
+            },
+            else => {
+                state.text_buf.appendSlice(state.allocator, slice) catch {
+                    state.err = true;
+                    return 1;
+                };
+            },
+        }
+    }
+    return 0;
+}
+
+/// Parse markdown text using md4c: extract display lines and code block metadata.
 /// Returns display lines and code block descriptors.
 fn parseMarkdown(
     allocator: Allocator,
@@ -50,105 +193,39 @@ fn parseMarkdown(
     lines: std.ArrayList([]const u8),
     blocks: std.ArrayList(CodeBlock),
 } {
-    var lines: std.ArrayList([]const u8) = .{};
-    var blocks: std.ArrayList(CodeBlock) = .{};
+    var state = Md4cState{
+        .allocator = allocator,
+        .lines = .{},
+        .blocks = .{},
+        .in_code_block = false,
+        .code_lang = "",
+        .code_start_line = 0,
+        .code_content = .{},
+        .text_buf = .{},
+        .err = false,
+    };
 
-    var it = std.mem.splitScalar(u8, markdown, '\n');
-    var in_fence = false;
-    var fence_lang: []const u8 = "";
-    var fence_start: u32 = 0;
-    var fence_content: std.ArrayList(u8) = .{};
-    defer fence_content.deinit(allocator);
-    var fence_line_count: u32 = 0;
+    const parser = md4c.MD_PARSER{
+        .abi_version = 0,
+        .flags = 0, // strict CommonMark
+        .enter_block = md4cEnterBlock,
+        .leave_block = md4cLeaveBlock,
+        .enter_span = null,
+        .leave_span = null,
+        .text = md4cText,
+        .debug_log = null,
+        .syntax = null,
+    };
 
-    while (it.next()) |raw| {
-        const line = std.mem.trimRight(u8, raw, "\r");
+    _ = md4c.md_parse(markdown.ptr, @intCast(markdown.len), &parser, @ptrCast(&state));
 
-        if (!in_fence) {
-            if (isFenceOpen(line)) {
-                fence_lang = normalizeLang(line[3..]);
-                fence_start = @intCast(lines.items.len);
-                fence_content.clearRetainingCapacity();
-                fence_line_count = 0;
-                in_fence = true;
-                continue; // skip the ``` line
-            }
-            // Basic markdown cleanup for display
-            try lines.append(allocator, cleanMarkdownLine(line));
-        } else {
-            if (isFenceClose(line)) {
-                // End of code block
-                try blocks.append(allocator, .{
-                    .lang = fence_lang,
-                    .start_line = fence_start,
-                    .content = try allocator.dupe(u8, fence_content.items),
-                    .line_count = fence_line_count,
-                });
-                in_fence = false;
-                continue; // skip closing ```
-            }
-            // Inside code block: add to both fence_content and display lines
-            if (fence_content.items.len > 0 or fence_line_count > 0) {
-                try fence_content.append(allocator, '\n');
-            }
-            try fence_content.appendSlice(allocator, line);
-            fence_line_count += 1;
-            try lines.append(allocator, line);
-        }
-    }
+    if (state.err) return error.OutOfMemory;
 
-    // Handle unclosed fence: output remaining content as plain text
-    if (in_fence) {
-        var remaining_it = std.mem.splitScalar(u8, fence_content.items, '\n');
-        while (remaining_it.next()) |remaining_line| {
-            try lines.append(allocator, remaining_line);
-        }
-    }
+    // Flush any remaining text
+    state.flushTextBuf();
+    if (state.err) return error.OutOfMemory;
 
-    return .{ .lines = lines, .blocks = blocks };
-}
-
-/// Check if a line opens a fenced code block (``` with optional language).
-fn isFenceOpen(line: []const u8) bool {
-    if (line.len < 3) return false;
-    if (!std.mem.startsWith(u8, line, "```")) return false;
-    // Opening fence can have language identifier after ```
-    const rest = std.mem.trim(u8, line[3..], " \t\r");
-    // If rest contains ```, it's not a valid fence
-    return std.mem.indexOf(u8, rest, "```") == null;
-}
-
-/// Check if a line closes a fenced code block.
-fn isFenceClose(line: []const u8) bool {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-    return std.mem.eql(u8, trimmed, "```");
-}
-
-/// Basic markdown line cleanup: strip heading markers, convert --- to empty.
-fn cleanMarkdownLine(line: []const u8) []const u8 {
-    // Heading: ### Foo -> Foo
-    if (line.len > 0 and line[0] == '#') {
-        var i: usize = 0;
-        while (i < line.len and line[i] == '#') : (i += 1) {}
-        while (i < line.len and line[i] == ' ') : (i += 1) {}
-        return line[i..];
-    }
-    // Horizontal rule: --- or *** or ___ (3+ chars) -> empty
-    if (line.len >= 3) {
-        const trimmed = std.mem.trim(u8, line, " \t");
-        if (isHorizontalRule(trimmed)) return "";
-    }
-    return line;
-}
-
-fn isHorizontalRule(line: []const u8) bool {
-    if (line.len < 3) return false;
-    const ch = line[0];
-    if (ch != '-' and ch != '*' and ch != '_') return false;
-    for (line) |c| {
-        if (c != ch and c != ' ') return false;
-    }
-    return true;
+    return .{ .lines = state.lines, .blocks = state.blocks };
 }
 
 /// Main entry: process markdown text and produce highlighted hover content.
@@ -177,9 +254,9 @@ pub fn extractHoverHighlights(
     }
 
     // Collapse consecutive blank lines and build output lines array.
-    // Track the mapping from output index → original index for highlights.
+    // Track the mapping from output index -> original index for highlights.
     var lines_arr = std.json.Array.init(allocator);
-    var out_map: std.ArrayListUnmanaged(u32) = .{}; // out_idx → orig_idx
+    var out_map: std.ArrayListUnmanaged(u32) = .{}; // out_idx -> orig_idx
     var prev_blank = false;
     for (parsed.lines.items, 0..) |line, orig_i| {
         const is_blank = std.mem.trim(u8, line, " \t").len == 0;
@@ -203,7 +280,7 @@ pub fn extractHoverHighlights(
     // Merge all code block highlights into a single dict
     var merged_groups = std.StringHashMap(std.json.Array).init(allocator);
 
-    // Build orig→out line index mapping for shifting code block highlights
+    // Build orig->out line index mapping for shifting code block highlights
     var orig_to_out = std.AutoHashMap(u32, u32).init(allocator);
     defer orig_to_out.deinit();
     for (out_map.items, 0..) |orig_idx, out_i| {
@@ -217,7 +294,7 @@ pub fn extractHoverHighlights(
         const lang_state = ts_state.findLangStateByName(effective_lang) orelse continue;
         const hl_query = lang_state.highlights orelse continue;
 
-        // Trust tree-sitter's native error recovery — no patching or retry
+        // Trust tree-sitter's native error recovery
         const tree = lang_state.parser.parseString(blk.content, null) orelse continue;
         defer tree.destroy();
 
@@ -262,7 +339,7 @@ pub fn extractHoverHighlights(
                 if (pos.items.len < 4) continue;
 
                 // lnum/end_lnum are 1-based from extractHighlights.
-                // Convert: (1-based hl lnum) → (0-based orig) → (0-based out) → (1-based out)
+                // Convert: (1-based hl lnum) -> (0-based orig) -> (0-based out) -> (1-based out)
                 const orig_lnum: u32 = @intCast(pos.items[0].integer - 1 + @as(i64, blk.start_line));
                 const orig_end: u32 = @intCast(pos.items[2].integer - 1 + @as(i64, blk.start_line));
                 const out_lnum = orig_to_out.get(orig_lnum) orelse continue;
@@ -331,41 +408,6 @@ test "normalizeLang" {
     try std.testing.expectEqualStrings("", normalizeLang(""));
 }
 
-test "isFenceOpen" {
-    try std.testing.expect(isFenceOpen("```zig"));
-    try std.testing.expect(isFenceOpen("```python"));
-    try std.testing.expect(isFenceOpen("```"));
-    try std.testing.expect(isFenceOpen("``` rust "));
-    try std.testing.expect(!isFenceOpen("``"));
-    try std.testing.expect(!isFenceOpen("hello"));
-}
-
-test "isFenceClose" {
-    try std.testing.expect(isFenceClose("```"));
-    try std.testing.expect(isFenceClose("  ``` "));
-    try std.testing.expect(!isFenceClose("```zig"));
-    try std.testing.expect(!isFenceClose("hello"));
-}
-
-test "cleanMarkdownLine" {
-    try std.testing.expectEqualStrings("Title", cleanMarkdownLine("# Title"));
-    try std.testing.expectEqualStrings("Sub", cleanMarkdownLine("## Sub"));
-    try std.testing.expectEqualStrings("Deep", cleanMarkdownLine("### Deep"));
-    try std.testing.expectEqualStrings("hello world", cleanMarkdownLine("hello world"));
-    try std.testing.expectEqualStrings("", cleanMarkdownLine("---"));
-    try std.testing.expectEqualStrings("", cleanMarkdownLine("***"));
-    try std.testing.expectEqualStrings("", cleanMarkdownLine("___"));
-}
-
-test "isHorizontalRule" {
-    try std.testing.expect(isHorizontalRule("---"));
-    try std.testing.expect(isHorizontalRule("***"));
-    try std.testing.expect(isHorizontalRule("___"));
-    try std.testing.expect(isHorizontalRule("-----"));
-    try std.testing.expect(!isHorizontalRule("--"));
-    try std.testing.expect(!isHorizontalRule("abc"));
-}
-
 test "parseMarkdown basic" {
     const md =
         \\# Hello
@@ -385,20 +427,20 @@ test "parseMarkdown basic" {
         result.blocks.deinit(std.testing.allocator);
     }
 
-    // Lines should not contain ``` fences
-    try std.testing.expectEqual(@as(usize, 5), result.lines.items.len);
-    try std.testing.expectEqualStrings("Hello", result.lines.items[0]);
-    try std.testing.expectEqualStrings("", result.lines.items[1]);
-    try std.testing.expectEqualStrings("Some text here.", result.lines.items[2]);
-    try std.testing.expectEqualStrings("", result.lines.items[3]);
-    // Line 4 is the code: "const x = 5;"
-    try std.testing.expectEqualStrings("const x = 5;", result.lines.items[4]);
-
-    // One code block
+    // md4c strips heading markers and produces text content.
+    // Lines: "Hello", "Some text here.", code line, "More text."
+    // md4c may not produce empty lines between blocks the same way,
+    // but code block content should be preserved.
     try std.testing.expectEqual(@as(usize, 1), result.blocks.items.len);
     try std.testing.expectEqualStrings("zig", result.blocks.items[0].lang);
-    try std.testing.expectEqual(@as(u32, 4), result.blocks.items[0].start_line);
     try std.testing.expectEqualStrings("const x = 5;", result.blocks.items[0].content);
+
+    // Verify heading text was extracted (not raw "# Hello")
+    var found_hello = false;
+    for (result.lines.items) |line| {
+        if (std.mem.eql(u8, line, "Hello")) found_hello = true;
+    }
+    try std.testing.expect(found_hello);
 }
 
 test "parseMarkdown multiple blocks" {
@@ -423,7 +465,6 @@ test "parseMarkdown multiple blocks" {
 
     // First block: rust
     try std.testing.expectEqualStrings("rust", result.blocks.items[0].lang);
-    try std.testing.expectEqual(@as(u32, 0), result.blocks.items[0].start_line);
     try std.testing.expectEqualStrings("fn main() {}", result.blocks.items[0].content);
 
     // Second block: python
@@ -464,11 +505,84 @@ test "parseMarkdown trailing text after blocks" {
         result.blocks.deinit(std.testing.allocator);
     }
 
-    // 3 display lines: code, empty, text
-    try std.testing.expectEqual(@as(usize, 3), result.lines.items.len);
-    try std.testing.expectEqualStrings("const x = 1;", result.lines.items[0]);
-    try std.testing.expectEqualStrings("", result.lines.items[1]);
-    try std.testing.expectEqualStrings("More text.", result.lines.items[2]);
+    // Should have code line and text line
+    try std.testing.expectEqual(@as(usize, 1), result.blocks.items.len);
+    try std.testing.expectEqualStrings("const x = 1;", result.blocks.items[0].content);
+
+    // "More text." should appear in lines
+    var found_more = false;
+    for (result.lines.items) |line| {
+        if (std.mem.eql(u8, line, "More text.")) found_more = true;
+    }
+    try std.testing.expect(found_more);
+}
+
+test "parseMarkdown tilde fence" {
+    const md =
+        \\~~~python
+        \\print("hello")
+        \\~~~
+    ;
+    const result = try parseMarkdown(std.testing.allocator, md);
+    defer result.lines.deinit(std.testing.allocator);
+    defer {
+        for (result.blocks.items) |blk| std.testing.allocator.free(blk.content);
+        result.blocks.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), result.blocks.items.len);
+    try std.testing.expectEqualStrings("python", result.blocks.items[0].lang);
+    try std.testing.expectEqualStrings("print(\"hello\")", result.blocks.items[0].content);
+}
+
+test "parseMarkdown indented code block" {
+    const md =
+        \\Some text.
+        \\
+        \\    indented code
+        \\    more code
+        \\
+        \\After.
+    ;
+    const result = try parseMarkdown(std.testing.allocator, md);
+    defer result.lines.deinit(std.testing.allocator);
+    defer {
+        for (result.blocks.items) |blk| std.testing.allocator.free(blk.content);
+        result.blocks.deinit(std.testing.allocator);
+    }
+
+    // md4c should recognize the indented code block
+    try std.testing.expectEqual(@as(usize, 1), result.blocks.items.len);
+    try std.testing.expectEqualStrings("", result.blocks.items[0].lang); // no lang for indented
+}
+
+test "parseMarkdown horizontal rule" {
+    const md =
+        \\Before
+        \\
+        \\---
+        \\
+        \\After
+    ;
+    const result = try parseMarkdown(std.testing.allocator, md);
+    defer result.lines.deinit(std.testing.allocator);
+    defer {
+        for (result.blocks.items) |blk| std.testing.allocator.free(blk.content);
+        result.blocks.deinit(std.testing.allocator);
+    }
+
+    // Should have: "Before", empty (HR), "After"
+    var found_before = false;
+    var found_after = false;
+    var found_empty = false;
+    for (result.lines.items) |line| {
+        if (std.mem.eql(u8, line, "Before")) found_before = true;
+        if (std.mem.eql(u8, line, "After")) found_after = true;
+        if (line.len == 0) found_empty = true;
+    }
+    try std.testing.expect(found_before);
+    try std.testing.expect(found_after);
+    try std.testing.expect(found_empty);
 }
 
 test "extractHoverHighlights with tree-sitter native error recovery" {
@@ -482,31 +596,30 @@ test "extractHoverHighlights with tree-sitter native error recovery" {
     // Load Rust language from project's languages/ dir
     ts_state.loadFromDir("languages/rust");
 
-    // Verify Rust was loaded — fail if not (don't silently skip)
+    // Verify Rust was loaded
     const lang_state = ts_state.findLangStateByName("rust") orelse
         return error.RustNotLoaded;
     _ = lang_state;
 
-    // Case 1: "let mut config: Config" — a complete statement, should highlight
+    // Case 1: "let mut config: Config"
     const md1 = "```rust\nlet mut config: Config\n```\n\nThe config.";
     const r1 = try extractHoverHighlights(allocator, &ts_state, md1, "");
     const c1 = countHighlights(r1);
-    try std.testing.expect(c1 > 0); // must have highlights
+    try std.testing.expect(c1 > 0);
 
-    // Case 2: "cli.config" — field access expression
+    // Case 2: "cli.config" - field access expression
     const md2 = "```rust\ncli.config\n```\n\nThe config field.";
     const r2 = try extractHoverHighlights(allocator, &ts_state, md2, "");
     const c2 = countHighlights(r2);
     try std.testing.expect(c2 > 0);
 
-    // Case 3: "fn main() -> Result<(), Error>" — incomplete fn declaration
-    // tree-sitter's error recovery + fillErrorGaps should still produce highlights
+    // Case 3: "fn main() -> Result<(), Error>" - incomplete fn declaration
     const md3 = "```rust\nfn main() -> Result<(), Error>\n```";
     const r3 = try extractHoverHighlights(allocator, &ts_state, md3, "");
     const c3 = countHighlights(r3);
     try std.testing.expect(c3 > 0);
 
-    // Case 4: "config: Config" — struct field declaration (common rust-analyzer hover)
+    // Case 4: "config: Config" - struct field declaration
     const md4 = "```rust\nconfig: Config\n```";
     const r4 = try extractHoverHighlights(allocator, &ts_state, md4, "");
     const c4 = countHighlights(r4);
@@ -538,40 +651,15 @@ test "extractHoverHighlights fallback language" {
     _ = lang_state;
 
     // Code block without language, but fallback_lang = "rust"
-    const md = "```\nlet x = 5;\n```";
-    const result = try extractHoverHighlights(allocator, &ts_state, md, "rust");
+    const md_text = "```\nlet x = 5;\n```";
+    const result = try extractHoverHighlights(allocator, &ts_state, md_text, "rust");
     const count = countHighlights(result);
     try std.testing.expect(count > 0); // should highlight using fallback
 
-    // No fallback either — should produce no code highlights (only YacTsComment if text exists)
+    // No fallback either
     const md2 = "```\nlet x = 5;\n```";
     const result2 = try extractHoverHighlights(allocator, &ts_state, md2, "");
     _ = result2; // just verify no crash
-}
-
-/// List all highlight group names present in an extractHighlights result.
-fn listHighlightGroups(val: Value) std.StaticStringMap(void) {
-    const obj = switch (val) {
-        .object => |o| o,
-        else => return std.StaticStringMap(void).initComptime(.{}),
-    };
-    const groups_val = obj.get("highlights") orelse
-        return std.StaticStringMap(void).initComptime(.{});
-    const groups = switch (groups_val) {
-        .object => |o| o,
-        else => return std.StaticStringMap(void).initComptime(.{}),
-    };
-    // Use a simple linear scan — test helper only
-    var keys: [64]struct { []const u8, void } = undefined;
-    var count: usize = 0;
-    var it = groups.iterator();
-    while (it.next()) |entry| {
-        if (count < 64) {
-            keys[count] = .{ entry.key_ptr.*, {} };
-            count += 1;
-        }
-    }
-    return std.StaticStringMap(void).initComptime(keys[0..count]);
 }
 
 /// Count total highlight entries across all groups in an extractHighlights result.

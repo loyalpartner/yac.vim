@@ -12,6 +12,12 @@ fn addTreeSitterDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.Re
     mod.linkSystemLibrary("unwind", .{ .use_pkg_config = .no });
 }
 
+fn addMd4cDeps(b: *std.Build, mod: *std.Build.Module) void {
+    mod.addCSourceFile(.{ .file = b.path("vendor/md4c/md4c.c"), .flags = &.{} });
+    mod.addIncludePath(b.path("vendor/md4c"));
+    mod.link_libc = true;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -22,6 +28,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     addTreeSitterDeps(b, mod, target, optimize);
+    addMd4cDeps(b, mod);
 
     const exe = b.addExecutable(.{
         .name = "yacd",
@@ -45,6 +52,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     addTreeSitterDeps(b, test_mod, target, optimize);
+    addMd4cDeps(b, test_mod);
 
     const tests = b.addTest(.{
         .root_module = test_mod,
