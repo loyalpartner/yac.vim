@@ -167,11 +167,13 @@ pub fn handleTsHoverHighlight(ctx: *HandlerContext, params: Value) !DispatchResu
         else => return .{ .empty = {} },
     };
     const markdown = json.getString(obj, "markdown") orelse return .{ .empty = {} };
+    const filetype = json.getString(obj, "filetype") orelse "";
 
     const result = try ts_mod.hover_highlight.extractHoverHighlights(
         ctx.allocator,
         ts_state,
         markdown,
+        filetype,
     );
     return .{ .data = result };
 }

@@ -164,12 +164,15 @@ else
   endfor
 
   call yac_test#log('INFO', 'Total yac_hover_ text properties: ' . total_props)
-  if total_props > 0
-    call yac_test#log('INFO', 'Code block highlighting present')
-  else
-    " zls returns plaintext hover — flattened to 1 line, tree-sitter may not parse
-    call yac_test#skip('hover_highlight', 'No TS highlights (plaintext hover)')
-  endif
+  " Also log ALL prop types on each line for debugging
+  for lnum in range(1, len(popup_lines))
+    let all_props = prop_list(lnum, {'bufnr': popup_bufnr})
+    if !empty(all_props)
+      call yac_test#log('INFO', '  ALL props line ' . lnum . ': ' . string(all_props))
+    endif
+  endfor
+  call yac_test#assert_true(total_props > 0,
+    \ 'Hover popup should have yac_hover_ text properties (got ' . total_props . ')')
 endif
 
 call yac_test#clear_popups()
@@ -216,15 +219,60 @@ else
     endfor
   endfor
 
+  let total_props = 0
+  for v in values(all_groups)
+    let total_props += v
+  endfor
   call yac_test#log('INFO', 'Function hover prop groups: ' . string(all_groups))
-  call yac_test#log('INFO', 'YacTsFunction props: ' . fn_props)
-  if fn_props > 0
-    call yac_test#log('INFO', 'Function name highlighting present')
-  else
-    " zls plaintext hover may not contain parseable function signature
-    call yac_test#skip('hover_fn_highlight', 'No fn highlights (plaintext hover)')
-  endif
+  call yac_test#log('INFO', 'Total yac_hover_ props: ' . total_props . ', YacTsFunction: ' . fn_props)
+  call yac_test#assert_true(total_props > 0,
+    \ 'Function hover should have yac_hover_ text properties (got ' . total_props . ')')
 endif
+
+call yac_test#clear_popups()
+
+" ============================================================================
+" Test 8: Hover twice on same symbol — highlights must persist on second hover
+" ============================================================================
+call yac_test#log('INFO', 'Test 8: Hover twice — highlights should persist')
+
+" Hover first time on User struct
+call cursor(6, 12)
+call yac_test#clear_popups()
+YacHover
+call yac_test#wait_hover_popup(5000)
+
+let pid1 = yac#get_hover_popup_id()
+let props1 = 0
+if pid1 != -1
+  let bufnr1 = winbufnr(pid1)
+  let lines1 = getbufline(bufnr1, 1, '$')
+  for lnum in range(1, len(lines1))
+    let props = prop_list(lnum, {'bufnr': bufnr1})
+    let props1 += len(filter(copy(props), {_, p -> get(p, 'type', '') =~# '^yac_hover_'}))
+  endfor
+  call yac_test#log('INFO', 'First hover: ' . props1 . ' props')
+endif
+call yac_test#assert_true(props1 > 0, 'First hover should have highlight props')
+
+" Close and hover again on same symbol
+call yac_test#clear_popups()
+call cursor(6, 12)
+YacHover
+call yac_test#wait_hover_popup(5000)
+
+let pid2 = yac#get_hover_popup_id()
+let props2 = 0
+if pid2 != -1
+  let bufnr2 = winbufnr(pid2)
+  let lines2 = getbufline(bufnr2, 1, '$')
+  for lnum in range(1, len(lines2))
+    let props = prop_list(lnum, {'bufnr': bufnr2})
+    let props2 += len(filter(copy(props), {_, p -> get(p, 'type', '') =~# '^yac_hover_'}))
+  endfor
+  call yac_test#log('INFO', 'Second hover: ' . props2 . ' props')
+endif
+call yac_test#assert_true(props2 > 0, 'Second hover should still have highlight props')
 
 call yac_test#clear_popups()
 

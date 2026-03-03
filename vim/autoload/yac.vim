@@ -830,6 +830,41 @@ function! s:handle_goto_response(channel, response) abort
   call cursor(l:line, l:col)
 endfunction
 
+" Convert plaintext hover (e.g. zls) into markdown with proper code fences.
+" zls format: "declaration\n(type_info)\n\ndoc_text"
+" We wrap only the code declaration in a code fence, leaving doc as plain text.
+function! s:wrap_plaintext_hover(text, filetype) abort
+  let l:lines = split(a:text, "\n", 1)
+
+  " Find the first blank line — separates code/type from doc
+  let l:blank_idx = -1
+  for i in range(len(l:lines))
+    if l:lines[i] =~# '^\s*$'
+      let l:blank_idx = i
+      break
+    endif
+  endfor
+
+  " Separate code lines and doc lines
+  if l:blank_idx >= 0
+    let l:code_lines = l:lines[:l:blank_idx - 1]
+    let l:doc_lines = l:lines[l:blank_idx + 1:]
+  else
+    let l:code_lines = l:lines
+    let l:doc_lines = []
+  endif
+
+  " Remove type info line: "(fn ...)" or "(type)" — starts with "("
+  let l:code_lines = filter(copy(l:code_lines), {_, v -> v !~# '^('})
+
+  " Build markdown: code fence + doc text
+  let l:md = '```' . a:filetype . "\n" . join(l:code_lines, "\n") . "\n```"
+  if !empty(l:doc_lines)
+    let l:md .= "\n\n" . join(l:doc_lines, "\n")
+  endif
+  return l:md
+endfunction
+
 function! s:handle_hover_response(channel, response) abort
   call s:debug_log(printf('[RECV]: hover response: %s', string(a:response)))
 
@@ -861,29 +896,36 @@ function! s:handle_hover_response(channel, response) abort
     return
   endif
 
-  " Plaintext hover (e.g. zls): wrap content in a code block so TS can highlight it
+  " Plaintext hover (e.g. zls): split into code declaration + doc text
+  " zls format: "declaration\n(type_info)\n\ndoc_text" (with real newlines)
   if l:kind ==# 'plaintext' && !empty(&filetype)
-    let l:md = '```' . &filetype . "\n" . l:md . "\n```"
+    let l:md = s:wrap_plaintext_hover(l:md, &filetype)
   endif
 
   " Send to TS thread for markdown parsing + code block highlighting
-  call s:request('ts_hover_highlight', {'markdown': l:md},
-    \ function('s:handle_ts_hover_hl_response'))
+  call s:request('ts_hover_highlight', {
+    \ 'markdown': l:md,
+    \ 'filetype': &filetype
+    \ }, function('s:handle_ts_hover_hl_response'))
 endfunction
 
 function! s:handle_ts_hover_hl_response(channel, response) abort
-  call s:debug_log('[RECV]: ts_hover_highlight response')
+  call s:debug_log(printf('[RECV]: ts_hover_highlight response: %s', string(a:response)))
 
   if type(a:response) != v:t_dict || !has_key(a:response, 'lines')
+    call s:debug_log('[HOVER_HL]: invalid response, no lines key')
     return
   endif
 
   let l:lines = a:response.lines
   if empty(l:lines)
+    call s:debug_log('[HOVER_HL]: empty lines')
     return
   endif
 
   let l:highlights = get(a:response, 'highlights', {})
+  call s:debug_log(printf('[HOVER_HL]: %d lines, %d highlight groups: %s',
+    \ len(l:lines), len(l:highlights), join(keys(l:highlights), ', ')))
   call s:show_hover_popup_highlighted(l:lines, l:highlights)
 endfunction
 
@@ -1409,14 +1451,22 @@ function! s:show_hover_popup_highlighted(lines, highlights) abort
   " Apply syntax highlights to popup buffer
   if !empty(a:highlights)
     let l:popup_bufnr = winbufnr(s:hover_popup_id)
+    call s:debug_log(printf('[HOVER_HL]: applying to popup %d, bufnr %d',
+      \ s:hover_popup_id, l:popup_bufnr))
     for [group, positions] in items(a:highlights)
       let l:prop_type = 'yac_hover_' . group
       call s:ensure_ts_prop_type(l:prop_type, group)
       try
         call prop_add_list({'type': l:prop_type, 'bufnr': l:popup_bufnr}, positions)
+        call s:debug_log(printf('[HOVER_HL]: applied %s: %d positions',
+          \ l:prop_type, len(positions)))
       catch
+        call s:debug_log(printf('[HOVER_HL]: ERROR applying %s: %s',
+          \ l:prop_type, v:exception))
       endtry
     endfor
+  else
+    call s:debug_log('[HOVER_HL]: no highlights to apply')
   endif
 endfunction
 

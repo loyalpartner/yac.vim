@@ -162,6 +162,7 @@ pub fn extractHoverHighlights(
     allocator: Allocator,
     ts_state: *const TreeSitter,
     markdown: []const u8,
+    fallback_lang: []const u8,
 ) !Value {
     const parsed = try parseMarkdown(allocator, markdown);
 
@@ -210,10 +211,13 @@ pub fn extractHoverHighlights(
     }
 
     for (parsed.blocks.items) |blk| {
-        if (blk.lang.len == 0) continue;
-        const lang_state = ts_state.findLangStateByName(blk.lang) orelse continue;
+        // Use block language, fallback to buffer filetype for unlabeled blocks
+        const effective_lang = if (blk.lang.len > 0) blk.lang else fallback_lang;
+        if (effective_lang.len == 0) continue;
+        const lang_state = ts_state.findLangStateByName(effective_lang) orelse continue;
         const hl_query = lang_state.highlights orelse continue;
 
+        // Trust tree-sitter's native error recovery — no patching or retry
         const tree = lang_state.parser.parseString(blk.content, null) orelse continue;
         defer tree.destroy();
 
@@ -465,4 +469,130 @@ test "parseMarkdown trailing text after blocks" {
     try std.testing.expectEqualStrings("const x = 1;", result.lines.items[0]);
     try std.testing.expectEqualStrings("", result.lines.items[1]);
     try std.testing.expectEqualStrings("More text.", result.lines.items[2]);
+}
+
+test "extractHoverHighlights with tree-sitter native error recovery" {
+    // Integration test: load a real language, verify tree-sitter produces
+    // highlights even for incomplete code fragments (no patching/retry).
+    const allocator = std.testing.allocator;
+
+    var ts_state = TreeSitter.init(allocator);
+    defer ts_state.deinit();
+
+    // Load Rust language from project's languages/ dir
+    ts_state.loadFromDir("languages/rust");
+
+    // Verify Rust was loaded — fail if not (don't silently skip)
+    const lang_state = ts_state.findLangStateByName("rust") orelse
+        return error.RustNotLoaded;
+    _ = lang_state;
+
+    // Case 1: "let mut config: Config" — a complete statement, should highlight
+    const md1 = "```rust\nlet mut config: Config\n```\n\nThe config.";
+    const r1 = try extractHoverHighlights(allocator, &ts_state, md1, "");
+    const c1 = countHighlights(r1);
+    try std.testing.expect(c1 > 0); // must have highlights
+
+    // Case 2: "cli.config" — field access expression
+    const md2 = "```rust\ncli.config\n```\n\nThe config field.";
+    const r2 = try extractHoverHighlights(allocator, &ts_state, md2, "");
+    const c2 = countHighlights(r2);
+    try std.testing.expect(c2 > 0);
+
+    // Case 3: "fn main() -> Result<(), Error>" — incomplete fn declaration
+    // tree-sitter's error recovery + fillErrorGaps should still produce highlights
+    const md3 = "```rust\nfn main() -> Result<(), Error>\n```";
+    const r3 = try extractHoverHighlights(allocator, &ts_state, md3, "");
+    const c3 = countHighlights(r3);
+    try std.testing.expect(c3 > 0);
+
+    // Case 4: "config: Config" — struct field declaration (common rust-analyzer hover)
+    const md4 = "```rust\nconfig: Config\n```";
+    const r4 = try extractHoverHighlights(allocator, &ts_state, md4, "");
+    const c4 = countHighlights(r4);
+    try std.testing.expect(c4 > 0);
+
+    // Case 5: rust-analyzer field hover with module path + field
+    const md5 = "```rust\nhscups::cli::Cli\n```\n\n```rust\npub config: Config\n```";
+    const r5 = try extractHoverHighlights(allocator, &ts_state, md5, "");
+    const c5 = countHighlights(r5);
+    try std.testing.expect(c5 > 0);
+
+    // Case 6: "pub fn init(config: LogConfig) -> (LogHandle, WorkerGuard)"
+    const md6 = "```rust\npub fn init(config: LogConfig) -> (LogHandle, WorkerGuard)\n```";
+    const r6 = try extractHoverHighlights(allocator, &ts_state, md6, "");
+    const c6 = countHighlights(r6);
+    try std.testing.expect(c6 > 0);
+}
+
+test "extractHoverHighlights fallback language" {
+    // Code blocks without language annotation should use fallback_lang
+    const allocator = std.testing.allocator;
+
+    var ts_state = TreeSitter.init(allocator);
+    defer ts_state.deinit();
+
+    ts_state.loadFromDir("languages/rust");
+    const lang_state = ts_state.findLangStateByName("rust") orelse
+        return error.RustNotLoaded;
+    _ = lang_state;
+
+    // Code block without language, but fallback_lang = "rust"
+    const md = "```\nlet x = 5;\n```";
+    const result = try extractHoverHighlights(allocator, &ts_state, md, "rust");
+    const count = countHighlights(result);
+    try std.testing.expect(count > 0); // should highlight using fallback
+
+    // No fallback either — should produce no code highlights (only YacTsComment if text exists)
+    const md2 = "```\nlet x = 5;\n```";
+    const result2 = try extractHoverHighlights(allocator, &ts_state, md2, "");
+    _ = result2; // just verify no crash
+}
+
+/// List all highlight group names present in an extractHighlights result.
+fn listHighlightGroups(val: Value) std.StaticStringMap(void) {
+    const obj = switch (val) {
+        .object => |o| o,
+        else => return std.StaticStringMap(void).initComptime(.{}),
+    };
+    const groups_val = obj.get("highlights") orelse
+        return std.StaticStringMap(void).initComptime(.{});
+    const groups = switch (groups_val) {
+        .object => |o| o,
+        else => return std.StaticStringMap(void).initComptime(.{}),
+    };
+    // Use a simple linear scan — test helper only
+    var keys: [64]struct { []const u8, void } = undefined;
+    var count: usize = 0;
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        if (count < 64) {
+            keys[count] = .{ entry.key_ptr.*, {} };
+            count += 1;
+        }
+    }
+    return std.StaticStringMap(void).initComptime(keys[0..count]);
+}
+
+/// Count total highlight entries across all groups in an extractHighlights result.
+fn countHighlights(val: Value) usize {
+    const obj = switch (val) {
+        .object => |o| o,
+        else => return 0,
+    };
+    const groups_val = obj.get("highlights") orelse return 0;
+    const groups = switch (groups_val) {
+        .object => |o| o,
+        else => return 0,
+    };
+    var total: usize = 0;
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        const arr = switch (entry.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
+        total += arr.items.len;
+    }
+    return total;
 }
