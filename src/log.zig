@@ -23,7 +23,8 @@ fn getLogPath(buf: []u8) ?[]const u8 {
 pub fn init() void {
     var buf: [256]u8 = undefined;
     const path = getLogPath(&buf) orelse return;
-    log_file = std.fs.cwd().createFile(path, .{}) catch null;
+    log_file = std.fs.cwd().createFile(path, .{ .truncate = false }) catch null;
+    if (log_file) |f| f.seekFromEnd(0) catch {};
     const pid = std.os.linux.getpid();
     info("yacd started, pid={d}, log={s}", .{ pid, path });
 }
