@@ -1436,7 +1436,10 @@ function! s:show_hover_popup_highlighted(lines, highlights) abort
     \ 'maxheight': height,
     \ 'close': 'click',
     \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'highlight': 'YacPickerNormal',
+    \ 'scrollbar': 0,
     \ 'moved': [line_num - 5, line_num + 5]
     \ }
 
