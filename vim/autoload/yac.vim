@@ -1299,15 +1299,9 @@ function! s:stop_all_channels() abort
   let s:channel_pool = {}
 endfunction
 
-" 停止 daemon 进程（通过删除 socket 文件触发）
+" 断开与 daemon 的连接（daemon 自行管理生命周期和 socket 清理）
 function! yac#daemon_stop() abort
   call s:stop_all_channels()
-  let l:sock = s:get_socket_path()
-  if filereadable(l:sock) || getftype(l:sock) == 'socket'
-    call delete(l:sock)
-    echo 'Daemon socket removed: ' . l:sock
-  endif
-  echo 'Daemon will exit after idle timeout (or immediately if no clients)'
 endfunction
 
 " === Debug 功能 ===
