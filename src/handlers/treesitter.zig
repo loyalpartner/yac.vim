@@ -159,3 +159,19 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
     );
     return .{ .data = result };
 }
+
+pub fn handleTsHoverHighlight(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const ts_state = ctx.ts orelse return .{ .empty = {} };
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+    const markdown = json.getString(obj, "markdown") orelse return .{ .empty = {} };
+
+    const result = try ts_mod.hover_highlight.extractHoverHighlights(
+        ctx.allocator,
+        ts_state,
+        markdown,
+    );
+    return .{ .data = result };
+}

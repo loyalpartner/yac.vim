@@ -109,6 +109,7 @@ const TS_METHODS = [_][]const u8{
     "\"ts_highlights\"",
     "\"ts_navigate\"",
     "\"ts_textobjects\"",
+    "\"ts_hover_highlight\"",
     "\"load_language\"",
 };
 

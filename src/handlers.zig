@@ -56,6 +56,7 @@ pub const handlers = [_]Handler{
     .{ .name = "ts_navigate", .handleFn = ts_handlers.handleTsNavigate },
     .{ .name = "ts_textobjects", .handleFn = ts_handlers.handleTsTextObjects },
     .{ .name = "ts_highlights", .handleFn = ts_handlers.handleTsHighlights },
+    .{ .name = "ts_hover_highlight", .handleFn = ts_handlers.handleTsHoverHighlight },
 };
 
 pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !DispatchResult {

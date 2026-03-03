@@ -842,22 +842,49 @@ function! s:handle_hover_response(channel, response) abort
     return
   endif
 
-  " Support both 'content' (string) and 'contents' (MarkupContent / string)
-  let l:text = ''
+  " Extract hover text from LSP response
+  let l:md = ''
+  let l:kind = ''
   if has_key(a:response, 'content') && !empty(a:response.content)
-    let l:text = a:response.content
+    let l:md = a:response.content
   elseif has_key(a:response, 'contents')
     let l:c = a:response.contents
     if type(l:c) == v:t_string
-      let l:text = l:c
+      let l:md = l:c
     elseif type(l:c) == v:t_dict && has_key(l:c, 'value')
-      let l:text = l:c.value
+      let l:md = l:c.value
+      let l:kind = get(l:c, 'kind', '')
     endif
   endif
 
-  if !empty(l:text)
-    call s:show_hover_popup(l:text)
+  if empty(l:md)
+    return
   endif
+
+  " Plaintext hover (e.g. zls): wrap content in a code block so TS can highlight it
+  if l:kind ==# 'plaintext' && !empty(&filetype)
+    let l:md = '```' . &filetype . "\n" . l:md . "\n```"
+  endif
+
+  " Send to TS thread for markdown parsing + code block highlighting
+  call s:request('ts_hover_highlight', {'markdown': l:md},
+    \ function('s:handle_ts_hover_hl_response'))
+endfunction
+
+function! s:handle_ts_hover_hl_response(channel, response) abort
+  call s:debug_log('[RECV]: ts_hover_highlight response')
+
+  if type(a:response) != v:t_dict || !has_key(a:response, 'lines')
+    return
+  endif
+
+  let l:lines = a:response.lines
+  if empty(l:lines)
+    return
+  endif
+
+  let l:highlights = get(a:response, 'highlights', {})
+  call s:show_hover_popup_highlighted(l:lines, l:highlights)
 endfunction
 
 " completion 响应处理器 - 简化：有 items 就显示
@@ -1341,52 +1368,55 @@ function! yac#cleanup_connections() abort
   echo printf('Cleaned up %d dead connections', cleaned)
 endfunction
 
-" 显示hover信息的浮动窗口
-function! s:show_hover_popup(content) abort
-  " 关闭之前的hover窗口
+" Show hover popup with syntax-highlighted code blocks.
+" lines: list of display strings (fences already stripped by daemon)
+" highlights: dict of {GroupName: [[lnum,col,end_lnum,end_col], ...]}
+function! s:show_hover_popup_highlighted(lines, highlights) abort
   call s:close_hover_popup()
 
-  if empty(a:content)
+  if empty(a:lines)
     return
   endif
 
-  " 将内容按行分割
-  let lines = split(a:content, '\n')
-  if empty(lines)
-    return
-  endif
-
-  " 计算窗口大小
-  let max_width = 80
   let content_width = 0
-  for line in lines
-    let content_width = max([content_width, len(line)])
+  for line in a:lines
+    let content_width = max([content_width, strdisplaywidth(line)])
   endfor
+  let max_width = &columns - 4
   let width = min([content_width + 2, max_width])
-  let height = min([len(lines), 15])
+  let height = min([len(a:lines), 15])
 
-  " 获取光标位置
-  let cursor_pos = getpos('.')
-  let line_num = cursor_pos[1]
-  let col_num = cursor_pos[2]
+  let line_num = line('.')
 
-  if exists('*popup_create')
-    " Vim 8.1+ popup实现
-    let opts = {
-      \ 'line': 'cursor+1',
-      \ 'col': 'cursor',
-      \ 'maxwidth': width,
-      \ 'maxheight': height,
-      \ 'close': 'click',
-      \ 'border': [],
-      \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
-      \ 'moved': [line_num - 5, line_num + 5]
-      \ }
+  if !exists('*popup_create')
+    echo join(a:lines, "\n")
+    return
+  endif
 
-    let s:hover_popup_id = popup_create(lines, opts)
-  else
-    " 降级到echo（老版本Vim）
-    echo join(lines, "\n")
+  let opts = {
+    \ 'line': 'cursor+1',
+    \ 'col': 'cursor',
+    \ 'maxwidth': width,
+    \ 'maxheight': height,
+    \ 'close': 'click',
+    \ 'border': [],
+    \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+    \ 'moved': [line_num - 5, line_num + 5]
+    \ }
+
+  let s:hover_popup_id = popup_create(a:lines, opts)
+
+  " Apply syntax highlights to popup buffer
+  if !empty(a:highlights)
+    let l:popup_bufnr = winbufnr(s:hover_popup_id)
+    for [group, positions] in items(a:highlights)
+      let l:prop_type = 'yac_hover_' . group
+      call s:ensure_ts_prop_type(l:prop_type, group)
+      try
+        call prop_add_list({'type': l:prop_type, 'bufnr': l:popup_bufnr}, positions)
+      catch
+      endtry
+    endfor
   endif
 endfunction
 

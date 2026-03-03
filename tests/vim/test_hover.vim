@@ -124,6 +124,53 @@ call yac_test#wait_no_popup(3000)
 call yac_test#assert_true(yac#get_hover_popup_id() == -1, 'No popup should appear on empty line')
 
 " ============================================================================
+" Test 6: Hover popup should have syntax-highlighted code blocks
+" ============================================================================
+call yac_test#log('INFO', 'Test 6: Hover popup code block highlighting')
+
+" 定位到 User struct 定义 — zls 会返回包含 ```zig 代码块的 markdown
+call cursor(6, 12)
+let word = expand('<cword>')
+call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
+
+call yac_test#clear_popups()
+YacHover
+" 两次 round-trip: hover→LSP + ts_hover_highlight→TS thread，需要更多时间
+call yac_test#wait_hover_popup(5000)
+
+let pid = yac#get_hover_popup_id()
+if pid == -1
+  call yac_test#log('INFO', 'No hover popup, skipping highlight test')
+  call yac_test#skip('hover_highlight', 'No hover popup appeared')
+else
+  let popup_bufnr = winbufnr(pid)
+  let popup_lines = getbufline(popup_bufnr, 1, '$')
+  call yac_test#log('INFO', 'Popup bufnr=' . popup_bufnr . ' lines=' . len(popup_lines))
+
+  " 记录前 5 行内容（调试用）
+  for i in range(min([5, len(popup_lines)]))
+    call yac_test#log('INFO', '  popup[' . (i+1) . ']: ' . popup_lines[i])
+  endfor
+
+  " 检查 popup buffer 上是否有 yac_hover_ 开头的 text properties
+  let total_props = 0
+  for lnum in range(1, len(popup_lines))
+    let props = prop_list(lnum, {'bufnr': popup_bufnr})
+    let ts_props = filter(copy(props), {_, p -> get(p, 'type', '') =~# '^yac_hover_'})
+    if !empty(ts_props)
+      call yac_test#log('INFO', '  line ' . lnum . ' props: ' . string(ts_props))
+    endif
+    let total_props += len(ts_props)
+  endfor
+
+  call yac_test#log('INFO', 'Total yac_hover_ text properties: ' . total_props)
+  call yac_test#assert_true(total_props > 0,
+    \ 'Hover popup should have yac_hover_ text properties for code blocks')
+endif
+
+call yac_test#clear_popups()
+
+" ============================================================================
 " Cleanup
 " ============================================================================
 call yac_test#teardown()

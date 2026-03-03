@@ -13,6 +13,7 @@ pub const textobjects = @import("textobjects.zig");
 pub const navigate = @import("navigate.zig");
 pub const highlights = @import("highlights.zig");
 pub const predicates = @import("predicates.zig");
+pub const hover_highlight = @import("hover_highlight.zig");
 
 const WasmLoader = wasm_loader_mod.WasmLoader;
 
