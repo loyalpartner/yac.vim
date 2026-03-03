@@ -61,6 +61,7 @@ fn captureToKind(cap_name: []const u8) ?[]const u8 {
     const map = .{
         .{ "function", "Function" },
         .{ "struct", "Struct" },
+        .{ "class", "Class" },
         .{ "enum", "Enum" },
         .{ "union", "Union" },
         .{ "test", "Test" },
@@ -130,21 +131,21 @@ pub fn extractPickerSymbols(
         const k = kind orelse continue;
         const node = outer_node orelse continue;
 
-        // For methods: emit an impl block header on first encounter, then indent at depth=1.
+        // For methods: emit a container header on first encounter, then indent at depth=1.
         var depth: i64 = 0;
         if (std.mem.eql(u8, k, "Method")) {
             if (impl_type_node) |inode| {
-                // @impl_type is a type_identifier; its parent is the impl_item.
                 const impl_node = inode.parent() orelse inode;
                 const impl_row = impl_node.startPoint().row;
                 if (!seen_impl_rows.contains(impl_row)) {
                     try seen_impl_rows.put(impl_row, {});
-                    const itype_name = impl_type_text orelse "impl";
-                    const impl_hl = try buildItemHighlights(allocator, "Interface", "impl", itype_name, "");
+                    const itype_name = impl_type_text orelse "";
+                    const prefix = containerPrefix(impl_node.kind());
+                    const impl_hl = try buildItemHighlights(allocator, "Interface", prefix, itype_name, "");
                     const impl_start = impl_node.startPoint();
                     var hdr = ObjectMap.init(allocator);
                     try hdr.put("label", json.jsonString(itype_name));
-                    try hdr.put("prefix", json.jsonString("impl"));
+                    try hdr.put("prefix", json.jsonString(prefix));
                     try hdr.put("detail", json.jsonString(""));
                     try hdr.put("kind", json.jsonString("Interface"));
                     try hdr.put("depth", json.jsonInteger(0));
@@ -169,6 +170,8 @@ pub fn extractPickerSymbols(
             prefix_str = try buildFunctionDetail(allocator, node);
         } else if (std.mem.eql(u8, k, "Test")) {
             prefix_str = "test";
+        } else if (std.mem.eql(u8, k, "Class")) {
+            prefix_str = "class";
         } else if (std.mem.eql(u8, k, "Struct")) {
             effective_detail = try buildContainerDetail(allocator, node, "struct");
         } else if (std.mem.eql(u8, k, "Enum")) {
@@ -294,6 +297,13 @@ fn appendContainerFields(
         }
         break; // Only one body declaration expected per variable_declaration.
     }
+}
+
+/// Return the keyword prefix for a container node (impl block, class, etc.).
+fn containerPrefix(node_kind: []const u8) []const u8 {
+    if (std.mem.eql(u8, node_kind, "impl_item")) return "impl";
+    if (std.mem.eql(u8, node_kind, "class_definition")) return "class";
+    return "";
 }
 
 fn nodeText(node: ts.Node, source: []const u8) ?[]const u8 {
