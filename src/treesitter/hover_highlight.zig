@@ -214,21 +214,16 @@ pub fn extractHoverHighlights(
         const lang_state = ts_state.findLangStateByName(blk.lang) orelse continue;
         const hl_query = lang_state.highlights orelse continue;
 
-        // Append "\n{}" to help tree-sitter parse incomplete code fragments
-        // (e.g. function signatures without body from zls plaintext hover).
-        // Only the original line range is used for highlights.
-        const patched = try std.fmt.allocPrint(allocator, "{s}\n{{}}", .{blk.content});
-        const tree = lang_state.parser.parseString(patched, null) orelse continue;
+        const tree = lang_state.parser.parseString(blk.content, null) orelse continue;
         defer tree.destroy();
 
-        // Extract highlights only for original lines (exclude the patched "{}").
         const hl_val = highlights_mod.extractHighlights(
             allocator,
             hl_query,
             tree,
-            patched,
+            blk.content,
             0,
-            blk.line_count,
+            blk.line_count + 1,
         ) catch continue;
 
         // Extract the highlights object and shift line numbers
