@@ -85,7 +85,8 @@ call yac_test#log('INFO', 'Test 3: Navigate to symbol from list')
 
 let qflist = getqflist()
 if !empty(qflist)
-  " 跳转到第一个符号
+  " 先移到文件中间，确保 cfirst 有实际位移
+  call cursor(50, 1)
   let start_line = line('.')
   cfirst
   let after_line = line('.')

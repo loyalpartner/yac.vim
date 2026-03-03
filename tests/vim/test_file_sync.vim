@@ -12,11 +12,10 @@ call yac_test#setup()
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: File open (didOpen)')
 
-" 打开测试文件
-edit! test_data/src/main.zig
+" 打开测试文件并等待 LSP 就绪
+call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
-" LSP 应该已经初始化
-" 验证通过尝试 hover
+" 验证 hover 可用
 call cursor(6, 12)
 YacHover
 call yac_test#wait_popup(3000)

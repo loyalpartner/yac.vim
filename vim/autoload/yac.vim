@@ -916,6 +916,11 @@ function! s:handle_inlay_hints_response(channel, response, ...) abort
     return
   endif
 
+  " Discard if hints are currently disabled for this buffer
+  if !get(b:, 'yac_inlay_hints', 0)
+    return
+  endif
+
   if type(a:response) == v:t_dict && has_key(a:response, 'hints')
     call s:show_inlay_hints(a:response.hints)
   endif

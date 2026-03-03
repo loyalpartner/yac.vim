@@ -12,12 +12,22 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
+" Helper: 只检测 inlay_hint_* 类型的 text prop（排除 ts_highlights 等其他 prop）
+function! s:has_inlay_props() abort
+  return !empty(filter(prop_list(1, {'end_lnum': line('$')}),
+        \ {_, p -> p.type =~# '^inlay_hint_'}))
+endfunction
+
+function! s:no_inlay_props() abort
+  return empty(filter(prop_list(1, {'end_lnum': line('$')}),
+        \ {_, p -> p.type =~# '^inlay_hint_'}))
+endfunction
+
 " ============================================================================
 " Feature probe: 检测 inlay hints 是否可用
 " ============================================================================
 YacInlayHints
-let s:hints_available = yac_test#wait_for(
-  \ {-> !empty(prop_list(1, {'end_lnum': line('$')}))}, 5000)
+let s:hints_available = yac_test#wait_for({-> s:has_inlay_props()}, 5000)
 
 if !s:hints_available
   call yac_test#log('INFO', 'Inlay hints not available (LSP returned null), skipping all tests')
@@ -36,7 +46,7 @@ call yac_test#log('INFO', 'Test 1: Inlay hints produce text properties')
 
 YacInlayHints
 call yac_test#wait_assert(
-  \ {-> !empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:has_inlay_props()},
   \ 3000, 'Inlay hints should create text properties')
 
 " ============================================================================
@@ -45,11 +55,11 @@ call yac_test#wait_assert(
 call yac_test#log('INFO', 'Test 2: Clear inlay hints')
 
 YacInlayHints
-call yac_test#wait_for({-> !empty(prop_list(1, {'end_lnum': line('$')}))}, 3000)
+call yac_test#wait_for({-> s:has_inlay_props()}, 3000)
 
 YacClearInlayHints
 call yac_test#wait_assert(
-  \ {-> empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:no_inlay_props()},
   \ 3000, 'Props should be empty after YacClearInlayHints')
 
 " ============================================================================
@@ -64,7 +74,7 @@ call yac_test#wait_assert(
   \ 1000, 'b:yac_inlay_hints should be 1 after first toggle')
 
 call yac_test#wait_assert(
-  \ {-> !empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:has_inlay_props()},
   \ 5000, 'Hints should appear after toggle on')
 
 " Disable
@@ -73,7 +83,7 @@ call yac_test#assert_eq(get(b:, 'yac_inlay_hints', 0), 0,
   \ 'b:yac_inlay_hints should be 0 after second toggle')
 
 call yac_test#wait_assert(
-  \ {-> empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:no_inlay_props()},
   \ 3000, 'Hints should be cleared after toggle off')
 
 " ============================================================================
@@ -85,18 +95,18 @@ call yac_test#log('INFO', 'Test 4: InsertLeave restores hints')
 if !get(b:, 'yac_inlay_hints', 0)
   YacInlayHintsToggle
 endif
-call yac_test#wait_for({-> !empty(prop_list(1, {'end_lnum': line('$')}))}, 3000)
+call yac_test#wait_for({-> s:has_inlay_props()}, 3000)
 
 " Simulate InsertEnter → hints should clear
 call yac#inlay_hints_on_insert_enter()
 call yac_test#wait_assert(
-  \ {-> empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:no_inlay_props()},
   \ 1000, 'Hints should clear on InsertEnter')
 
 " Simulate InsertLeave → hints should reappear
 call yac#inlay_hints_on_insert_leave()
 call yac_test#wait_assert(
-  \ {-> !empty(prop_list(1, {'end_lnum': line('$')}))},
+  \ {-> s:has_inlay_props()},
   \ 3000, 'Hints should reappear on InsertLeave')
 
 " Cleanup
@@ -113,8 +123,7 @@ call yac#clear_inlay_hints()
 " InsertLeave should NOT trigger hints when disabled
 call yac#inlay_hints_on_insert_leave()
 sleep 500m
-let props = prop_list(1, {'end_lnum': line('$')})
-call yac_test#assert_true(empty(props),
+call yac_test#assert_true(s:no_inlay_props(),
   \ 'InsertLeave should not show hints when b:yac_inlay_hints=0')
 
 " ============================================================================
