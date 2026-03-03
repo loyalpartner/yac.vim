@@ -1,0 +1,6 @@
+{
+  "toml": {
+    "extensions": [".toml"],
+    "grammar": "grammar/parser.wasm"
+  }
+}

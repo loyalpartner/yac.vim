@@ -1,0 +1,12 @@
+{
+  "cpp": {
+    "extensions": [
+      ".cpp",
+      ".cc",
+      ".cxx",
+      ".hpp",
+      ".hxx"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

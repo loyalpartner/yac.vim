@@ -1,0 +1,8 @@
+{
+  "lua": {
+    "extensions": [
+      ".lua"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

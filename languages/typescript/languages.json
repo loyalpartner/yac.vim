@@ -1,0 +1,9 @@
+{
+  "typescript": {
+    "extensions": [
+      ".ts",
+      ".tsx"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

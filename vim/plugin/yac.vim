@@ -23,6 +23,18 @@ if !exists('g:yac_lang_plugins')
   let g:yac_lang_plugins = {}
 endif
 
+" Auto-register languages bundled with yac.vim (overridable by external plugins)
+let s:_builtin = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h') . '/languages'
+if isdirectory(s:_builtin)
+  for s:_dir in glob(s:_builtin . '/*', 0, 1)
+    if isdirectory(s:_dir)
+      let g:yac_lang_plugins[fnamemodify(s:_dir, ':t')] = s:_dir
+    endif
+  endfor
+  unlet! s:_dir
+endif
+unlet s:_builtin
+
 " 用户命令
 command! YacStart          call yac#start()
 command! YacStop           call yac#stop()

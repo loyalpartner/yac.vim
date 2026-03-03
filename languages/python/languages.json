@@ -1,0 +1,9 @@
+{
+  "python": {
+    "extensions": [
+      ".py",
+      ".pyi"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

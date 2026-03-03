@@ -1,0 +1,9 @@
+{
+  "c": {
+    "extensions": [
+      ".c",
+      ".h"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

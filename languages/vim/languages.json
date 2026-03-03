@@ -1,0 +1,8 @@
+{
+  "vim": {
+    "extensions": [
+      ".vim"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}
