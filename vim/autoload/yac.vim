@@ -2247,7 +2247,14 @@ function! s:completion_filter(winid, key) abort
     return 1
   endif
 
-  " 其他按键：透传给 insert 模式（正常打字、BS 等）
+  " BS / C-h: 关闭 popup（移除 filter），让 BS 正常走 insert mode mapping
+  " 这样 delimitMate 等插件的 <expr> 映射不会被 filter 截断 <CR>
+  if a:key == "\<BS>" || nr == 8
+    call s:close_completion_popup()
+    return 0
+  endif
+
+  " 其他按键：透传给 insert 模式
   return 0
 endfunction
 
