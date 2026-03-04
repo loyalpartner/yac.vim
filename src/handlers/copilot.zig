@@ -10,6 +10,42 @@ const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 const LspRegistry = registry_mod.LspRegistry;
 
+/// Track which URIs have been didOpen'd to the Copilot client.
+/// Reset when copilot client is recreated (spawn_failed resets).
+var copilot_opened_uris: std.StringHashMap(void) = std.StringHashMap(void).init(std.heap.page_allocator);
+
+/// Ensure a file is open in the Copilot client before sending requests.
+fn ensureCopilotDidOpen(ctx: *HandlerContext, client: *@import("../lsp/client.zig").LspClient, file: []const u8) void {
+    const real_path = registry_mod.extractRealPath(file);
+    const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
+
+    if (copilot_opened_uris.contains(uri)) return;
+
+    const content = std.fs.cwd().readFileAlloc(ctx.allocator, real_path, 10 * 1024 * 1024) catch return;
+    const lang = LspRegistry.detectLanguage(real_path) orelse "plaintext";
+
+    var td_item = ObjectMap.init(ctx.allocator);
+    td_item.put("uri", json.jsonString(uri)) catch return;
+    td_item.put("languageId", json.jsonString(lang)) catch return;
+    td_item.put("version", json.jsonInteger(1)) catch return;
+    td_item.put("text", json.jsonString(content)) catch return;
+
+    var params_obj = ObjectMap.init(ctx.allocator);
+    params_obj.put("textDocument", .{ .object = td_item }) catch return;
+
+    client.sendNotification("textDocument/didOpen", .{ .object = params_obj }) catch |e| {
+        log.err("Failed to send didOpen to Copilot: {any}", .{e});
+        return;
+    };
+
+    // Track it (need a stable copy of the URI string)
+    const uri_owned = std.heap.page_allocator.dupe(u8, uri) catch return;
+    copilot_opened_uris.put(uri_owned, {}) catch {
+        std.heap.page_allocator.free(uri_owned);
+    };
+    log.info("Sent didOpen to Copilot for {s}", .{uri});
+}
+
 // ============================================================================
 // Helper: get copilot client or return empty
 // ============================================================================
@@ -91,6 +127,9 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, params: Value) !DispatchResul
     const file = json.getString(obj, "file") orelse return .{ .empty = {} };
     const line: u32 = std.math.cast(u32, json.getInteger(obj, "line") orelse return .{ .empty = {} }) orelse return .{ .empty = {} };
     const column: u32 = std.math.cast(u32, json.getInteger(obj, "column") orelse return .{ .empty = {} }) orelse return .{ .empty = {} };
+
+    // Ensure file is open in Copilot before requesting completions
+    ensureCopilotDidOpen(ctx, client, file);
 
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 

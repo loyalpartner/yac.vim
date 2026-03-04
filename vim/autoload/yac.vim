@@ -1296,6 +1296,47 @@ function! s:handle_signature_help_response(channel, response) abort
   endif
 
   call s:show_signature_popup(l:lines, l:hl_start, l:hl_end)
+
+  " Save active parameter highlight range for re-application after hl response
+  let s:signature_hl_start = l:hl_start
+  let s:signature_hl_end = l:hl_end
+
+  " Build markdown with code fence for signature label, plain text for docs
+  let l:md_parts = ['```' . &filetype, l:label, '```']
+  if !empty(l:doc)
+    call add(l:md_parts, '')
+    call extend(l:md_parts, split(l:doc, '\n'))
+  endif
+
+  " Request tree-sitter syntax highlighting asynchronously
+  call s:request('ts_hover_highlight', {
+    \ 'markdown': join(l:md_parts, "\n"),
+    \ 'filetype': &filetype
+    \ }, function('s:handle_signature_hl_response'))
+endfunction
+
+" 签名帮助语法高亮回调 — popup 已存在，更新文本和高亮
+function! s:handle_signature_hl_response(channel, response) abort
+  if s:signature_popup_id == -1
+    return
+  endif
+  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
+    return
+  endif
+
+  " Replace plain text with highlighted version
+  call popup_settext(s:signature_popup_id, a:response.lines)
+
+  " Apply tree-sitter highlights
+  let l:highlights = get(a:response, 'highlights', {})
+  if !empty(l:highlights)
+    call s:apply_ts_highlights_to_buffer(winbufnr(s:signature_popup_id), l:highlights)
+  endif
+
+  " Re-apply active parameter highlight (popup_settext clears previous matches)
+  if s:signature_hl_start >= 0 && s:signature_hl_end > s:signature_hl_start
+    call matchaddpos('Special', [[1, s:signature_hl_start + 1, s:signature_hl_end - s:signature_hl_start]], 10, -1, #{window: s:signature_popup_id})
+  endif
 endfunction
 
 " type_hierarchy 响应处理器
@@ -1614,6 +1655,8 @@ endfunction
 " === Signature Help Popup ===
 let s:signature_popup_id = -1
 let s:signature_help_timer = -1
+let s:signature_hl_start = -1
+let s:signature_hl_end = -1
 
 function! s:show_signature_popup(lines, hl_start, hl_end) abort
   call s:close_signature_popup()

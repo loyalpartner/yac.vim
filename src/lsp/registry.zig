@@ -286,6 +286,16 @@ pub const LspRegistry = struct {
         try client.sendInitialized();
         log.info("LSP initialized: {s}", .{client_key});
 
+        // Copilot requires workspace/didChangeConfiguration after initialized
+        if (std.mem.eql(u8, client_key, copilot_key)) {
+            const settings = ObjectMap.init(self.allocator);
+            var config_params = ObjectMap.init(self.allocator);
+            try config_params.put("settings", .{ .object = settings });
+            client.sendNotification("workspace/didChangeConfiguration", .{ .object = config_params }) catch |e| {
+                log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
+            };
+        }
+
         // Replay files that were opened during initialization
         if (self.pending_opens.getPtr(client_key)) |opens| {
             for (opens.items) |open| {

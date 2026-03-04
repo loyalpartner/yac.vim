@@ -61,17 +61,24 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Forward didOpen to the Copilot client (if active and initialized).
 fn forwardDidOpenToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
-    const copilot_client = ctx.registry.copilot_client orelse return;
-    if (ctx.registry.isInitializing(registry_mod.LspRegistry.copilot_key)) return;
+    if (ctx.registry.copilot_client == null) return;
 
     const file = json.getString(obj, "file") orelse return;
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
     const content = json.getString(obj, "text") orelse
         (std.fs.cwd().readFileAlloc(ctx.allocator, real_path, 10 * 1024 * 1024) catch return);
-
-    // Detect language for Copilot's languageId field
     const lang = registry_mod.LspRegistry.detectLanguage(real_path) orelse "plaintext";
+
+    // If copilot is still initializing, queue the didOpen for replay
+    if (ctx.registry.isInitializing(registry_mod.LspRegistry.copilot_key)) {
+        ctx.registry.queuePendingOpen(registry_mod.LspRegistry.copilot_key, uri, lang, content) catch |e| {
+            log.err("Failed to queue pending didOpen for Copilot: {any}", .{e});
+        };
+        return;
+    }
+
+    const copilot_client = ctx.registry.copilot_client orelse return;
 
     var td_item = ObjectMap.init(ctx.allocator);
     td_item.put("uri", json.jsonString(uri)) catch return;
@@ -84,7 +91,9 @@ fn forwardDidOpenToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
 
     copilot_client.sendNotification("textDocument/didOpen", .{ .object = params_obj }) catch |e| {
         log.err("Failed to send didOpen to Copilot: {any}", .{e});
+        return;
     };
+    log.info("Forwarded didOpen to Copilot for {s}", .{uri});
 }
 
 fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {

@@ -65,14 +65,25 @@ function! s:show_ghost(index) abort
   let l:lnum = line('.')
   let l:col = col('.')
 
-  " First line: inline after cursor
+  " First line: inline after cursor using virtual text
   if !empty(l:lines[0])
-    call prop_add(l:lnum, l:col, {
-      \ 'type': s:ghost_prop_type,
-      \ 'text': l:lines[0],
-      \ 'text_align': 'after',
-      \ 'text_padding_left': 0,
-      \ })
+    " Extract text from cursor position to end — show only the suggestion part
+    " The insertText from Copilot may include the prefix already typed;
+    " strip it to show only the new part after the cursor.
+    let l:line_text = getline(l:lnum)
+    let l:prefix = strpart(l:line_text, 0, l:col - 1)
+    let l:suffix = l:lines[0]
+    " If the suggestion starts with what's already on the line, strip it
+    if l:suffix[:len(l:prefix)-1] ==# l:prefix && len(l:prefix) > 0
+      let l:suffix = l:suffix[len(l:prefix):]
+    endif
+    if !empty(l:suffix)
+      call prop_add(l:lnum, 0, {
+        \ 'type': s:ghost_prop_type,
+        \ 'text': l:suffix,
+        \ 'text_align': 'after',
+        \ })
+    endif
   endif
 
   " Subsequent lines: below

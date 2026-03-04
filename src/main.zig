@@ -644,7 +644,8 @@ const EventLoop = struct {
                         defer arena.deinit();
 
                         if (resp.err) |err_val| {
-                            log.err("LSP error for request {d} ({s}): {any}", .{ resp.id, pending.method, err_val });
+                            const err_str = json_utils.stringifyAlloc(arena.allocator(), err_val) catch "?";
+                            log.err("LSP error for request {d} ({s}): {s}", .{ resp.id, pending.method, err_str });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
                         } else {
                             const transformed = lsp_transform.transformLspResult(
