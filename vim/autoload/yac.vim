@@ -1793,12 +1793,7 @@ function! s:render_completion_window() abort
 
   call s:create_or_update_completion_popup(lines)
   call s:apply_completion_highlights()
-
-  " 用 win_execute 移动 popup 内的 cursorline 到选中项
-  if s:completion.popup_id != -1
-    let target_line = s:completion.selected + 1  " 1-based
-    call win_execute(s:completion.popup_id, 'call cursor(' . target_line . ', 1)')
-  endif
+  call s:completion_highlight_selected()
 
   " 显示选中项的文档
   call s:show_completion_documentation()
@@ -1825,6 +1820,13 @@ function! s:ensure_completion_prop_types(bufnr) abort
     call prop_type_add('yac_detail', {'highlight': 'YacCompletionDetail', 'bufnr': a:bufnr, 'priority': 5})
   catch /E969/
   endtry
+endfunction
+
+" 选中行高亮 — cursorline + win_execute（popup filter 已拦截按键，不走 insert 管线）
+function! s:completion_highlight_selected() abort
+  if s:completion.popup_id == -1 | return | endif
+  let lnum = s:completion.selected + 1
+  call win_execute(s:completion.popup_id, 'noautocmd call cursor(' . lnum . ', 1)')
 endfunction
 
 " 为补全弹窗添加 text property 高亮
@@ -2066,15 +2068,17 @@ function! s:create_or_update_completion_popup(lines) abort
     \ 'minwidth': 25,
     \ 'maxwidth': 70,
     \ 'zindex': 1000,
+    \ 'filter': function('s:completion_filter'),
+    \ 'mapping': 0,
     \ }
-
   if has('patch-9.0.0')
     let opts['cursorlinehighlight'] = 'YacCompletionSelect'
   endif
 
   let s:completion.popup_id = popup_create(a:lines, opts)
 
-  call s:install_completion_mappings()
+  " 初始选中高亮
+  call s:completion_highlight_selected()
 endfunction
 
 " 显示补全项文档
@@ -2190,144 +2194,62 @@ function! s:close_completion_documentation() abort
   endif
 endfunction
 
-" === Buffer-local mapping 系统 ===
+" 补全 popup filter — 直接在 popup 层拦截按键，不走 insert 模式 mapping 管线
+function! s:completion_filter(winid, key) abort
+  let nr = char2nr(a:key)
 
-" 保存一个 mapping 的当前状态
-function! s:save_mapping(key) abort
-  let maparg = maparg(a:key, 'i', 0, 1)
-  if !empty(maparg)
-    let s:completion.saved_mappings[a:key] = maparg
-  else
-    let s:completion.saved_mappings[a:key] = {}
+  " C-n / Down / Tab: 下一项
+  if nr == 14 || a:key == "\<Down>"
+    call s:move_completion_selection(1)
+    return 1
   endif
-endfunction
 
-" 恢复一个 mapping
-function! s:restore_mapping(key) abort
-  " 先清除我们安装的 mapping
-  try
-    execute 'iunmap <buffer> ' . a:key
-  catch
-  endtry
+  " C-p / Up / S-Tab: 上一项
+  if nr == 16 || a:key == "\<Up>"
+    call s:move_completion_selection(-1)
+    return 1
+  endif
 
-  if has_key(s:completion.saved_mappings, a:key)
-    let m = s:completion.saved_mappings[a:key]
-    if !empty(m)
-      " 恢复原有 mapping
-      let cmd = (get(m, 'noremap', 0) ? 'inoremap' : 'imap')
-      let flags = '<buffer>'
-      if get(m, 'silent', 0)
-        let flags .= '<silent>'
-      endif
-      if get(m, 'expr', 0)
-        let flags .= '<expr>'
-      endif
-      if get(m, 'nowait', 0)
-        let flags .= '<nowait>'
-      endif
-      execute cmd . ' ' . flags . ' ' . a:key . ' ' . m.rhs
+  " CR / Tab: 接受补全
+  if a:key == "\<CR>" || a:key == "\<Tab>"
+    if !empty(s:completion.items)
+      call s:insert_completion(s:completion.items[s:completion.selected])
     endif
-  endif
-endfunction
-
-" 安装补全 buffer-local mappings
-function! s:install_completion_mappings() abort
-  if s:completion.mappings_installed
-    return
+    return 1
   endif
 
-  let keys = ['<Esc>', '<CR>', '<Tab>', '<C-N>', '<C-P>', '<C-E>', '<Down>', '<Up>']
-  for key in keys
-    call s:save_mapping(key)
-  endfor
-
-  inoremap <buffer><silent> <Esc>  <Cmd>call <SID>completion_do_esc()<CR>
-  inoremap <buffer><silent> <CR>   <Cmd>call <SID>completion_do_cr()<CR>
-  inoremap <buffer><silent> <Tab>  <Cmd>call <SID>completion_do_tab()<CR>
-  inoremap <buffer><silent> <C-N>  <Cmd>call <SID>completion_handle_nav(1)<CR>
-  inoremap <buffer><silent> <C-P>  <Cmd>call <SID>completion_handle_nav(-1)<CR>
-  inoremap <buffer><silent> <Down> <Cmd>call <SID>completion_handle_nav(1)<CR>
-  inoremap <buffer><silent> <Up>   <Cmd>call <SID>completion_handle_nav(-1)<CR>
-  inoremap <buffer><silent> <C-E>  <Cmd>call <SID>close_completion_popup()<CR>
-
-  let s:completion.mappings_installed = 1
-endfunction
-
-" 卸载补全 mappings，恢复原有状态
-function! s:remove_completion_mappings() abort
-  if !s:completion.mappings_installed
-    return
-  endif
-
-  let keys = ['<Esc>', '<CR>', '<Tab>', '<C-N>', '<C-P>', '<C-E>', '<Down>', '<Up>']
-  for key in keys
-    call s:restore_mapping(key)
-  endfor
-
-  let s:completion.saved_mappings = {}
-  let s:completion.mappings_installed = 0
-endfunction
-
-" --- Key handlers ---
-
-" Esc: popup 打开 → 关闭弹窗，留在 insert；popup 已关闭 → 正常退出
-function! s:completion_do_esc() abort
-  if s:completion.popup_id != -1
+  " Esc / C-e: 关闭补全
+  if a:key == "\<Esc>" || nr == 5
     call s:close_completion_popup()
-    " 抑制异步响应重新打开弹窗（用户主动关闭）
     let s:completion.suppress_until = reltime()
-  else
-    call feedkeys("\<Esc>", 'nt')
+    " Esc 还要退出 insert 模式
+    if a:key == "\<Esc>"
+      call feedkeys("\<Esc>", 'nt')
+    endif
+    return 1
   endif
+
+  " 其他按键：透传给 insert 模式（正常打字、BS 等）
+  return 0
 endfunction
 
-" CR: popup 打开 → 接受补全；无 popup → 换行
-function! s:completion_do_cr() abort
-  if s:completion.popup_id != -1 && !empty(s:completion.items)
-    call s:insert_completion(s:completion.items[s:completion.selected])
-  else
-    call feedkeys("\<CR>", 'nt')
-  endif
-endfunction
-
-" Tab: popup 打开 → 接受补全；无 popup → 正常 Tab
-function! s:completion_do_tab() abort
-  if s:completion.popup_id != -1 && !empty(s:completion.items)
-    call s:insert_completion(s:completion.items[s:completion.selected])
-  else
-    call feedkeys("\<Tab>", 'nt')
-  endif
-endfunction
-
-function! s:completion_handle_nav(direction) abort
-  call s:move_completion_selection(a:direction)
-endfunction
-
-" 简单选择移动
+" 简单选择移动 — prop_add 方式，不触发 CursorMoved autocmd
 function! s:move_completion_selection(direction) abort
-  let total_items = len(s:completion.items)
   let new_idx = s:completion.selected + a:direction
 
-  " 边界检查，不循环
-  if new_idx < 0
-    let new_idx = 0
-  elseif new_idx >= total_items
-    let new_idx = total_items - 1
+  " 边界 clamp
+  if new_idx < 0 || new_idx >= len(s:completion.items)
+    return
   endif
 
   let s:completion.selected = new_idx
+  call s:completion_highlight_selected()
 
-  " 只移动 cursorline，不重建高亮
-  if s:completion.popup_id != -1
-    let target_line = new_idx + 1
-    call win_execute(s:completion.popup_id, 'call cursor(' . target_line . ', 1)')
-  endif
-
-  " debounce 文档：只重置 timer，不关旧 doc popup（避免反复 close/create 开销）
+  " debounce 文档请求
   if s:completion.doc_timer_id != -1
     call timer_stop(s:completion.doc_timer_id)
   endif
-  let s:completion.doc_timer_id = timer_start(200, {-> s:show_completion_documentation()})
+  let s:completion.doc_timer_id = timer_start(300, {-> s:show_completion_documentation()})
 endfunction
 
 " LSP CompletionItemKind: 数字 → 字符串
@@ -2397,9 +2319,6 @@ endfunction
 
 " 关闭补全窗口
 function! s:close_completion_popup() abort
-  " 先卸载 mappings（在关闭 popup 之前，确保状态一致）
-  call s:remove_completion_mappings()
-
   " 停止待发的补全 timer
   if s:completion.timer_id != -1
     call timer_stop(s:completion.timer_id)
@@ -3606,6 +3525,10 @@ function! yac#ts_highlights_toggle() abort
 endfunction
 
 function! yac#ts_highlights_debounce() abort
+  " 忽略 popup 窗口（C-n 在 popup 中移动光标会触发 CursorMoved）
+  if win_gettype() ==# 'popup'
+    return
+  endif
   " Auto-enable on first BufEnter if global option is on
   if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
     let b:yac_ts_highlights_enabled = 1
@@ -3633,6 +3556,9 @@ endfunction
 
 
 function! yac#ts_highlights_invalidate() abort
+  if win_gettype() ==# 'popup'
+    return
+  endif
   if !get(b:, 'yac_ts_highlights_enabled', 0)
     return
   endif
