@@ -144,6 +144,9 @@ let s:completion.suppress_until = 0
 let s:completion.timer_id = -1
 let s:completion.bg_timer_id = -1    " 后台补全请求的 timer ID
 let s:completion.seq = 0
+let s:completion.cache = []         " 上次补全的 items 缓存（跨 session 复用）
+let s:completion.cache_file = ''    " 缓存对应的文件
+let s:completion.cache_line = -1    " 缓存对应的行号
 
 " didChange debounce timer
 let s:did_change_timer = -1
@@ -411,6 +414,21 @@ function! yac#complete() abort
       return
     endif
     call s:close_completion_popup()
+  endif
+
+  " 即时弹出：缓存 → buffer words → 等 LSP
+  if s:completion.popup_id == -1 && !s:at_trigger_char()
+    let l:instant_items = []
+    if !empty(s:completion.cache) && s:completion.cache_file ==# expand('%:p')
+      let l:instant_items = s:completion.cache
+    else
+      let l:instant_items = s:collect_buffer_words()
+    endif
+    if !empty(l:instant_items)
+      let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
+      let s:completion.original_items = l:instant_items
+      call s:filter_completions()
+    endif
   endif
 
   " 递增序列号，丢弃旧请求的响应
@@ -1629,9 +1647,11 @@ function! s:show_signature_popup(lines, hl_start, hl_end) abort
     \ pos: 'botleft',
     \ maxwidth: l:width,
     \ maxheight: 8,
-    \ border: [0, 0, 0, 0],
-    \ padding: [0, 1, 0, 1],
-    \ highlight: 'YacCompletionNormal',
+    \ border: [],
+    \ borderchars: ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ borderhighlight: ['YacPickerBorder'],
+    \ padding: [0,0,0,0],
+    \ highlight: 'YacPickerNormal',
     \ moved: 'any',
     \ zindex: 200,
     \ })
@@ -1690,20 +1710,43 @@ function! s:trigger_signature_help() abort
   call yac#signature_help()
 endfunction
 
+" 从当前 buffer 可见区域收集单词，作为即时补全源
+function! s:collect_buffer_words() abort
+  let l:cur_word = s:get_current_word_prefix()
+  if empty(l:cur_word) | return [] | endif
+
+  " 扫描可见区域 ± 50 行
+  let l:top = max([1, line('w0') - 50])
+  let l:bot = min([line('$'), line('w$') + 50])
+  let l:lines = getline(l:top, l:bot)
+
+  " 提取所有 >= 3 字符的单词，去重
+  let l:seen = {}
+  let l:items = []
+  for l:line in l:lines
+    for l:word in split(l:line, '\W\+')
+      if len(l:word) >= 3 && !has_key(l:seen, l:word) && l:word !=# l:cur_word
+        let l:seen[l:word] = 1
+        call add(l:items, {'label': l:word, 'kind': 'Text'})
+      endif
+    endfor
+  endfor
+  return l:items
+endfunction
+
 " 显示补全popup窗口
 function! s:show_completion_popup(items) abort
-  " 关闭之前的补全窗口
-  call s:close_completion_popup()
+  if s:completion.popup_id == -1
+    " 没有现有 popup → 正常创建
+    let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
+  endif
+  " popup 已存在（可能从缓存打开）→ 直接更新 items，避免 close/reopen 闪烁
 
-  " 记录触发列位置（当前词的起始位置）
-  let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
-
-  " 存储原始补全项目和当前过滤后的项目
+  " 存储原始补全项目
   let s:completion.original_items = a:items
-  let s:completion.items = a:items
   let s:completion.selected = 0
 
-  " 应用当前前缀的过滤
+  " 应用当前前缀的过滤（会复用或创建 popup）
   call s:filter_completions()
 endfunction
 
@@ -1798,17 +1841,30 @@ function! s:apply_completion_highlights() abort
         \ })
     endif
 
-    " 2. 模糊匹配字符高亮
+    " 2. 模糊匹配字符高亮（合并连续字符位置减少 prop_add 调用）
+    " matchfuzzypos 返回字符位置，需转成字节偏移给 prop_add
     if has_key(item, '_match_positions') && !empty(item._match_positions)
-      for pos in item._match_positions
-        " pos 是 label 中的 0-based byte offset，加上 icon 的字节数
-        let col = icon_bytes + pos + 1  " 1-based
-        call prop_add(lnum, col, {
-          \ 'type': 'yac_match',
-          \ 'length': 1,
-          \ 'bufnr': bufnr
-          \ })
-      endfor
+      let l:label = item.label
+      let l:positions = item._match_positions
+      let l:i = 0
+      while l:i < len(l:positions)
+        let l:char_start = l:positions[l:i]
+        let l:run = 1
+        while l:i + l:run < len(l:positions) && l:positions[l:i + l:run] == l:char_start + l:run
+          let l:run += 1
+        endwhile
+        " 字符位置 → 字节偏移：byteidx(label, char_idx)
+        let l:byte_start = byteidx(l:label, l:char_start)
+        let l:byte_end = byteidx(l:label, l:char_start + l:run)
+        if l:byte_start >= 0 && l:byte_end >= 0
+          call prop_add(lnum, icon_bytes + l:byte_start + 1, {
+            \ 'type': 'yac_match',
+            \ 'length': l:byte_end - l:byte_start,
+            \ 'bufnr': bufnr
+            \ })
+        endif
+        let l:i += l:run
+      endwhile
     endif
 
     " 3. detail 灰色
@@ -1914,28 +1970,26 @@ function! s:fuzzy_match_score(text, pattern) abort
   return {'score': score, 'positions': match_positions}
 endfunction
 
-" 智能过滤补全项
+" 智能过滤补全项（使用 Vim 内置 C 实现的 matchfuzzypos）
 function! s:filter_completions() abort
   let current_prefix = s:get_current_word_prefix()
-  " 收集匹配项和评分
-  let scored_items = []
-  for item in s:completion.original_items
-    let result = s:fuzzy_match_score(item.label, current_prefix)
-    if result.score > 0
-      let item._match_positions = result.positions
-      call add(scored_items, {'item': item, 'score': result.score})
-    endif
-  endfor
 
-  " 排序：score 降序 → label 长度升序 → 字母序
-  call sort(scored_items, {a, b ->
-    \ a.score != b.score ? b.score - a.score :
-    \ len(a.item.label) != len(b.item.label) ? len(a.item.label) - len(b.item.label) :
-    \ a.item.label < b.item.label ? -1 : a.item.label > b.item.label ? 1 : 0
-    \ })
-
-  " 提取排序后的项目
-  let s:completion.items = map(scored_items, {_, v -> v.item})
+  if empty(current_prefix)
+    " 空前缀：保留全部（LSP 已按相关性排序）
+    for item in s:completion.original_items
+      let item._match_positions = []
+    endfor
+    let s:completion.items = copy(s:completion.original_items)
+  else
+    " matchfuzzypos: C 实现的 fuzzy match + sort + 位置提取，一次调用
+    " 返回 [matched_items, char_positions_list, scores]
+    let [matched, positions, scores] = matchfuzzypos(
+      \ s:completion.original_items, current_prefix, {'key': 'label'})
+    for i in range(len(matched))
+      let matched[i]._match_positions = positions[i]
+    endfor
+    let s:completion.items = matched
+  endif
 
   let s:completion.selected = 0
 
@@ -1948,6 +2002,18 @@ function! s:filter_completions() abort
   call s:render_completion_window()
 endfunction
 
+" 计算补全 popup 的位置参数
+function! s:completion_popup_position() abort
+  let screen_cursor_row = screenrow()
+  let popup_height = min([len(s:completion.items), 10])
+  let space_below = &lines - screen_cursor_row - 1
+  if space_below >= popup_height
+    return {'line': screen_cursor_row + 1, 'pos': 'topleft'}
+  else
+    return {'line': screen_cursor_row - 1, 'pos': 'botleft'}
+  endif
+endfunction
+
 " 被动式 popup 创建/更新（不拦截任何按键）
 function! s:create_or_update_completion_popup(lines) abort
   if !exists('*popup_create')
@@ -1956,32 +2022,28 @@ function! s:create_or_update_completion_popup(lines) abort
   endif
 
   if s:completion.popup_id != -1
-    " 复用已有 popup，只更新文本（避免 close/reopen 闪烁）
+    " 复用已有 popup：更新文本 + 位置（trigger_col 可能变了）
     call popup_settext(s:completion.popup_id, a:lines)
+    let l:pos = s:completion_popup_position()
+    call popup_move(s:completion.popup_id, {
+      \ 'line': l:pos.line,
+      \ 'col': s:completion.trigger_col,
+      \ 'pos': l:pos.pos,
+      \ })
     return
   endif
 
-  " 计算绝对屏幕坐标，锁定位置（避免上下跳动）
-  let screen_cursor_row = screenrow()
-  let popup_height = min([len(a:lines), 10])
-  let space_below = &lines - screen_cursor_row - 1  " 光标下方可用行数（减 cmdline）
-  if space_below >= popup_height
-    " 下方够用，放光标下一行
-    let popup_line = screen_cursor_row + 1
-    let popup_pos = 'topleft'
-  else
-    " 下方不够，放光标上方
-    let popup_line = screen_cursor_row - 1
-    let popup_pos = 'botleft'
-  endif
+  let l:pos = s:completion_popup_position()
 
   let opts = {
-    \ 'line': popup_line,
+    \ 'line': l:pos.line,
     \ 'col': s:completion.trigger_col,
-    \ 'pos': popup_pos,
+    \ 'pos': l:pos.pos,
     \ 'fixed': 1,
-    \ 'border': [0,0,0,0],
-    \ 'padding': [0,1,0,1],
+    \ 'border': [],
+    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'padding': [0,0,0,0],
     \ 'cursorline': 1,
     \ 'highlight': 'YacCompletionNormal',
     \ 'maxheight': 10,
@@ -1990,14 +2052,12 @@ function! s:create_or_update_completion_popup(lines) abort
     \ 'zindex': 1000,
     \ }
 
-  " cursorlinehighlight requires Vim 9.0+
   if has('patch-9.0.0')
     let opts['cursorlinehighlight'] = 'YacCompletionSelect'
   endif
 
   let s:completion.popup_id = popup_create(a:lines, opts)
 
-  " 安装 buffer-local mappings
   call s:install_completion_mappings()
 endfunction
 
@@ -2240,7 +2300,13 @@ function! s:move_completion_selection(direction) abort
   endif
 
   let s:completion.selected = new_idx
-  call s:render_completion_window()
+
+  " 只移动 cursorline + 刷新文档，不重建高亮
+  if s:completion.popup_id != -1
+    let target_line = new_idx + 1
+    call win_execute(s:completion.popup_id, 'call cursor(' . target_line . ', 1)')
+  endif
+  call s:show_completion_documentation()
 endfunction
 
 " LSP CompletionItemKind: 数字 → 字符串
@@ -2326,6 +2392,12 @@ function! s:close_completion_popup() abort
   endif
 
   if s:completion.popup_id != -1 && exists('*popup_close')
+    " 保留 items 到缓存：下次补全可立即弹出
+    if !empty(s:completion.original_items)
+      let s:completion.cache = s:completion.original_items
+      let s:completion.cache_file = expand('%:p')
+      let s:completion.cache_line = line('.')
+    endif
     call popup_close(s:completion.popup_id)
     let s:completion.popup_id = -1
     let s:completion.items = []

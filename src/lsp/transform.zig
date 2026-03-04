@@ -471,6 +471,7 @@ fn truncateUtf8(s: []const u8, max_bytes: usize) []const u8 {
 /// Returns {items: [...]}.
 pub fn transformCompletionResult(alloc: Allocator, result: Value) !Value {
     const max_doc_bytes: usize = 500;
+    const max_items: usize = 100;
 
     // Extract the items array from either format
     const items_slice: []const Value = switch (result) {
@@ -482,9 +483,14 @@ pub fn transformCompletionResult(alloc: Allocator, result: Value) !Value {
         else => &[_]Value{},
     };
 
+    // Cap items to avoid serializing/transmitting thousands of entries.
+    // LSP servers like rust-analyzer pre-sort by relevance, so truncating
+    // preserves the most useful items.
+    const capped = if (items_slice.len > max_items) items_slice[0..max_items] else items_slice;
+
     var items = std.json.Array.init(alloc);
 
-    for (items_slice) |item_val| {
+    for (capped) |item_val| {
         const ci = switch (item_val) {
             .object => |o| o,
             else => continue,

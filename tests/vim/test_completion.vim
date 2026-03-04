@@ -415,15 +415,14 @@ call popup_clear()
 normal! u
 
 " ============================================================================
-" Test 12: Popup style — signature should be borderless (like completion)
+" Test 12: Popup style — unified round-corner border (YacPickerBorder)
 " ============================================================================
-call yac_test#log('INFO', 'Test 12: Signature popup should be borderless')
+call yac_test#log('INFO', 'Test 12: Popups should have unified round-corner border')
 
-" popup_getoptions 对无边框 popup 不返回 borderchars 键；
-" 有边框（border: [] + borderchars）则返回 borderchars 数组。
-" 所以检测 borderchars 键是否存在即可。
+" All popups now use: border: [] + borderchars: ['─','│','─','│','╭','╮','╯','╰']
+" + borderhighlight: ['YacPickerBorder']
 
-" 12a: 验证补全弹窗无边框（基线：应该通过）
+" 12a: 验证补全弹窗有圆角边框
 call cursor(46, 1)
 normal! O
 execute "normal! i    const x = us"
@@ -435,14 +434,14 @@ if s:popup_appeared
   let s:comp_opts = yac#get_completion_popup_options()
   let s:comp_has_borderchars = has_key(s:comp_opts, 'borderchars')
   call yac_test#log('INFO', printf('Completion has borderchars: %d', s:comp_has_borderchars))
-  call yac_test#assert_true(!s:comp_has_borderchars, 'Completion popup should NOT have borderchars (borderless)')
+  call yac_test#assert_true(s:comp_has_borderchars, 'Completion popup should have round-corner borderchars')
 endif
 
 execute "normal! \<Esc>"
 call popup_clear()
 normal! u
 
-" 12b: 验证签名弹窗也无边框（bug: 当前有 borderchars）
+" 12b: 验证签名弹窗也有圆角边框（与补全一致）
 call cursor(46, 1)
 normal! O
 execute "normal! i    const x = createUserMap("
@@ -464,7 +463,7 @@ if s:sig_appeared
   let s:sig_opts = yac#get_signature_popup_options()
   let s:sig_has_borderchars = has_key(s:sig_opts, 'borderchars')
   call yac_test#log('INFO', printf('Signature has borderchars: %d', s:sig_has_borderchars))
-  call yac_test#assert_true(!s:sig_has_borderchars, 'Signature popup should NOT have borderchars (borderless, consistent with completion)')
+  call yac_test#assert_true(s:sig_has_borderchars, 'Signature popup should have round-corner borderchars (consistent with completion)')
 endif
 
 execute "normal! \<Esc>"
