@@ -418,6 +418,14 @@ function! yac#references() abort
     \ }, 's:handle_references_response')
 endfunction
 
+function! yac#peek() abort
+  call s:request('references', {
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }, 's:handle_peek_response')
+endfunction
+
 function! yac#inlay_hints() abort
   let l:bufnr = bufnr('%')
   call s:request('inlay_hints', {
@@ -974,6 +982,23 @@ function! s:handle_references_response(channel, response) abort
   endif
 
   call yac#toast('No references found')
+endfunction
+
+" peek 响应处理器
+function! s:handle_peek_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: peek response: %s', string(a:response)))
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
+    return
+  endif
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
+    call yac_peek#show(a:response.locations)
+    return
+  endif
+
+  call yac#toast('No results found')
 endfunction
 
 " inlay_hints 响应处理器
