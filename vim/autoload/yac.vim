@@ -1364,12 +1364,6 @@ function! s:handle_response(channel, msg) abort
   endif
 endfunction
 
-" VimScript函数：接收daemon设置的日志文件路径（通过call_async调用）
-function! yac#set_log_file(log_path) abort
-  let s:log_file = a:log_path
-  call s:debug_log('Log file path set to: ' . a:log_path)
-endfunction
-
 " Toast notification popup (top-right corner, auto-dismiss)
 let s:toast_popup = -1
 
@@ -2442,9 +2436,6 @@ function! yac#test_do_cr() abort
 endfunction
 function! yac#test_do_esc() abort
   call s:completion_do_esc()
-endfunction
-function! yac#test_do_tab() abort
-  call s:completion_do_tab()
 endfunction
 function! yac#test_do_nav(direction) abort
   call s:completion_handle_nav(a:direction)
