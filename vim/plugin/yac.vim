@@ -205,3 +205,8 @@ augroup yac_theme
   autocmd!
   autocmd ColorScheme * call yac_theme#autoload()
 augroup END
+
+" Enable Copilot by default (set g:yac_copilot_auto = 0 to disable)
+if get(g:, 'yac_copilot_auto', 1)
+  call yac_copilot#enable()
+endif
