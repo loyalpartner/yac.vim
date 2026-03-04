@@ -1031,6 +1031,23 @@ function! s:handle_peek_drill_response(channel, response) abort
   call yac#toast('No results for ' . symbol)
 endfunction
 
+" Bridge for peek syntax highlighting: send ts_highlights for preview
+function! yac#_peek_highlights_request(file, text, start_line, end_line, seq) abort
+  let l:seq = a:seq
+  call s:request('ts_highlights', {
+    \   'file': a:file,
+    \   'text': a:text,
+    \   'start_line': a:start_line,
+    \   'end_line': a:end_line,
+    \ }, {ch, resp -> s:handle_peek_highlights_response(ch, resp, l:seq)})
+endfunction
+
+function! s:handle_peek_highlights_response(channel, response, seq) abort
+  if type(a:response) == v:t_dict
+    call yac_peek#highlights_response(a:response, a:seq)
+  endif
+endfunction
+
 " inlay_hints 响应处理器
 function! s:handle_inlay_hints_response(channel, response, ...) abort
   call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))

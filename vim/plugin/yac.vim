@@ -82,7 +82,7 @@ command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>
-nnoremap <silent> gD :YacDeclaration<CR>
+nnoremap <silent> gD :YacPeek<CR>
 nnoremap <silent> gy :YacTypeDefinition<CR>
 nnoremap <silent> gi :YacImplementation<CR>
 nnoremap <silent> gr :YacReferences<CR>

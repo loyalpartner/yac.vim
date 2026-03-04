@@ -2,10 +2,10 @@
 "
 " Keys:
 "   j/k     — navigate location list (switch reference)
-"   n/p     — scroll code preview
-"   s       — ace-jump: label symbols, press letter to drill in
-"   h       — tree: go to parent node
-"   l       — tree: go to last visited child
+"   u/d     — scroll code preview
+"   s       — ace-jump: label all symbols, press letter to drill in
+"   C-o     — tree: go to parent node
+"   C-i     — tree: go to last visited child
 "   J/K     — tree: next/prev sibling
 "   Enter   — jump to selected location
 "   q/Esc   — close
@@ -14,6 +14,8 @@
 
 let s:peek = {
   \ 'popup_id': -1,
+  \ 'popup_line': 0,
+  \ 'popup_col': 0,
   \ 'preview_height': 12,
   \ 'orig_file': '',
   \ 'orig_lnum': 0,
@@ -21,6 +23,9 @@ let s:peek = {
   \ 'file_cache': {},
   \ 'ace_active': 0,
   \ 'ace_labels': [],
+  \ 'render_seq': 0,
+  \ 'breadcrumb_lines': 0,
+  \ 'skip_regions': [],
   \ }
 
 " Tree: flat list of nodes, each with parent/children indices
@@ -98,6 +103,7 @@ function! yac_peek#close() abort
   let s:tree.current = -1
   let s:peek.file_cache = {}
   let s:peek.ace_active = 0
+  let s:hl_props_done = {}
 endfunction
 
 " Called when drill-in results arrive from daemon
@@ -174,6 +180,17 @@ function! s:display_to_orig_col(line, dcol) abort
   return ocol
 endfunction
 
+" Original column → display column (accounting for tab expansion)
+function! s:orig_to_display_col(line, ocol) abort
+  let d = 0
+  let o = 0
+  while o < a:ocol && o < len(a:line)
+    let d += a:line[o] == "\t" ? 4 : 1
+    let o += 1
+  endwhile
+  return d
+endfunction
+
 " Get visible preview lines (tab-expanded)
 function! s:get_visible_lines() abort
   let node = s:cur_node()
@@ -190,8 +207,17 @@ function! s:get_visible_lines() abort
 endfunction
 
 " ============================================================================
-" Ace-jump: label all symbols in preview
+" Ace-jump: label all symbols in preview (skip comments/strings)
 " ============================================================================
+
+function! s:in_skip_region(row, col) abort
+  for r in s:peek.skip_regions
+    if a:row == r[0] && a:col >= r[1] && a:col < r[2]
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
 
 function! s:ace_enter() abort
   let vis_lines = s:get_visible_lines()
@@ -202,12 +228,15 @@ function! s:ace_enter() abort
     let line = vis_lines[row]
     let col = 0
     while col < len(line)
+      " Detect word start
       if line[col] =~# '\w' && (col == 0 || line[col - 1] !~# '\w')
-        if label_idx < len(s:ACE_CHARS)
-          let wend = col
-          while wend < len(line) && line[wend] =~# '\w'
-            let wend += 1
-          endwhile
+        " Find word end
+        let wend = col
+        while wend < len(line) && line[wend] =~# '\w'
+          let wend += 1
+        endwhile
+        " Skip words inside comments/strings
+        if !s:in_skip_region(row, col) && label_idx < len(s:ACE_CHARS)
           call add(s:peek.ace_labels, {
             \ 'char': s:ACE_CHARS[label_idx],
             \ 'row': row,
@@ -294,6 +323,8 @@ function! s:render() abort
       \ 'col': 1, 'len': strlen(crumb)})
   endif
 
+  let s:peek.breadcrumb_lines = len(display)
+
   " --- Code preview ---
   let lnum = node.scroll_top + 1
   for i in range(len(vis_lines))
@@ -331,13 +362,13 @@ function! s:render() abort
     let lnum += 1
   endfor
 
-  " --- Separator ---
-  let sep_width = 50
+  " --- Separator + max width (single pass) ---
+  let max_w = 50
   for dl in display
     let w = strdisplaywidth(dl)
-    if w > sep_width | let sep_width = w | endif
+    if w > max_w | let max_w = w | endif
   endfor
-  call add(display, repeat('─', sep_width))
+  call add(display, repeat('─', max_w))
 
   " --- Location list (max 5 visible) ---
   let locs = node.locations
@@ -368,12 +399,12 @@ function! s:render() abort
   if s:peek.ace_active
     let status .= 'press letter to drill'
   else
-    let status .= 'j/k:ref  n/p:scroll  s:ace'
+    let status .= 'j/k:ref  u/d:scroll  s:ace'
     if node.parent >= 0
-      let status .= '  h:parent'
+      let status .= '  C-o:parent'
     endif
     if !empty(node.children)
-      let status .= '  l:child'
+      let status .= '  C-i:child'
     endif
     if node.parent >= 0 && len(s:tree.nodes[node.parent].children) > 1
       let status .= '  J/K:sibling'
@@ -384,46 +415,52 @@ function! s:render() abort
   call add(display, status)
 
   " --- Popup dimensions ---
-  let max_w = 0
-  for dl in display
-    let w = strdisplaywidth(dl)
-    if w > max_w | let max_w = w | endif
-  endfor
   let width = min([max_w + 2, &columns - 4])
   let height = min([len(display), &lines - 4])
 
-  " --- Create popup ---
+  let depth = len(path)
+  let title = s:peek.ace_active ? ' Peek [Ace] '
+    \ : depth > 1 ? ' Peek [' . depth . '] '
+    \ : ' Peek '
+
+  " --- Update existing popup or create new one ---
   if s:peek.popup_id != -1
-    silent! call popup_close(s:peek.popup_id)
+    " Reuse popup to avoid flicker; lock position to prevent drift
+    call popup_settext(s:peek.popup_id, display)
+    call popup_setoptions(s:peek.popup_id, {
+      \ 'line': s:peek.popup_line,
+      \ 'col': s:peek.popup_col,
+      \ 'minwidth': width,
+      \ 'maxwidth': width,
+      \ 'maxheight': height,
+      \ 'title': title,
+      \ 'borderhighlight': [s:peek.ace_active ? 'WarningMsg' : 'YacPickerBorder'],
+      \ })
+  else
+    let s:peek.popup_id = popup_create(display, {
+      \ 'line': 'cursor+1',
+      \ 'col': 'cursor',
+      \ 'minwidth': width,
+      \ 'maxwidth': width,
+      \ 'maxheight': height,
+      \ 'border': [],
+      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+      \ 'borderhighlight': [s:peek.ace_active ? 'WarningMsg' : 'YacPickerBorder'],
+      \ 'highlight': 'Normal',
+      \ 'scrollbar': 0,
+      \ 'padding': [0, 1, 0, 1],
+      \ 'filter': function('s:popup_filter'),
+      \ 'mapping': 0,
+      \ 'callback': function('s:popup_closed'),
+      \ 'title': title,
+      \ })
+    " Save absolute screen position for subsequent renders
+    let pos = popup_getpos(s:peek.popup_id)
+    let s:peek.popup_line = pos.line
+    let s:peek.popup_col = pos.col
   endif
 
-  let depth = len(s:tree_path())
-  let title = s:peek.ace_active ? ' Peek [Ace] ' : ' Peek '
-  if depth > 1
-    let title = ' Peek [' . depth . '] '
-  endif
-  if s:peek.ace_active
-    let title = ' Peek [Ace] '
-  endif
-
-  let s:peek.popup_id = popup_create(display, {
-    \ 'line': 'cursor+1',
-    \ 'col': 'cursor',
-    \ 'minwidth': width,
-    \ 'maxwidth': width,
-    \ 'maxheight': height,
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': [s:peek.ace_active ? 'WarningMsg' : 'YacPickerBorder'],
-    \ 'highlight': 'Normal',
-    \ 'scrollbar': 0,
-    \ 'padding': [0, 1, 0, 1],
-    \ 'filter': function('s:popup_filter'),
-    \ 'callback': function('s:popup_closed'),
-    \ 'title': title,
-    \ })
-
-  " --- Apply text properties ---
+  " --- Apply text properties (popup_settext clears old ones) ---
   let bufnr = winbufnr(s:peek.popup_id)
   call s:ensure_hl_props(bufnr)
   for h in hl_list
@@ -436,6 +473,131 @@ function! s:render() abort
     catch
     endtry
   endfor
+
+  " --- Syntax highlighting: apply cache immediately, then request fresh ---
+  if !s:peek.ace_active
+    call s:apply_hl_cache(bufnr)
+    call s:request_preview_highlights()
+  endif
+endfunction
+
+" ============================================================================
+" Syntax highlighting for preview (via tree-sitter)
+" ============================================================================
+
+function! s:request_preview_highlights() abort
+  let node = s:cur_node()
+  if empty(node.locations) | return | endif
+
+  let file = get(node.locations[node.selected], 'file', '')
+  let lines = s:get_file_lines(file)
+  if empty(lines) | return | endif
+
+  let s:peek.render_seq += 1
+  " Cache joined text to avoid re-joining entire file on every scroll
+  if !has_key(s:peek.file_cache, file . ':text')
+    let s:peek.file_cache[file . ':text'] = join(lines, "\n")
+  endif
+  let text = s:peek.file_cache[file . ':text']
+  " Request a wider range so cached highlights survive small scrolls
+  let l:buf = s:peek.preview_height * 2
+  let l:req_start = max([0, node.scroll_top - l:buf])
+  let l:req_end = min([node.scroll_top + s:peek.preview_height + l:buf, len(lines)])
+  call yac#_peek_highlights_request(file, text,
+    \ l:req_start, l:req_end,
+    \ s:peek.render_seq)
+endfunction
+
+" Groups whose tokens should be skipped by ace-jump (dict for O(1) lookup)
+let s:SKIP_GROUPS = {}
+for s:_g in ['YacTsComment', 'YacTsCommentDocumentation',
+  \ 'YacTsString', 'YacTsStringEscape', 'YacTsCharacter',
+  \ 'YacTsKeyword', 'YacTsKeywordType', 'YacTsKeywordFunction',
+  \ 'YacTsKeywordOperator', 'YacTsKeywordConditional', 'YacTsKeywordReturn',
+  \ 'YacTsKeywordRepeat', 'YacTsKeywordImport', 'YacTsKeywordException',
+  \ 'YacTsKeywordModifier', 'YacTsKeywordCoroutine',
+  \ 'YacTsOperator', 'YacTsBoolean', 'YacTsNumber', 'YacTsNumberFloat',
+  \ 'YacTsPunctuationBracket', 'YacTsPunctuationDelimiter']
+  let s:SKIP_GROUPS[s:_g] = 1
+endfor
+unlet s:_g
+
+" Apply highlights data to popup buffer
+function! s:apply_highlights(bufnr, hl) abort
+  if s:tree.current < 0 | return | endif
+  let node = s:cur_node()
+  let file = get(node.locations[node.selected], 'file', '')
+  let orig_lines = s:get_file_lines(file)
+
+  let s:peek.skip_regions = []
+
+  for [group, positions] in items(a:hl)
+    let is_skip = has_key(s:SKIP_GROUPS, group)
+
+    let prop_name = 'yac_peek_ts_' . group
+    if !has_key(s:hl_props_done, prop_name)
+      if empty(prop_type_get(prop_name, {'bufnr': a:bufnr}))
+        call prop_type_add(prop_name, {
+          \ 'bufnr': a:bufnr, 'highlight': group, 'priority': 30})
+      endif
+      let s:hl_props_done[prop_name] = 1
+    endif
+
+    for pos in positions
+      let file_line = pos[0] - 1
+      let orig_col = pos[1] - 1
+      let end_col = pos[3] - 1
+      let row = file_line - node.scroll_top
+
+      if row < 0 || row >= s:peek.preview_height | continue | endif
+      if file_line >= len(orig_lines) | continue | endif
+
+      let dcol = s:orig_to_display_col(orig_lines[file_line], orig_col)
+      let dcol_end = s:orig_to_display_col(orig_lines[file_line], end_col)
+      let length = dcol_end - dcol
+      if length <= 0 | continue | endif
+
+      if is_skip
+        call add(s:peek.skip_regions, [row, dcol, dcol_end])
+      endif
+
+      let popup_line = s:peek.breadcrumb_lines + row + 1
+      let popup_col = s:PREFIX_BYTES + dcol + 1
+      try
+        call prop_add(popup_line, popup_col, {
+          \ 'type': prop_name,
+          \ 'length': length,
+          \ 'bufnr': a:bufnr,
+          \ })
+      catch
+      endtry
+    endfor
+  endfor
+endfunction
+
+" Apply cached highlights immediately (avoids flicker on scroll)
+function! s:apply_hl_cache(bufnr) abort
+  if s:tree.current < 0 | return | endif
+  let node = s:cur_node()
+  if has_key(node, 'hl_cache')
+    call s:apply_highlights(a:bufnr, node.hl_cache)
+  endif
+endfunction
+
+" Called by yac.vim when ts_highlights response arrives
+function! yac_peek#highlights_response(response, seq) abort
+  if a:seq != s:peek.render_seq | return | endif
+  if s:peek.popup_id == -1 | return | endif
+  if s:tree.current < 0 | return | endif
+
+  let bufnr = winbufnr(s:peek.popup_id)
+  if bufnr < 0 | return | endif
+
+  " Cache on the node for reuse during scroll
+  let node = s:cur_node()
+  let node.hl_cache = get(a:response, 'highlights', {})
+
+  call s:apply_highlights(bufnr, node.hl_cache)
 endfunction
 
 " ============================================================================
@@ -458,22 +620,13 @@ endfunction
 " List navigation (within current node)
 " ============================================================================
 
-function! s:select_next() abort
+function! s:select_nav(delta) abort
   let node = s:cur_node()
-  if node.selected < len(node.locations) - 1
-    let node.selected += 1
-    call s:init_preview()
-    call s:render()
-  endif
-endfunction
-
-function! s:select_prev() abort
-  let node = s:cur_node()
-  if node.selected > 0
-    let node.selected -= 1
-    call s:init_preview()
-    call s:render()
-  endif
+  let new_sel = node.selected + a:delta
+  if new_sel < 0 || new_sel >= len(node.locations) | return | endif
+  let node.selected = new_sel
+  call s:init_preview()
+  call s:render()
 endfunction
 
 " ============================================================================
@@ -499,27 +652,15 @@ function! s:tree_go_child() abort
   call s:render()
 endfunction
 
-function! s:tree_next_sibling() abort
+function! s:tree_move_sibling(delta) abort
   let node = s:cur_node()
   if node.parent < 0 | return | endif
   let parent = s:tree.nodes[node.parent]
   let my_ci = index(parent.children, s:tree.current)
-  if my_ci < 0 || my_ci >= len(parent.children) - 1 | return | endif
-  let parent.selected_child = my_ci + 1
-  let s:tree.current = parent.children[my_ci + 1]
-  let s:peek.ace_active = 0
-  call s:init_preview()
-  call s:render()
-endfunction
-
-function! s:tree_prev_sibling() abort
-  let node = s:cur_node()
-  if node.parent < 0 | return | endif
-  let parent = s:tree.nodes[node.parent]
-  let my_ci = index(parent.children, s:tree.current)
-  if my_ci <= 0 | return | endif
-  let parent.selected_child = my_ci - 1
-  let s:tree.current = parent.children[my_ci - 1]
+  let new_ci = my_ci + a:delta
+  if new_ci < 0 || new_ci >= len(parent.children) | return | endif
+  let parent.selected_child = new_ci
+  let s:tree.current = parent.children[new_ci]
   let s:peek.ace_active = 0
   call s:init_preview()
   call s:render()
@@ -559,15 +700,15 @@ function! s:popup_filter(winid, key) abort
 endfunction
 
 function! s:filter_normal(key) abort
-  if a:key == 'j' || a:key == "\<Down>" | call s:select_next()      | return 1 | endif
-  if a:key == 'k' || a:key == "\<Up>"   | call s:select_prev()      | return 1 | endif
-  if a:key == 'n'    | call s:scroll(3)              | return 1 | endif
-  if a:key == 'p'    | call s:scroll(-3)             | return 1 | endif
+  if a:key == 'j' || a:key == "\<Down>" | call s:select_nav(1)    | return 1 | endif
+  if a:key == 'k' || a:key == "\<Up>"   | call s:select_nav(-1)   | return 1 | endif
+  if a:key == 'd'    | call s:scroll(3)              | return 1 | endif
+  if a:key == 'u'    | call s:scroll(-3)             | return 1 | endif
   if a:key == 's'    | call s:ace_enter()             | return 1 | endif
-  if a:key == 'h'    | call s:tree_go_parent()        | return 1 | endif
-  if a:key == 'l'    | call s:tree_go_child()         | return 1 | endif
-  if a:key == 'J'    | call s:tree_next_sibling()     | return 1 | endif
-  if a:key == 'K'    | call s:tree_prev_sibling()     | return 1 | endif
+  if a:key == "\<C-o>" | call s:tree_go_parent()       | return 1 | endif
+  if a:key == "\<C-i>" | call s:tree_go_child()        | return 1 | endif
+  if a:key == 'J'    | call s:tree_move_sibling(1)    | return 1 | endif
+  if a:key == 'K'    | call s:tree_move_sibling(-1)   | return 1 | endif
   if a:key == "\<CR>" | call s:jump_to_selected()     | return 1 | endif
   if a:key == 'q' || a:key == "\<Esc>" | call yac_peek#close() | return 1 | endif
   return 0
@@ -591,7 +732,10 @@ endfunction
 " Highlight setup
 " ============================================================================
 
+let s:hl_props_done = {}
+
 function! s:ensure_hl_props(bufnr) abort
+  if has_key(s:hl_props_done, a:bufnr) | return | endif
   for [name, hl, prio] in [
     \ ['yac_peek_target',     'CursorLine', 50],
     \ ['yac_peek_selected',   'PmenuSel',   50],
@@ -602,4 +746,5 @@ function! s:ensure_hl_props(bufnr) abort
       call prop_type_add(name, {'bufnr': a:bufnr, 'highlight': hl, 'priority': prio})
     endif
   endfor
+  let s:hl_props_done[a:bufnr] = 1
 endfunction
