@@ -35,11 +35,42 @@ endfunction
 
 function! yac_copilot#render_ghost_text(items) abort
   call yac_copilot#clear_ghost_text()
-  let s:ghost_items = a:items
-  let s:ghost_index = 0
   if empty(a:items)
+    let s:ghost_items = []
+    let s:ghost_index = 0
     return
   endif
+
+  " Pre-process: strip already-typed prefix from insertText using range info.
+  " Copilot's insertText covers from range.start to the end of the suggestion;
+  " we only want the portion after the cursor.
+  let l:col = col('.')
+  for l:item in a:items
+    let l:text = get(l:item, 'insertText', '')
+    if empty(l:text) | continue | endif
+
+    let l:skip = 0
+    let l:range = get(l:item, 'range', {})
+    if !empty(l:range)
+      let l:skip = (l:col - 1) - get(get(l:range, 'start', {}), 'character', 0)
+    else
+      " Fallback: prefix matching on first line
+      let l:prefix = strpart(getline('.'), 0, l:col - 1)
+      let l:first_line = split(l:text, "\n", 1)[0]
+      if len(l:prefix) > 0 && l:first_line[:len(l:prefix)-1] ==# l:prefix
+        let l:skip = len(l:prefix)
+      endif
+    endif
+
+    if l:skip > 0
+      let l:lines = split(l:text, "\n", 1)
+      let l:lines[0] = l:lines[0][l:skip:]
+      let l:item.insertText = join(l:lines, "\n")
+    endif
+  endfor
+
+  let s:ghost_items = a:items
+  let s:ghost_index = 0
   call s:show_ghost(0)
 endfunction
 
@@ -55,35 +86,21 @@ function! s:show_ghost(index) abort
     call prop_type_add(s:ghost_prop_type, {'highlight': 'CopilotSuggestion'})
   endif
 
-  let l:item = s:ghost_items[a:index]
-  let l:text = get(l:item, 'insertText', '')
+  let l:text = get(s:ghost_items[a:index], 'insertText', '')
   if empty(l:text)
     return
   endif
 
   let l:lines = split(l:text, "\n", 1)
   let l:lnum = line('.')
-  let l:col = col('.')
 
   " First line: inline after cursor using virtual text
   if !empty(l:lines[0])
-    " Extract text from cursor position to end — show only the suggestion part
-    " The insertText from Copilot may include the prefix already typed;
-    " strip it to show only the new part after the cursor.
-    let l:line_text = getline(l:lnum)
-    let l:prefix = strpart(l:line_text, 0, l:col - 1)
-    let l:suffix = l:lines[0]
-    " If the suggestion starts with what's already on the line, strip it
-    if l:suffix[:len(l:prefix)-1] ==# l:prefix && len(l:prefix) > 0
-      let l:suffix = l:suffix[len(l:prefix):]
-    endif
-    if !empty(l:suffix)
-      call prop_add(l:lnum, 0, {
-        \ 'type': s:ghost_prop_type,
-        \ 'text': l:suffix,
-        \ 'text_align': 'after',
-        \ })
-    endif
+    call prop_add(l:lnum, 0, {
+      \ 'type': s:ghost_prop_type,
+      \ 'text': l:lines[0],
+      \ 'text_align': 'after',
+      \ })
   endif
 
   " Subsequent lines: below
