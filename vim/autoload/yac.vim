@@ -20,16 +20,9 @@ if !hlexists('YacCompletionDetail')
   highlight YacCompletionDetail guifg=#6a6a6a ctermfg=242
 endif
 
-" VSCode 风格补全弹窗高亮组
-if !hlexists('YacCompletionNormal')
-  highlight YacCompletionNormal guibg=#1e1e1e guifg=#cccccc ctermbg=234 ctermfg=252
-endif
-if !hlexists('YacCompletionSelect')
-  highlight YacCompletionSelect guibg=#04395e guifg=#ffffff ctermbg=24 ctermfg=15
-endif
-if !hlexists('YacCompletionDoc')
-  highlight YacCompletionDoc guibg=#252526 guifg=#cccccc ctermbg=235 ctermfg=252
-endif
+" 补全弹窗高亮组 — link 到通用 Yac/Vim 组，跟随 colorscheme
+hi def link YacCompletionNormal  YacPickerNormal
+hi def link YacCompletionSelect  PmenuSel
 
 " 补全项类型图标映射
 let s:completion_icons = {
