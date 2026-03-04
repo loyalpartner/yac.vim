@@ -244,7 +244,7 @@ fn parseMarkdown(
 ///   "lines": ["display line 1", "display line 2", ...],
 ///   "highlights": {"YacTsKeyword": [[lnum,col,lnum,end_col], ...], ...}
 /// }
-pub fn extractHoverHighlights(
+pub noinline fn extractHoverHighlights(
     allocator: Allocator,
     ts_state: *TreeSitter,
     markdown: []const u8,
