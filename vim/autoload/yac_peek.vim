@@ -1,23 +1,74 @@
-" yac_peek.vim — Peek window with tree navigation
-" Shows code preview + location list in a popup, supports drilling into symbols
+" yac_peek.vim — Peek window with tree navigation and ace-jump
+"
+" Keys:
+"   j/k     — navigate location list (switch reference)
+"   n/p     — scroll code preview
+"   s       — ace-jump: label symbols, press letter to drill in
+"   h       — tree: go to parent node
+"   l       — tree: go to last visited child
+"   J/K     — tree: next/prev sibling
+"   Enter   — jump to selected location
+"   q/Esc   — close
+
+" --- State ---
 
 let s:peek = {
   \ 'popup_id': -1,
-  \ 'locations': [],
-  \ 'selected': 0,
-  \ 'preview_lines': 10,
+  \ 'preview_height': 12,
   \ 'orig_file': '',
   \ 'orig_lnum': 0,
   \ 'orig_col': 0,
-  \ 'history': [],
-  \ 'breadcrumb': [],
+  \ 'file_cache': {},
+  \ 'ace_active': 0,
+  \ 'ace_labels': [],
   \ }
+
+" Tree: flat list of nodes, each with parent/children indices
+let s:tree = { 'nodes': [], 'current': -1 }
+
+" Byte length of line number prefix: printf('%4d │ ', N)
+let s:PREFIX_BYTES = strlen(printf('%4d │ ', 1))
+
+" Label chars ordered by ergonomics (home row first)
+let s:ACE_CHARS = 'asdfghjklqwertyuiopzxcvbnm'
+
+" ============================================================================
+" Tree helpers
+" ============================================================================
+
+function! s:new_node(symbol, locations, parent) abort
+  return {
+    \ 'symbol': a:symbol,
+    \ 'locations': a:locations,
+    \ 'selected': 0,
+    \ 'scroll_top': -1,
+    \ 'parent': a:parent,
+    \ 'children': [],
+    \ 'selected_child': -1,
+    \ }
+endfunction
+
+function! s:cur_node() abort
+  return s:tree.nodes[s:tree.current]
+endfunction
+
+" Build path from root to current node
+function! s:tree_path() abort
+  let path = []
+  let idx = s:tree.current
+  while idx >= 0
+    call insert(path, idx)
+    let idx = s:tree.nodes[idx].parent
+  endwhile
+  return path
+endfunction
 
 " ============================================================================
 " Public API
 " ============================================================================
 
-function! yac_peek#show(locations) abort
+function! yac_peek#show(locations, ...) abort
+  let symbol = a:0 >= 1 ? a:1 : ''
   if empty(a:locations)
     call yac#toast('No results found')
     return
@@ -25,14 +76,16 @@ function! yac_peek#show(locations) abort
 
   call yac_peek#close()
 
-  let s:peek.locations = a:locations
-  let s:peek.selected = 0
   let s:peek.orig_file = expand('%:p')
   let s:peek.orig_lnum = line('.')
   let s:peek.orig_col = col('.')
-  let s:peek.history = []
-  let s:peek.breadcrumb = []
+  let s:peek.file_cache = {}
+  let s:peek.ace_active = 0
 
+  let s:tree.nodes = [s:new_node(symbol, a:locations, -1)]
+  let s:tree.current = 0
+
+  call s:init_preview()
   call s:render()
 endfunction
 
@@ -41,28 +94,159 @@ function! yac_peek#close() abort
     silent! call popup_close(s:peek.popup_id)
     let s:peek.popup_id = -1
   endif
-  let s:peek.locations = []
-  let s:peek.history = []
-  let s:peek.breadcrumb = []
+  let s:tree.nodes = []
+  let s:tree.current = -1
+  let s:peek.file_cache = {}
+  let s:peek.ace_active = 0
 endfunction
 
-" Called by yac#_peek_drill_response() when drill-in results arrive
+" Called when drill-in results arrive from daemon
 function! yac_peek#drill_response(locations, symbol) abort
   if empty(a:locations)
     call yac#toast('No results for ' . a:symbol)
     return
   endif
 
-  " Push current state onto history
-  call add(s:peek.history, {
-    \ 'locations': copy(s:peek.locations),
-    \ 'selected': s:peek.selected,
-    \ })
-  call add(s:peek.breadcrumb, a:symbol)
+  let parent_idx = s:tree.current
+  let node = s:new_node(a:symbol, a:locations, parent_idx)
+  call add(s:tree.nodes, node)
+  let child_idx = len(s:tree.nodes) - 1
 
-  " Show new level
-  let s:peek.locations = a:locations
-  let s:peek.selected = 0
+  " Register as child of parent
+  let parent = s:tree.nodes[parent_idx]
+  call add(parent.children, child_idx)
+  let parent.selected_child = len(parent.children) - 1
+
+  let s:tree.current = child_idx
+  let s:peek.ace_active = 0
+  call s:init_preview()
+  call s:render()
+endfunction
+
+" ============================================================================
+" Preview state
+" ============================================================================
+
+function! s:init_preview() abort
+  let node = s:cur_node()
+  if empty(node.locations) | return | endif
+
+  let loc = node.locations[node.selected]
+  let file = get(loc, 'file', '')
+  let target_line = get(loc, 'line', 0)
+
+  let half = s:peek.preview_height / 2
+  let node.scroll_top = max([0, target_line - half])
+
+  let total = len(s:get_file_lines(file))
+  if node.scroll_top + s:peek.preview_height > total
+    let node.scroll_top = max([0, total - s:peek.preview_height])
+  endif
+endfunction
+
+" ============================================================================
+" File I/O
+" ============================================================================
+
+function! s:get_file_lines(file) abort
+  if !has_key(s:peek.file_cache, a:file)
+    try
+      let s:peek.file_cache[a:file] = readfile(a:file)
+    catch
+      let s:peek.file_cache[a:file] = []
+    endtry
+  endif
+  return s:peek.file_cache[a:file]
+endfunction
+
+function! s:expand_tabs(text) abort
+  return substitute(a:text, '\t', '    ', 'g')
+endfunction
+
+" Display column → original column (accounting for tab expansion)
+function! s:display_to_orig_col(line, dcol) abort
+  let ocol = 0
+  let d = 0
+  while ocol < len(a:line) && d < a:dcol
+    let d += a:line[ocol] == "\t" ? 4 : 1
+    let ocol += 1
+  endwhile
+  return ocol
+endfunction
+
+" Get visible preview lines (tab-expanded)
+function! s:get_visible_lines() abort
+  let node = s:cur_node()
+  if empty(node.locations) | return [] | endif
+  let file = get(node.locations[node.selected], 'file', '')
+  let lines = s:get_file_lines(file)
+  let start = node.scroll_top
+  let end = min([start + s:peek.preview_height, len(lines)])
+  let result = []
+  for i in range(start, end - 1)
+    call add(result, s:expand_tabs(lines[i]))
+  endfor
+  return result
+endfunction
+
+" ============================================================================
+" Ace-jump: label all symbols in preview
+" ============================================================================
+
+function! s:ace_enter() abort
+  let vis_lines = s:get_visible_lines()
+  let s:peek.ace_labels = []
+  let label_idx = 0
+
+  for row in range(len(vis_lines))
+    let line = vis_lines[row]
+    let col = 0
+    while col < len(line)
+      if line[col] =~# '\w' && (col == 0 || line[col - 1] !~# '\w')
+        if label_idx < len(s:ACE_CHARS)
+          let wend = col
+          while wend < len(line) && line[wend] =~# '\w'
+            let wend += 1
+          endwhile
+          call add(s:peek.ace_labels, {
+            \ 'char': s:ACE_CHARS[label_idx],
+            \ 'row': row,
+            \ 'col': col,
+            \ 'word': line[col : wend - 1],
+            \ })
+          let label_idx += 1
+        endif
+      endif
+      let col += 1
+    endwhile
+  endfor
+
+  let s:peek.ace_active = 1
+  call s:render()
+endfunction
+
+function! s:ace_select(key) abort
+  for lbl in s:peek.ace_labels
+    if lbl.char == a:key
+      let s:peek.ace_active = 0
+
+      let node = s:cur_node()
+      let file = get(node.locations[node.selected], 'file', '')
+      let file_line = node.scroll_top + lbl.row
+      let lines = s:get_file_lines(file)
+      if file_line >= len(lines)
+        call s:render()
+        return
+      endif
+      let orig_col = s:display_to_orig_col(lines[file_line], lbl.col)
+
+      call yac#_peek_drill(file, file_line, orig_col, lbl.word)
+      return
+    endif
+  endfor
+
+  " No match — cancel ace mode
+  let s:peek.ace_active = 0
   call s:render()
 endfunction
 
@@ -71,89 +255,155 @@ endfunction
 " ============================================================================
 
 function! s:render() abort
-  if empty(s:peek.locations)
-    return
-  endif
+  let node = s:cur_node()
+  if empty(node.locations) | return | endif
 
-  let loc = s:peek.locations[s:peek.selected]
-  let file = get(loc, 'file', '')
-  let target_line = get(loc, 'line', 0)  " 0-based
-  let target_col = get(loc, 'column', 0)
+  let loc = node.locations[node.selected]
+  let target_line = get(loc, 'line', 0)
+  let vis_lines = s:get_visible_lines()
 
-  " Read file content around target line
-  let preview = s:read_preview(file, target_line)
-  let code_lines = preview.lines
-  let start_lnum = preview.start  " 1-based display line number
-
-  " Build display lines
   let display = []
-  let hl_positions = []
-  let max_width = 0
+  let hl_list = []
 
-  " --- Breadcrumb (if drilling) ---
-  if !empty(s:peek.breadcrumb)
-    let crumb = ' ' . join(s:peek.breadcrumb, ' → ')
+  " --- Tree path breadcrumb ---
+  let path = s:tree_path()
+  if len(path) > 0
+    let parts = []
+    for i in range(len(path))
+      let n = s:tree.nodes[path[i]]
+      let sym = empty(n.symbol) ? '?' : n.symbol
+      if path[i] == s:tree.current
+        call add(parts, '[' . sym . ']')
+      else
+        call add(parts, sym)
+      endif
+    endfor
+    let crumb = ' ' . join(parts, ' → ')
+
+    " Show sibling info if has siblings
+    if node.parent >= 0
+      let parent = s:tree.nodes[node.parent]
+      let my_ci = index(parent.children, s:tree.current)
+      if len(parent.children) > 1
+        let crumb .= '  (' . (my_ci + 1) . '/' . len(parent.children) . ')'
+      endif
+    endif
+
     call add(display, crumb)
-    call add(hl_positions, {'line': len(display), 'type': 'breadcrumb'})
-    let w = strdisplaywidth(crumb)
-    if w > max_width | let max_width = w | endif
+    call add(hl_list, {'line': len(display), 'type': 'breadcrumb',
+      \ 'col': 1, 'len': strlen(crumb)})
   endif
 
-  " --- Code preview section ---
-  let lnum = start_lnum
-  for line in code_lines
-    let prefix = printf('%4d │ ', lnum)
-    let display_line = prefix . line
-    call add(display, display_line)
-    let w = strdisplaywidth(display_line)
-    if w > max_width | let max_width = w | endif
+  " --- Code preview ---
+  let lnum = node.scroll_top + 1
+  for i in range(len(vis_lines))
+    let line = vis_lines[i]
 
-    " Highlight the target line
-    if lnum == target_line + 1  " target_line is 0-based
-      call add(hl_positions, {'line': len(display), 'type': 'target'})
+    " In ace mode, replace first char of labeled words with label letter
+    if s:peek.ace_active
+      for lbl in s:peek.ace_labels
+        if lbl.row == i
+          let line = (lbl.col > 0 ? line[: lbl.col - 1] : '')
+            \ . lbl.char . line[lbl.col + 1 :]
+        endif
+      endfor
     endif
+
+    let prefix = printf('%4d │ ', lnum)
+    call add(display, prefix . line)
+
+    " Target line background
+    if lnum == target_line + 1
+      call add(hl_list, {'line': len(display), 'type': 'target',
+        \ 'col': 1, 'len': strlen(display[-1])})
+    endif
+
+    " Ace label highlights
+    if s:peek.ace_active
+      for lbl in s:peek.ace_labels
+        if lbl.row == i
+          call add(hl_list, {'line': len(display), 'type': 'ace_label',
+            \ 'col': s:PREFIX_BYTES + lbl.col + 1, 'len': 1})
+        endif
+      endfor
+    endif
+
     let lnum += 1
   endfor
 
   " --- Separator ---
-  call add(display, repeat('─', max([max_width, 40])))
+  let sep_width = 50
+  for dl in display
+    let w = strdisplaywidth(dl)
+    if w > sep_width | let sep_width = w | endif
+  endfor
+  call add(display, repeat('─', sep_width))
 
-  " --- Location list section ---
-  let idx = 0
-  for loc in s:peek.locations
-    let f = fnamemodify(get(loc, 'file', ''), ':~:.')
-    let l = get(loc, 'line', 0) + 1
-    let c = get(loc, 'column', 0) + 1
-    let marker = idx == s:peek.selected ? '▸ ' : '  '
+  " --- Location list (max 5 visible) ---
+  let locs = node.locations
+  let sel = node.selected
+  let list_max = min([len(locs), 5])
+  let list_start = max([0, sel - 2])
+  let list_end = min([list_start + list_max, len(locs)])
+  let list_start = max([0, list_end - list_max])
+
+  let idx = list_start
+  while idx < list_end
+    let rloc = locs[idx]
+    let f = fnamemodify(get(rloc, 'file', ''), ':~:.')
+    let l = get(rloc, 'line', 0) + 1
+    let c = get(rloc, 'column', 0) + 1
+    let marker = idx == sel ? '▸ ' : '  '
     let entry = marker . f . ':' . l . ':' . c
     call add(display, entry)
-    if idx == s:peek.selected
-      call add(hl_positions, {'line': len(display), 'type': 'selected'})
+    if idx == sel
+      call add(hl_list, {'line': len(display), 'type': 'selected',
+        \ 'col': 1, 'len': strlen(entry)})
     endif
     let idx += 1
-  endfor
+  endwhile
 
   " --- Status line ---
-  let nav_hint = 'j/k:select  l:drill  '
-  if !empty(s:peek.history)
-    let nav_hint .= 'h:back  '
+  let status = ' ' . (sel + 1) . '/' . len(locs) . '  '
+  if s:peek.ace_active
+    let status .= 'press letter to drill'
+  else
+    let status .= 'j/k:ref  n/p:scroll  s:ace'
+    if node.parent >= 0
+      let status .= '  h:parent'
+    endif
+    if !empty(node.children)
+      let status .= '  l:child'
+    endif
+    if node.parent >= 0 && len(s:tree.nodes[node.parent].children) > 1
+      let status .= '  J/K:sibling'
+    endif
+    let status .= '  Enter:jump'
   endif
-  let nav_hint .= 'Enter:jump  q:close'
-  call add(display, ' ' . (s:peek.selected + 1) . '/' . len(s:peek.locations)
-    \ . '  ' . nav_hint)
+  let status .= '  q:close'
+  call add(display, status)
 
-  " Calculate popup dimensions
-  let max_width = 0
-  for line in display
-    let w = strdisplaywidth(line)
-    if w > max_width | let max_width = w | endif
+  " --- Popup dimensions ---
+  let max_w = 0
+  for dl in display
+    let w = strdisplaywidth(dl)
+    if w > max_w | let max_w = w | endif
   endfor
-  let width = min([max_width + 2, &columns - 4])
+  let width = min([max_w + 2, &columns - 4])
   let height = min([len(display), &lines - 4])
 
-  " Create or update popup
+  " --- Create popup ---
   if s:peek.popup_id != -1
     silent! call popup_close(s:peek.popup_id)
+  endif
+
+  let depth = len(s:tree_path())
+  let title = s:peek.ace_active ? ' Peek [Ace] ' : ' Peek '
+  if depth > 1
+    let title = ' Peek [' . depth . '] '
+  endif
+  if s:peek.ace_active
+    let title = ' Peek [Ace] '
   endif
 
   let s:peek.popup_id = popup_create(display, {
@@ -164,181 +414,177 @@ function! s:render() abort
     \ 'maxheight': height,
     \ 'border': [],
     \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'borderhighlight': [s:peek.ace_active ? 'WarningMsg' : 'YacPickerBorder'],
     \ 'highlight': 'Normal',
     \ 'scrollbar': 0,
     \ 'padding': [0, 1, 0, 1],
     \ 'filter': function('s:popup_filter'),
     \ 'callback': function('s:popup_closed'),
-    \ 'title': ' Peek ',
+    \ 'title': title,
     \ })
 
-  " Apply highlights
+  " --- Apply text properties ---
   let bufnr = winbufnr(s:peek.popup_id)
   call s:ensure_hl_props(bufnr)
-  for pos in hl_positions
-    let hl_len = strdisplaywidth(display[pos.line - 1])
-    if pos.type == 'target'
-      call prop_add(pos.line, 1, {'type': 'yac_peek_target', 'length': hl_len, 'bufnr': bufnr})
-    elseif pos.type == 'selected'
-      call prop_add(pos.line, 1, {'type': 'yac_peek_selected', 'length': hl_len, 'bufnr': bufnr})
-    elseif pos.type == 'breadcrumb'
-      call prop_add(pos.line, 1, {'type': 'yac_peek_breadcrumb', 'length': hl_len, 'bufnr': bufnr})
-    endif
+  for h in hl_list
+    try
+      call prop_add(h.line, h.col, {
+        \ 'type': 'yac_peek_' . h.type,
+        \ 'length': h.len,
+        \ 'bufnr': bufnr,
+        \ })
+    catch
+    endtry
   endfor
 endfunction
 
 " ============================================================================
-" File reading
+" Scrolling
 " ============================================================================
 
-function! s:read_preview(file, target_line) abort
-  let half = s:peek.preview_lines / 2
-  let start = max([0, a:target_line - half])
-
-  try
-    let all_lines = readfile(a:file)
-  catch
-    return {'lines': ['  (cannot read file)'], 'start': 1}
-  endtry
-
-  let end = min([start + s:peek.preview_lines, len(all_lines)])
-  " Adjust start if we're near the end of file
-  let start = max([0, end - s:peek.preview_lines])
-
-  let lines = all_lines[start : end - 1]
-  " Replace tabs for consistent display
-  call map(lines, {_, v -> substitute(v, '\t', '    ', 'g')})
-
-  return {'lines': lines, 'start': start + 1}
-endfunction
-
-" Extract the word at a given 0-based line/col from a file
-function! s:word_at(file, line, col) abort
-  try
-    let lines = readfile(a:file)
-  catch
-    return ''
-  endtry
-  if a:line >= len(lines)
-    return ''
+function! s:scroll(delta) abort
+  let node = s:cur_node()
+  let file = get(node.locations[node.selected], 'file', '')
+  let total = len(s:get_file_lines(file))
+  let new_top = node.scroll_top + a:delta
+  let new_top = max([0, min([new_top, max([0, total - s:peek.preview_height])])])
+  if new_top != node.scroll_top
+    let node.scroll_top = new_top
+    call s:render()
   endif
-  let text = lines[a:line]
-  " Find word boundaries around col
-  let col = a:col
-  if col >= len(text)
-    return ''
-  endif
-  let start = col
-  while start > 0 && text[start - 1] =~# '\w'
-    let start -= 1
-  endwhile
-  let end = col
-  while end < len(text) && text[end] =~# '\w'
-    let end += 1
-  endwhile
-  return text[start : end - 1]
 endfunction
 
 " ============================================================================
-" Popup interaction
+" List navigation (within current node)
 " ============================================================================
-
-function! s:popup_filter(winid, key) abort
-  if a:key == 'j' || a:key == "\<Down>"
-    call s:select_next()
-    return 1
-  elseif a:key == 'k' || a:key == "\<Up>"
-    call s:select_prev()
-    return 1
-  elseif a:key == 'l' || a:key == "\<Right>"
-    call s:drill_in()
-    return 1
-  elseif a:key == 'h' || a:key == "\<Left>"
-    call s:drill_back()
-    return 1
-  elseif a:key == "\<CR>"
-    call s:jump_to_selected()
-    return 1
-  elseif a:key == 'q' || a:key == "\<Esc>"
-    call yac_peek#close()
-    return 1
-  endif
-  return 0
-endfunction
-
-function! s:popup_closed(id, result) abort
-  let s:peek.popup_id = -1
-endfunction
 
 function! s:select_next() abort
-  if s:peek.selected < len(s:peek.locations) - 1
-    let s:peek.selected += 1
+  let node = s:cur_node()
+  if node.selected < len(node.locations) - 1
+    let node.selected += 1
+    call s:init_preview()
     call s:render()
   endif
 endfunction
 
 function! s:select_prev() abort
-  if s:peek.selected > 0
-    let s:peek.selected -= 1
+  let node = s:cur_node()
+  if node.selected > 0
+    let node.selected -= 1
+    call s:init_preview()
     call s:render()
   endif
 endfunction
 
-function! s:jump_to_selected() abort
-  if empty(s:peek.locations)
-    return
-  endif
+" ============================================================================
+" Tree navigation
+" ============================================================================
 
-  let loc = s:peek.locations[s:peek.selected]
+function! s:tree_go_parent() abort
+  let node = s:cur_node()
+  if node.parent < 0 | return | endif
+  let s:tree.current = node.parent
+  let s:peek.ace_active = 0
+  call s:init_preview()
+  call s:render()
+endfunction
+
+function! s:tree_go_child() abort
+  let node = s:cur_node()
+  if empty(node.children) | return | endif
+  let ci = node.selected_child >= 0 ? node.selected_child : 0
+  let s:tree.current = node.children[ci]
+  let s:peek.ace_active = 0
+  call s:init_preview()
+  call s:render()
+endfunction
+
+function! s:tree_next_sibling() abort
+  let node = s:cur_node()
+  if node.parent < 0 | return | endif
+  let parent = s:tree.nodes[node.parent]
+  let my_ci = index(parent.children, s:tree.current)
+  if my_ci < 0 || my_ci >= len(parent.children) - 1 | return | endif
+  let parent.selected_child = my_ci + 1
+  let s:tree.current = parent.children[my_ci + 1]
+  let s:peek.ace_active = 0
+  call s:init_preview()
+  call s:render()
+endfunction
+
+function! s:tree_prev_sibling() abort
+  let node = s:cur_node()
+  if node.parent < 0 | return | endif
+  let parent = s:tree.nodes[node.parent]
+  let my_ci = index(parent.children, s:tree.current)
+  if my_ci <= 0 | return | endif
+  let parent.selected_child = my_ci - 1
+  let s:tree.current = parent.children[my_ci - 1]
+  let s:peek.ace_active = 0
+  call s:init_preview()
+  call s:render()
+endfunction
+
+" ============================================================================
+" Jump
+" ============================================================================
+
+function! s:jump_to_selected() abort
+  let node = s:cur_node()
+  if empty(node.locations) | return | endif
+
+  let loc = node.locations[node.selected]
   let file = get(loc, 'file', '')
   let line = get(loc, 'line', 0) + 1
   let col = get(loc, 'column', 0) + 1
 
   call yac_peek#close()
-
-  " Save current position to jumplist
   normal! m'
-
   if file != expand('%:p')
     execute 'edit ' . fnameescape(file)
   endif
   call cursor(line, col)
 endfunction
 
-" Drill into the symbol at the selected location
-function! s:drill_in() abort
-  if empty(s:peek.locations)
-    return
+" ============================================================================
+" Popup filter
+" ============================================================================
+
+function! s:popup_filter(winid, key) abort
+  if s:peek.ace_active
+    return s:filter_ace(a:key)
+  else
+    return s:filter_normal(a:key)
   endif
-
-  let loc = s:peek.locations[s:peek.selected]
-  let file = get(loc, 'file', '')
-  let line = get(loc, 'line', 0)
-  let col = get(loc, 'column', 0)
-
-  let symbol = s:word_at(file, line, col)
-  if empty(symbol)
-    call yac#toast('No symbol at this position')
-    return
-  endif
-
-  " Send references request for this position via yac.vim bridge
-  call yac#_peek_drill(file, line, col, symbol)
 endfunction
 
-" Go back to previous level in the browse tree
-function! s:drill_back() abort
-  if empty(s:peek.history)
-    return
+function! s:filter_normal(key) abort
+  if a:key == 'j' || a:key == "\<Down>" | call s:select_next()      | return 1 | endif
+  if a:key == 'k' || a:key == "\<Up>"   | call s:select_prev()      | return 1 | endif
+  if a:key == 'n'    | call s:scroll(3)              | return 1 | endif
+  if a:key == 'p'    | call s:scroll(-3)             | return 1 | endif
+  if a:key == 's'    | call s:ace_enter()             | return 1 | endif
+  if a:key == 'h'    | call s:tree_go_parent()        | return 1 | endif
+  if a:key == 'l'    | call s:tree_go_child()         | return 1 | endif
+  if a:key == 'J'    | call s:tree_next_sibling()     | return 1 | endif
+  if a:key == 'K'    | call s:tree_prev_sibling()     | return 1 | endif
+  if a:key == "\<CR>" | call s:jump_to_selected()     | return 1 | endif
+  if a:key == 'q' || a:key == "\<Esc>" | call yac_peek#close() | return 1 | endif
+  return 0
+endfunction
+
+function! s:filter_ace(key) abort
+  if a:key == "\<Esc>" || a:key == 'q'
+    let s:peek.ace_active = 0
+    call s:render()
+    return 1
   endif
+  call s:ace_select(a:key)
+  return 1
+endfunction
 
-  let prev = remove(s:peek.history, -1)
-  call remove(s:peek.breadcrumb, -1)
-
-  let s:peek.locations = prev.locations
-  let s:peek.selected = prev.selected
-  call s:render()
+function! s:popup_closed(id, result) abort
+  let s:peek.popup_id = -1
 endfunction
 
 " ============================================================================
@@ -346,16 +592,14 @@ endfunction
 " ============================================================================
 
 function! s:ensure_hl_props(bufnr) abort
-  " Target line highlight (the line being peeked at)
-  if empty(prop_type_get('yac_peek_target', {'bufnr': a:bufnr}))
-    call prop_type_add('yac_peek_target', {'bufnr': a:bufnr, 'highlight': 'CursorLine'})
-  endif
-  " Selected location in the list
-  if empty(prop_type_get('yac_peek_selected', {'bufnr': a:bufnr}))
-    call prop_type_add('yac_peek_selected', {'bufnr': a:bufnr, 'highlight': 'PmenuSel'})
-  endif
-  " Breadcrumb path
-  if empty(prop_type_get('yac_peek_breadcrumb', {'bufnr': a:bufnr}))
-    call prop_type_add('yac_peek_breadcrumb', {'bufnr': a:bufnr, 'highlight': 'Comment'})
-  endif
+  for [name, hl, prio] in [
+    \ ['yac_peek_target',     'CursorLine', 50],
+    \ ['yac_peek_selected',   'PmenuSel',   50],
+    \ ['yac_peek_breadcrumb', 'Comment',     50],
+    \ ['yac_peek_ace_label',  'WarningMsg',  200],
+    \ ]
+    if empty(prop_type_get(name, {'bufnr': a:bufnr}))
+      call prop_type_add(name, {'bufnr': a:bufnr, 'highlight': hl, 'priority': prio})
+    endif
+  endfor
 endfunction

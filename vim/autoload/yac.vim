@@ -419,6 +419,7 @@ function! yac#references() abort
 endfunction
 
 function! yac#peek() abort
+  let s:peek_initial_symbol = expand('<cword>')
   call s:request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
@@ -1004,7 +1005,7 @@ function! s:handle_peek_response(channel, response) abort
   endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
-    call yac_peek#show(a:response.locations)
+    call yac_peek#show(a:response.locations, get(s:, 'peek_initial_symbol', ''))
     return
   endif
 
