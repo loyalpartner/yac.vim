@@ -2323,12 +2323,11 @@ function! s:move_completion_selection(direction) abort
     call win_execute(s:completion.popup_id, 'call cursor(' . target_line . ', 1)')
   endif
 
-  " debounce 文档请求：快速连按时不发请求，停下后 150ms 再请求
-  call s:close_completion_documentation()
+  " debounce 文档：只重置 timer，不关旧 doc popup（避免反复 close/create 开销）
   if s:completion.doc_timer_id != -1
     call timer_stop(s:completion.doc_timer_id)
   endif
-  let s:completion.doc_timer_id = timer_start(150, {-> s:show_completion_documentation()})
+  let s:completion.doc_timer_id = timer_start(200, {-> s:show_completion_documentation()})
 endfunction
 
 " LSP CompletionItemKind: 数字 → 字符串
