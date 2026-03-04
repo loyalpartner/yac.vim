@@ -8,21 +8,16 @@ if !hlexists('YacBridgeMatchChar')
   highlight YacBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
 endif
 
-" 定义补全项类型的高亮组
-if !hlexists('YacCompletionFunction')
-  highlight YacCompletionFunction ctermfg=Blue ctermbg=NONE guifg=#61AFEF guibg=NONE
-endif
-if !hlexists('YacCompletionVariable')
-  highlight YacCompletionVariable ctermfg=Green ctermbg=NONE guifg=#98C379 guibg=NONE
-endif
-if !hlexists('YacCompletionStruct')
-  highlight YacCompletionStruct ctermfg=Magenta ctermbg=NONE guifg=#C678DD guibg=NONE
-endif
-if !hlexists('YacCompletionKeyword')
-  highlight YacCompletionKeyword ctermfg=Red ctermbg=NONE guifg=#E06C75 guibg=NONE
-endif
-if !hlexists('YacCompletionModule')
-  highlight YacCompletionModule ctermfg=Cyan ctermbg=NONE guifg=#56B6C2 guibg=NONE
+" 补全项类型高亮组 — link 到 tree-sitter 主题，跟随 colorscheme
+hi def link YacCompletionFunction  YacTsFunction
+hi def link YacCompletionVariable  YacTsVariable
+hi def link YacCompletionStruct    YacTsType
+hi def link YacCompletionKeyword   YacTsKeyword
+hi def link YacCompletionModule    YacTsModule
+
+" 补全项 detail 灰色高亮
+if !hlexists('YacCompletionDetail')
+  highlight YacCompletionDetail guifg=#6a6a6a ctermfg=242
 endif
 
 " VSCode 风格补全弹窗高亮组
@@ -63,6 +58,26 @@ let s:completion_icons = {
   \ 'Constructor': '󰆧 ',
   \ 'Operator': '󰆕 ',
   \ 'Event': '󱐋 '
+  \ }
+
+" 补全项 kind → highlight 映射表
+let s:completion_kind_highlights = {
+  \ 'Function': 'YacCompletionFunction',
+  \ 'Method': 'YacCompletionFunction',
+  \ 'Constructor': 'YacCompletionFunction',
+  \ 'Variable': 'YacCompletionVariable',
+  \ 'Field': 'YacCompletionVariable',
+  \ 'Property': 'YacCompletionVariable',
+  \ 'Constant': 'YacCompletionVariable',
+  \ 'Struct': 'YacCompletionStruct',
+  \ 'Class': 'YacCompletionStruct',
+  \ 'Interface': 'YacCompletionStruct',
+  \ 'Enum': 'YacCompletionStruct',
+  \ 'EnumMember': 'YacCompletionStruct',
+  \ 'TypeParameter': 'YacCompletionStruct',
+  \ 'Keyword': 'YacCompletionKeyword',
+  \ 'Module': 'YacCompletionModule',
+  \ 'Snippet': 'YacCompletionKeyword',
   \ }
 
 " Tree-sitter highlight groups (linked to standard Vim groups)
@@ -701,7 +716,7 @@ function! yac#auto_complete_trigger() abort
   " 前缀不够长且不在触发字符后 → 跳过
   let prefix = s:get_current_word_prefix()
   let l:is_trigger = s:at_trigger_char()
-  if len(prefix) < get(g:, 'yac_auto_complete_min_chars', 2) && !l:is_trigger
+  if len(prefix) < get(g:, 'yac_auto_complete_min_chars', 1) && !l:is_trigger
     return
   endif
 
@@ -713,13 +728,13 @@ function! yac#auto_complete_trigger() abort
     return
   endif
 
-  " 递增序列号，使已发出请求的响应过期
-  let s:completion.seq += 1
-
+  " Timer 已在等待 → 不重置，让它尽快触发（避免快速输入时不断重启 timer）
   if s:completion.timer_id != -1
-    call timer_stop(s:completion.timer_id)
+    return
   endif
-  let s:completion.timer_id = timer_start(get(g:, 'yac_auto_complete_delay', 80), 'yac#delayed_complete')
+
+  " 首次触发用 timer_start(0)：下一个事件循环即刻发出请求
+  let s:completion.timer_id = timer_start(0, 'yac#delayed_complete')
 endfunction
 
 " 延迟补全触发
@@ -1548,25 +1563,24 @@ function! s:show_hover_popup_highlighted(lines, highlights) abort
   let s:hover_popup_id = popup_create(a:lines, opts)
 
   " Apply syntax highlights to popup buffer
-  if !empty(a:highlights)
-    let l:popup_bufnr = winbufnr(s:hover_popup_id)
-    call s:debug_log(printf('[HOVER_HL]: applying to popup %d, bufnr %d',
-      \ s:hover_popup_id, l:popup_bufnr))
-    for [group, positions] in items(a:highlights)
-      let l:prop_type = 'yac_hover_' . group
-      call s:ensure_ts_prop_type(l:prop_type, group)
-      try
-        call prop_add_list({'type': l:prop_type, 'bufnr': l:popup_bufnr}, positions)
-        call s:debug_log(printf('[HOVER_HL]: applied %s: %d positions',
-          \ l:prop_type, len(positions)))
-      catch
-        call s:debug_log(printf('[HOVER_HL]: ERROR applying %s: %s',
-          \ l:prop_type, v:exception))
-      endtry
-    endfor
-  else
-    call s:debug_log('[HOVER_HL]: no highlights to apply')
+  call s:apply_ts_highlights_to_buffer(winbufnr(s:hover_popup_id), a:highlights)
+endfunction
+
+" Apply tree-sitter highlights to a popup buffer (shared by hover and completion doc)
+function! s:apply_ts_highlights_to_buffer(bufnr, highlights) abort
+  if empty(a:highlights) || a:bufnr == -1
+    return
   endif
+  for [group, positions] in items(a:highlights)
+    let l:prop_type = 'yac_hover_' . group
+    call s:ensure_ts_prop_type(l:prop_type, group)
+    try
+      call prop_add_list({'type': l:prop_type, 'bufnr': a:bufnr}, positions)
+    catch
+      call s:debug_log(printf('[HL]: ERROR applying %s: %s',
+        \ l:prop_type, v:exception))
+    endtry
+  endfor
 endfunction
 
 " 关闭hover窗口
@@ -1719,6 +1733,7 @@ function! s:render_completion_window() abort
   let lines = map(copy(s:completion.items), {_, item -> s:format_completion_item(item)})
 
   call s:create_or_update_completion_popup(lines)
+  call s:apply_completion_highlights()
 
   " 用 win_execute 移动 popup 内的 cursorline 到选中项
   if s:completion.popup_id != -1
@@ -1730,23 +1745,112 @@ function! s:render_completion_window() abort
   call s:show_completion_documentation()
 endfunction
 
+" 确保 popup buffer 上注册了补全高亮 prop types
+function! s:ensure_completion_prop_types(bufnr) abort
+  " 注册 kind 高亮 prop types
+  for [kind, hl] in items(s:completion_kind_highlights)
+    let type_name = 'yac_ck_' . kind
+    try
+      call prop_type_add(type_name, {'highlight': hl, 'bufnr': a:bufnr, 'priority': 10})
+    catch /E969/
+      " 已存在，忽略
+    endtry
+  endfor
+  " 注册匹配字符 prop type
+  try
+    call prop_type_add('yac_match', {'highlight': 'YacBridgeMatchChar', 'bufnr': a:bufnr, 'priority': 20, 'combine': 0})
+  catch /E969/
+  endtry
+  " 注册 detail prop type
+  try
+    call prop_type_add('yac_detail', {'highlight': 'YacCompletionDetail', 'bufnr': a:bufnr, 'priority': 5})
+  catch /E969/
+  endtry
+endfunction
+
+" 为补全弹窗添加 text property 高亮
+function! s:apply_completion_highlights() abort
+  if s:completion.popup_id == -1 | return | endif
+  let bufnr = winbufnr(s:completion.popup_id)
+  if bufnr == -1 | return | endif
+
+  " 清除旧的 text properties
+  call prop_clear(1, len(s:completion.items), {'bufnr': bufnr})
+
+  " 确保 prop types 已注册到此 buffer
+  call s:ensure_completion_prop_types(bufnr)
+
+  let lnum = 1
+  for item in s:completion.items
+    let kind_str = s:normalize_kind(get(item, 'kind', ''))
+    let hl_type = get(s:completion_kind_highlights, kind_str, '')
+
+    let icon = get(s:completion_icons, kind_str, '󰉿 ')
+    let icon_bytes = strlen(icon)
+    let label_bytes = strlen(item.label)
+
+    " 1. icon + label 按 kind 着色
+    if !empty(hl_type)
+      call prop_add(lnum, 1, {
+        \ 'type': 'yac_ck_' . kind_str,
+        \ 'length': icon_bytes + label_bytes,
+        \ 'bufnr': bufnr
+        \ })
+    endif
+
+    " 2. 模糊匹配字符高亮
+    if has_key(item, '_match_positions') && !empty(item._match_positions)
+      for pos in item._match_positions
+        " pos 是 label 中的 0-based byte offset，加上 icon 的字节数
+        let col = icon_bytes + pos + 1  " 1-based
+        call prop_add(lnum, col, {
+          \ 'type': 'yac_match',
+          \ 'length': 1,
+          \ 'bufnr': bufnr
+          \ })
+      endfor
+    endif
+
+    " 3. detail 灰色
+    let display = s:format_completion_item(item)
+    if has_key(item, 'detail') && !empty(item.detail)
+      " 找到 detail 在 display 中的起始位置
+      let detail_text = item.detail
+      if len(detail_text) > 25
+        let detail_text = detail_text[:22] . '...'
+      endif
+      let detail_start = stridx(display, detail_text, icon_bytes + label_bytes)
+      if detail_start >= 0
+        call prop_add(lnum, detail_start + 1, {
+          \ 'type': 'yac_detail',
+          \ 'length': strlen(detail_text),
+          \ 'bufnr': bufnr
+          \ })
+      endif
+    endif
+
+    let lnum += 1
+  endfor
+endfunction
+
 " 计算模糊匹配评分
 function! s:fuzzy_match_score(text, pattern) abort
   if empty(a:pattern)
-    return 1000  " 空模式匹配所有项目，给高分
+    return {'score': 1000, 'positions': []}  " 空模式匹配所有项目，给高分
   endif
 
   let text_lower = tolower(a:text)
   let pattern_lower = tolower(a:pattern)
+  let pat_len = len(a:pattern)
 
   " Case-sensitive 精确前缀 — 最高优先级
   if a:text =~# '^' . escape(a:pattern, '[]^$.*\~')
-    return 5000 + (1000 - len(a:text))
+    return {'score': 5000 + (1000 - len(a:text)), 'positions': range(pat_len)}
   endif
 
   " Case-insensitive 前缀匹配
   if text_lower =~# '^' . escape(pattern_lower, '[]^$.*\~')
-    return 2000 + (1000 - len(a:text))
+    return {'score': 2000 + (1000 - len(a:text)), 'positions': range(pat_len)}
   endif
 
   " 子序列匹配（case-insensitive）
@@ -1756,7 +1860,7 @@ function! s:fuzzy_match_score(text, pattern) abort
   for char in split(pattern_lower, '\zs')
     let pos = stridx(text_lower, char, idx)
     if pos == -1
-      return 0  " 没有匹配
+      return {'score': 0, 'positions': []}  " 没有匹配
     endif
     call add(match_positions, pos)
     let idx = pos + 1
@@ -1807,7 +1911,7 @@ function! s:fuzzy_match_score(text, pattern) abort
   " 总长度短的优先
   let score -= len(a:text)
 
-  return score
+  return {'score': score, 'positions': match_positions}
 endfunction
 
 " 智能过滤补全项
@@ -1816,9 +1920,10 @@ function! s:filter_completions() abort
   " 收集匹配项和评分
   let scored_items = []
   for item in s:completion.original_items
-    let score = s:fuzzy_match_score(item.label, current_prefix)
-    if score > 0
-      call add(scored_items, {'item': item, 'score': score})
+    let result = s:fuzzy_match_score(item.label, current_prefix)
+    if result.score > 0
+      let item._match_positions = result.positions
+      call add(scored_items, {'item': item, 'score': result.score})
     endif
   endfor
 
@@ -1907,62 +2012,79 @@ function! s:show_completion_documentation() abort
   endif
 
   let item = s:completion.items[s:completion.selected]
-  let doc_lines = []
+  let md_parts = []
 
-  " 添加detail信息（类型/符号信息）
+  " detail 作为代码块
   if has_key(item, 'detail') && !empty(item.detail)
-    call add(doc_lines, item.detail)
+    call add(md_parts, '```' . &filetype)
+    call add(md_parts, item.detail)
+    call add(md_parts, '```')
   endif
 
-  " 添加documentation信息
+  " documentation
   if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(doc_lines)
-      call add(doc_lines, '')
+    if !empty(md_parts)
+      call add(md_parts, '')
     endif
     let doc_raw = item.documentation
     if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
       let doc_raw = doc_raw.value
     endif
     if type(doc_raw) == v:t_string
-      let doc_text = substitute(doc_raw, '\r\n\|\r\|\n', '\n', 'g')
-      call extend(doc_lines, split(doc_text, '\n'))
+      call extend(md_parts, split(doc_raw, '\n'))
     endif
   endif
 
-  if empty(doc_lines)
+  if empty(md_parts)
     return
   endif
 
-  " 动态计算位置：获取主弹窗位置，右侧优先，左侧备选
-  let doc_min_width = 30
-  if s:completion.popup_id == -1 || !exists('*popup_getpos')
-    return  " 无法定位，不显示文档
+  let md = join(md_parts, "\n")
+
+  " 发送 ts_hover_highlight 请求获取语法高亮
+  call s:request('ts_hover_highlight', {
+    \ 'markdown': md,
+    \ 'filetype': &filetype
+    \ }, function('s:handle_completion_doc_hl_response'))
+endfunction
+
+" 补全文档高亮回调
+function! s:handle_completion_doc_hl_response(channel, response) abort
+  " 补全 popup 已关闭则忽略
+  if s:completion.popup_id == -1
+    return
   endif
 
+  " 关闭旧的文档 popup
+  call s:close_completion_documentation()
+
+  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
+    return
+  endif
+
+  let l:lines = a:response.lines
+  let l:highlights = get(a:response, 'highlights', {})
+
+  " 计算文档 popup 位置
   let pos = popup_getpos(s:completion.popup_id)
-  if empty(pos)
-    return
-  endif
+  if empty(pos) | return | endif
 
-  let doc_line = pos.line
+  let doc_min_width = 30
   let right_space = &columns - (pos.col + pos.width)
   let left_space = pos.col - 1
 
   if right_space >= doc_min_width + 2
-    " 右侧够用
     let doc_col = pos.col + pos.width + 1
     let doc_maxwidth = min([60, right_space - 2])
   elseif left_space >= doc_min_width + 2
-    " 左侧够用
     let doc_maxwidth = min([60, left_space - 2])
     let doc_col = max([1, pos.col - doc_maxwidth - 2])
   else
-    " 两侧都不够，不显示文档
     return
   endif
 
-  let s:completion.doc_popup_id = popup_create(doc_lines, {
-    \ 'line': doc_line,
+  let s:completion.doc_popup_id = popup_create(l:lines, {
+    \ 'line': pos.line,
     \ 'col': doc_col,
     \ 'pos': 'topleft',
     \ 'border': [0,0,0,0],
@@ -1974,6 +2096,11 @@ function! s:show_completion_documentation() abort
     \ 'wrap': 1,
     \ 'zindex': 1001,
     \ })
+
+  " 应用 tree-sitter 高亮
+  if !empty(l:highlights)
+    call s:apply_ts_highlights_to_buffer(winbufnr(s:completion.doc_popup_id), l:highlights)
+  endif
 endfunction
 
 " 关闭补全文档popup
