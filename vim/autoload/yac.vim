@@ -2015,13 +2015,10 @@ function! s:create_or_update_completion_popup(lines) abort
   endif
 
   if s:completion.popup_id != -1
-    " 复用已有 popup：更新文本 + 位置（trigger_col 可能变了）
+    " 复用已有 popup：只更新文本和 col（方向锁定，避免上下抖动）
     call popup_settext(s:completion.popup_id, a:lines)
-    let l:pos = s:completion_popup_position()
     call popup_move(s:completion.popup_id, {
-      \ 'line': l:pos.line,
       \ 'col': s:completion.trigger_col,
-      \ 'pos': l:pos.pos,
       \ })
     return
   endif
