@@ -1750,18 +1750,40 @@ function! s:format_completion_item(item) abort
   let label = a:item.label
   let display = icon . label
 
-  " 右侧 detail，截断到合理宽度
+  " 右侧 detail — 动态对齐，按实际显示宽度计算
   if has_key(a:item, 'detail') && !empty(a:item.detail)
-    let detail = a:item.detail
-    if len(detail) > 25
-      let detail = detail[:22] . '...'
+    let detail = substitute(a:item.detail, '[\n\r].*', '', '')  " 只取第一行
+    let label_width = strdisplaywidth(display)
+    " detail 列：至少在 label 后留 2 格间距
+    let detail_col = max([label_width + 2, 30])
+    let pad = detail_col - label_width
+    " 截断 detail 使总宽度不超过 popup maxwidth
+    let max_detail_width = 70 - detail_col
+    if max_detail_width > 3 && strdisplaywidth(detail) > max_detail_width
+      " 按显示宽度截断
+      let detail = s:truncate_display(detail, max_detail_width - 3) . '...'
     endif
-    " 用空格填充到 label 之后，让 detail 靠右
-    let pad = max([1, 30 - len(display)])
-    let display .= repeat(' ', pad) . detail
+    if max_detail_width > 3
+      let display .= repeat(' ', pad) . detail
+    endif
   endif
 
   return display
+endfunction
+
+" 按显示宽度截断字符串
+function! s:truncate_display(str, max_width) abort
+  let result = ''
+  let width = 0
+  for char in split(a:str, '\zs')
+    let cw = strdisplaywidth(char)
+    if width + cw > a:max_width
+      break
+    endif
+    let result .= char
+    let width += cw
+  endfor
+  return result
 endfunction
 
 " 渲染补全窗口 - cursorline 驱动选中高亮
@@ -2038,7 +2060,7 @@ function! s:create_or_update_completion_popup(lines) abort
     \ 'highlight': 'YacCompletionNormal',
     \ 'maxheight': 10,
     \ 'minwidth': 25,
-    \ 'maxwidth': 50,
+    \ 'maxwidth': 70,
     \ 'zindex': 1000,
     \ }
 
