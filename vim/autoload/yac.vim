@@ -426,6 +426,16 @@ function! yac#peek() abort
     \ }, 's:handle_peek_response')
 endfunction
 
+" Bridge for peek drill-in: send references request for a specific position
+function! yac#_peek_drill(file, line, col, symbol) abort
+  let s:peek_drill_symbol = a:symbol
+  call s:request('references', {
+    \   'file': a:file,
+    \   'line': a:line,
+    \   'column': a:col
+    \ }, 's:handle_peek_drill_response')
+endfunction
+
 function! yac#inlay_hints() abort
   let l:bufnr = bufnr('%')
   call s:request('inlay_hints', {
@@ -999,6 +1009,25 @@ function! s:handle_peek_response(channel, response) abort
   endif
 
   call yac#toast('No results found')
+endfunction
+
+" peek drill-in 响应处理器
+function! s:handle_peek_drill_response(channel, response) abort
+  call s:debug_log(printf('[RECV]: peek drill response: %s', string(a:response)))
+
+  let symbol = get(s:, 'peek_drill_symbol', '?')
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
+    return
+  endif
+
+  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
+    call yac_peek#drill_response(a:response.locations, symbol)
+    return
+  endif
+
+  call yac#toast('No results for ' . symbol)
 endfunction
 
 " inlay_hints 响应处理器
