@@ -1385,8 +1385,8 @@ function! yac#toast(msg, ...) abort
     \ highlight: hl,
     \ zindex: 300,
     \ border: [],
-    \ borderchars: ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
-    \ borderhighlight: ['Comment'],
+    \ borderchars: ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ borderhighlight: ['YacPickerBorder'],
     \ callback: {id, result -> execute('let s:toast_popup = -1')},
     \ })
 endfunction
@@ -2834,7 +2834,8 @@ function! s:show_code_actions(actions) abort
           \ 'title': ' Code Actions ',
           \ 'callback': function('s:code_action_callback'),
           \ 'border': [],
-          \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+          \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+          \ 'borderhighlight': ['YacPickerBorder'],
           \ })
   else
     " 降级到 input() 选择

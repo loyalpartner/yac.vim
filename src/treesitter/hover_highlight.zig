@@ -144,6 +144,11 @@ fn md4cLeaveBlock(block_type: md4c.MD_BLOCKTYPE, _: ?*anyopaque, userdata: ?*any
         md4c.MD_BLOCK_CODE => {
             state.flushCodeBlock();
             state.in_code_block = false;
+            // Add blank line after code block for visual separation from doc text
+            state.lines.append(state.allocator, "") catch {
+                state.err = true;
+                return 1;
+            };
         },
         md4c.MD_BLOCK_P, md4c.MD_BLOCK_H => {
             state.flushTextBuf();
@@ -587,6 +592,29 @@ test "parseMarkdown horizontal rule" {
     try std.testing.expect(found_before);
     try std.testing.expect(found_after);
     try std.testing.expect(found_empty);
+}
+
+test "parseMarkdown blank line between code block and doc text" {
+    // Hover should display: signature (code block) + blank line + doc text
+    const md =
+        \\```zig
+        \\fn foo() void
+        \\```
+        \\
+        \\Documentation text.
+    ;
+    const result = try parseMarkdown(std.testing.allocator, md);
+    defer result.lines.deinit(std.testing.allocator);
+    defer {
+        for (result.blocks.items) |blk| std.testing.allocator.free(blk.content);
+        result.blocks.deinit(std.testing.allocator);
+    }
+
+    // Expected lines: ["fn foo() void", "", "Documentation text."]
+    try std.testing.expectEqual(@as(usize, 3), result.lines.items.len);
+    try std.testing.expectEqualStrings("fn foo() void", result.lines.items[0]);
+    try std.testing.expectEqualStrings("", result.lines.items[1]);
+    try std.testing.expectEqualStrings("Documentation text.", result.lines.items[2]);
 }
 
 test "extractHoverHighlights with tree-sitter native error recovery" {

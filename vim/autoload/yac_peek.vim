@@ -446,7 +446,7 @@ function! s:render() abort
       \ 'border': [],
       \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
       \ 'borderhighlight': [s:peek.ace_active ? 'WarningMsg' : 'YacPickerBorder'],
-      \ 'highlight': 'Normal',
+      \ 'highlight': 'YacPickerNormal',
       \ 'scrollbar': 0,
       \ 'padding': [0, 1, 0, 1],
       \ 'filter': function('s:popup_filter'),
