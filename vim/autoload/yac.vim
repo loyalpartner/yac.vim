@@ -2087,9 +2087,12 @@ function! s:handle_completion_doc_hl_response(channel, response) abort
     \ 'line': pos.line,
     \ 'col': doc_col,
     \ 'pos': 'topleft',
-    \ 'border': [0,0,0,0],
+    \ 'border': [],
+    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+    \ 'borderhighlight': ['YacPickerBorder'],
     \ 'padding': [0,1,0,1],
-    \ 'highlight': 'YacCompletionDoc',
+    \ 'highlight': 'YacPickerNormal',
+    \ 'scrollbar': 0,
     \ 'minwidth': doc_min_width,
     \ 'maxwidth': doc_maxwidth,
     \ 'maxheight': 15,
@@ -2552,7 +2555,9 @@ function! s:render_inlay_hints() abort
   for kind in ['type', 'parameter', 'other']
     let hl = kind ==# 'type' ? 'InlayHintType' :
           \ kind ==# 'parameter' ? 'InlayHintParameter' : 'InlayHintOther'
-    try | call prop_type_add('inlay_hint_' . kind, {'highlight': hl}) | catch /E969/ | endtry
+    if empty(prop_type_get('inlay_hint_' . kind))
+      call prop_type_add('inlay_hint_' . kind, {'highlight': hl})
+    endif
   endfor
 
   for hint in s:inlay_hints[bufnr]
