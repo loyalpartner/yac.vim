@@ -2092,20 +2092,41 @@ function! s:show_completion_documentation() abort
   endif
 
   let item = s:completion.items[s:completion.selected]
-  let md_parts = []
 
-  " detail 作为代码块
+  " 收集纯文本行（detail + documentation）
+  let plain_lines = []
+  if has_key(item, 'detail') && !empty(item.detail)
+    call extend(plain_lines, split(item.detail, '\n'))
+  endif
+  if has_key(item, 'documentation') && !empty(item.documentation)
+    if !empty(plain_lines)
+      call add(plain_lines, '')
+    endif
+    let doc_raw = item.documentation
+    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
+      let doc_raw = doc_raw.value
+    endif
+    if type(doc_raw) == v:t_string
+      call extend(plain_lines, split(doc_raw, '\n'))
+    endif
+  endif
+
+  if empty(plain_lines)
+    return
+  endif
+
+  " 立即创建 doc popup（纯文本，无需等 daemon）
+  call s:create_completion_doc_popup(plain_lines)
+
+  " 异步请求语法高亮，回调时更新
+  let md_parts = []
   if has_key(item, 'detail') && !empty(item.detail)
     call add(md_parts, '```' . &filetype)
     call add(md_parts, item.detail)
     call add(md_parts, '```')
   endif
-
-  " documentation
   if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(md_parts)
-      call add(md_parts, '')
-    endif
+    if !empty(md_parts) | call add(md_parts, '') | endif
     let doc_raw = item.documentation
     if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
       let doc_raw = doc_raw.value
@@ -2114,38 +2135,14 @@ function! s:show_completion_documentation() abort
       call extend(md_parts, split(doc_raw, '\n'))
     endif
   endif
-
-  if empty(md_parts)
-    return
-  endif
-
-  let md = join(md_parts, "\n")
-
-  " 发送 ts_hover_highlight 请求获取语法高亮
   call s:request('ts_hover_highlight', {
-    \ 'markdown': md,
+    \ 'markdown': join(md_parts, "\n"),
     \ 'filetype': &filetype
     \ }, function('s:handle_completion_doc_hl_response'))
 endfunction
 
-" 补全文档高亮回调
-function! s:handle_completion_doc_hl_response(channel, response) abort
-  " 补全 popup 已关闭则忽略
-  if s:completion.popup_id == -1
-    return
-  endif
-
-  " 关闭旧的文档 popup
-  call s:close_completion_documentation()
-
-  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
-    return
-  endif
-
-  let l:lines = a:response.lines
-  let l:highlights = get(a:response, 'highlights', {})
-
-  " 计算文档 popup 位置
+" 创建/更新文档 popup（位置跟随补全 popup）
+function! s:create_completion_doc_popup(lines) abort
   let pos = popup_getpos(s:completion.popup_id)
   if empty(pos) | return | endif
 
@@ -2163,7 +2160,14 @@ function! s:handle_completion_doc_hl_response(channel, response) abort
     return
   endif
 
-  let s:completion.doc_popup_id = popup_create(l:lines, {
+  if s:completion.doc_popup_id != -1
+    " 复用已有 doc popup
+    call popup_settext(s:completion.doc_popup_id, a:lines)
+    call popup_move(s:completion.doc_popup_id, {'col': doc_col})
+    return
+  endif
+
+  let s:completion.doc_popup_id = popup_create(a:lines, {
     \ 'line': pos.line,
     \ 'col': doc_col,
     \ 'pos': 'topleft',
@@ -2179,8 +2183,22 @@ function! s:handle_completion_doc_hl_response(channel, response) abort
     \ 'wrap': 1,
     \ 'zindex': 1001,
     \ })
+endfunction
+
+" 补全文档高亮回调 — doc popup 已存在，只更新文本和高亮
+function! s:handle_completion_doc_hl_response(channel, response) abort
+  if s:completion.popup_id == -1 || s:completion.doc_popup_id == -1
+    return
+  endif
+  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
+    return
+  endif
+
+  " 用高亮版文本替换纯文本
+  call popup_settext(s:completion.doc_popup_id, a:response.lines)
 
   " 应用 tree-sitter 高亮
+  let l:highlights = get(a:response, 'highlights', {})
   if !empty(l:highlights)
     call s:apply_ts_highlights_to_buffer(winbufnr(s:completion.doc_popup_id), l:highlights)
   endif
@@ -2249,7 +2267,7 @@ function! s:move_completion_selection(direction) abort
   if s:completion.doc_timer_id != -1
     call timer_stop(s:completion.doc_timer_id)
   endif
-  let s:completion.doc_timer_id = timer_start(300, {-> s:show_completion_documentation()})
+  let s:completion.doc_timer_id = timer_start(100, {-> s:show_completion_documentation()})
 endfunction
 
 " LSP CompletionItemKind: 数字 → 字符串
