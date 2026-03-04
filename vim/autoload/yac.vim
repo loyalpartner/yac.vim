@@ -2247,11 +2247,28 @@ function! s:completion_filter(winid, key) abort
     return 1
   endif
 
-  " BS / C-h: 关闭 popup（移除 filter），让 BS 正常走 insert mode mapping
-  " 这样 delimitMate 等插件的 <expr> 映射不会被 filter 截断 <CR>
+  " BS / C-h: 手动删字符 + 重新过滤（不关闭 popup，避免闪烁）
+  " 不走 feedkeys/return 0，因为 delimitMate 等 <expr> 映射的 <CR> 会被 filter 截断
   if a:key == "\<BS>" || nr == 8
-    call s:close_completion_popup()
-    return 0
+    let l:col = col('.')
+    if l:col <= 1
+      " 行首：关闭 popup，让正常 BS 合并行
+      call s:close_completion_popup()
+      return 0
+    endif
+    " 删除光标前一个字符（支持多字节）
+    let l:line = getline('.')
+    let l:before = strpart(l:line, 0, l:col - 1)
+    let l:char = matchstr(l:before, '.$')
+    let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
+    let l:after = strpart(l:line, l:col - 1)
+    call setline('.', l:new_before . l:after)
+    call cursor(line('.'), strlen(l:new_before) + 1)
+    " 通知 LSP 文本变化
+    call yac#did_change()
+    " 重新过滤补全列表
+    call s:filter_completions()
+    return 1
   endif
 
   " 其他按键：透传给 insert 模式
