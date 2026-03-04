@@ -10,8 +10,8 @@ let g:yac_diagnostic_virtual_text = get(g:, 'yac_diagnostic_virtual_text', 1)
 
 " 自动补全配置选项
 let g:yac_auto_complete = get(g:, 'yac_auto_complete', 1)
-let g:yac_auto_complete_delay = get(g:, 'yac_auto_complete_delay', 300)
-let g:yac_auto_complete_min_chars = get(g:, 'yac_auto_complete_min_chars', 2)
+let g:yac_auto_complete_delay = get(g:, 'yac_auto_complete_delay', 0)
+let g:yac_auto_complete_min_chars = get(g:, 'yac_auto_complete_min_chars', 1)
 let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', ':', '::'])
 
 " Tree-sitter highlights (auto-enable for supported filetypes)
