@@ -137,6 +137,7 @@ let s:completion.suppress_until = 0
 let s:completion.timer_id = -1
 let s:completion.bg_timer_id = -1    " 后台补全请求的 timer ID
 let s:completion.seq = 0
+let s:completion.doc_timer_id = -1   " 文档请求 debounce timer
 let s:completion.cache = []         " 上次补全的 items 缓存（跨 session 复用）
 let s:completion.cache_file = ''    " 缓存对应的文件
 let s:completion.cache_line = -1    " 缓存对应的行号
@@ -1732,12 +1733,12 @@ function! s:show_completion_popup(items) abort
   if s:completion.popup_id == -1
     " 没有现有 popup → 正常创建
     let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
+    let s:completion.selected = 0
   endif
-  " popup 已存在（可能从缓存打开）→ 直接更新 items，避免 close/reopen 闪烁
+  " popup 已存在（LSP 异步更新）→ 保留 selected 位置，只更新 items
 
   " 存储原始补全项目
   let s:completion.original_items = a:items
-  let s:completion.selected = 0
 
   " 应用当前前缀的过滤（会复用或创建 popup）
   call s:filter_completions()
@@ -2006,7 +2007,10 @@ function! s:filter_completions() abort
     let s:completion.items = matched
   endif
 
-  let s:completion.selected = 0
+  " clamp selected 防止越界（LSP 更新后 items 可能变少）
+  if s:completion.selected >= len(s:completion.items)
+    let s:completion.selected = max([0, len(s:completion.items) - 1])
+  endif
 
   " 0 结果时自动关闭弹窗
   if empty(s:completion.items)
@@ -2313,12 +2317,18 @@ function! s:move_completion_selection(direction) abort
 
   let s:completion.selected = new_idx
 
-  " 只移动 cursorline + 刷新文档，不重建高亮
+  " 只移动 cursorline，不重建高亮
   if s:completion.popup_id != -1
     let target_line = new_idx + 1
     call win_execute(s:completion.popup_id, 'call cursor(' . target_line . ', 1)')
   endif
-  call s:show_completion_documentation()
+
+  " debounce 文档请求：快速连按时不发请求，停下后 150ms 再请求
+  call s:close_completion_documentation()
+  if s:completion.doc_timer_id != -1
+    call timer_stop(s:completion.doc_timer_id)
+  endif
+  let s:completion.doc_timer_id = timer_start(150, {-> s:show_completion_documentation()})
 endfunction
 
 " LSP CompletionItemKind: 数字 → 字符串
@@ -2401,6 +2411,12 @@ function! s:close_completion_popup() abort
   if s:completion.bg_timer_id != -1
     call timer_stop(s:completion.bg_timer_id)
     let s:completion.bg_timer_id = -1
+  endif
+
+  " 停止文档 debounce timer
+  if s:completion.doc_timer_id != -1
+    call timer_stop(s:completion.doc_timer_id)
+    let s:completion.doc_timer_id = -1
   endif
 
   if s:completion.popup_id != -1 && exists('*popup_close')
