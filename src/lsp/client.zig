@@ -111,6 +111,13 @@ pub const LspClient = struct {
         log.debug("LSP response [{d}]", .{id});
     }
 
+    /// Send $/cancelRequest notification for a pending request.
+    pub fn sendCancelNotification(self: *LspClient, request_id: u32) !void {
+        var params = ObjectMap.init(self.allocator);
+        try params.put("id", json.jsonInteger(@intCast(request_id)));
+        try self.sendNotification("$/cancelRequest", .{ .object = params });
+    }
+
     /// Send a JSON-RPC notification (no response expected).
     pub fn sendNotification(self: *LspClient, method: []const u8, params: Value) !void {
         const content = try lsp.buildLspNotification(self.allocator, method, params);

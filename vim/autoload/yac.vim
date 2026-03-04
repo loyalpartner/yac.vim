@@ -127,6 +127,7 @@ let s:completion.saved_mappings = {}
 let s:completion.trigger_col = 0
 let s:completion.suppress_until = 0
 let s:completion.timer_id = -1
+let s:completion.bg_timer_id = -1    " 后台补全请求的 timer ID
 let s:completion.seq = 0
 
 " didChange debounce timer
@@ -638,7 +639,7 @@ function! yac#did_change(...) abort
   if s:did_change_timer != -1
     call timer_stop(s:did_change_timer)
   endif
-  let s:did_change_timer = timer_start(180, {tid -> s:send_did_change(l:file_path, l:text_content)})
+  let s:did_change_timer = timer_start(50, {tid -> s:send_did_change(l:file_path, l:text_content)})
 endfunction
 
 " NOTE: Full document sync (TextDocumentSyncKind.Full) is used intentionally.
@@ -664,22 +665,24 @@ function! yac#auto_complete_trigger() abort
   if type(s:completion.suppress_until) != v:t_number
     let elapsed = reltimefloat(reltime(s:completion.suppress_until))
     let s:completion.suppress_until = 0
-    if elapsed < 0.5
+    if elapsed < 0.3
       return
     endif
   endif
 
-  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤
+  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤 + 后台 racing
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
     if s:at_trigger_char()
-      " 触发字符（如 .）→ 关闭当前弹窗，后续会重新请求
       call s:close_completion_popup()
+      " 触发字符继续走下面的完整请求流程
     else
-      " 非词字符（如 ( ) 空格）→ 关闭弹窗，让 signature help 等接管
       let l:line = getline('.')
       let l:cc = s:cursor_lsp_col() - 1
       if l:cc >= 0 && l:line[l:cc] =~ '\w'
+        " 即时本地过滤
         call s:filter_completions()
+        " 同时安排后台 LSP 请求（200ms debounce），带来更精确的结果
+        call s:schedule_background_completion()
         return
       else
         call s:close_completion_popup()
@@ -702,9 +705,12 @@ function! yac#auto_complete_trigger() abort
     return
   endif
 
-  " 触发字符 → 立即 flush did_change，让 LSP 在 delay 期间处理新内容
+  " 触发字符 → 立即 flush did_change 并直接请求，跳过 timer
   if l:is_trigger
     call s:flush_did_change()
+    let s:completion.seq += 1
+    call yac#complete()
+    return
   endif
 
   " 递增序列号，使已发出请求的响应过期
@@ -713,7 +719,7 @@ function! yac#auto_complete_trigger() abort
   if s:completion.timer_id != -1
     call timer_stop(s:completion.timer_id)
   endif
-  let s:completion.timer_id = timer_start(get(g:, 'yac_auto_complete_delay', 300), 'yac#delayed_complete')
+  let s:completion.timer_id = timer_start(get(g:, 'yac_auto_complete_delay', 80), 'yac#delayed_complete')
 endfunction
 
 " 延迟补全触发
@@ -727,6 +733,30 @@ function! yac#delayed_complete(timer_id) abort
 
   " 触发补全
   call yac#complete()
+endfunction
+
+" 后台补全请求调度（Racing 模式：本地过滤 + 后台 LSP 竞速）
+function! s:schedule_background_completion() abort
+  if s:completion.bg_timer_id != -1
+    call timer_stop(s:completion.bg_timer_id)
+  endif
+  let s:completion.bg_timer_id = timer_start(200, 's:bg_completion_fire')
+endfunction
+
+function! s:bg_completion_fire(timer_id) abort
+  let s:completion.bg_timer_id = -1
+  if mode() != 'i' || s:completion.popup_id == -1
+    return
+  endif
+  call s:flush_did_change()
+  let s:completion.seq += 1
+  let l:seq = s:completion.seq
+  let l:lsp_col = s:cursor_lsp_col()
+  call s:request('completion', {
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': l:lsp_col
+    \ }, {ch, resp -> s:handle_completion_response(ch, resp, l:seq)})
 endfunction
 
 function! yac#will_save(...) abort
@@ -960,7 +990,7 @@ function! s:handle_completion_response(channel, response, ...) abort
 
   " suppress 窗口内 → 忽略（用户刚关闭/接受补全）
   if type(s:completion.suppress_until) != v:t_number
-    if reltimefloat(reltime(s:completion.suppress_until)) < 0.5
+    if reltimefloat(reltime(s:completion.suppress_until)) < 0.3
       return
     endif
   endif
@@ -2157,6 +2187,12 @@ function! s:close_completion_popup() abort
   if s:completion.timer_id != -1
     call timer_stop(s:completion.timer_id)
     let s:completion.timer_id = -1
+  endif
+
+  " 停止后台补全 timer（Racing 模式）
+  if s:completion.bg_timer_id != -1
+    call timer_stop(s:completion.bg_timer_id)
+    let s:completion.bg_timer_id = -1
   endif
 
   if s:completion.popup_id != -1 && exists('*popup_close')

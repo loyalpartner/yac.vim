@@ -529,19 +529,35 @@ const EventLoop = struct {
                 }
             },
             .pending_lsp => |pending| {
-                self.trackPendingRequest(pending.lsp_request_id, cid, vim_id, method, params);
+                self.trackPendingRequest(pending.lsp_request_id, cid, vim_id, method, params, pending.client_key);
             },
         }
     }
 
     /// Track a pending LSP request so the response can be routed back to the correct Vim client.
-    fn trackPendingRequest(self: *EventLoop, lsp_request_id: u32, cid: ClientId, vim_id: ?u64, method: []const u8, params: Value) void {
+    fn trackPendingRequest(self: *EventLoop, lsp_request_id: u32, cid: ClientId, vim_id: ?u64, method: []const u8, params: Value, client_key: ?[]const u8) void {
         const params_obj: ?ObjectMap = switch (params) {
             .object => |o| o,
             else => null,
         };
         const file = if (params_obj) |obj| json_utils.getString(obj, "file") else null;
         const ssh_host = if (file) |f| lsp_registry_mod.extractSshHost(f) else null;
+
+        // Cancel older in-flight requests of the same method+client (e.g. completion)
+        if (client_key) |key| {
+            var cancelled = self.requests.cancelByMethodAndClientKey(method, key);
+            defer cancelled.deinit(self.allocator);
+            if (cancelled.items.len > 0) {
+                if (self.lsp.registry.getClient(key)) |lsp_client| {
+                    for (cancelled.items) |old_id| {
+                        lsp_client.sendCancelNotification(old_id) catch |e| {
+                            log.warn("Failed to send $/cancelRequest for id={d}: {any}", .{ old_id, e });
+                        };
+                    }
+                }
+                log.debug("Cancelled {d} old {s} request(s)", .{ cancelled.items.len, method });
+            }
+        }
 
         const method_owned = self.allocator.dupe(u8, method) catch |e| {
             log.err("Failed to track pending request: {any}", .{e});
@@ -564,6 +580,16 @@ const EventLoop = struct {
             }
         else
             null;
+        const client_key_owned = if (client_key) |key|
+            self.allocator.dupe(u8, key) catch |e| {
+                self.allocator.free(method_owned);
+                if (ssh_host_owned) |h| self.allocator.free(h);
+                if (file_owned) |f| self.allocator.free(f);
+                log.err("Failed to track pending request: {any}", .{e});
+                return;
+            }
+        else
+            null;
 
         self.requests.addLsp(lsp_request_id, .{
             .vim_request_id = vim_id,
@@ -571,10 +597,12 @@ const EventLoop = struct {
             .ssh_host = ssh_host_owned,
             .file = file_owned,
             .client_id = cid,
+            .lsp_client_key = client_key_owned,
         }) catch |e| {
             self.allocator.free(method_owned);
             if (ssh_host_owned) |h| self.allocator.free(h);
             if (file_owned) |f| self.allocator.free(f);
+            if (client_key_owned) |k| self.allocator.free(k);
             log.err("Failed to track pending request: {any}", .{e});
         };
     }

@@ -455,6 +455,91 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
     return .{ .object = result_obj };
 }
 
+/// Truncate a UTF-8 string to at most `max_bytes` bytes, ensuring we don't split a multi-byte sequence.
+fn truncateUtf8(s: []const u8, max_bytes: usize) []const u8 {
+    if (s.len <= max_bytes) return s;
+    // Walk back from max_bytes to find a valid UTF-8 boundary
+    var end = max_bytes;
+    while (end > 0 and s[end] & 0xC0 == 0x80) {
+        end -= 1;
+    }
+    return s[0..end];
+}
+
+/// Transform LSP completion result, keeping only fields Vim needs.
+/// Accepts CompletionList ({isIncomplete, items}) or CompletionItem[].
+/// Returns {items: [...]}.
+pub fn transformCompletionResult(alloc: Allocator, result: Value) !Value {
+    const max_doc_bytes: usize = 500;
+
+    // Extract the items array from either format
+    const items_slice: []const Value = switch (result) {
+        .array => |a| a.items,
+        .object => |o| blk: {
+            if (json_utils.getArray(o, "items")) |arr| break :blk arr;
+            break :blk &[_]Value{};
+        },
+        else => &[_]Value{},
+    };
+
+    var items = std.json.Array.init(alloc);
+
+    for (items_slice) |item_val| {
+        const ci = switch (item_val) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        // label is required
+        const label = json_utils.getString(ci, "label") orelse continue;
+
+        var item = ObjectMap.init(alloc);
+        try item.put("label", json_utils.jsonString(label));
+
+        // Optional fields — only include if present
+        if (json_utils.getInteger(ci, "kind")) |kind| {
+            try item.put("kind", json_utils.jsonInteger(kind));
+        }
+        if (json_utils.getString(ci, "detail")) |detail| {
+            try item.put("detail", json_utils.jsonString(detail));
+        }
+        if (json_utils.getString(ci, "insertText")) |insert_text| {
+            try item.put("insertText", json_utils.jsonString(insert_text));
+        }
+        if (json_utils.getString(ci, "filterText")) |filter_text| {
+            try item.put("filterText", json_utils.jsonString(filter_text));
+        }
+        if (json_utils.getString(ci, "sortText")) |sort_text| {
+            try item.put("sortText", json_utils.jsonString(sort_text));
+        }
+
+        // documentation: string | {kind, value} — truncate to max_doc_bytes
+        if (ci.get("documentation")) |doc_val| {
+            switch (doc_val) {
+                .string => |s| {
+                    try item.put("documentation", json_utils.jsonString(truncateUtf8(s, max_doc_bytes)));
+                },
+                .object => |doc_obj| {
+                    // MarkupContent: {kind: "markdown"|"plaintext", value: "..."}
+                    const kind_str = json_utils.getString(doc_obj, "kind") orelse "plaintext";
+                    const value = json_utils.getString(doc_obj, "value") orelse "";
+                    var new_doc = ObjectMap.init(alloc);
+                    try new_doc.put("kind", json_utils.jsonString(kind_str));
+                    try new_doc.put("value", json_utils.jsonString(truncateUtf8(value, max_doc_bytes)));
+                    try item.put("documentation", .{ .object = new_doc });
+                },
+                else => {},
+            }
+        }
+
+        try items.append(.{ .object = item });
+    }
+
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("items", .{ .array = items });
+    return .{ .object = result_obj };
+}
+
 /// Transform an LSP response into the format Vim expects, dispatching by method name.
 pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
     if (std.mem.startsWith(u8, method, "goto_")) {
@@ -471,6 +556,9 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     }
     if (std.mem.eql(u8, method, "inlay_hints")) {
         return transformInlayHintsResult(alloc, result) catch .null;
+    }
+    if (std.mem.eql(u8, method, "completion")) {
+        return transformCompletionResult(alloc, result) catch .null;
     }
 
     return result;
@@ -826,4 +914,205 @@ test "transformPickerSymbolResult — DocumentSymbol format" {
     try std.testing.expectEqualStrings("Allocator", json_utils.getString(items[1].object, "label").?);
     try std.testing.expectEqualStrings("std.mem.Allocator", json_utils.getString(items[1].object, "detail").?);
     try std.testing.expectEqualStrings("Constant", json_utils.getString(items[1].object, "kind").?);
+}
+
+test "transformCompletionResult — CompletionList format" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build a CompletionItem with all fields
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("println"));
+    try ci.put("kind", json_utils.jsonInteger(3)); // Function
+    try ci.put("detail", json_utils.jsonString("fn println(...)"));
+    try ci.put("insertText", json_utils.jsonString("println($1)"));
+    try ci.put("filterText", json_utils.jsonString("println"));
+    try ci.put("sortText", json_utils.jsonString("0000println"));
+    try ci.put("documentation", json_utils.jsonString("Prints a line."));
+    // Fields that should be dropped
+    try ci.put("data", json_utils.jsonInteger(42));
+    try ci.put("deprecated", .{ .bool = false });
+
+    var items_arr = std.json.Array.init(alloc);
+    try items_arr.append(.{ .object = ci });
+
+    // Wrap in CompletionList
+    var completion_list = ObjectMap.init(alloc);
+    try completion_list.put("isIncomplete", .{ .bool = false });
+    try completion_list.put("items", .{ .array = items_arr });
+
+    const result = try transformCompletionResult(alloc, .{ .object = completion_list });
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+
+    const item = items[0].object;
+    try std.testing.expectEqualStrings("println", json_utils.getString(item, "label").?);
+    try std.testing.expectEqual(@as(i64, 3), json_utils.getInteger(item, "kind").?);
+    try std.testing.expectEqualStrings("fn println(...)", json_utils.getString(item, "detail").?);
+    try std.testing.expectEqualStrings("println($1)", json_utils.getString(item, "insertText").?);
+    try std.testing.expectEqualStrings("println", json_utils.getString(item, "filterText").?);
+    try std.testing.expectEqualStrings("0000println", json_utils.getString(item, "sortText").?);
+    try std.testing.expectEqualStrings("Prints a line.", json_utils.getString(item, "documentation").?);
+    // Dropped fields should not be present
+    try std.testing.expect(item.get("data") == null);
+    try std.testing.expect(item.get("deprecated") == null);
+}
+
+test "transformCompletionResult — direct CompletionItem array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("foo"));
+    try ci.put("kind", json_utils.jsonInteger(6)); // Variable
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci });
+
+    const result = try transformCompletionResult(alloc, .{ .array = arr });
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("foo", json_utils.getString(items[0].object, "label").?);
+}
+
+test "transformCompletionResult — null/empty input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try transformCompletionResult(alloc, .null);
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "transformCompletionResult — documentation truncation (string)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build a long documentation string (600 bytes of 'a')
+    const long_doc = "a" ** 600;
+
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("bar"));
+    try ci.put("documentation", json_utils.jsonString(long_doc));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci });
+
+    const result = try transformCompletionResult(alloc, .{ .array = arr });
+    const items = json_utils.getArray(result.object, "items").?;
+    const doc = json_utils.getString(items[0].object, "documentation").?;
+    try std.testing.expectEqual(@as(usize, 500), doc.len);
+}
+
+test "transformCompletionResult — documentation truncation (MarkupContent)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const long_value = "b" ** 600;
+
+    var doc_obj = ObjectMap.init(alloc);
+    try doc_obj.put("kind", json_utils.jsonString("markdown"));
+    try doc_obj.put("value", json_utils.jsonString(long_value));
+
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("baz"));
+    try ci.put("documentation", .{ .object = doc_obj });
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci });
+
+    const result = try transformCompletionResult(alloc, .{ .array = arr });
+    const items = json_utils.getArray(result.object, "items").?;
+    const doc = json_utils.getObject(items[0].object, "documentation").?;
+    try std.testing.expectEqualStrings("markdown", json_utils.getString(doc, "kind").?);
+    const value = json_utils.getString(doc, "value").?;
+    try std.testing.expectEqual(@as(usize, 500), value.len);
+}
+
+test "transformCompletionResult — optional fields omitted when absent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Only label, no other fields
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("minimal"));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci });
+
+    const result = try transformCompletionResult(alloc, .{ .array = arr });
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    const item = items[0].object;
+    try std.testing.expectEqualStrings("minimal", json_utils.getString(item, "label").?);
+    // Optional fields should be absent (not null)
+    try std.testing.expect(item.get("kind") == null);
+    try std.testing.expect(item.get("detail") == null);
+    try std.testing.expect(item.get("insertText") == null);
+    try std.testing.expect(item.get("documentation") == null);
+}
+
+test "transformCompletionResult — items without label are skipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Item without label
+    var ci1 = ObjectMap.init(alloc);
+    try ci1.put("kind", json_utils.jsonInteger(1));
+
+    // Item with label
+    var ci2 = ObjectMap.init(alloc);
+    try ci2.put("label", json_utils.jsonString("valid"));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci1 });
+    try arr.append(.{ .object = ci2 });
+
+    const result = try transformCompletionResult(alloc, .{ .array = arr });
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("valid", json_utils.getString(items[0].object, "label").?);
+}
+
+test "transformLspResult — completion method dispatches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ci = ObjectMap.init(alloc);
+    try ci.put("label", json_utils.jsonString("test_item"));
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = ci });
+
+    const result = transformLspResult(alloc, "completion", .{ .array = arr }, null);
+    const items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("test_item", json_utils.getString(items[0].object, "label").?);
+}
+
+test "truncateUtf8 — no truncation needed" {
+    const s = "hello";
+    try std.testing.expectEqualStrings("hello", truncateUtf8(s, 10));
+    try std.testing.expectEqualStrings("hello", truncateUtf8(s, 5));
+}
+
+test "truncateUtf8 — ASCII truncation" {
+    const s = "hello world";
+    try std.testing.expectEqualStrings("hello", truncateUtf8(s, 5));
+}
+
+test "truncateUtf8 — multi-byte boundary" {
+    // UTF-8: "é" = 0xC3 0xA9 (2 bytes)
+    const s = "caf\xc3\xa9!"; // "café!"
+    // Truncating at 5 would land after the full "é", so we get "café"
+    try std.testing.expectEqualStrings("caf\xc3\xa9", truncateUtf8(s, 5));
+    // Truncating at 4 would land in the middle of "é" (0xA9 is continuation), back up to 3
+    try std.testing.expectEqualStrings("caf", truncateUtf8(s, 4));
 }

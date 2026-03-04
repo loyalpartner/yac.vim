@@ -120,7 +120,24 @@ pub fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
 }
 
 pub fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return sendPositionRequest(ctx, params, "textDocument/completion");
+    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
+    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+
+    const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
+    const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = lsp_ctx.client_key } };
 }
 
 pub fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {

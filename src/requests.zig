@@ -10,11 +10,13 @@ pub const PendingLspRequest = struct {
     ssh_host: ?[]const u8,
     file: ?[]const u8,
     client_id: ClientId,
+    lsp_client_key: ?[]const u8,
 
     pub fn deinit(self: PendingLspRequest, allocator: Allocator) void {
         allocator.free(self.method);
         if (self.ssh_host) |ssh_host| allocator.free(ssh_host);
         if (self.file) |file| allocator.free(file);
+        if (self.lsp_client_key) |key| allocator.free(key);
     }
 };
 
@@ -65,6 +67,35 @@ pub const Requests = struct {
             return entry.value;
         }
         return null;
+    }
+
+    /// Cancel pending requests with the same method and LSP client key.
+    /// Returns a list of LSP request IDs that were cancelled.
+    pub fn cancelByMethodAndClientKey(self: *Requests, method: []const u8, client_key: []const u8) std.ArrayList(u32) {
+        var cancelled: std.ArrayList(u32) = .{};
+        var to_remove: std.ArrayList(u32) = .{};
+        defer to_remove.deinit(self.allocator);
+
+        var it = self.pending_requests.iterator();
+        while (it.next()) |entry| {
+            const pending = entry.value_ptr;
+            if (std.mem.eql(u8, pending.method, method)) {
+                if (pending.lsp_client_key) |key| {
+                    if (std.mem.eql(u8, key, client_key)) {
+                        cancelled.append(self.allocator, entry.key_ptr.*) catch continue;
+                        to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
+                    }
+                }
+            }
+        }
+
+        for (to_remove.items) |req_id| {
+            if (self.pending_requests.fetchRemove(req_id)) |entry| {
+                entry.value.deinit(self.allocator);
+            }
+        }
+
+        return cancelled;
     }
 
     pub fn lspIterator(self: *Requests) std.AutoHashMap(u32, PendingLspRequest).Iterator {

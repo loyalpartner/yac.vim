@@ -37,6 +37,7 @@ pub const DispatchResult = union(enum) {
     /// Handler sent an LSP request and is waiting for a response.
     pending_lsp: struct {
         lsp_request_id: u32,
+        client_key: ?[]const u8 = null,
     },
     /// LSP client is still initializing; caller should defer and retry.
     initializing: void,
