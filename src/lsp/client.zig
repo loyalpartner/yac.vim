@@ -340,6 +340,55 @@ pub const LspClient = struct {
         return try self.sendRequest("initialize", .{ .object = params });
     }
 
+    /// Initialize a Copilot language server with Copilot-specific capabilities.
+    pub fn initializeCopilot(self: *LspClient) !u32 {
+        self.state = .initializing;
+
+        var params = ObjectMap.init(self.allocator);
+        try params.put("processId", json.jsonInteger(@intCast(std.os.linux.getpid())));
+
+        // capabilities — minimal, with inlineCompletion support
+        var capabilities = ObjectMap.init(self.allocator);
+        var text_doc = ObjectMap.init(self.allocator);
+
+        var inline_completion = ObjectMap.init(self.allocator);
+        try inline_completion.put("dynamicRegistration", json.jsonBool(true));
+        try text_doc.put("inlineCompletion", .{ .object = inline_completion });
+
+        var sync = ObjectMap.init(self.allocator);
+        try sync.put("didSave", json.jsonBool(true));
+        try text_doc.put("synchronization", .{ .object = sync });
+
+        try capabilities.put("textDocument", .{ .object = text_doc });
+        try params.put("capabilities", .{ .object = capabilities });
+
+        // rootUri = null (global, no workspace)
+        try params.put("rootUri", .null);
+
+        // clientInfo
+        var client_info = ObjectMap.init(self.allocator);
+        try client_info.put("name", json.jsonString("yac.vim"));
+        try client_info.put("version", json.jsonString("0.1.0"));
+        try params.put("clientInfo", .{ .object = client_info });
+
+        // initializationOptions — required by Copilot
+        var init_options = ObjectMap.init(self.allocator);
+
+        var editor_info = ObjectMap.init(self.allocator);
+        try editor_info.put("name", json.jsonString("yac.vim"));
+        try editor_info.put("version", json.jsonString("0.1.0"));
+        try init_options.put("editorInfo", .{ .object = editor_info });
+
+        var plugin_info = ObjectMap.init(self.allocator);
+        try plugin_info.put("name", json.jsonString("yac-copilot"));
+        try plugin_info.put("version", json.jsonString("0.1.0"));
+        try init_options.put("editorPluginInfo", .{ .object = plugin_info });
+
+        try params.put("initializationOptions", .{ .object = init_options });
+
+        return try self.sendRequest("initialize", .{ .object = params });
+    }
+
     /// Send initialized notification after receiving initialize response.
     pub fn sendInitialized(self: *LspClient) !void {
         self.state = .initialized;

@@ -566,8 +566,62 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     if (std.mem.eql(u8, method, "completion")) {
         return transformCompletionResult(alloc, result) catch .null;
     }
+    if (std.mem.eql(u8, method, "copilot_complete")) {
+        return transformInlineCompletionResult(alloc, result) catch .null;
+    }
 
     return result;
+}
+
+/// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, filterText, range?, command?}]}
+fn transformInlineCompletionResult(alloc: Allocator, result: Value) !Value {
+    // Result can be InlineCompletionList {items: []} or InlineCompletionItem[]
+    const items_arr: []Value = switch (result) {
+        .object => |obj| json_utils.getArray(obj, "items") orelse return .null,
+        .array => |a| a.items,
+        .null => return .null,
+        else => return .null,
+    };
+
+    var out_items = std.json.Array.init(alloc);
+    for (items_arr) |item_val| {
+        const item = switch (item_val) {
+            .object => |o| o,
+            else => continue,
+        };
+
+        var out = ObjectMap.init(alloc);
+
+        // insertText is required
+        if (item.get("insertText")) |insert_text| {
+            switch (insert_text) {
+                .string => try out.put("insertText", insert_text),
+                .object => |obj| {
+                    // StringValue {value: string}
+                    if (json_utils.getString(obj, "value")) |v| {
+                        try out.put("insertText", json_utils.jsonString(v));
+                    }
+                },
+                else => continue,
+            }
+        } else continue;
+
+        if (json_utils.getString(item, "filterText")) |ft| {
+            try out.put("filterText", json_utils.jsonString(ft));
+        }
+        if (item.get("range")) |range| {
+            try out.put("range", range);
+        }
+        if (item.get("command")) |cmd| {
+            try out.put("command", cmd);
+        }
+
+        try out_items.append(.{ .object = out });
+    }
+
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("items", .{ .array = out_items });
+    return .{ .object = result_obj };
 }
 
 // ============================================================================
@@ -1121,4 +1175,91 @@ test "truncateUtf8 — multi-byte boundary" {
     try std.testing.expectEqualStrings("caf\xc3\xa9", truncateUtf8(s, 5));
     // Truncating at 4 would land in the middle of "é" (0xA9 is continuation), back up to 3
     try std.testing.expectEqualStrings("caf", truncateUtf8(s, 4));
+}
+
+// ============================================================================
+// Inline Completion Tests
+// ============================================================================
+
+test "transformInlineCompletionResult — object with items array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var item = ObjectMap.init(alloc);
+    try item.put("insertText", json_utils.jsonString("console.log()"));
+    try item.put("filterText", json_utils.jsonString("cons"));
+
+    var items_arr = std.json.Array.init(alloc);
+    try items_arr.append(.{ .object = item });
+
+    var input = ObjectMap.init(alloc);
+    try input.put("items", .{ .array = items_arr });
+
+    const result = try transformInlineCompletionResult(alloc, .{ .object = input });
+    const out_items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), out_items.len);
+    try std.testing.expectEqualStrings("console.log()", json_utils.getString(out_items[0].object, "insertText").?);
+    try std.testing.expectEqualStrings("cons", json_utils.getString(out_items[0].object, "filterText").?);
+}
+
+test "transformInlineCompletionResult — bare array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var item = ObjectMap.init(alloc);
+    try item.put("insertText", json_utils.jsonString("hello"));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = item });
+
+    const result = try transformInlineCompletionResult(alloc, .{ .array = arr });
+    const out_items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), out_items.len);
+    try std.testing.expectEqualStrings("hello", json_utils.getString(out_items[0].object, "insertText").?);
+}
+
+test "transformInlineCompletionResult — null returns null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try transformInlineCompletionResult(arena.allocator(), .null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformInlineCompletionResult — items without insertText are skipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var bad_item = ObjectMap.init(alloc);
+    try bad_item.put("filterText", json_utils.jsonString("no_insert"));
+
+    var good_item = ObjectMap.init(alloc);
+    try good_item.put("insertText", json_utils.jsonString("good"));
+
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = bad_item });
+    try arr.append(.{ .object = good_item });
+
+    const result = try transformInlineCompletionResult(alloc, .{ .array = arr });
+    const out_items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), out_items.len);
+    try std.testing.expectEqualStrings("good", json_utils.getString(out_items[0].object, "insertText").?);
+}
+
+test "transformLspResult — copilot_complete dispatches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var item = ObjectMap.init(alloc);
+    try item.put("insertText", json_utils.jsonString("test_suggestion"));
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = item });
+
+    const result = transformLspResult(alloc, "copilot_complete", .{ .array = arr }, null);
+    const out_items = json_utils.getArray(result.object, "items").?;
+    try std.testing.expectEqual(@as(usize, 1), out_items.len);
+    try std.testing.expectEqualStrings("test_suggestion", json_utils.getString(out_items[0].object, "insertText").?);
 }

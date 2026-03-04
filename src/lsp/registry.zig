@@ -44,6 +44,12 @@ pub const LspRegistry = struct {
     failed_spawns: std.StringHashMap(void),
     /// Server capabilities from initialize response: client_key -> capabilities JSON
     server_capabilities: std.StringHashMap(std.json.Parsed(Value)),
+    /// Global Copilot language server client (one instance for all file types)
+    copilot_client: ?*LspClient = null,
+    /// Whether Copilot client spawn has been attempted and failed
+    copilot_spawn_failed: bool = false,
+
+    pub const copilot_key = "copilot";
 
     pub fn init(allocator: Allocator) LspRegistry {
         return .{
@@ -79,6 +85,7 @@ pub const LspRegistry = struct {
             }
         }
         self.server_capabilities.deinit();
+        if (self.copilot_client) |c| c.deinit();
     }
 
     /// Detect language from file path extension.
@@ -119,13 +126,63 @@ pub const LspRegistry = struct {
         };
     }
 
-    /// Get an existing client by client key.
+    /// Get an existing client by client key (includes copilot).
     pub fn getClient(self: *LspRegistry, client_key: []const u8) ?*LspClient {
+        if (std.mem.eql(u8, client_key, copilot_key)) return self.copilot_client;
         return self.clients.get(client_key);
+    }
+
+    /// Reset Copilot spawn failure flag to allow retry (e.g. on explicit sign-in).
+    pub fn resetCopilotSpawnFailed(self: *LspRegistry) void {
+        self.copilot_spawn_failed = false;
+    }
+
+    /// Get or create the global Copilot language server client.
+    pub fn getOrCreateCopilotClient(self: *LspRegistry) ?*LspClient {
+        if (self.copilot_client) |c| return c;
+        if (self.copilot_spawn_failed) return null;
+
+        log.info("Starting copilot-language-server --stdio", .{});
+        const client = LspClient.spawn(
+            self.allocator,
+            "copilot-language-server",
+            &[_][]const u8{"--stdio"},
+            &self.next_id,
+        ) catch {
+            log.warn("Failed to spawn copilot-language-server", .{});
+            self.copilot_spawn_failed = true;
+            return null;
+        };
+
+        const init_id = client.initializeCopilot() catch {
+            log.err("Failed to send Copilot initialize", .{});
+            client.deinit();
+            self.copilot_spawn_failed = true;
+            return null;
+        };
+        self.pending_init.put(copilot_key, init_id) catch {
+            client.deinit();
+            self.copilot_spawn_failed = true;
+            return null;
+        };
+        self.copilot_client = client;
+        log.info("Copilot client created, init request id={d}", .{init_id});
+        return client;
     }
 
     /// Remove a dead client and free its resources.
     pub fn removeClient(self: *LspRegistry, client_key: []const u8) void {
+        // Handle copilot client separately (not in clients hashmap)
+        if (std.mem.eql(u8, client_key, copilot_key)) {
+            if (self.copilot_client) |c| {
+                c.deinit();
+                self.copilot_client = null;
+            }
+            _ = self.pending_init.remove(copilot_key);
+            self.copilot_spawn_failed = true;
+            return;
+        }
+
         if (self.clients.fetchRemove(client_key)) |entry| {
             entry.value.deinit();
             // Remove from pending_init/pending_opens BEFORE freeing the key,
@@ -196,7 +253,7 @@ pub const LspRegistry = struct {
     /// Handle an initialize response: store capabilities, send 'initialized', then replay queued didOpens.
     pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8, result: Value) !void {
         _ = self.pending_init.remove(client_key);
-        const client = self.clients.get(client_key) orelse return;
+        const client = self.getClient(client_key) orelse return;
 
         // Store server capabilities from initialize result
         if (result == .object) {
@@ -210,8 +267,11 @@ pub const LspRegistry = struct {
                     log.err("Failed to parse capabilities: {any}", .{e});
                     return try self.finishInit(client, client_key);
                 };
-                // Use the stable key from the clients map
-                const stable_key = self.clients.getKey(client_key) orelse client_key;
+                // Use the stable key from the clients map; for copilot use its constant key
+                const stable_key = if (std.mem.eql(u8, client_key, copilot_key))
+                    copilot_key
+                else
+                    self.clients.getKey(client_key) orelse client_key;
                 self.server_capabilities.put(stable_key, parsed) catch |e| {
                     log.err("Failed to store capabilities: {any}", .{e});
                     parsed.deinit();
@@ -310,7 +370,7 @@ pub const LspRegistry = struct {
         };
     }
 
-    /// Shutdown all clients.
+    /// Shutdown all clients (including copilot).
     pub fn shutdownAll(self: *LspRegistry) void {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
@@ -323,6 +383,12 @@ pub const LspRegistry = struct {
         self.pending_init.clearAndFree();
         self.freePendingOpens();
         self.pending_opens.clearAndFree();
+        if (self.copilot_client) |c| {
+            _ = c.sendShutdown() catch {};
+            c.sendExit() catch {};
+            c.deinit();
+            self.copilot_client = null;
+        }
     }
 
     fn freePendingOpens(self: *LspRegistry) void {
@@ -333,7 +399,7 @@ pub const LspRegistry = struct {
         }
     }
 
-    /// Collect all stdout fds for polling.
+    /// Collect all stdout fds for polling (includes copilot client).
     pub fn collectFds(self: *LspRegistry, fds: *std.ArrayList(std.posix.pollfd), client_keys: *std.ArrayList([]const u8)) !void {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
@@ -344,6 +410,14 @@ pub const LspRegistry = struct {
                 .revents = 0,
             });
             try client_keys.append(self.allocator, entry.key_ptr.*);
+        }
+        if (self.copilot_client) |c| {
+            try fds.append(self.allocator, .{
+                .fd = c.stdoutFd(),
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            });
+            try client_keys.append(self.allocator, copilot_key);
         }
     }
 };

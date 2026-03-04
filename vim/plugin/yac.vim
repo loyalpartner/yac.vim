@@ -79,6 +79,11 @@ command! YacTsHighlightsToggle    call yac#ts_highlights_toggle()
 command! YacThemePicker           call yac#picker_open({'initial': '%'})
 command! YacThemeDefault          call yac_theme#apply_default() | call yac_theme#save_selection('')
 command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>) | call yac_theme#save_selection(<q-args>)
+command! CopilotSignIn  call yac_copilot#sign_in()
+command! CopilotSignOut call yac_copilot#sign_out()
+command! CopilotStatus  call yac_copilot#status()
+command! CopilotEnable  call yac_copilot#enable()
+command! CopilotDisable call yac_copilot#disable()
 
 " 默认快捷键
 nnoremap <silent> gd :YacDefinition<CR>

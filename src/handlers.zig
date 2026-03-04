@@ -6,6 +6,7 @@ const lsp_requests = @import("handlers/lsp_requests.zig");
 const lsp_notifications = @import("handlers/lsp_notifications.zig");
 const picker_handlers = @import("handlers/picker.zig");
 const ts_handlers = @import("handlers/treesitter.zig");
+const copilot = @import("handlers/copilot.zig");
 
 pub const HandlerContext = common.HandlerContext;
 pub const DispatchResult = common.DispatchResult;
@@ -57,6 +58,14 @@ pub const handlers = [_]Handler{
     .{ .name = "ts_textobjects", .handleFn = ts_handlers.handleTsTextObjects },
     .{ .name = "ts_highlights", .handleFn = ts_handlers.handleTsHighlights },
     .{ .name = "ts_hover_highlight", .handleFn = ts_handlers.handleTsHoverHighlight },
+    .{ .name = "copilot_sign_in", .handleFn = copilot.handleCopilotSignIn },
+    .{ .name = "copilot_sign_out", .handleFn = copilot.handleCopilotSignOut },
+    .{ .name = "copilot_check_status", .handleFn = copilot.handleCopilotCheckStatus },
+    .{ .name = "copilot_sign_in_confirm", .handleFn = copilot.handleCopilotSignInConfirm },
+    .{ .name = "copilot_complete", .handleFn = copilot.handleCopilotComplete },
+    .{ .name = "copilot_did_focus", .handleFn = copilot.handleCopilotDidFocus },
+    .{ .name = "copilot_accept", .handleFn = copilot.handleCopilotAccept },
+    .{ .name = "copilot_partial_accept", .handleFn = copilot.handleCopilotPartialAccept },
 };
 
 pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !DispatchResult {
