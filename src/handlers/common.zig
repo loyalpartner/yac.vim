@@ -6,6 +6,7 @@ const LspClient = @import("../lsp/client.zig").LspClient;
 const log = @import("../log.zig");
 pub const treesitter_mod = @import("../treesitter/treesitter.zig");
 const queue_mod = @import("../queue.zig");
+const lsp_mod = @import("../lsp/lsp.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -22,6 +23,7 @@ pub const HandlerContext = struct {
     /// GPA allocator for allocations that must outlive the request (e.g. OutMessage bytes).
     gpa_allocator: Allocator,
     registry: *LspRegistry,
+    lsp: *lsp_mod.Lsp,
     client_stream: std.net.Stream,
     ts: ?*treesitter_mod.TreeSitter = null,
     /// Outgoing message queue — push OutMessages here instead of writing directly.

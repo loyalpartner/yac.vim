@@ -24,6 +24,7 @@ pub const Handler = struct {
 };
 
 pub const handlers = [_]Handler{
+    .{ .name = "lsp_status", .handleFn = lsp_requests.handleLspStatus },
     .{ .name = "file_open", .handleFn = lsp_requests.handleFileOpen },
     .{ .name = "goto_definition", .handleFn = lsp_requests.handleGotoDefinition },
     .{ .name = "goto_declaration", .handleFn = lsp_requests.handleGotoDeclaration },
