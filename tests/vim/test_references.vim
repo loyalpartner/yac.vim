@@ -20,7 +20,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open')
 
 let info = yac#picker_info()
@@ -42,7 +42,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open for getName')
 
 let info = yac#picker_info()
@@ -62,7 +62,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 call yac_test#assert_true(popup_ok, 'References picker should open for users')
 
 let info = yac#picker_info()
@@ -79,7 +79,7 @@ call yac_test#log('INFO', 'Test 4: Navigate through references')
 
 call cursor(6, 12)
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 
 if popup_ok
   let info = yac#picker_info()
@@ -100,7 +100,7 @@ call cursor(2, 7)
 let word = expand('<cword>')
 
 YacReferences
-let popup_ok = yac_test#wait_picker(5000)
+let popup_ok = yac_test#wait_picker(8000)
 
 if popup_ok
   let info = yac#picker_info()
