@@ -25,7 +25,8 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 - `src/handlers.zig` — request dispatch
 - `src/lsp/` — LSP client, registry, protocol
 - `src/treesitter/` — Tree-sitter parsing
-- `src/lsp_transform.zig` — LSP response → Vim format
+- `src/lsp/transform.zig` — LSP response → Vim format
+- `src/treesitter/document_highlight.zig` — tree-sitter fallback for document highlight
 
 ## Reference
 

@@ -30,7 +30,7 @@ pub const handlers = [_]Handler{
     .{ .name = "goto_type_definition", .handleFn = lsp_requests.handleGotoTypeDefinition },
     .{ .name = "goto_implementation", .handleFn = lsp_requests.handleGotoImplementation },
     .{ .name = "hover", .handleFn = lsp_requests.handleHover },
-    .{ .name = "document_highlight", .handleFn = lsp_requests.handleDocumentHighlight },
+    .{ .name = "document_highlight", .handleFn = ts_handlers.handleDocumentHighlight },
     .{ .name = "completion", .handleFn = lsp_requests.handleCompletion },
     .{ .name = "references", .handleFn = lsp_requests.handleReferences },
     .{ .name = "rename", .handleFn = lsp_requests.handleRename },

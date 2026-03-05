@@ -2,6 +2,7 @@ const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 const log = @import("../log.zig");
+const lsp_requests = @import("lsp_requests.zig");
 const ts_mod = common.treesitter_mod;
 
 const Value = json.Value;
@@ -156,6 +157,35 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
         source,
         start_line,
         end_line,
+    );
+    return .{ .data = result };
+}
+
+/// Document highlight: try LSP first (semantic), fall back to tree-sitter (textual).
+pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchResult {
+    // Try LSP — it provides semantic scope awareness
+    const lsp_result = try lsp_requests.handleDocumentHighlight(ctx, params);
+    switch (lsp_result) {
+        .pending_lsp => return lsp_result, // LSP request sent, wait for response
+        .initializing => {}, // LSP not ready, fall through to tree-sitter
+        .empty => {}, // No LSP available, fall through
+        .data => return lsp_result,
+    }
+
+    // Fallback: tree-sitter based (textual match within scope)
+    const tc = getTsContext(ctx, params) orelse return .{ .empty = {} };
+    const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
+    const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
+
+    const line: u32 = @intCast(json.getInteger(tc.obj, "line") orelse return .{ .empty = {} });
+    const column: u32 = @intCast(json.getInteger(tc.obj, "column") orelse return .{ .empty = {} });
+
+    const result = try ts_mod.document_highlight.extractDocumentHighlights(
+        ctx.allocator,
+        tree,
+        source,
+        line,
+        column,
     );
     return .{ .data = result };
 }

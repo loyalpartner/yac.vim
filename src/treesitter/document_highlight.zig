@@ -1,0 +1,130 @@
+const std = @import("std");
+const ts = @import("tree_sitter");
+const json = @import("../json_utils.zig");
+
+const Allocator = std.mem.Allocator;
+const Value = json.Value;
+const ObjectMap = json.ObjectMap;
+
+/// Find all occurrences of the identifier under the cursor within the
+/// enclosing scope (function/test/class). Falls back to file scope for
+/// top-level symbols.
+/// Returns {highlights: [{line, col, end_line, end_col, kind}]}
+pub fn extractDocumentHighlights(
+    alloc: Allocator,
+    tree: *const ts.Tree,
+    source: []const u8,
+    line: u32,
+    column: u32,
+) !Value {
+    const root = tree.rootNode();
+    const point = ts.Point{ .row = line, .column = column };
+
+    // Find the smallest named node at cursor position
+    const target_node = root.namedDescendantForPointRange(point, point) orelse
+        return .null;
+
+    // Get the text of the target node — this is what we'll search for
+    const target_text = nodeText(target_node, source) orelse return .null;
+
+    // Skip nodes that are too large (not identifiers) or empty
+    if (target_text.len == 0 or target_text.len > 200) return .null;
+
+    // Find the enclosing scope — search only within it
+    const scope = findEnclosingScope(target_node, root);
+
+    // Collect all matching nodes via DFS traversal within scope
+    var highlights = std.json.Array.init(alloc);
+    try collectMatches(alloc, scope, source, target_text, target_node.kindId(), &highlights);
+
+    if (highlights.items.len == 0) return .null;
+
+    var result = ObjectMap.init(alloc);
+    try result.put("highlights", .{ .array = highlights });
+    return .{ .object = result };
+}
+
+/// Walk up from node to find the nearest scope-defining ancestor.
+/// Scope nodes: function declarations, test blocks, methods, classes, etc.
+/// Returns root if no scope ancestor found (file-level symbol).
+fn findEnclosingScope(node: ts.Node, root: ts.Node) ts.Node {
+    var current = node;
+    while (current.parent()) |p| {
+        if (p.eql(root)) break;
+        if (isScopeNode(p)) return p;
+        current = p;
+    }
+    return root;
+}
+
+/// Heuristic: is this node a scope boundary?
+/// Covers common patterns across Zig, Python, Go, Rust, JS/TS, C/C++.
+fn isScopeNode(node: ts.Node) bool {
+    const kind = node.kind();
+    // Exact matches for common scope nodes
+    const scope_kinds = [_][]const u8{
+        "fn_decl", // Zig
+        "test_declaration", // Zig
+        "function_definition", // Python, C/C++
+        "class_definition", // Python
+        "function_declaration", // Go, JS/TS
+        "method_declaration", // Go
+        "func_literal", // Go
+        "function_item", // Rust
+        "impl_item", // Rust
+        "method_definition", // JS/TS
+        "arrow_function", // JS/TS
+        "class_declaration", // JS/TS
+        "class_specifier", // C/C++
+    };
+    for (scope_kinds) |sk| {
+        if (std.mem.eql(u8, kind, sk)) return true;
+    }
+    return false;
+}
+
+/// DFS traversal to find all nodes with matching text and kind.
+fn collectMatches(
+    alloc: Allocator,
+    node: ts.Node,
+    source: []const u8,
+    target_text: []const u8,
+    target_kind_id: u16,
+    out: *std.json.Array,
+) !void {
+    // If this node is smaller than target text, skip subtree
+    const node_len = node.endByte() - node.startByte();
+    if (node_len < target_text.len) return;
+
+    // Check leaf-ish nodes (same kind as target)
+    if (node.kindId() == target_kind_id) {
+        if (nodeText(node, source)) |text| {
+            if (std.mem.eql(u8, text, target_text)) {
+                const start = node.startPoint();
+                const end = node.endPoint();
+                var hl = ObjectMap.init(alloc);
+                try hl.put("line", json.jsonInteger(@intCast(start.row)));
+                try hl.put("col", json.jsonInteger(@intCast(start.column)));
+                try hl.put("end_line", json.jsonInteger(@intCast(end.row)));
+                try hl.put("end_col", json.jsonInteger(@intCast(end.column)));
+                try hl.put("kind", json.jsonInteger(1));
+                try out.append(.{ .object = hl });
+                return; // Don't recurse into matched node's children
+            }
+        }
+    }
+
+    // Recurse into children
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        try collectMatches(alloc, child, source, target_text, target_kind_id, out);
+    }
+}
+
+fn nodeText(node: ts.Node, source: []const u8) ?[]const u8 {
+    const start = node.startByte();
+    const end = node.endByte();
+    if (start >= source.len or end > source.len) return null;
+    return source[start..end];
+}

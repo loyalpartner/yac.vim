@@ -2780,21 +2780,44 @@ function! s:render_inlay_hints() abort
 endfunction
 
 " === Document Highlight ===
-" Highlight all occurrences of the symbol under cursor (LSP textDocument/documentHighlight)
+" Highlight all occurrences of the symbol under cursor (LSP + tree-sitter fallback)
 
 let s:doc_hl_matches = []
 let s:doc_hl_bufnr = -1
+let s:doc_hl_timer = -1
+let s:doc_hl_delay = 300
+let s:doc_hl_word = ''
 
-" Default highlight groups — link to CursorLine/Search for visibility
 hi default YacDocHighlightText  guibg=#2a2a3a ctermbg=237
 hi default link YacDocHighlightRead  YacDocHighlightText
 hi default link YacDocHighlightWrite YacDocHighlightText
+
+function! yac#document_highlight_debounce() abort
+  if !get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1))
+    return
+  endif
+  " Skip if word under cursor hasn't changed
+  let l:word = expand('<cword>')
+  if l:word ==# s:doc_hl_word && !empty(s:doc_hl_matches)
+    return
+  endif
+  call s:clear_document_highlights()
+  let s:doc_hl_word = l:word
+  if empty(l:word)
+    return
+  endif
+  if s:doc_hl_timer != -1
+    call timer_stop(s:doc_hl_timer)
+  endif
+  let s:doc_hl_timer = timer_start(s:doc_hl_delay, {-> yac#document_highlight()})
+endfunction
 
 function! yac#document_highlight() abort
   call s:request('document_highlight', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
-    \   'column': col('.') - 1
+    \   'column': col('.') - 1,
+    \   'text': join(getline(1, '$'), "\n")
     \ }, 's:handle_document_highlight_response')
 endfunction
 
@@ -2809,7 +2832,6 @@ function! s:handle_document_highlight_response(ch, response) abort
   endif
   let s:doc_hl_bufnr = bufnr('%')
   for hl in l:highlights
-    " kind: 1=Text, 2=Read, 3=Write
     let l:kind = get(hl, 'kind', 1)
     let l:group = l:kind == 3 ? 'YacDocHighlightWrite' :
           \ l:kind == 2 ? 'YacDocHighlightRead' : 'YacDocHighlightText'
@@ -2826,7 +2848,6 @@ function! s:handle_document_highlight_response(ch, response) abort
         endif
       endif
     else
-      " Multi-line highlight (rare but handle it)
       let l:id = matchaddpos(l:group, [[l:line, l:col, 999]], 10)
       if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
       for l:mid_line in range(l:line + 1, l:end_line - 1)
@@ -2840,6 +2861,10 @@ function! s:handle_document_highlight_response(ch, response) abort
 endfunction
 
 function! s:clear_document_highlights() abort
+  if s:doc_hl_timer != -1
+    call timer_stop(s:doc_hl_timer)
+    let s:doc_hl_timer = -1
+  endif
   if s:doc_hl_bufnr != -1 && s:doc_hl_bufnr == bufnr('%')
     for id in s:doc_hl_matches
       silent! call matchdelete(id)
@@ -2847,6 +2872,7 @@ function! s:clear_document_highlights() abort
   endif
   let s:doc_hl_matches = []
   let s:doc_hl_bufnr = -1
+  let s:doc_hl_word = ''
 endfunction
 
 function! yac#clear_document_highlights() abort
