@@ -17,16 +17,15 @@ let s:failed = 0
 let s:start_time = 0
 let s:output_file = '/tmp/yac_test_output.txt'
 let s:batch_mode = 0
-let s:redir_active = 0
 let s:lsp_ready = 0
+let s:term_mode = 0
 
-" 初始化输出重定向（用于无头模式）
+" 检测运行模式
 if $YAC_TEST_OUTPUT != ''
   let s:output_file = $YAC_TEST_OUTPUT
 endif
-if !s:redir_active
-  execute 'redir! > ' . s:output_file
-  let s:redir_active = 1
+if $YAC_TEST_SIGNAL != ''
+  let s:term_mode = 1
 endif
 
 " ----------------------------------------------------------------------------
@@ -46,6 +45,9 @@ endfunction
 
 " 结束测试套件并输出结果
 function! yac_test#end() abort
+  " 最终 v:errmsg 检测
+  call yac_test#check_errors()
+
   let elapsed = localtime() - s:start_time
   let total = s:passed + s:failed
 
@@ -66,12 +68,19 @@ function! yac_test#end() abort
         \ 'success': s:failed == 0
         \ }
 
-  echo '::YAC_TEST_RESULT::' . json_encode(result)
+  let result_line = '::YAC_TEST_RESULT::' . json_encode(result)
 
-  " 批量模式下不关闭重定向，由 finish() 负责
-  if !s:batch_mode
-    redir END
-    let s:redir_active = 0
+  " 用 writefile 输出结果（避免 redir / -- More -- 问题）
+  call writefile([result_line], s:output_file)
+
+  " 通知 driver 测试完成
+  if s:term_mode && $YAC_TEST_SIGNAL != ''
+    call writefile(['DONE'], $YAC_TEST_SIGNAL)
+  endif
+
+  " term_start 模式下不自己 qa!，由 driver 控制退出（先 dump 屏幕）
+  if !s:term_mode
+    qa!
   endif
 
   return s:failed == 0
@@ -404,16 +413,39 @@ function! s:record_fail(description, reason) abort
   call s:log('FAIL', a:description . ' - ' . a:reason)
 endfunction
 
-" 日志输出
+" 日志输出（silent echom 写入 :messages，不显示在屏幕上，避免 -- More --）
 function! s:log(level, message) abort
   let timestamp = strftime('%H:%M:%S')
   let prefix = '[' . timestamp . '] [' . a:level . '] '
-  echo prefix . a:message
+  silent echom prefix . a:message
 endfunction
 
 " 公开日志函数
 function! yac_test#log(level, message) abort
   call s:log(a:level, a:message)
+endfunction
+
+" 检测 Vim 运行时错误
+" ignore_patterns: channel 关闭时的异步竞争条件（E716 channel_pool）
+let s:errmsg_ignore = [
+      \ 'E716:.*channel_pool',
+      \ 'E716:.*"local"',
+      \ ]
+
+function! yac_test#check_errors() abort
+  if !empty(v:errmsg)
+    let l:ignore = 0
+    for pat in s:errmsg_ignore
+      if v:errmsg =~# pat
+        let l:ignore = 1
+        break
+      endif
+    endfor
+    if !l:ignore
+      call s:record_fail('Vim error detected', v:errmsg)
+    endif
+    let v:errmsg = ''
+  endif
 endfunction
 
 " 跳过测试
@@ -437,6 +469,9 @@ function! yac_test#setup() abort
   set nobackup
   set nowritebackup
   set hidden
+  " 抑制 "Press ENTER" 提示和文件信息消息
+  set cmdheight=10
+  set shortmess+=F
 
   " 启动 YAC（ensure_job 内部是幂等的）
   if exists(':YacStart')
@@ -446,23 +481,24 @@ endfunction
 
 " 清理测试环境
 function! yac_test#teardown() abort
+  " 检测测试过程中的 Vim 错误
+  call yac_test#check_errors()
+
   " 关闭所有 popup
   call popup_clear()
 
   " 批量模式下不停止 YAC，由 finish() 负责
   if !s:batch_mode && exists(':YacStop')
     silent! YacStop
+    " YacStop 可能触发 v:errmsg（异步回调竞争），不算测试失败
+    let v:errmsg = ''
   endif
 endfunction
 
-" 批量模式结束：停止 YAC + 关闭输出重定向
+" 批量模式结束：停止 YAC
 function! yac_test#finish() abort
   if exists(':YacStop')
     silent! YacStop
-  endif
-  if s:redir_active
-    redir END
-    let s:redir_active = 0
   endif
 endfunction
 

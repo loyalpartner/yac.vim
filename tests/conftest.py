@@ -2,6 +2,7 @@
 
 import json
 import os
+import pty
 import re
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ class SuiteResult:
     formatted_failures: str = ""
     yacd_log: str = ""
     vim_log: str = ""
+    screen_dump: str = ""
 
 
 class VimRunner:
@@ -87,59 +89,65 @@ class VimRunner:
         runtime_dir.mkdir()
 
         start_time = time.time()
-        output_file = Path(f"/tmp/yac_test_{test_name}_{os.getpid()}.txt")
+        pid = os.getpid()
+        output_file = Path(f"/tmp/yac_test_{test_name}_{pid}.txt")
+        signal_file = Path(f"/tmp/yac_test_{test_name}_{pid}.signal")
+        screen_dump_file = Path(f"/tmp/yac_test_{test_name}_{pid}.screen")
+        driver_vim = self.test_dir / "driver.vim"
 
         vimrc = workspace / "vimrc"
-        cmd = [
-            self.vim_cmd,
-            "-N",
-            "-u", str(vimrc),
-            "-U", "NONE",
-            "-es",
-            "-c", "set noswapfile",
-            "-c", "set nobackup",
-            "-c", f"source {test_file}",
-            "-c", "qa!",
-        ]
 
         env = os.environ.copy()
         env["YAC_TEST_OUTPUT"] = str(output_file)
+        env["YAC_TEST_SIGNAL"] = str(signal_file)
+        env["YAC_TEST_SCREEN"] = str(screen_dump_file)
+        env["YAC_TEST_FILE"] = str(test_file)
+        env["YAC_DRIVER_TIMEOUT"] = str(timeout * 1000)
+        env["YAC_DRIVER_VIMRC"] = str(vimrc)
+        env["YAC_DRIVER_CWD"] = str(workspace)
         env["XDG_RUNTIME_DIR"] = str(runtime_dir)
 
         # Per-test vim debug log
         vim_debug_log = workspace / "yac-vim-debug.log"
         env["YAC_DEBUG_LOG"] = str(vim_debug_log)
 
+        # Clean up stale files
+        for f in [output_file, signal_file, screen_dump_file]:
+            if f.exists():
+                f.unlink()
+
+        # Use PTY so outer Vim runs in a real terminal
+        master_fd, slave_fd = pty.openpty()
+
+        proc = None
         try:
-            result = subprocess.run(
-                cmd,
+            proc = subprocess.Popen(
+                [self.vim_cmd, "-N", "-u", "NONE", "-S", str(driver_vim)],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
                 cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
                 env=env,
             )
-            if output_file.exists():
-                output = output_file.read_text()
-                output_file.unlink()
-            else:
-                output = result.stdout + result.stderr
+            os.close(slave_fd)
+            slave_fd = -1
+
+            # Driver has its own timeout; give it extra margin
+            proc.wait(timeout=timeout + 15)
         except subprocess.TimeoutExpired:
-            if output_file.exists():
-                output_file.unlink()
-            suite = SuiteResult(
-                suite=test_name,
-                failed=1,
-                duration=timeout,
-                output=f"Test timed out after {timeout}s",
-            )
-            suite.yacd_log = self._collect_log(runtime_dir / "yacd.log")
-            suite.vim_log = self._collect_log(vim_debug_log)
-            shutil.rmtree(workspace, ignore_errors=True)
-            return suite
+            if proc is not None:
+                proc.kill()
+                proc.wait()
         except Exception as e:
-            if output_file.exists():
-                output_file.unlink()
+            if slave_fd >= 0:
+                os.close(slave_fd)
+            os.close(master_fd)
+            if proc is not None:
+                proc.kill()
+                proc.wait()
+            for f in [output_file, signal_file, screen_dump_file]:
+                if f.exists():
+                    f.unlink()
             shutil.rmtree(workspace, ignore_errors=True)
             return SuiteResult(
                 suite=test_name,
@@ -147,9 +155,30 @@ class VimRunner:
                 duration=time.time() - start_time,
                 output=str(e),
             )
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+        # Read results
+        output = ""
+        if output_file.exists():
+            output = output_file.read_text()
+            output_file.unlink()
+
+        # Clean up signal file
+        if signal_file.exists():
+            signal_file.unlink()
 
         duration = time.time() - start_time
         suite_result = self._parse_output(test_name, output, duration)
+
+        # Attach screen dump
+        if screen_dump_file.exists():
+            suite_result.screen_dump = screen_dump_file.read_text()
+            screen_dump_file.unlink()
+
         if not suite_result.success:
             print(f"\n  [debug] workspace preserved: {workspace}")
             suite_result.formatted_failures = self._format_failures(

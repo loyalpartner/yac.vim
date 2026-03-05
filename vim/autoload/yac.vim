@@ -1448,7 +1448,11 @@ function! yac#stop() abort
       call s:debug_log(printf('Closing channel for %s', l:key))
       call ch_close(l:ch)
     endif
-    unlet s:channel_pool[l:key]
+    " ch_close() may trigger close_cb → cleanup_dead_connections() which
+    " already removed the key, so guard again before unlet.
+    if has_key(s:channel_pool, l:key)
+      unlet s:channel_pool[l:key]
+    endif
   endif
 endfunction
 
@@ -2550,15 +2554,22 @@ function! yac#test_bump_seq() abort
   return s:completion.seq
 endfunction
 
-" 公开接口：测试用操作函数（直接调用内部 handler）
+" 公开接口：测试用操作函数（通过 filter 模拟按键）
 function! yac#test_do_cr() abort
-  call s:completion_do_cr()
+  if s:completion.popup_id != -1
+    call s:completion_filter(s:completion.popup_id, "\<CR>")
+  endif
 endfunction
 function! yac#test_do_esc() abort
-  call s:completion_do_esc()
+  if s:completion.popup_id != -1
+    call s:completion_filter(s:completion.popup_id, "\<Esc>")
+  endif
 endfunction
 function! yac#test_do_nav(direction) abort
-  call s:completion_handle_nav(a:direction)
+  if s:completion.popup_id != -1
+    let key = a:direction > 0 ? "\<Down>" : "\<Up>"
+    call s:completion_filter(s:completion.popup_id, key)
+  endif
 endfunction
 function! yac#test_do_bs() abort
   " Simulate real mapping:1 flow: <expr> mapping fires first

@@ -30,16 +30,25 @@ function! s:get_prop_at(lnum, col) abort
 endfunction
 
 " 提取 props 的 col/length/type 三元组（用于比较）
+" normalize: 去除 prop type 中的序号前缀（yac_ts_N_ → yac_ts_）
 function! s:props_signature(lnum) abort
-  return map(s:get_ts_props(a:lnum), {_, p -> [p.col, p.length, p.type]})
+  return map(s:get_ts_props(a:lnum),
+    \ {_, p -> [p.col, p.length, s:normalize_prop_type(p.type)]})
+endfunction
+
+function! s:normalize_prop_type(type) abort
+  return substitute(a:type, '^yac_ts_\d\+_', 'yac_ts_', '')
 endfunction
 
 " 重新加载干净的测试文件并等待高亮就绪
+" 滚动到 line 32 附近（测试关注这些行），确保可视范围覆盖
 function! s:reload_and_wait() abort
   execute '%d'
   call setline(1, readfile('test_data/src/main.zig'))
+  call cursor(32, 1)
+  normal! zz
   call yac#ts_highlights_invalidate()
-  call yac_test#wait_for({-> !empty(s:get_ts_props(1))}, 5000)
+  call yac_test#wait_for({-> !empty(s:get_ts_props(32))}, 5000)
 endfunction
 
 " ============================================================================
@@ -75,6 +84,12 @@ call yac_test#wait_assert(
 call yac_test#log('INFO', 'Test 2: Identical lines should have identical highlight signatures')
 
 " Line 32-34 都是 `try users.put(N, ...)`
+" 滚动到 line 32 使其进入可视范围
+call cursor(32, 1)
+normal! zz
+call yac#ts_highlights_invalidate()
+call yac_test#wait_for({-> !empty(s:get_ts_props(32)) && !empty(s:get_ts_props(34))}, 5000)
+
 let s:sig32 = s:props_signature(32)
 let s:sig33 = s:props_signature(33)
 let s:sig34 = s:props_signature(34)
@@ -106,7 +121,8 @@ call yac_test#log('INFO', 'Test 3: After edit + invalidate, highlights match new
 
 call s:reload_and_wait()
 
-" 记录编辑前 line 34 的签名（`try users.put(3, ...)`）
+" 等待 line 34 也有 props，然后记录签名
+call yac_test#wait_for({-> !empty(s:get_ts_props(34))}, 5000)
 let s:sig34_before = s:props_signature(34)
 call yac_test#log('INFO', 'Line 34 sig before edit: ' . string(s:sig34_before))
 
@@ -114,12 +130,16 @@ call yac_test#log('INFO', 'Line 34 sig before edit: ' . string(s:sig34_before))
 call append(31, '    var a: i32 = 0;')
 " 现在：line 32 = 新行, 原 line 32-34 → line 33-35
 
+" 滚动到目标行使其进入可视范围（term_start 只高亮可视区域）
+call cursor(33, 1)
+normal! zz
+
 " 触发 invalidate（模拟 InsertLeave/TextChanged）
 call yac#ts_highlights_invalidate()
 
-" 等待新行（line 32）获得高亮 — 证明 daemon 解析了新文本
+" 等待新行（line 32）和移位行（line 33-35）都获得高亮
 call yac_test#wait_assert(
-  \ {-> !empty(s:get_ts_props(32))},
+  \ {-> !empty(s:get_ts_props(32)) && !empty(s:get_ts_props(35))},
   \ 5000, 'New line 32 ("var a: i32 = 0;") should get ts props after invalidate')
 
 " 验证新行的 "var" 关键字有高亮
@@ -128,9 +148,8 @@ call yac_test#log('INFO', 'New line 32 "var" prop: ' . string(s:new_var_prop))
 call yac_test#assert_true(!empty(s:new_var_prop),
   \ 'New line "var" keyword should have a ts prop')
 
-" 验证原 line 34（现 line 35）的签名不变
+" 验证原 line 34（现 line 35）的签名不变（prop type 序号已 normalize）
 let s:sig35_after = s:props_signature(35)
-call yac_test#log('INFO', 'Line 35 (shifted from 34) sig after: ' . string(s:sig35_after))
 call yac_test#assert_eq(s:sig35_after, s:sig34_before,
   \ 'Shifted line should keep same highlight signature after invalidate')
 
@@ -194,8 +213,12 @@ call append(31, '    users')
 "       line 34 = `try users.put(2, ...)` (原 33)
 "       line 35 = `try users.put(3, ...)` (原 34)
 
+" 滚动到目标行使其进入可视范围
+call cursor(33, 1)
+normal! zz
+
 call yac#ts_highlights_invalidate()
-call yac_test#wait_for({-> !empty(s:get_ts_props(33))}, 5000)
+call yac_test#wait_for({-> !empty(s:get_ts_props(33)) && !empty(s:get_ts_props(35))}, 5000)
 
 " 三行 try 的高亮应彼此一致（核心断言）
 let s:try33_err = get(s:get_prop_at(33, 5), 'type', '')
@@ -231,15 +254,20 @@ call yac_test#log('INFO', 'Test 6: After line deletion + invalidate, highlights 
 
 call s:reload_and_wait()
 
-" 记录 line 34 签名
+" 等待 line 34 props 就绪，然后记录签名
+call yac_test#wait_for({-> !empty(s:get_ts_props(34))}, 5000)
 let s:sig34_orig = s:props_signature(34)
 
 " 删除 line 32（第一个 try users.put）
 execute '32d'
 " 原 line 34 → line 33
 
+" 滚动到目标行使其进入可视范围
+call cursor(33, 1)
+normal! zz
+
 call yac#ts_highlights_invalidate()
-call yac_test#wait_for({-> !empty(s:get_ts_props(33))}, 5000)
+call yac_test#wait_for({-> !empty(s:get_ts_props(32)) && !empty(s:get_ts_props(33))}, 5000)
 
 let s:sig33_after_del = s:props_signature(33)
 call yac_test#assert_eq(s:sig33_after_del, s:sig34_orig,
@@ -260,6 +288,10 @@ call yac_test#assert_eq(s:sig33_after_del, s:sig34_orig,
 call yac_test#log('INFO', 'Test 7: scroll-up branch min() regression (E118)')
 
 call s:reload_and_wait()
+
+" 移到文件顶部（scroll-up 测试需要 cursor 在 line 1）
+call cursor(1, 1)
+normal! zt
 
 " disable 会清除 props 和 coverage
 call yac#ts_highlights_disable()

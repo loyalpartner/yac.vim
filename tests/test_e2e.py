@@ -70,6 +70,14 @@ def test_vim_e2e(vim_runner, check_bridge, test_name):
                 f"{result.vim_log}"
             )
 
+        if result.screen_dump:
+            sections.append(
+                f"\n{'=' * 60}\n"
+                f"Screen at failure:\n"
+                f"{'=' * 60}\n"
+                f"{result.screen_dump}"
+            )
+
         pytest.fail(
             f"{test_name}: {result.failed} failures, "
             f"{result.passed} passed\n\n{''.join(sections)}"
