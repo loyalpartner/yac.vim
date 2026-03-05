@@ -288,11 +288,15 @@ endfunction
 
 " Load a language plugin into the daemon (async, idempotent).
 " Sends load_language request without blocking; highlights refresh on completion.
+" Also loads dependency languages from sibling directories.
 function! yac#ensure_language(lang_dir) abort
   if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
   if has_key(s:loaded_langs, a:lang_dir) | return | endif
 
   let s:loaded_langs[a:lang_dir] = 'loading'
+
+  " Load dependencies first (works even without daemon connection)
+  call s:load_language_deps(a:lang_dir)
 
   let l:key = s:get_connection_key()
   let l:ch = get(s:channel_pool, l:key, '')
@@ -300,6 +304,27 @@ function! yac#ensure_language(lang_dir) abort
 
   call s:request('load_language', {'lang_dir': a:lang_dir},
     \ 's:handle_load_language_response')
+endfunction
+
+function! s:load_language_deps(lang_dir) abort
+  let l:json_path = a:lang_dir . '/languages.json'
+  if !filereadable(l:json_path) | return | endif
+  try
+    let l:config = json_decode(join(readfile(l:json_path), "\n"))
+    let l:parent = fnamemodify(a:lang_dir, ':h')
+    for [name, info] in items(l:config)
+      for dep in get(info, 'dependencies', [])
+        " Reject path traversal: only bare directory names allowed
+        if dep =~# '[/\\]' || dep =~# '^\.' | continue | endif
+        let l:dep_dir = l:parent . '/' . dep
+        if isdirectory(l:dep_dir)
+          call yac#ensure_language(l:dep_dir)
+        endif
+      endfor
+    endfor
+  catch
+    call s:debug_log(printf('[load_language_deps] failed to parse %s: %s', l:json_path, v:exception))
+  endtry
 endfunction
 
 function! s:handle_load_language_response(channel, response) abort
@@ -708,7 +733,7 @@ endfunction
 
 " 自动补全触发检查
 function! yac#auto_complete_trigger() abort
-  if !get(g:, 'yac_auto_complete', 1)
+  if !get(g:, 'yac_auto_complete', 1) || !get(b:, 'yac_lsp_supported', 0)
     return
   endif
 
@@ -1736,7 +1761,7 @@ endfunction
 
 " Auto-trigger signature help on ( and ,
 function! yac#signature_help_trigger() abort
-  if mode() != 'i'
+  if mode() != 'i' || !get(b:, 'yac_lsp_supported', 0)
     return
   endif
 

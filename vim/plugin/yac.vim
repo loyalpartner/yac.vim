@@ -123,7 +123,7 @@ onoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
 
 " Build extension-to-plugin mapping from g:yac_lang_plugins.
 " Each plugin has a languages.json with {"lang": {"extensions": [".ext", ...], ...}}.
-" Returns a dict: {".ext": "lang_dir", ...}
+" Returns a dict: {".ext": {"dir": "lang_dir", "lsp": bool}, ...}
 function! s:build_ext_map() abort
   let l:ext_map = {}
   for [lang, lang_dir] in items(g:yac_lang_plugins)
@@ -132,11 +132,13 @@ function! s:build_ext_map() abort
     try
       let l:config = json_decode(join(readfile(l:json_path), "\n"))
       for [name, info] in items(l:config)
+        let l:has_lsp = get(info, 'lsp', 1)
         for ext in get(info, 'extensions', [])
-          let l:ext_map[ext] = lang_dir
+          let l:ext_map[ext] = {'dir': lang_dir, 'lsp': l:has_lsp}
         endfor
       endfor
     catch
+      echohl WarningMsg | echom 'yac: failed to parse ' . l:json_path . ': ' . v:exception | echohl None
     endtry
   endfor
   return l:ext_map
@@ -148,10 +150,12 @@ function! s:yac_check_language() abort
   if empty(l:file) | return | endif
   let b:yac_lsp_supported = 0
   if !exists('s:yac_ext_map') | let s:yac_ext_map = s:build_ext_map() | endif
-  for [ext, lang_dir] in items(s:yac_ext_map)
+  for [ext, info] in items(s:yac_ext_map)
     if l:file =~# '\V' . escape(ext, '\') . '\$'
-      let b:yac_lsp_supported = 1
-      call yac#ensure_language(lang_dir)
+      if info.lsp
+        let b:yac_lsp_supported = 1
+      endif
+      call yac#ensure_language(info.dir)
       return
     endif
   endfor
