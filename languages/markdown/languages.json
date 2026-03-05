@@ -1,0 +1,6 @@
+{
+  "markdown": {
+    "extensions": [".md", ".markdown", ".mkd", ".mkdn"],
+    "grammar": "grammar/parser.wasm"
+  }
+}

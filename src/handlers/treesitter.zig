@@ -150,7 +150,7 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
     const start_line: u32 = @intCast(json.getInteger(tc.obj, "start_line") orelse 0);
     const end_line: u32 = @intCast(json.getInteger(tc.obj, "end_line") orelse 100);
 
-    const result = try ts_mod.highlights.extractHighlights(
+    var result = try ts_mod.highlights.extractHighlights(
         ctx.allocator,
         hl_query,
         tree,
@@ -158,6 +158,21 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
         start_line,
         end_line,
     );
+
+    // Process injections if the language has an injections query
+    if (tc.lang_state.injections) |inj_query| {
+        try ts_mod.highlights.processInjections(
+            ctx.allocator,
+            inj_query,
+            tree,
+            source,
+            start_line,
+            end_line,
+            tc.ts,
+            &result,
+        );
+    }
+
     return .{ .data = result };
 }
 

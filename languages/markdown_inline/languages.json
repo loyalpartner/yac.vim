@@ -1,0 +1,6 @@
+{
+  "markdown_inline": {
+    "extensions": [],
+    "grammar": "grammar/parser.wasm"
+  }
+}

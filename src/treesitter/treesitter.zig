@@ -39,6 +39,7 @@ pub const LangState = struct {
     folds: ?*ts.Query,
     textobjects: ?*ts.Query,
     highlights: ?*ts.Query,
+    injections: ?*ts.Query,
 
     fn initForDynamic(language: *const ts.Language, lang_name: []const u8, allocator: Allocator, query_dir: []const u8, wasm_loader: *WasmLoader) !LangState {
         const parser = ts.Parser.create();
@@ -53,13 +54,15 @@ pub const LangState = struct {
         const folds_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "folds", language);
         const to_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "textobjects", language);
         const hl_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "highlights", language);
+        const inj_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "injections", language);
 
-        log.info("TreeSitter initialized for {s} (sym:{s} folds:{s} to:{s} hl:{s})", .{
+        log.info("TreeSitter initialized for {s} (sym:{s} folds:{s} to:{s} hl:{s} inj:{s})", .{
             lang_name,
             if (sym_query != null) "ok" else "-",
             if (folds_query != null) "ok" else "-",
             if (to_query != null) "ok" else "-",
             if (hl_query != null) "ok" else "-",
+            if (inj_query != null) "ok" else "-",
         });
 
         return .{
@@ -69,6 +72,7 @@ pub const LangState = struct {
             .folds = folds_query,
             .textobjects = to_query,
             .highlights = hl_query,
+            .injections = inj_query,
         };
     }
 
@@ -77,6 +81,7 @@ pub const LangState = struct {
         if (self.folds) |q| q.destroy();
         if (self.textobjects) |q| q.destroy();
         if (self.highlights) |q| q.destroy();
+        if (self.injections) |q| q.destroy();
         // Detach the shared WasmStore before destroying the parser,
         // otherwise ts_parser_delete will free the store (double-free).
         _ = self.parser.takeWasmStore();

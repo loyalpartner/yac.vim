@@ -2,6 +2,8 @@ const std = @import("std");
 const ts = @import("tree_sitter");
 const json = @import("../json_utils.zig");
 const predicates = @import("predicates.zig");
+const TreeSitter = @import("treesitter.zig").TreeSitter;
+const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -254,6 +256,199 @@ fn isIdentCont(c: u8) bool {
     return isIdentStart(c) or (c >= '0' and c <= '9');
 }
 
+/// Find a capture index by name by iterating all captures in the query.
+fn findCaptureIndex(query: *const ts.Query, name: []const u8) ?u32 {
+    var i: u32 = 0;
+    while (i < query.captureCount()) : (i += 1) {
+        const cap_name = query.captureNameForId(i) orelse continue;
+        if (std.mem.eql(u8, cap_name, name)) return i;
+    }
+    return null;
+}
+
+/// Process language injections: run the injections query to find embedded regions,
+/// parse each with the target language, extract highlights, and merge into the result.
+pub fn processInjections(
+    allocator: Allocator,
+    inj_query: *const ts.Query,
+    tree: *const ts.Tree,
+    source: []const u8,
+    start_line: u32,
+    end_line: u32,
+    ts_state: *TreeSitter,
+    result: *Value,
+) !void {
+    const hl_obj_ptr = getHighlightsObj(result) orelse return;
+
+    // Find the capture index for "injection.content"
+    const content_idx = findCaptureIndex(inj_query, "injection.content") orelse return;
+
+    const cursor = ts.QueryCursor.create();
+    defer cursor.destroy();
+
+    cursor.setPointRange(
+        .{ .row = start_line, .column = 0 },
+        .{ .row = end_line, .column = std.math.maxInt(u32) },
+    ) catch {};
+
+    cursor.exec(inj_query, tree.rootNode());
+
+    while (cursor.nextMatch()) |match| {
+        // Extract injection.language from #set! predicates
+        const inj_lang = getSetPredicate(inj_query, match.pattern_index, "injection.language") orelse continue;
+
+        // Find the injection.content capture node
+        var content_node: ?ts.Node = null;
+        for (match.captures) |cap| {
+            if (cap.index == content_idx) {
+                content_node = cap.node;
+                break;
+            }
+        }
+        const node = content_node orelse continue;
+
+        const node_start = node.startPoint();
+        const node_end = node.endPoint();
+        // Skip nodes outside visible range
+        if (node_end.row < start_line or node_start.row >= end_line) continue;
+
+        const node_start_byte = node.startByte();
+        const node_end_byte = node.endByte();
+        if (node_start_byte >= source.len or node_end_byte > source.len) continue;
+
+        const node_source = source[node_start_byte..node_end_byte];
+        if (node_source.len == 0) continue;
+
+        // Load the injected language
+        const lang_state = ts_state.findOrLoadLangState(inj_lang) orelse continue;
+        const inj_hl_query = lang_state.highlights orelse continue;
+
+        // Parse the injection content
+        const inj_tree = lang_state.parser.parseString(node_source, null) orelse continue;
+        defer inj_tree.destroy();
+
+        // Clamp line range to the injection node's extent (local coordinates)
+        const local_start: u32 = if (start_line > node_start.row) start_line - node_start.row else 0;
+        const local_end: u32 = node_end.row - node_start.row + 1;
+
+        // Extract highlights in local coordinates
+        const inj_result = extractHighlights(
+            allocator,
+            inj_hl_query,
+            inj_tree,
+            node_source,
+            local_start,
+            local_end,
+        ) catch continue;
+
+        // Merge injection highlights into the main result, shifting positions
+        mergeInjectionHighlights(allocator, hl_obj_ptr, inj_result, node_start) catch continue;
+    }
+}
+
+/// Extract the "highlights" ObjectMap from a result Value.
+fn getHighlightsObj(result: *Value) ?*ObjectMap {
+    switch (result.*) {
+        .object => |*o| {
+            const val = o.getPtr("highlights") orelse return null;
+            switch (val.*) {
+                .object => |*ho| return ho,
+                else => return null,
+            }
+        },
+        else => return null,
+    }
+}
+
+/// Extract a #set! predicate value for a given property name from a pattern.
+fn getSetPredicate(query: *const ts.Query, pattern_index: u32, property: []const u8) ?[]const u8 {
+    const steps = query.predicatesForPattern(pattern_index);
+    var i: usize = 0;
+    while (i < steps.len) {
+        const pred_start = i;
+        while (i < steps.len and steps[i].type != .done) : (i += 1) {}
+        const pred_end = i;
+        if (i < steps.len) i += 1;
+
+        if (pred_end <= pred_start) continue;
+        if (steps[pred_start].type != .string) continue;
+
+        const name = query.stringValueForId(steps[pred_start].value_id) orelse continue;
+        if (!std.mem.eql(u8, name, "set!")) continue;
+
+        // #set! property value — steps: ["set!", property_string, value_string]
+        if (pred_end - pred_start >= 3 and steps[pred_start + 1].type == .string and steps[pred_start + 2].type == .string) {
+            const prop = query.stringValueForId(steps[pred_start + 1].value_id) orelse continue;
+            if (std.mem.eql(u8, prop, property)) {
+                return query.stringValueForId(steps[pred_start + 2].value_id);
+            }
+        }
+    }
+    return null;
+}
+
+/// Merge injection highlights into the main highlights object, shifting by the injection's
+/// start position in the document.
+fn mergeInjectionHighlights(
+    allocator: Allocator,
+    hl_obj: *ObjectMap,
+    inj_result: Value,
+    offset: ts.Point,
+) !void {
+    const inj_obj = switch (inj_result) {
+        .object => |o| o,
+        else => return,
+    };
+    const inj_groups_val = inj_obj.get("highlights") orelse return;
+    const inj_groups = switch (inj_groups_val) {
+        .object => |o| o,
+        else => return,
+    };
+
+    var it = inj_groups.iterator();
+    while (it.next()) |entry| {
+        const positions = switch (entry.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
+
+        const gop = try hl_obj.getOrPut(entry.key_ptr.*);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{ .array = std.json.Array.init(allocator) };
+        }
+        var target = &gop.value_ptr.array;
+
+        for (positions.items) |pos_val| {
+            const pos = switch (pos_val) {
+                .array => |a| a,
+                else => continue,
+            };
+            if (pos.items.len < 4) continue;
+
+            // pos = [lnum(1-based), col(1-based), end_lnum(1-based), end_col(1-based)]
+            const lnum = pos.items[0].integer;
+            const col = pos.items[1].integer;
+            const end_lnum = pos.items[2].integer;
+            const end_col = pos.items[3].integer;
+
+            // Shift by injection offset
+            const shifted_lnum = lnum + @as(i64, offset.row);
+            const shifted_end_lnum = end_lnum + @as(i64, offset.row);
+            // First line: add column offset; subsequent lines start at column 1
+            const shifted_col = if (lnum == 1) col + @as(i64, offset.column) else col;
+            const shifted_end_col = if (end_lnum == 1) end_col + @as(i64, offset.column) else end_col;
+
+            var shifted = std.json.Array.init(allocator);
+            try shifted.ensureTotalCapacity(4);
+            shifted.appendAssumeCapacity(json.jsonInteger(shifted_lnum));
+            shifted.appendAssumeCapacity(json.jsonInteger(shifted_col));
+            shifted.appendAssumeCapacity(json.jsonInteger(shifted_end_lnum));
+            shifted.appendAssumeCapacity(json.jsonInteger(shifted_end_col));
+            try target.append(.{ .array = shifted });
+        }
+    }
+}
+
 /// Calculate the length (in columns) from the start of a given row to the end of the line,
 /// given a node's start byte and start point as reference.
 fn lineLengthFromByte(source: []const u8, node_start_byte: u32, node_start: ts.Point, row: u32) u32 {
@@ -333,6 +528,21 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "function.method.call", "YacTsFunctionCall" },
         .{ "type.class", "YacTsType" },
         .{ "type.interface", "YacTsType" },
+        // Markup captures (markdown block + inline)
+        .{ "markup.heading", "YacTsMarkupHeading" },
+        .{ "markup.heading.marker", "YacTsMarkupHeadingMarker" },
+        .{ "markup.raw.block", "YacTsMarkupRawBlock" },
+        .{ "markup.raw.inline", "YacTsMarkupRawInline" },
+        .{ "markup.link", "YacTsMarkupLink" },
+        .{ "markup.link.url", "YacTsMarkupLinkUrl" },
+        .{ "markup.link.label", "YacTsMarkupLinkLabel" },
+        .{ "markup.list.marker", "YacTsMarkupListMarker" },
+        .{ "markup.list.checked", "YacTsMarkupListChecked" },
+        .{ "markup.list.unchecked", "YacTsMarkupListUnchecked" },
+        .{ "markup.quote", "YacTsMarkupQuote" },
+        .{ "markup.italic", "YacTsMarkupItalic" },
+        .{ "markup.bold", "YacTsMarkupBold" },
+        .{ "markup.strikethrough", "YacTsMarkupStrikethrough" },
         // Legacy capture names (pre-nvim-treesitter 1.0 convention)
         .{ "parameter", "YacTsVariableParameter" },
         .{ "field", "YacTsProperty" },
@@ -371,6 +581,58 @@ test "captureToGroup mapping" {
     try std.testing.expectEqualStrings("YacTsVariable", captureToGroup("variable").?);
     try std.testing.expectEqualStrings("YacTsComment", captureToGroup("comment").?);
     try std.testing.expect(captureToGroup("spell") == null);
+}
+
+test "captureToGroup markup captures" {
+    try std.testing.expectEqualStrings("YacTsMarkupHeading", captureToGroup("markup.heading").?);
+    try std.testing.expectEqualStrings("YacTsMarkupHeadingMarker", captureToGroup("markup.heading.marker").?);
+    try std.testing.expectEqualStrings("YacTsMarkupLinkUrl", captureToGroup("markup.link.url").?);
+    try std.testing.expectEqualStrings("YacTsMarkupLinkLabel", captureToGroup("markup.link.label").?);
+    try std.testing.expectEqualStrings("YacTsMarkupListMarker", captureToGroup("markup.list.marker").?);
+    try std.testing.expectEqualStrings("YacTsMarkupListChecked", captureToGroup("markup.list.checked").?);
+    try std.testing.expectEqualStrings("YacTsMarkupListUnchecked", captureToGroup("markup.list.unchecked").?);
+    try std.testing.expectEqualStrings("YacTsMarkupQuote", captureToGroup("markup.quote").?);
+    try std.testing.expectEqualStrings("YacTsMarkupRawBlock", captureToGroup("markup.raw.block").?);
+    try std.testing.expectEqualStrings("YacTsMarkupRawInline", captureToGroup("markup.raw.inline").?);
+    try std.testing.expectEqualStrings("YacTsMarkupItalic", captureToGroup("markup.italic").?);
+    try std.testing.expectEqualStrings("YacTsMarkupBold", captureToGroup("markup.bold").?);
+    try std.testing.expectEqualStrings("YacTsMarkupStrikethrough", captureToGroup("markup.strikethrough").?);
+    try std.testing.expectEqualStrings("YacTsMarkupLink", captureToGroup("markup.link").?);
+}
+
+test "extractHighlights markdown" {
+    const allocator = std.testing.allocator;
+    const treesitter_mod = @import("treesitter.zig");
+    var ts_state = treesitter_mod.TreeSitter.init(allocator);
+    defer ts_state.deinit();
+
+    ts_state.loadFromDir("languages/markdown");
+    const lang_state = ts_state.findLangStateByName("markdown") orelse
+        return error.MarkdownNotLoaded;
+    const hl_query = lang_state.highlights orelse return error.NoHighlightsQuery;
+
+    const source = "# Hello World\n\nSome text.\n\n- item 1\n- item 2\n\n```zig\nconst x = 5;\n```\n";
+    const tree = lang_state.parser.parseString(source, null) orelse return error.ParseFailed;
+    defer tree.destroy();
+
+    const result = try extractHighlights(allocator, hl_query, tree, source, 0, 10);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.UnexpectedResult,
+    };
+    const groups_val = obj.get("highlights") orelse return error.NoHighlights;
+    const groups = switch (groups_val) {
+        .object => |o| o,
+        else => return error.UnexpectedResult,
+    };
+
+    // Should have at least heading and list marker highlights
+    try std.testing.expect(groups.count() > 0);
+
+    // Verify specific groups exist
+    try std.testing.expect(groups.get("YacTsMarkupHeading") != null or
+        groups.get("YacTsMarkupHeadingMarker") != null);
+    try std.testing.expect(groups.get("YacTsMarkupListMarker") != null);
 }
 
 test "captureToGroup fallback to parent" {
