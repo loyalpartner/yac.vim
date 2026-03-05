@@ -220,11 +220,14 @@ pub const LspRegistry = struct {
             return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
         }
 
-        // For files without workspace marker, try reusing any client for this language
+        // Reuse any existing client for this language ONLY when the file has no
+        // workspace marker (workspace_uri == null), e.g. stdlib/toolchain files.
+        // Files with a workspace marker must get their own client to avoid
+        // cross-project interference.
         if (workspace_uri == null) {
             var it = self.clients.iterator();
             while (it.next()) |entry| {
-                if (std.mem.startsWith(u8, entry.key_ptr.*, language)) {
+                if (matchesLanguage(entry.key_ptr.*, language)) {
                     return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
                 }
             }
@@ -258,7 +261,7 @@ pub const LspRegistry = struct {
         if (workspace_uri == null) {
             var it = self.clients.iterator();
             while (it.next()) |entry| {
-                if (std.mem.startsWith(u8, entry.key_ptr.*, language)) {
+                if (matchesLanguage(entry.key_ptr.*, language)) {
                     return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
                 }
             }
@@ -555,6 +558,14 @@ fn isDescendantOf(path: []const u8, maybe_base: ?[]const u8, suffixes: anytype) 
     return isDescendant(path, buf[0..pos]);
 }
 
+/// Check if a client_key belongs to a given language.
+/// Key format: "language" (no workspace) or "language\x00workspace_uri".
+/// Simple startsWith would match "c" against "cpp" — this checks the boundary.
+fn matchesLanguage(key: []const u8, language: []const u8) bool {
+    if (!std.mem.startsWith(u8, key, language)) return false;
+    return key.len == language.len or key[language.len] == 0;
+}
+
 /// Find workspace root for a file based on workspace markers.
 /// For Rust, runs `cargo metadata` to get the true workspace root (like nvim-lspconfig).
 fn findWorkspaceUri(allocator: Allocator, config: *const LspServerConfig, file_path: []const u8) ?[]const u8 {
@@ -710,6 +721,20 @@ test "extract real path from scp URL" {
         extractRealPath("scp://user@host//home/user/file.rs"),
     );
     try std.testing.expectEqualStrings("test.rs", extractRealPath("test.rs"));
+}
+
+test "matchesLanguage" {
+    // Exact match (no workspace)
+    try std.testing.expect(matchesLanguage("c", "c"));
+    try std.testing.expect(matchesLanguage("cpp", "cpp"));
+    // With workspace (null separator)
+    try std.testing.expect(matchesLanguage("c\x00file:///project", "c"));
+    try std.testing.expect(matchesLanguage("cpp\x00file:///project", "cpp"));
+    // Must not match prefix of different language
+    try std.testing.expect(!matchesLanguage("cpp", "c"));
+    try std.testing.expect(!matchesLanguage("cpp\x00file:///project", "c"));
+    // Must not match shorter key
+    try std.testing.expect(!matchesLanguage("c", "cpp"));
 }
 
 test "extract SSH host" {

@@ -491,6 +491,7 @@ endfunction
 " 重置 LSP 就绪标志（用于 YacStop/YacStart 测试场景）
 function! yac_test#reset_lsp_ready() abort
   let s:lsp_ready = 0
+  let g:yac_lsp_status = {}
 endfunction
 
 " 打开测试文件并等待 LSP

@@ -156,6 +156,11 @@ class VimRunner:
             if proc is not None:
                 proc.kill()
                 proc.wait()
+            for f in [output_file, signal_file, screen_dump_file]:
+                if f.exists():
+                    f.unlink()
+            if shared is None:
+                shutil.rmtree(workspace, ignore_errors=True)
         except Exception as e:
             if slave_fd >= 0:
                 os.close(slave_fd)
@@ -294,14 +299,22 @@ def shared_workspace():
 
     yield tmpdir, runtime_dir
 
-    # Kill daemon that used this runtime dir
+    # Kill daemon that used this runtime dir (find PID via socket file)
     sock = runtime_dir / "yacd.sock"
     if sock.exists():
-        subprocess.run(
-            ["pkill", "-f", f"yacd.*{runtime_dir}"],
-            capture_output=True,
-            timeout=5,
-        )
+        try:
+            result = subprocess.run(
+                ["fuser", str(sock)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for pid_str in result.stdout.split():
+                pid_str = pid_str.strip()
+                if pid_str.isdigit():
+                    os.kill(int(pid_str), 15)  # SIGTERM
+        except (subprocess.SubprocessError, OSError):
+            pass
     shutil.rmtree(tmpdir, ignore_errors=True)
 
 

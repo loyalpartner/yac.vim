@@ -187,6 +187,8 @@ pub fn isQueryMethod(method: []const u8) bool {
         "signature_help",
         // picker_query is intentionally excluded: the file/grep picker does not
         // depend on LSP initialization and must never be deferred during indexing.
+        // lsp_status is intentionally excluded: it queries daemon-internal state
+        // and is used by wait_lsp_ready to poll for indexing completion.
     };
     for (query_methods) |m| {
         if (std.mem.eql(u8, method, m)) return true;
