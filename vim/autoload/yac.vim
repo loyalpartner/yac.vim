@@ -50,7 +50,7 @@ let s:completion_icons = {
   \ 'Color': '󰏘 ',
   \ 'Constructor': '󰆧 ',
   \ 'Operator': '󰆕 ',
-  \ 'Event': '󱐋 '
+  \ 'Event': '󱐋 ',
   \ }
 
 " 补全项 kind → highlight 映射表
@@ -2034,7 +2034,7 @@ function! s:filter_completions() abort
     for item in s:completion.original_items
       let item._match_positions = []
     endfor
-    let s:completion.items = copy(s:completion.original_items)
+    let s:completion.items = s:completion.original_items
   else
     " matchfuzzypos: C 实现的 fuzzy match + sort + 位置提取，一次调用
     " 返回 [matched_items, char_positions_list, scores]
@@ -2106,7 +2106,6 @@ function! s:create_or_update_completion_popup(lines) abort
     \ 'maxwidth': 70,
     \ 'zindex': 1000,
     \ 'filter': function('s:completion_filter'),
-    \ 'mapping': 0,
     \ }
   if has('patch-9.0.0')
     let opts['cursorlinehighlight'] = 'YacCompletionSelect'
@@ -2251,6 +2250,10 @@ endfunction
 
 " 补全 popup filter — 直接在 popup 层拦截按键，不走 insert 模式 mapping 管线
 function! s:completion_filter(winid, key) abort
+  " popup 已被代码关闭但 Vim 仍路由按键 — 透传
+  if s:completion.popup_id == -1
+    return 0
+  endif
   let nr = char2nr(a:key)
 
   " C-n / Down / Tab: 下一项
@@ -2265,8 +2268,16 @@ function! s:completion_filter(winid, key) abort
     return 1
   endif
 
-  " CR / Tab: 接受补全
-  if a:key == "\<CR>" || a:key == "\<Tab>"
+  " CR: 接受补全
+  if a:key == "\<CR>"
+    if !empty(s:completion.items)
+      call s:insert_completion(s:completion.items[s:completion.selected])
+    endif
+    return 1
+  endif
+
+  " Tab: accept completion item (ghost text already handled by <expr> mapping)
+  if a:key == "\<Tab>"
     if !empty(s:completion.items)
       call s:insert_completion(s:completion.items[s:completion.selected])
     endif
@@ -2482,6 +2493,19 @@ function! yac#test_do_esc() abort
 endfunction
 function! yac#test_do_nav(direction) abort
   call s:completion_handle_nav(a:direction)
+endfunction
+function! yac#test_do_tab() abort
+  " Simulate real mapping:1 flow: <expr> mapping fires first, then filter
+  let l:result = yac_copilot#tab_key()
+  if l:result == ''
+    " Ghost text was accepted by tab_key (timer deferred)
+    return 1
+  endif
+  " No ghost — pass Tab to filter if popup is open
+  if s:completion.popup_id != -1
+    return s:completion_filter(s:completion.popup_id, "\<Tab>")
+  endif
+  return 0
 endfunction
 
 function! yac#get_signature_popup_id() abort
