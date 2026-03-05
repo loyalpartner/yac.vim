@@ -1,5 +1,13 @@
 # yac.vim — Claude Instructions
 
+## Verification
+
+- Always run tests after every code change. No exceptions.
+- Never claim tests pass without actually running them.
+- After Zig changes: `zig build` to verify compilation, then `zig build test`.
+- After VimScript changes: `uv run pytest` to run relevant E2E tests.
+- After CI-related changes: verify formatting with `zig fmt --check`.
+
 ## Build & Test
 
 ```bash
@@ -9,7 +17,7 @@ zig build test                   # run Zig unit tests
 uv run pytest                    # run E2E tests (tests/test_e2e.py)
 ```
 
-**Always run tests after every code change. No exceptions.**
+E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `uv run pytest`.
 
 ## Architecture
 
@@ -39,11 +47,23 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
 See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 
+## Debugging Principles
+
+- Read the relevant code thoroughly before attempting any fix. Do not cycle through multiple wrong approaches.
+- If the first approach fails, step back and re-analyze the root cause rather than trying variations blindly.
+- Understand the user's actual goal before trying solutions.
+
 ## Bug Fix Workflow
 
 When fixing a bug, always write a test to reproduce it first. If the test cannot reproduce the bug, the testing infrastructure is incomplete — improve it first, then write the test, then fix.
 
 "Hard to test" (timing, UI, environment) is not a reason to skip tests; it's a signal to improve the test infrastructure.
+
+## Working Style
+
+- Prioritize implementation over analysis. Produce working code first.
+- Limit planning documents to what's necessary — do not spend entire sessions writing plans without code output.
+- When asked for code changes, deliver code, not analysis.
 
 ## Exploratory Tasks
 
@@ -58,6 +78,12 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - **Never use `mapping: 0`** on completion popup — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim).
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
 - Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
+
+## Code Quality
+
+- Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
+- After renaming or refactoring, grep for all usages of the old name to catch stale references.
+- Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
 
 ## Known LSP Limitations
 

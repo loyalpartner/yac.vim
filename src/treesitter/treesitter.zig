@@ -305,8 +305,8 @@ pub const TreeSitter = struct {
 
     /// Look up a LangState by language name.
     pub fn findLangStateByName(self: *const TreeSitter, name: []const u8) ?*const LangState {
-        if (self.dynamic_langs.get(name)) |*dl| return &dl.state;
-        return null;
+        const dl = self.dynamic_langs.getPtr(name) orelse return null;
+        return &dl.state;
     }
 
     /// Get language name for a file path.

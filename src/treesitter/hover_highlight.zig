@@ -772,6 +772,44 @@ test "parseMarkdown pytest.fixture hover crash" {
     try std.testing.expect(result.blocks.items.len > 0);
 }
 
+test "extractHoverHighlights zig code blocks" {
+    // Zig-specific test: zls returns hover with zig code blocks.
+    // This must produce highlights under ReleaseFast too.
+    const allocator = std.testing.allocator;
+
+    var ts_state = TreeSitter.init(allocator);
+    defer ts_state.deinit();
+
+    ts_state.loadFromDir("languages/zig");
+    const lang_state = ts_state.findLangStateByName("zig") orelse
+        return error.ZigNotLoaded;
+    _ = lang_state;
+
+    // Case 1: typical zls hover — function signature
+    const md1 = "```zig\nfn createUserMap(allocator: Allocator) !std.AutoHashMap(i32, User)\n```\n\nCreate user map";
+    const r1 = try extractHoverHighlights(allocator, &ts_state, md1, "zig");
+    const c1 = countHighlights(r1);
+    try std.testing.expect(c1 > 0);
+
+    // Case 2: variable declaration
+    const md2 = "```zig\nconst x: u32 = 5;\n```";
+    const r2 = try extractHoverHighlights(allocator, &ts_state, md2, "zig");
+    const c2 = countHighlights(r2);
+    try std.testing.expect(c2 > 0);
+
+    // Case 3: pub fn with doc
+    const md3 = "```zig\npub fn init(allocator: std.mem.Allocator) void\n```\n\nInitialize the system.";
+    const r3 = try extractHoverHighlights(allocator, &ts_state, md3, "zig");
+    const c3 = countHighlights(r3);
+    try std.testing.expect(c3 > 0);
+
+    // Case 4: struct field
+    const md4 = "```zig\nallocator: std.mem.Allocator\n```";
+    const r4 = try extractHoverHighlights(allocator, &ts_state, md4, "zig");
+    const c4 = countHighlights(r4);
+    try std.testing.expect(c4 > 0);
+}
+
 /// Count total highlight entries across all groups in an extractHighlights result.
 fn countHighlights(val: Value) usize {
     const obj = switch (val) {
