@@ -15,14 +15,18 @@ uv run pytest                    # run E2E tests (tests/test_e2e.py)
 
 VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
-- `vim/autoload/yac.vim` — Vim-side logic
+- `vim/autoload/yac.vim` — Vim-side logic (completion, popup, LSP bridge)
+- `vim/autoload/yac_copilot.vim` — Copilot ghost text + Tab acceptance
+- `vim/autoload/yac_picker.vim` — Fuzzy picker component
 - `src/main.zig` — entry point, EventLoop
 - `src/queue.zig` — async pipeline (InQueue/OutQueue/WorkItem)
 - `src/handlers/` — per-feature request handlers
+- `src/handlers/copilot.zig` — Copilot LSP handler (global singleton)
 - `src/handlers.zig` — request dispatch
 - `src/lsp/` — LSP client, registry, protocol
 - `src/treesitter/` — Tree-sitter parsing
-- `src/lsp_transform.zig` — LSP response → Vim format
+- `src/lsp/transform.zig` — LSP response → Vim format
+- `src/treesitter/document_highlight.zig` — tree-sitter fallback for document highlight
 
 ## Reference
 
@@ -48,6 +52,12 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 ## Task Tracking
 
 Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
+
+## Vim Popup Gotchas
+
+- **Never use `mapping: 0`** on completion popup — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim).
+- `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
+- Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
 
 ## Known LSP Limitations
 

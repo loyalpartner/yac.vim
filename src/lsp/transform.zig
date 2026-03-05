@@ -563,6 +563,9 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     if (std.mem.eql(u8, method, "inlay_hints")) {
         return transformInlayHintsResult(alloc, result) catch .null;
     }
+    if (std.mem.eql(u8, method, "document_highlight")) {
+        return transformDocumentHighlightResult(alloc, result) catch .null;
+    }
     if (std.mem.eql(u8, method, "completion")) {
         return transformCompletionResult(alloc, result) catch .null;
     }
@@ -571,6 +574,49 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
     }
 
     return result;
+}
+
+/// Transform DocumentHighlight[] → {highlights: [{line, col, end_line, end_col, kind}]}
+/// kind: 1=Text, 2=Read, 3=Write (LSP spec)
+fn transformDocumentHighlightResult(alloc: Allocator, result: Value) !Value {
+    const items = switch (result) {
+        .array => |a| a.items,
+        else => return .null,
+    };
+
+    var highlights = std.json.Array.init(alloc);
+    for (items) |item| {
+        const obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        const range_val = obj.get("range") orelse continue;
+        const range_obj = switch (range_val) {
+            .object => |o| o,
+            else => continue,
+        };
+        const start_obj = switch (range_obj.get("start") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const end_obj = switch (range_obj.get("end") orelse continue) {
+            .object => |o| o,
+            else => continue,
+        };
+        const kind = json_utils.getInteger(obj, "kind") orelse 1;
+
+        var hl = ObjectMap.init(alloc);
+        try hl.put("line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse continue));
+        try hl.put("col", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse continue));
+        try hl.put("end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse continue));
+        try hl.put("end_col", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse continue));
+        try hl.put("kind", json_utils.jsonInteger(kind));
+        try highlights.append(.{ .object = hl });
+    }
+
+    var result_obj = ObjectMap.init(alloc);
+    try result_obj.put("highlights", .{ .array = highlights });
+    return .{ .object = result_obj };
 }
 
 /// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, filterText, range?, command?}]}

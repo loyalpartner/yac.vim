@@ -284,6 +284,46 @@ execute "normal! \<Esc>"
 normal! u
 
 " ============================================================================
+" Test 11: BS in popup uses deferred handler (no delimitMate conflict)
+" ============================================================================
+call yac_test#log('INFO', 'Test 11: BS in popup via <expr> mapping')
+
+call cursor(46, 1)
+normal! O
+execute "normal! i    const x = us"
+
+call yac#test_inject_completion_response(s:mock_items)
+let s:popup_appeared = yac_test#wait_for({-> yac#get_completion_state().popup_id != -1}, 1000)
+call yac_test#assert_true(s:popup_appeared, 'Popup should appear for BS test')
+
+if s:popup_appeared
+  " BS via <expr> mapping should return '' (deferred) when popup is open
+  let s:bs_result = yac#bs_key()
+  call yac_test#assert_eq(s:bs_result, '',
+    \ 'bs_key should return empty when popup is open (deferred)')
+endif
+
+execute "normal! \<Esc>"
+call popup_clear()
+normal! u
+
+" ============================================================================
+" Test 12: BS with no popup returns original BS
+" ============================================================================
+call yac_test#log('INFO', 'Test 12: BS with no popup returns BS key')
+
+call cursor(46, 1)
+normal! O
+execute "normal! i    test"
+
+let s:bs_no_popup = yac#bs_key()
+call yac_test#assert_eq(s:bs_no_popup, "\<BS>",
+  \ 'bs_key should return literal BS when no popup')
+
+execute "normal! \<Esc>"
+normal! u
+
+" ============================================================================
 " Cleanup
 " ============================================================================
 silent! %d
