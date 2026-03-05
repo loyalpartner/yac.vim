@@ -52,7 +52,7 @@ fn ensureCopilotDidOpen(ctx: *HandlerContext, client: *@import("../lsp/client.zi
 
 fn getCopilotClient(ctx: *HandlerContext) ?*@import("../lsp/client.zig").LspClient {
     const client = ctx.registry.getOrCreateCopilotClient() orelse {
-        const msg = "call yac#toast('[yac] copilot-language-server not found')";
+        const msg = "call yac#toast('[yac] copilot-language-server not found. Install: npm i -g @github/copilot-language-server')";
         common.vimEx(ctx, msg) catch {};
         return null;
     };

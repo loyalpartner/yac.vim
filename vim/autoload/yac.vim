@@ -1514,7 +1514,9 @@ function! yac#debug_status() abort
   endif
 
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
-  echo '  LSP Log: ' . (empty(s:log_file) ? 'Not available' : s:log_file)
+  let l:log_files = glob(fnamemodify(s:get_socket_path(), ':h') . '/yacd-*.log', 0, 1)
+  call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
+  echo '  Daemon Log: ' . (empty(l:log_files) ? 'Not available' : l:log_files[0])
   echo ''
   echo 'Commands:'
   echo '  :YacDebugToggle - Toggle debug mode'
@@ -2450,6 +2452,70 @@ function! yac#close_completion() abort
   call s:close_completion_popup()
 endfunction
 
+" <expr> BS mapping: handle BS inline when popup is open, delegate to
+" original mapping (delimitMate, auto-pairs, etc.) when popup is closed.
+" Without this, plugins using imap <BS> <C-R>=Func()<CR> break because
+" the popup filter intercepts <CR> as "accept completion".
+let s:saved_bs_map = {}
+function! yac#install_bs_mapping() abort
+  let s:saved_bs_map = maparg('<BS>', 'i', 0, 1)
+  inoremap <silent><expr> <BS> yac#bs_key()
+endfunction
+
+function! yac#uninstall_bs_mapping() abort
+  if !empty(s:saved_bs_map)
+    call mapset('i', 0, s:saved_bs_map)
+    let s:saved_bs_map = {}
+  else
+    silent! iunmap <BS>
+  endif
+endfunction
+
+function! yac#bs_key() abort
+  if s:completion.popup_id != -1
+    let l:col = col('.')
+    if l:col <= 1
+      call s:close_completion_popup()
+      return s:invoke_original_bs()
+    endif
+    " Defer BS to timer (can't call setline in <expr>)
+    call timer_start(0, {-> s:deferred_completion_bs()})
+    return ''
+  endif
+  return s:invoke_original_bs()
+endfunction
+
+function! s:invoke_original_bs() abort
+  if !empty(s:saved_bs_map) && get(s:saved_bs_map, 'expr', 0)
+    " Original was <expr> mapping (e.g. inoremap <expr> <BS> delimitMate#BS())
+    return eval(s:saved_bs_map.rhs)
+  elseif !empty(s:saved_bs_map) && !empty(get(s:saved_bs_map, 'rhs', ''))
+    " Original was imap <BS> <C-R>=Func()<CR> — return rhs keys
+    return s:saved_bs_map.rhs
+  endif
+  return "\<BS>"
+endfunction
+
+function! s:deferred_completion_bs() abort
+  if s:completion.popup_id == -1
+    return
+  endif
+  let l:col = col('.')
+  if l:col <= 1
+    call s:close_completion_popup()
+    return
+  endif
+  let l:line = getline('.')
+  let l:before = strpart(l:line, 0, l:col - 1)
+  let l:char = matchstr(l:before, '.$')
+  let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
+  let l:after = strpart(l:line, l:col - 1)
+  call setline('.', l:new_before . l:after)
+  call cursor(line('.'), strlen(l:new_before) + 1)
+  call yac#did_change()
+  call s:filter_completions()
+endfunction
+
 " 公开接口：获取补全状态（供测试使用）
 function! yac#get_completion_state() abort
   return {
@@ -2494,6 +2560,20 @@ endfunction
 function! yac#test_do_nav(direction) abort
   call s:completion_handle_nav(a:direction)
 endfunction
+function! yac#test_do_bs() abort
+  " Simulate real mapping:1 flow: <expr> mapping fires first
+  let l:result = yac#bs_key()
+  if l:result == ''
+    " BS was handled by deferred timer
+    return 1
+  endif
+  " BS produced keys — feed them (in test, just delete a char)
+  if s:completion.popup_id != -1
+    return s:completion_filter(s:completion.popup_id, "\<BS>")
+  endif
+  return 0
+endfunction
+
 function! yac#test_do_tab() abort
   " Simulate real mapping:1 flow: <expr> mapping fires first, then filter
   let l:result = yac_copilot#tab_key()
@@ -2608,13 +2688,20 @@ endfunction
 
 " 简单打开日志文件
 function! yac#open_log() abort
-  " Log path mirrors socket path convention (.sock -> .log)
-  let l:log_file = substitute(s:get_socket_path(), '\.sock$', '.log', '')
+  " Find per-process log: yacd-{pid}.log in the same dir as the socket
+  let l:sock = s:get_socket_path()
+  let l:dir = fnamemodify(l:sock, ':h')
+  let l:pattern = l:dir . '/yacd-*.log'
+  let l:files = glob(l:pattern, 0, 1)
 
-  if !filereadable(l:log_file)
-    echo 'Log file does not exist: ' . l:log_file
+  if empty(l:files)
+    echo 'No log files found matching: ' . l:pattern
     return
   endif
+
+  " Sort by modification time (newest first)
+  call sort(l:files, {a, b -> getftime(b) - getftime(a)})
+  let l:log_file = l:files[0]
 
   split
   execute 'edit ' . fnameescape(l:log_file)
@@ -2690,6 +2777,80 @@ function! s:render_inlay_hints() abort
     catch
     endtry
   endfor
+endfunction
+
+" === Document Highlight ===
+" Highlight all occurrences of the symbol under cursor (LSP textDocument/documentHighlight)
+
+let s:doc_hl_matches = []
+let s:doc_hl_bufnr = -1
+
+" Default highlight groups — link to CursorLine/Search for visibility
+hi default YacDocHighlightText  guibg=#2a2a3a ctermbg=237
+hi default link YacDocHighlightRead  YacDocHighlightText
+hi default link YacDocHighlightWrite YacDocHighlightText
+
+function! yac#document_highlight() abort
+  call s:request('document_highlight', {
+    \   'file': expand('%:p'),
+    \   'line': line('.') - 1,
+    \   'column': col('.') - 1
+    \ }, 's:handle_document_highlight_response')
+endfunction
+
+function! s:handle_document_highlight_response(ch, response) abort
+  call s:clear_document_highlights()
+  if type(a:response) != v:t_dict
+    return
+  endif
+  let l:highlights = get(a:response, 'highlights', [])
+  if empty(l:highlights)
+    return
+  endif
+  let s:doc_hl_bufnr = bufnr('%')
+  for hl in l:highlights
+    " kind: 1=Text, 2=Read, 3=Write
+    let l:kind = get(hl, 'kind', 1)
+    let l:group = l:kind == 3 ? 'YacDocHighlightWrite' :
+          \ l:kind == 2 ? 'YacDocHighlightRead' : 'YacDocHighlightText'
+    let l:line = get(hl, 'line', 0) + 1
+    let l:col = get(hl, 'col', 0) + 1
+    let l:end_line = get(hl, 'end_line', 0) + 1
+    let l:end_col = get(hl, 'end_col', 0) + 1
+    if l:line == l:end_line
+      let l:len = l:end_col - l:col
+      if l:len > 0
+        let l:id = matchaddpos(l:group, [[l:line, l:col, l:len]], 10)
+        if l:id != -1
+          call add(s:doc_hl_matches, l:id)
+        endif
+      endif
+    else
+      " Multi-line highlight (rare but handle it)
+      let l:id = matchaddpos(l:group, [[l:line, l:col, 999]], 10)
+      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
+      for l:mid_line in range(l:line + 1, l:end_line - 1)
+        let l:id = matchaddpos(l:group, [[l:mid_line]], 10)
+        if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
+      endfor
+      let l:id = matchaddpos(l:group, [[l:end_line, 1, l:end_col - 1]], 10)
+      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
+    endif
+  endfor
+endfunction
+
+function! s:clear_document_highlights() abort
+  if s:doc_hl_bufnr != -1 && s:doc_hl_bufnr == bufnr('%')
+    for id in s:doc_hl_matches
+      silent! call matchdelete(id)
+    endfor
+  endif
+  let s:doc_hl_matches = []
+  let s:doc_hl_bufnr = -1
+endfunction
+
+function! yac#clear_document_highlights() abort
+  call s:clear_document_highlights()
 endfunction
 
 " === 重命名功能 ===

@@ -176,6 +176,9 @@ if get(g:, 'yac_auto_start', 1)
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
     autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | call yac#inlay_hints_on_insert_leave() | endif
     autocmd InsertEnter * if s:not_preview_loading() | call yac#inlay_hints_on_insert_enter() | endif
+    autocmd CursorHold * if s:not_preview_loading() && get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1)) | call yac#document_highlight() | endif
+    autocmd CursorMoved,CursorMovedI * if s:not_preview_loading() | call yac#clear_document_highlights() | endif
+    autocmd InsertEnter * if s:not_preview_loading() | call yac#clear_document_highlights() | endif
     autocmd VimLeave * call yac#daemon_stop()
   augroup END
 endif

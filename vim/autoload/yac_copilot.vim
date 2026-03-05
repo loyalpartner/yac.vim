@@ -451,6 +451,10 @@ function! yac_copilot#enable() abort
   inoremap <silent>       <M-[>    <Cmd>call yac_copilot#prev()<CR>
   inoremap <silent>       <M-Right> <Cmd>call yac_copilot#accept_word()<CR>
 
+  " BS mapping: prevent delimitMate/auto-pairs <C-R>=Func()<CR> from
+  " conflicting with popup filter's CR handler
+  call yac#install_bs_mapping()
+
   " Send didOpen for current buffer immediately
   call s:notify_copilot_did_open()
 endfunction
@@ -477,5 +481,6 @@ function! yac_copilot#disable() abort
   silent! iunmap <Tab>
   silent! iunmap <M-]>
   silent! iunmap <M-[>
+  call yac#uninstall_bs_mapping()
   silent! iunmap <M-Right>
 endfunction

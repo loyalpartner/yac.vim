@@ -161,6 +161,10 @@ pub fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
     return sendPositionRequest(ctx, params, "textDocument/hover");
 }
 
+pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchResult {
+    return sendPositionRequest(ctx, params, "textDocument/documentHighlight");
+}
+
 pub fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
         .ready => |c| c,

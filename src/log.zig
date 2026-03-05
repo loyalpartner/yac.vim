@@ -7,26 +7,23 @@ const std = @import("std");
 var log_mutex: std.Thread.Mutex = .{};
 var log_file: ?std.fs.File = null;
 
-/// Compute the daemon log path: $XDG_RUNTIME_DIR/yacd.log or /tmp/yacd-$USER.log
+/// Compute per-process log path: yacd-{pid}.log in $XDG_RUNTIME_DIR or /tmp
 fn getLogPath(buf: []u8) ?[]const u8 {
-    // Try XDG_RUNTIME_DIR first
+    const pid = std.os.linux.getpid();
     if (std.posix.getenv("XDG_RUNTIME_DIR")) |xdg| {
-        return std.fmt.bufPrint(buf, "{s}/yacd.log", .{xdg}) catch null;
+        return std.fmt.bufPrint(buf, "{s}/yacd-{d}.log", .{ xdg, pid }) catch null;
     }
-    // Fallback with $USER
     if (std.posix.getenv("USER")) |user| {
-        return std.fmt.bufPrint(buf, "/tmp/yacd-{s}.log", .{user}) catch null;
+        return std.fmt.bufPrint(buf, "/tmp/yacd-{s}-{d}.log", .{ user, pid }) catch null;
     }
-    return std.fmt.bufPrint(buf, "/tmp/yacd.log", .{}) catch null;
+    return std.fmt.bufPrint(buf, "/tmp/yacd-{d}.log", .{pid}) catch null;
 }
 
 pub fn init() void {
     var buf: [256]u8 = undefined;
     const path = getLogPath(&buf) orelse return;
-    log_file = std.fs.cwd().createFile(path, .{ .truncate = false }) catch null;
-    if (log_file) |f| f.seekFromEnd(0) catch {};
-    const pid = std.os.linux.getpid();
-    info("yacd started, pid={d}, log={s}", .{ pid, path });
+    log_file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch null;
+    info("yacd started, pid={d}, log={s}", .{ std.os.linux.getpid(), path });
 }
 
 pub fn deinit() void {
