@@ -40,6 +40,7 @@ class VimRunner:
         self.project_root = project_root
         self.vim_cmd = self._find_vim()
         self.test_dir = project_root / "tests" / "vim"
+        self.shared_workspace = None  # Set by fixture if YAC_SHARED_DAEMON=1
 
     def _find_vim(self) -> str:
         for cmd in ["vim", "/usr/bin/vim", "/usr/local/bin/vim"]:
@@ -63,6 +64,7 @@ class VimRunner:
         shutil.copytree(
             self.project_root / "tests" / "data_tmpl",
             tmpdir / "test_data",
+            ignore=shutil.ignore_patterns(".zig-cache"),
         )
 
         # Symlink read-only directories needed by the plugin at runtime
@@ -73,6 +75,17 @@ class VimRunner:
 
         return tmpdir
 
+    def _reset_test_data(self, workspace: Path) -> None:
+        """Reset test_data/ to a clean copy of the template."""
+        test_data = workspace / "test_data"
+        if test_data.exists():
+            shutil.rmtree(test_data)
+        shutil.copytree(
+            self.project_root / "tests" / "data_tmpl",
+            test_data,
+            ignore=shutil.ignore_patterns(".zig-cache"),
+        )
+
     def run_test(self, test_name: str, timeout: int = 60) -> SuiteResult:
         test_file = self.test_dir / f"{test_name}.vim"
         if not test_file.exists():
@@ -82,17 +95,22 @@ class VimRunner:
                 output=f"Test file not found: {test_file}",
             )
 
-        workspace = self._make_workspace()
-
-        # Per-test runtime dir so each yacd writes its own log
-        runtime_dir = workspace / "run"
-        runtime_dir.mkdir()
+        shared = self.shared_workspace
+        if shared is not None:
+            workspace, runtime_dir = shared
+            self._reset_test_data(workspace)
+        else:
+            workspace = self._make_workspace()
+            # Per-test runtime dir so each yacd writes its own log
+            runtime_dir = workspace / "run"
+            runtime_dir.mkdir()
 
         start_time = time.time()
         pid = os.getpid()
-        output_file = Path(f"/tmp/yac_test_{test_name}_{pid}.txt")
-        signal_file = Path(f"/tmp/yac_test_{test_name}_{pid}.signal")
-        screen_dump_file = Path(f"/tmp/yac_test_{test_name}_{pid}.screen")
+        safe_name = test_name.replace("/", "_")
+        output_file = Path(f"/tmp/yac_test_{safe_name}_{pid}.txt")
+        signal_file = Path(f"/tmp/yac_test_{safe_name}_{pid}.signal")
+        screen_dump_file = Path(f"/tmp/yac_test_{safe_name}_{pid}.screen")
         driver_vim = self.test_dir / "driver.vim"
 
         vimrc = workspace / "vimrc"
@@ -148,7 +166,8 @@ class VimRunner:
             for f in [output_file, signal_file, screen_dump_file]:
                 if f.exists():
                     f.unlink()
-            shutil.rmtree(workspace, ignore_errors=True)
+            if shared is None:
+                shutil.rmtree(workspace, ignore_errors=True)
             return SuiteResult(
                 suite=test_name,
                 failed=1,
@@ -180,14 +199,18 @@ class VimRunner:
             screen_dump_file.unlink()
 
         if not suite_result.success:
-            print(f"\n  [debug] workspace preserved: {workspace}")
+            if shared is None:
+                print(f"\n  [debug] workspace preserved: {workspace}")
+            else:
+                print(f"\n  [debug] shared workspace: {workspace}")
             suite_result.formatted_failures = self._format_failures(
                 suite_result.tests
             )
             suite_result.yacd_log = self._collect_log(runtime_dir / "yacd.log")
             suite_result.vim_log = self._collect_log(vim_debug_log)
         else:
-            shutil.rmtree(workspace, ignore_errors=True)
+            if shared is None:
+                shutil.rmtree(workspace, ignore_errors=True)
         return suite_result
 
     def _parse_output(self, suite: str, output: str, duration: float) -> SuiteResult:
@@ -240,12 +263,53 @@ class VimRunner:
             return ""
 
     def list_tests(self) -> list[str]:
-        return sorted(f.stem for f in self.test_dir.glob("test_*.vim"))
+        test_files = sorted(self.test_dir.glob("**/test_*.vim"))
+        return [
+            str(f.relative_to(self.test_dir)).removesuffix('.vim')
+            for f in test_files
+        ]
+
+
+@pytest.fixture(scope="session")
+def shared_workspace():
+    """Session-scoped shared workspace: one daemon + one LSP instance for all tests."""
+    if not os.environ.get("YAC_SHARED_DAEMON"):
+        yield None
+        return
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="yac_shared_"))
+    runtime_dir = tmpdir / "run"
+    runtime_dir.mkdir()
+
+    # Initial test_data
+    shutil.copytree(
+        PROJECT_ROOT / "tests" / "data_tmpl",
+        tmpdir / "test_data",
+        ignore=shutil.ignore_patterns(".zig-cache"),
+    )
+
+    # Symlinks for plugin runtime
+    for name in ["vim", "vimrc", "zig-out", "tests"]:
+        (tmpdir / name).symlink_to(PROJECT_ROOT / name)
+
+    yield tmpdir, runtime_dir
+
+    # Kill daemon that used this runtime dir
+    sock = runtime_dir / "yacd.sock"
+    if sock.exists():
+        subprocess.run(
+            ["pkill", "-f", f"yacd.*{runtime_dir}"],
+            capture_output=True,
+            timeout=5,
+        )
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture(scope="function")
-def vim_runner():
-    return VimRunner(PROJECT_ROOT)
+def vim_runner(shared_workspace):
+    runner = VimRunner(PROJECT_ROOT)
+    runner.shared_workspace = shared_workspace
+    return runner
 
 
 @pytest.fixture(scope="session")

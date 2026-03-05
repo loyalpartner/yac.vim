@@ -389,6 +389,16 @@ function! yac#hover() abort
     \ }, 's:handle_hover_response')
 endfunction
 
+" Query daemon-internal LSP status (no LSP round-trip)
+let g:yac_lsp_status = {}
+function! yac#lsp_status(file) abort
+  call s:request('lsp_status', {'file': a:file}, function('s:on_lsp_status'))
+endfunction
+
+function! s:on_lsp_status(ch, response) abort
+  let g:yac_lsp_status = a:response
+endfunction
+
 function! yac#open_file() abort
   call s:request('file_open', {
     \   'file': expand('%:p'),

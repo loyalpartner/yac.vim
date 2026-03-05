@@ -492,6 +492,7 @@ const EventLoop = struct {
             .allocator = alloc,
             .gpa_allocator = self.allocator,
             .registry = &self.lsp.registry,
+            .lsp = &self.lsp,
             .client_stream = client_stream,
             .ts = &self.ts,
             .out_queue = &self.out_queue,

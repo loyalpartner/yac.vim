@@ -204,6 +204,35 @@ pub const LspRegistry = struct {
         }
     }
 
+    /// Find an existing client for a language + file path (read-only, does not spawn).
+    pub fn findClient(self: *LspRegistry, language: []const u8, file_path: []const u8) ?struct { client: *LspClient, client_key: []const u8 } {
+        const config = getConfig(language) orelse return null;
+        const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
+        defer if (workspace_uri) |uri| self.allocator.free(uri);
+
+        var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+        const lookup_key = if (workspace_uri) |uri|
+            std.fmt.bufPrint(&key_buf, "{s}\x00{s}", .{ language, uri }) catch return null
+        else
+            std.fmt.bufPrint(&key_buf, "{s}", .{language}) catch return null;
+
+        if (self.clients.get(lookup_key)) |client| {
+            return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
+        }
+
+        // For files without workspace marker, try reusing any client for this language
+        if (workspace_uri == null) {
+            var it = self.clients.iterator();
+            while (it.next()) |entry| {
+                if (std.mem.startsWith(u8, entry.key_ptr.*, language)) {
+                    return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// Get or create a client for a language + file path.
     /// Workspace root is detected from file_path; (language + workspace_root) determines client.
     pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {

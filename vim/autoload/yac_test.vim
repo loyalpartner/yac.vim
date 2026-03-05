@@ -249,7 +249,7 @@ endfunction
 " timeout_ms: 超时时间（毫秒）
 " interval_ms: 检查间隔（毫秒）
 function! yac_test#wait_for(condition, timeout_ms, ...) abort
-  let interval_ms = a:0 >= 1 ? a:1 : 100
+  let interval_ms = a:0 >= 1 ? a:1 : 50
   let elapsed = 0
 
   while elapsed < a:timeout_ms
@@ -270,45 +270,31 @@ function! yac_test#wait_for(condition, timeout_ms, ...) abort
   return 0
 endfunction
 
-" 等待 LSP 就绪 — 通过 hover 探测实际可用性
+" 等待 LSP 就绪 — 通过 lsp_status 查询 daemon 内部状态
 function! yac_test#wait_lsp_ready(timeout_ms) abort
   if s:lsp_ready
     call s:log('INFO', 'LSP already ready, skipping wait')
     return 1
   endif
 
-  call s:log('INFO', 'Probing LSP readiness...')
+  call s:log('INFO', 'Probing LSP readiness via lsp_status...')
 
-  " 探测：发送 hover 请求，等待 hover popup 出现（排除 toast 干扰）
-  let l:ready = 0
-  let l:elapsed = 0
-  let l:interval = 500
-
-  while l:elapsed < a:timeout_ms
-    call popup_clear()
-    let l:save = getpos('.')
-    call cursor(14, 12)
-    silent! YacHover
-    " 等待 hover popup（精确判断，不被 toast 干扰）
-    let l:got_popup = yac_test#wait_for({-> yac#get_hover_popup_id() != -1}, 2000)
-    call popup_clear()
-    call setpos('.', l:save)
-
-    if l:got_popup
-      let l:ready = 1
-      break
-    endif
-
-    execute 'sleep ' . l:interval . 'm'
-    let l:elapsed += 2000 + l:interval
-  endwhile
+  let l:ready = yac_test#wait_for({-> s:probe_lsp_status()}, a:timeout_ms)
 
   if l:ready
     let s:lsp_ready = 1
-    call s:log('INFO', 'LSP ready (probe succeeded)')
+    call s:log('INFO', 'LSP ready')
   else
     call s:log('WARN', 'LSP not ready after ' . (a:timeout_ms / 1000) . 's')
   endif
+  return l:ready
+endfunction
+
+function! s:probe_lsp_status() abort
+  " Check result from previous async callback (processed during sleep interval)
+  let l:ready = get(g:yac_lsp_status, 'ready', 0)
+  " Fire next async query for the following poll cycle
+  call yac#lsp_status(expand('%:p'))
   return l:ready
 endfunction
 

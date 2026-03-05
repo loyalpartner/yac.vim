@@ -5,10 +5,48 @@ const log = @import("../log.zig");
 const ts_handlers = @import("treesitter.zig");
 const registry_mod = @import("../lsp/registry.zig");
 
+const lsp_mod = @import("../lsp/lsp.zig");
+
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
+
+/// Synchronous handler: query daemon-internal LSP readiness without any LSP round-trip.
+pub fn handleLspStatus(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const real_path = registry_mod.extractRealPath(file);
+    const language = registry_mod.LspRegistry.detectLanguage(real_path) orelse {
+        var r = ObjectMap.init(ctx.allocator);
+        try r.put("ready", .{ .bool = false });
+        try r.put("reason", json.jsonString("unsupported_language"));
+        return .{ .data = .{ .object = r } };
+    };
+
+    const client_result = ctx.registry.findClient(language, real_path);
+    var r = ObjectMap.init(ctx.allocator);
+
+    if (client_result) |cr| {
+        const initializing = ctx.registry.isInitializing(cr.client_key);
+        const state = cr.client.state;
+        const lang_from_key = lsp_mod.extractLanguageFromKey(cr.client_key);
+        const indexing = ctx.lsp.isLanguageIndexing(lang_from_key);
+        const ready = state == .initialized and !initializing and !indexing;
+
+        try r.put("ready", .{ .bool = ready });
+        try r.put("state", json.jsonString(@tagName(state)));
+        try r.put("initializing", .{ .bool = initializing });
+        try r.put("indexing", .{ .bool = indexing });
+    } else {
+        try r.put("ready", .{ .bool = false });
+        try r.put("reason", json.jsonString("no_client"));
+    }
+    return .{ .data = .{ .object = r } };
+}
 
 pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     ts_handlers.parseIfSupported(ctx, params);
