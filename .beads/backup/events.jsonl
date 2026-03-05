@@ -71,3 +71,5 @@
 {"actor":"lee","comment":null,"created_at":"2026-03-04T19:04:22Z","event_type":"closed","id":71,"issue_id":"yac-m7i","new_value":"已优化：daemon 限制 100 项、matchfuzzypos 替代 VimScript 循环、合并 prop_add、缓存即时弹出、统一 popup 样式","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-04T21:21:30Z","event_type":"created","id":72,"issue_id":"yac-9pw","new_value":"","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-05T11:09:21Z","event_type":"created","id":73,"issue_id":"yac-0xy","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-05T11:18:37Z","event_type":"created","id":74,"issue_id":"yac-5uo","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-05T11:24:28Z","event_type":"created","id":75,"issue_id":"yac-u1m","new_value":"","old_value":""}
