@@ -69,7 +69,9 @@ fn captureToKind(cap_name: []const u8) ?[]const u8 {
         .{ "trait", "Interface" },
         .{ "interface", "Interface" },
         .{ "module", "Module" },
+        .{ "namespace", "Namespace" },
         .{ "macro", "Macro" },
+        .{ "typedef", "Type" },
         .{ "type", "Type" },
         .{ "type_alias", "Type" },
         .{ "variable", "Variable" },
@@ -303,6 +305,8 @@ fn appendContainerFields(
 fn containerPrefix(node_kind: []const u8) []const u8 {
     if (std.mem.eql(u8, node_kind, "impl_item")) return "impl";
     if (std.mem.eql(u8, node_kind, "class_definition")) return "class";
+    if (std.mem.eql(u8, node_kind, "class_specifier")) return "class";
+    if (std.mem.eql(u8, node_kind, "namespace_definition")) return "namespace";
     return "";
 }
 
@@ -330,6 +334,7 @@ fn kindToNameHlGroup(k: []const u8) []const u8 {
         std.mem.eql(u8, k, "Property") or
         std.mem.eql(u8, k, "EnumMember")) return "YacTsVariableMember";
     if (std.mem.eql(u8, k, "Module") or std.mem.eql(u8, k, "Namespace")) return "YacTsModule";
+    if (std.mem.eql(u8, k, "Macro")) return "YacTsFunctionMacro";
     if (std.mem.eql(u8, k, "Test")) return "YacTsString";
     return "";
 }
