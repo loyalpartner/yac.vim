@@ -86,15 +86,3 @@ function! s:ensure_remote_binary(user_host) abort
 
   return 1
 endfunction
-
-" Get file path for LSP operations - returns converted path for SSH files
-function! yac_remote#get_lsp_file_path() abort
-  return exists('b:yac_real_path_for_lsp') ? b:yac_real_path_for_lsp : expand('%:p')
-endfunction
-
-" Note: get_job_command removed - now handled by connection pool in yac.vim
-
-" Cleanup remote connections - delegates to daemon stop
-function! yac_remote#cleanup() abort
-  call yac#daemon_stop()
-endfunction
