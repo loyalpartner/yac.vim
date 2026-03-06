@@ -1,0 +1,11 @@
+(compound_statement) @fold
+(field_declaration_list) @fold
+(enumerator_list) @fold
+(if_statement) @fold
+(for_statement) @fold
+(while_statement) @fold
+(do_statement) @fold
+(switch_statement) @fold
+(case_statement) @fold
+(preproc_ifdef) @fold
+(preproc_if) @fold
