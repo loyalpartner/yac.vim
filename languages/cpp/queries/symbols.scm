@@ -9,7 +9,13 @@
     declarator: (qualified_identifier
       name: (identifier) @name))) @method
 
-; Class/struct/enum/union specifiers
+; Pointer-returning function definitions: int* foo() {}
+(function_definition
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @name))) @function
+
+; Class/struct/enum/union specifiers (only when NOT inside template_declaration)
 (class_specifier name: (type_identifier) @name) @class
 (struct_specifier name: (type_identifier) @name) @struct
 (enum_specifier name: (type_identifier) @name) @enum
@@ -22,7 +28,8 @@
 (type_definition
   declarator: (type_identifier) @name) @typedef
 
-; Template function/class
+; Template function/class (these also match the inner class/function patterns above,
+; but extractSymbols deduplicates by position, so template versions take priority)
 (template_declaration
   (function_definition
     declarator: (function_declarator
@@ -31,20 +38,25 @@
 (template_declaration
   (class_specifier name: (type_identifier) @name)) @class
 
-; Method declarations inside class body (no body, field_declaration with function_declarator)
+; Method declarations inside class body (field_declaration with function_declarator)
 (field_declaration
   declarator: (function_declarator
     declarator: (field_identifier) @name)) @method
 
-; Top-level variable declarations
-(declaration
-  declarator: (init_declarator
-    declarator: (identifier) @name)) @variable
-
-; Function declarations (forward declarations, no body)
+; Constructor/destructor declarations inside class body
+; These appear as (declaration (function_declarator ...)) inside field_declaration_list
 (declaration
   declarator: (function_declarator
-    declarator: (identifier) @name)) @function
+    declarator: (identifier) @name)) @method
+
+; Member variables (fields inside class/struct body)
+(field_declaration
+  declarator: (field_identifier) @name) @field
+
+; Pointer member variables: T* m_data;
+(field_declaration
+  declarator: (pointer_declarator
+    declarator: (field_identifier) @name)) @field
 
 ; Preprocessor macros
 (preproc_function_def name: (identifier) @name) @macro

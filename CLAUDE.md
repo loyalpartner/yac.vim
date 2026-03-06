@@ -23,18 +23,33 @@ E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `
 
 VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
-- `vim/autoload/yac.vim` — Vim-side logic (completion, popup, LSP bridge)
+**Vim side:**
+- `vim/autoload/yac.vim` — Vim-side logic (completion, popup, LSP bridge, tree-sitter highlights)
 - `vim/autoload/yac_copilot.vim` — Copilot ghost text + Tab acceptance
 - `vim/autoload/yac_picker.vim` — Fuzzy picker component
+- `vim/autoload/yac_peek.vim` — Reference peek window with tree navigation
+- `vim/autoload/yac_theme.vim` — Tree-sitter highlight theme management
+- `vim/autoload/yac_test.vim` — E2E test helpers (term_start mode)
+
+**Zig daemon:**
 - `src/main.zig` — entry point, EventLoop
 - `src/queue.zig` — async pipeline (InQueue/OutQueue/WorkItem)
+- `src/handlers.zig` — request dispatch table
 - `src/handlers/` — per-feature request handlers
 - `src/handlers/copilot.zig` — Copilot LSP handler (global singleton)
-- `src/handlers.zig` — request dispatch
-- `src/lsp/` — LSP client, registry, protocol
-- `src/treesitter/` — Tree-sitter parsing
+- `src/lsp/` — LSP client, registry, protocol, config
 - `src/lsp/transform.zig` — LSP response → Vim format
-- `src/treesitter/document_highlight.zig` — tree-sitter fallback for document highlight
+- `src/treesitter/` — Tree-sitter parsing (highlights, symbols, folds, textobjects, navigate)
+- `src/treesitter/predicates.zig` — Tree-sitter query predicate evaluator
+- `src/treesitter/highlights.zig` — Syntax highlighting with `captureToGroup` mapping
+
+**Language plugins:**
+- `languages/{lang}/queries/highlights.scm` — Syntax highlighting queries (from Zed)
+- `languages/{lang}/queries/symbols.scm` — Document symbol extraction
+- `languages/{lang}/queries/folds.scm` — Code folding ranges
+- `languages/{lang}/queries/textobjects.scm` — Text object definitions
+- `languages/{lang}/languages.json` — File extension → grammar mapping
+- `themes/` — Color themes (one-dark.json, catppuccin-mocha.json, etc.)
 
 ## Reference
 
@@ -84,6 +99,13 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
 - After renaming or refactoring, grep for all usages of the old name to catch stale references.
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
+
+## Tree-sitter Gotchas
+
+- **`simplePatternMatch` only supports hardcoded patterns**: `src/treesitter/predicates.zig` does NOT use a regex engine. Each `#match?` pattern in highlights.scm must have a corresponding case in `simplePatternMatch()`. Unknown patterns return `true` (permissive), which silently breaks priority — e.g., `@constant.builtin` overrides `@function` for ALL identifiers.
+- **`captureToGroup` registration required**: New `@capture` names in highlights.scm must be added to `captureToGroup()` in `src/treesitter/highlights.zig`. Unregistered captures are silently ignored (no highlighting).
+- **Theme group registration**: New `YacTs*` highlight groups need 3 places: `captureToGroup` (Zig), `s:TS_GROUPS` list + `s:default_groups` dict (`yac_theme.vim`), `hi def link` (`yac.vim`), and theme JSON files.
+- **highlights.scm sourced from Zed**: Query files match Zed's tree-sitter queries exactly. When comparing rendering, note that Zed also applies LSP semantic tokens which yac.vim does not.
 
 ## Known LSP Limitations
 

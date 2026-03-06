@@ -708,7 +708,7 @@ test "detect language" {
     try std.testing.expectEqualStrings("go", LspRegistry.detectLanguage("test.go").?);
     try std.testing.expectEqualStrings("zig", LspRegistry.detectLanguage("test.zig").?);
     try std.testing.expectEqualStrings("c", LspRegistry.detectLanguage("main.c").?);
-    try std.testing.expectEqualStrings("c", LspRegistry.detectLanguage("header.h").?);
+    try std.testing.expectEqualStrings("cpp", LspRegistry.detectLanguage("header.h").?);
     try std.testing.expectEqualStrings("cpp", LspRegistry.detectLanguage("main.cpp").?);
     try std.testing.expectEqualStrings("cpp", LspRegistry.detectLanguage("main.cc").?);
     try std.testing.expectEqualStrings("cpp", LspRegistry.detectLanguage("header.hpp").?);

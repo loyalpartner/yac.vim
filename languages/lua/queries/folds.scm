@@ -1,0 +1,10 @@
+(function_definition) @fold
+(function_declaration) @fold
+(local_function_statement) @fold
+(if_statement) @fold
+(for_statement) @fold
+(generic_for_statement) @fold
+(while_statement) @fold
+(repeat_statement) @fold
+(do_statement) @fold
+(table_constructor) @fold

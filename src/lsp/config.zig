@@ -54,14 +54,14 @@ pub const builtin_configs = [_]LspServerConfig{
         .command = "clangd",
         .args = &.{},
         .language_id = "c",
-        .file_extensions = &.{ ".c", ".h" },
+        .file_extensions = &.{".c"},
         .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
     },
     .{
         .command = "clangd",
         .args = &.{},
         .language_id = "cpp",
-        .file_extensions = &.{ ".cpp", ".hpp", ".cc", ".cxx", ".hxx" },
+        .file_extensions = &.{ ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".h" },
         .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
     },
 };

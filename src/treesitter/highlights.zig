@@ -543,6 +543,21 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "markup.italic", "YacTsMarkupItalic" },
         .{ "markup.bold", "YacTsMarkupBold" },
         .{ "markup.strikethrough", "YacTsMarkupStrikethrough" },
+        // C/C++ specific captures
+        .{ "preproc", "YacTsPreproc" },
+        .{ "concept", "YacTsType" },
+        .{ "operator.spaceship", "YacTsOperator" },
+        .{ "enum", "YacTsType" },
+        // Python specific
+        .{ "import", "YacTsKeywordImport" },
+        .{ "string.doc", "YacTsCommentDocumentation" },
+        .{ "string.regex", "YacTsStringEscape" },
+        // JSX/TSX specific
+        .{ "tag", "YacTsFunction" },
+        .{ "embedded", "YacTsVariable" },
+        .{ "text", "YacTsVariable" },
+        // Zig specific
+        .{ "cImport", "YacTsKeywordImport" },
         // Legacy capture names (pre-nvim-treesitter 1.0 convention)
         .{ "parameter", "YacTsVariableParameter" },
         .{ "field", "YacTsProperty" },
@@ -550,7 +565,6 @@ fn captureToGroup(cap_name: []const u8) ?[]const u8 {
         .{ "method.call", "YacTsFunctionCall" },
         .{ "conditional", "YacTsKeywordConditional" },
         .{ "repeat", "YacTsKeywordRepeat" },
-        .{ "preproc", "YacTsKeyword" },
         .{ "delimiter", "YacTsPunctuationDelimiter" },
     };
 

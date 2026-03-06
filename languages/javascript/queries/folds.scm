@@ -1,0 +1,16 @@
+(statement_block) @fold
+(class_body) @fold
+(object) @fold
+(array) @fold
+(template_string) @fold
+(if_statement) @fold
+(for_statement) @fold
+(for_in_statement) @fold
+(while_statement) @fold
+(do_statement) @fold
+(switch_statement) @fold
+(switch_body) @fold
+(try_statement) @fold
+(catch_clause) @fold
+(finally_clause) @fold
+(jsx_element) @fold

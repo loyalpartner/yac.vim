@@ -20,8 +20,15 @@ pub fn extractSymbols(
 
     var symbols = std.json.Array.init(allocator);
 
+    // Deduplicate by name node position — e.g. template_declaration and inner
+    // class_specifier both match, producing duplicate entries for the same @name node.
+    const SeenKey = struct { row: u32, col: u32 };
+    var seen = std.AutoHashMap(SeenKey, void).init(allocator);
+    defer seen.deinit();
+
     while (cursor.nextMatch()) |match| {
         var name_text: ?[]const u8 = null;
+        var name_node: ?ts.Node = null;
         var kind: ?[]const u8 = null;
         var outer_node: ?ts.Node = null;
 
@@ -30,6 +37,7 @@ pub fn extractSymbols(
 
             if (std.mem.eql(u8, cap_name, "name")) {
                 name_text = nodeText(cap.node, source);
+                name_node = cap.node;
             } else if (captureToKind(cap_name)) |k| {
                 kind = k;
                 outer_node = cap.node;
@@ -39,8 +47,16 @@ pub fn extractSymbols(
         const name = name_text orelse continue;
         const k = kind orelse continue;
         const node = outer_node orelse continue;
+        const nn = name_node orelse continue;
 
         const start = node.startPoint();
+
+        // Skip duplicates (same @name node position)
+        const name_pos = nn.startPoint();
+        const key = SeenKey{ .row = name_pos.row, .col = name_pos.column };
+        if (seen.contains(key)) continue;
+        try seen.put(key, {});
+
         var sym = ObjectMap.init(allocator);
         try sym.put("name", json.jsonString(name));
         try sym.put("kind", json.jsonString(k));
@@ -75,6 +91,7 @@ fn captureToKind(cap_name: []const u8) ?[]const u8 {
         .{ "type", "Type" },
         .{ "type_alias", "Type" },
         .{ "variable", "Variable" },
+        .{ "field", "Field" },
         .{ "constant", "Constant" },
     };
     inline for (map) |entry| {

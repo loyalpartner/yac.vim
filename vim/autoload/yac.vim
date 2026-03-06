@@ -114,6 +114,7 @@ hi def link YacTsConstructor         Special
 hi def link YacTsFunctionMacro       Macro
 hi def link YacTsFunctionMethod      Function
 hi def link YacTsProperty            Identifier
+hi def link YacTsPreproc             PreProc
 hi def link YacTsMarkupHeading       Title
 hi def link YacTsMarkupHeadingMarker Delimiter
 hi def link YacTsMarkupRawBlock      String

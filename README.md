@@ -16,7 +16,7 @@ A lightweight LSP bridge and tree-sitter integration for Vim, powered by a Zig d
 
 ### Prerequisites
 
-- Zig 0.14+
+- Zig 0.15+
 - Vim 8.1+ (Neovim not supported)
 
 ### With vim-plug
@@ -80,6 +80,7 @@ You also need the LSP servers installed for the languages you use (e.g. `rust-an
 :YacTypeDefinition           " Jump to type definition
 :YacImplementation           " Jump to implementation
 :YacHover                    " Show hover info
+:YacPeek                     " Peek definition (inline preview)
 :YacComplete                 " Trigger completion
 :YacReferences               " Find references
 :YacRename [newname]         " Rename symbol
@@ -91,14 +92,21 @@ You also need the LSP servers installed for the languages you use (e.g. `rust-an
 :YacInlayHintsToggle         " Toggle inlay hints
 :YacCallHierarchyIncoming    " Incoming calls
 :YacCallHierarchyOutgoing    " Outgoing calls
+:YacTypeHierarchySupertypes  " Type hierarchy (supertypes)
+:YacTypeHierarchySubtypes    " Type hierarchy (subtypes)
 :YacFoldingRange             " LSP folding
+:YacExecuteCommand <cmd>     " Execute LSP command
 
 " Picker
 :YacPicker                   " File picker
 :YacGrep                     " Grep picker
 :YacThemePicker              " Theme picker
+:YacThemeDefault             " Reset to default theme
+:YacThemeLoad <file>         " Load theme from JSON file
 
 " Tree-sitter
+:YacTsHighlightsEnable       " Enable tree-sitter highlights
+:YacTsHighlightsDisable      " Disable tree-sitter highlights
 :YacTsHighlightsToggle       " Toggle tree-sitter highlights
 :YacTsSymbols                " Tree-sitter symbols
 
@@ -114,6 +122,8 @@ You also need the LSP servers installed for the languages you use (e.g. `rust-an
 :YacDaemonStop               " Stop daemon process
 :YacOpenLog                  " Open daemon log
 :YacDebugToggle              " Toggle debug logging
+:YacDebugStatus              " Show debug status
+:YacConnections              " Show active connections
 ```
 
 ## Configuration

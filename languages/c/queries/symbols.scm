@@ -12,15 +12,6 @@
 (type_definition
   declarator: (type_identifier) @name) @typedef
 
-; Top-level variable declarations
-(declaration
-  declarator: (init_declarator
-    declarator: (identifier) @name)) @variable
-
-; Function declarations (forward declarations, no body)
-(declaration
-  declarator: (function_declarator
-    declarator: (identifier) @name)) @function
 
 ; Preprocessor macros
 (preproc_function_def name: (identifier) @name) @macro

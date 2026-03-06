@@ -8,6 +8,11 @@
             "type": "command",
             "command": "case \"$CLAUDE_FILE_PATHS\" in *.zig) zig fmt $CLAUDE_FILE_PATHS ;; esac",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_FILE_PATHS\" in *.zig) zig build 2>&1 | head -30 ;; esac",
+            "timeout": 30000
           }
         ]
       }

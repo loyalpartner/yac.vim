@@ -169,16 +169,39 @@ pub fn simplePatternMatch(pattern: []const u8, text: []const u8) bool {
         return std.mem.startsWith(u8, text, "//!");
     } else if (std.mem.eql(u8, pattern, "^[A-Z]")) {
         return text.len > 0 and isUpper(text[0]);
+    } else if (std.mem.eql(u8, pattern, "^_*[A-Z][A-Z\\d_]*$")) {
+        // C/C++ constants: optional leading underscores, then UPPER_CASE
+        return isLeadingUnderscoreUpperCase(text);
     } else if (std.mem.eql(u8, pattern, "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$")) {
         return isGoBuiltin(text);
     }
-    // Unknown pattern -- don't filter (permissive)
-    return true;
+    // Unknown pattern — conservative: reject to prevent silent priority override.
+    // A permissive `return true` here caused @constant.builtin to override @function
+    // for ALL identifiers in C++, breaking highlighting for entire languages.
+    std.log.warn("simplePatternMatch: unknown regex pattern, rejecting: {s}", .{pattern});
+    return false;
 }
 
 fn isUpperSnakeCase(text: []const u8) bool {
     if (text.len < 2 or !isUpper(text[0])) return false;
     for (text[1..]) |c| {
+        if (!isUpper(c) and !std.ascii.isDigit(c) and c != '_') return false;
+    }
+    return true;
+}
+
+/// Matches `^_*[A-Z][A-Z\d_]*$` — optional leading underscores then UPPER_CASE
+fn isLeadingUnderscoreUpperCase(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var i: usize = 0;
+    // Skip leading underscores
+    while (i < text.len and text[i] == '_') : (i += 1) {}
+    // Must have at least one uppercase letter
+    if (i >= text.len or !isUpper(text[i])) return false;
+    i += 1;
+    // Rest must be uppercase, digit, or underscore
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
         if (!isUpper(c) and !std.ascii.isDigit(c) and c != '_') return false;
     }
     return true;
@@ -253,6 +276,22 @@ test "simplePatternMatch — starts with uppercase" {
     try std.testing.expect(!simplePatternMatch(pat, ""));
 }
 
+test "simplePatternMatch — C/C++ constants with leading underscores" {
+    const pat = "^_*[A-Z][A-Z\\d_]*$";
+    try std.testing.expect(simplePatternMatch(pat, "MAX_USERS"));
+    try std.testing.expect(simplePatternMatch(pat, "_FOO"));
+    try std.testing.expect(simplePatternMatch(pat, "__BAR"));
+    try std.testing.expect(simplePatternMatch(pat, "A"));
+    try std.testing.expect(simplePatternMatch(pat, "_A"));
+    try std.testing.expect(simplePatternMatch(pat, "HELLO123"));
+    try std.testing.expect(!simplePatternMatch(pat, "getWindowGroup")); // lowercase
+    try std.testing.expect(!simplePatternMatch(pat, "window"));
+    try std.testing.expect(!simplePatternMatch(pat, "Foo")); // mixed case
+    try std.testing.expect(!simplePatternMatch(pat, ""));
+    try std.testing.expect(!simplePatternMatch(pat, "_")); // only underscore, no uppercase
+    try std.testing.expect(!simplePatternMatch(pat, "_foo")); // lowercase after underscore
+}
+
 test "simplePatternMatch — Go builtins" {
     const pat = "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$";
     try std.testing.expect(simplePatternMatch(pat, "append"));
@@ -260,4 +299,13 @@ test "simplePatternMatch — Go builtins" {
     try std.testing.expect(simplePatternMatch(pat, "recover"));
     try std.testing.expect(!simplePatternMatch(pat, "foo"));
     try std.testing.expect(!simplePatternMatch(pat, "appendx"));
+}
+
+test "simplePatternMatch — unknown patterns return false (conservative)" {
+    // Unknown patterns must NOT match — permissive `return true` causes
+    // later captures (e.g. @constant.builtin) to silently override earlier
+    // ones (e.g. @function), breaking highlighting for entire languages.
+    try std.testing.expect(!simplePatternMatch("^some_unknown_regex$", "anything"));
+    try std.testing.expect(!simplePatternMatch("^[a-z]+_[a-z]+$", "foo_bar"));
+    try std.testing.expect(!simplePatternMatch("^\\w+$", "hello"));
 }
