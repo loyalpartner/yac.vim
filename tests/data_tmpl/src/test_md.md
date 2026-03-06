@@ -16,3 +16,15 @@ Code `@annotation` inline.
 **bold** and *italic* and ~~strikethrough~~
 
 [link](https://example.com)
+
+```zig
+const std = @import("std");
+pub fn main() void {
+    std.debug.print("hello", .{});
+}
+```
+
+```python
+def hello():
+    print("world")
+```

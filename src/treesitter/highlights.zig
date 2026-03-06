@@ -280,8 +280,9 @@ pub fn processInjections(
 ) !void {
     const hl_obj_ptr = getHighlightsObj(result) orelse return;
 
-    // Find the capture index for "injection.content"
+    // Find capture indices
     const content_idx = findCaptureIndex(inj_query, "injection.content") orelse return;
+    const lang_cap_idx = findCaptureIndex(inj_query, "injection.language");
 
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
@@ -295,17 +296,32 @@ pub fn processInjections(
 
     var inj_count: u32 = 0;
     while (cursor.nextMatch()) |match| {
-        // Extract injection.language from #set! predicates
-        const inj_lang = getSetPredicate(inj_query, match.pattern_index, "injection.language") orelse continue;
+        // Determine injection language: either from #set! predicate or @injection.language capture
+        var inj_lang: ?[]const u8 = getSetPredicate(inj_query, match.pattern_index, "injection.language");
 
-        // Get the content node from captures
+        // Get content node and optional language node from captures
         var content_node_opt: ?ts.Node = null;
+        var lang_node_opt: ?ts.Node = null;
         for (match.captures) |cap| {
             if (cap.index == content_idx) {
                 content_node_opt = cap.node;
-                break;
+            } else if (lang_cap_idx != null and cap.index == lang_cap_idx.?) {
+                lang_node_opt = cap.node;
             }
         }
+
+        // If language comes from a capture node, extract its text
+        if (inj_lang == null) {
+            if (lang_node_opt) |lang_node| {
+                const lang_start = lang_node.startByte();
+                const lang_end = lang_node.endByte();
+                if (lang_start < source.len and lang_end <= source.len) {
+                    inj_lang = source[lang_start..lang_end];
+                }
+            }
+        }
+        const resolved_lang = inj_lang orelse continue;
+
         const content_node = content_node_opt orelse continue;
 
         const node_start = content_node.startPoint();
@@ -321,7 +337,7 @@ pub fn processInjections(
         if (node_source.len == 0) continue;
 
         // Load the injected language
-        const lang_state = ts_state.findOrLoadLangState(inj_lang) orelse continue;
+        const lang_state = ts_state.findOrLoadLangState(resolved_lang) orelse continue;
         const inj_hl_query = lang_state.highlights orelse continue;
 
         // Parse the injection content
