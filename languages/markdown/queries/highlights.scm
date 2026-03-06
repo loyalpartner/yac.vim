@@ -40,11 +40,6 @@
   (info_string)
 ] @punctuation.special
 
-; Code fence content gets language-specific highlighting via injections.scm
-; Fallback for code blocks without a recognized language
-(fenced_code_block
-  (code_fence_content) @string)
-
 ; Links
 (link_destination) @markup.link.url
 (link_label) @markup.link.label

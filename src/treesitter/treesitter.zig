@@ -191,6 +191,7 @@ pub const TreeSitter = struct {
     /// Load all languages from a plugin directory.
     /// Reads {lang_dir}/languages.json for grammar/extension info.
     /// Queries are loaded from {lang_dir}/queries/.
+    /// Also registers sibling directories for lazy loading (injection support).
     pub fn loadFromDir(self: *TreeSitter, lang_dir: []const u8) void {
         self.addLangDir(self.allocator.dupe(u8, lang_dir) catch return);
         const configs = lang_config.loadFromDir(self.allocator, lang_dir) orelse {
@@ -198,6 +199,37 @@ pub const TreeSitter = struct {
             return;
         };
         self.registerConfigs(configs);
+
+        // Register sibling language directories for lazy loading.
+        // When loading e.g. languages/markdown/, also discover languages/zig/,
+        // languages/python/ etc. so injection can lazily load them.
+        self.discoverSiblingLangDirs(lang_dir);
+    }
+
+    /// Scan the parent directory of `lang_dir` for sibling directories
+    /// that contain a languages.json, and add them to `lang_dirs`.
+    fn discoverSiblingLangDirs(self: *TreeSitter, lang_dir: []const u8) void {
+        const parent = std.fs.path.dirname(lang_dir) orelse return;
+        var dir = std.fs.cwd().openDir(parent, .{ .iterate = true }) catch return;
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            // Build full path: parent/entry.name
+            const sibling = std.fs.path.join(self.allocator, &.{ parent, entry.name }) catch continue;
+            // Check if this sibling has a languages.json
+            const check_path = std.fs.path.join(self.allocator, &.{ sibling, "languages.json" }) catch {
+                self.allocator.free(sibling);
+                continue;
+            };
+            defer self.allocator.free(check_path);
+            std.fs.cwd().access(check_path, .{}) catch {
+                self.allocator.free(sibling);
+                continue;
+            };
+            // addLangDir takes ownership of sibling
+            self.addLangDir(sibling);
+        }
     }
 
     /// Register all configs, then free the config slice.

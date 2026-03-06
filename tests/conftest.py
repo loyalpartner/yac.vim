@@ -204,6 +204,9 @@ class VimRunner:
             suite_result.screen_dump = screen_dump_file.read_text()
             screen_dump_file.unlink()
 
+        # Collect yacd log (yacd-{pid}.log) from runtime dir
+        yacd_log_file = self._find_yacd_log(runtime_dir)
+
         if not suite_result.success:
             if shared is None:
                 print(f"\n  [debug] workspace preserved: {workspace}")
@@ -212,10 +215,10 @@ class VimRunner:
             suite_result.formatted_failures = self._format_failures(
                 suite_result.tests
             )
-            suite_result.yacd_log = self._collect_log(runtime_dir / "yacd.log")
+            suite_result.yacd_log = self._collect_log(yacd_log_file) if yacd_log_file else ""
             suite_result.vim_log = self._collect_log(vim_debug_log)
         else:
-            if shared is None:
+            if shared is None and not os.environ.get("YAC_KEEP_WORKSPACE"):
                 shutil.rmtree(workspace, ignore_errors=True)
         return suite_result
 
@@ -256,6 +259,14 @@ class VimRunner:
                 lines.append(f"  FAIL: {t['name']}")
                 lines.append(f"        {t.get('reason', '')}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _find_yacd_log(runtime_dir: "Path") -> "Path | None":
+        """Find the yacd-{pid}.log file in the runtime directory."""
+        if not runtime_dir.exists():
+            return None
+        logs = sorted(runtime_dir.glob("yacd-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return logs[0] if logs else None
 
     @staticmethod
     def _collect_log(path: Path, tail: int = 80) -> str:

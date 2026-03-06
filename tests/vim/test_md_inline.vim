@@ -21,14 +21,20 @@ let s:has_inline = yac_test#wait_for(
 
 " Collect all props for diagnostics
 let s:total = 0
-let s:code_block_props = 0
+let s:code_block_injection = 0
 let s:diag = []
 for lnum in range(1, line('$'))
   let props = filter(prop_list(lnum), {_, p -> get(p, 'type', '') =~# '^yac_ts_'})
   let s:total += len(props)
-  " Lines 21-25 are zig code block, 28-30 are python code block
-  if lnum >= 21 && lnum <= 30
-    let s:code_block_props += len(props)
+  " Lines 21-24 are zig code, 28-29 are python code (inside fenced blocks)
+  if (lnum >= 21 && lnum <= 24) || (lnum >= 28 && lnum <= 29)
+    for p in props
+      let hl = get(prop_type_get(p.type), 'highlight', '?')
+      " Count language-specific highlights (not @string fallback)
+      if hl =~# 'Keyword\|Function\|Variable\|Operator\|Module\|Type\|Property'
+        let s:code_block_injection += 1
+      endif
+    endfor
   endif
   if !empty(props)
     for p in props
@@ -38,7 +44,8 @@ for lnum in range(1, line('$'))
   endif
 endfor
 
-call yac_test#log('INFO', printf('inline=%d total=%d code_block=%d', s:has_inline, s:total, s:code_block_props))
+call yac_test#log('INFO', printf('inline=%d total=%d injection=%d',
+  \ s:has_inline, s:total, s:code_block_injection))
 for d in s:diag
   call yac_test#log('INFO', d)
 endfor
@@ -50,9 +57,9 @@ call yac_test#assert_true(s:total >= 5, 'Block-level highlights missing (got ' .
 call yac_test#assert_true(s:has_inline, 'Inline highlights not detected on L16 (total=' . s:total . ')')
 call yac_test#assert_true(s:total > 10, 'Inline highlights insufficient (got ' . s:total . ', expected >10)')
 
-" Fenced code block injection — zig/python code should have syntax highlights
-call yac_test#log('INFO', printf('Code block props: %d (zig+python lines 21-30)', s:code_block_props))
-call yac_test#assert_true(s:code_block_props >= 3, 'Code block injection not working (got ' . s:code_block_props . ' props in lines 21-30)')
+" Fenced code block injection — zig/python should have keyword/function highlights
+call yac_test#log('INFO', printf('Code block injection props: %d (zig L21-24, python L28-29)', s:code_block_injection))
+call yac_test#assert_true(s:code_block_injection >= 3, 'Code block injection not working (got ' . s:code_block_injection . ' keyword/function props)')
 
 call yac#ts_highlights_disable()
 call yac_test#teardown()
