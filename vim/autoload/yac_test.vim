@@ -416,7 +416,6 @@ endfunction
 let s:errmsg_ignore = [
       \ 'E716:.*channel_pool',
       \ 'E716:.*"local"',
-      \ 'LSP server.*not found',
       \ ]
 
 function! yac_test#check_errors() abort
