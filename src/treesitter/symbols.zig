@@ -177,6 +177,28 @@ pub fn extractPickerSymbols(
             depth = 1;
         }
 
+        // Markdown heading depth: H1→0, H2→1, …, H6→5
+        const node_kind = node.kind();
+        if (std.mem.eql(u8, node_kind, "atx_heading")) {
+            if (node.namedChild(0)) |marker| {
+                const mk = marker.kind();
+                // "atx_h1_marker" → mk[5]='1', "atx_h2_marker" → mk[5]='2', …
+                if (mk.len > 5 and mk[4] == 'h') {
+                    depth = @intCast(mk[5] - '1');
+                }
+            }
+        } else if (std.mem.eql(u8, node_kind, "setext_heading")) {
+            // setext H1 → depth 0 (default), H2 → depth 1
+            var ci2: u32 = 0;
+            while (ci2 < node.namedChildCount()) : (ci2 += 1) {
+                const child = node.namedChild(ci2) orelse continue;
+                if (std.mem.eql(u8, child.kind(), "setext_h2_underline")) {
+                    depth = 1;
+                    break;
+                }
+            }
+        }
+
         const pos_node = name_node orelse node;
         const start = pos_node.startPoint();
 

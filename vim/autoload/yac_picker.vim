@@ -471,6 +471,7 @@ function! s:picker_create_ui(opts) abort
     \ 'scrollbar': 0,
     \ 'wrap': 0,
     \ 'zindex': 100,
+    \ 'cursorline': 1,
     \ })
 
   highlight default link YacPickerBorder Comment
@@ -982,18 +983,9 @@ function! s:picker_highlight_selected() abort
   if s:picker.results_popup == -1 || empty(s:picker.items)
     return
   endif
-  call s:ensure_prop_types()
-  let bufnr = winbufnr(s:picker.results_popup)
-  call prop_remove({'type': 'YacPickerSelected', 'all': 1, 'bufnr': bufnr})
-  if s:picker.selected >= 0 && s:picker.selected < len(s:picker.items)
-    let lnum = s:picker.selected + 1
-    let line_len = get(s:picker.line_lengths, s:picker.selected, 1)
-    call prop_add(lnum, 1, {'type': 'YacPickerSelected', 'length': max([1, line_len]), 'bufnr': bufnr})
-  endif
-  let pos = popup_getpos(s:picker.results_popup)
-  let visible = get(pos, 'core_height', 15)
   let lnum = s:picker.selected >= 0 ? s:picker.selected + 1 : 1
-  call popup_setoptions(s:picker.results_popup, #{firstline: max([1, lnum - visible + 1])})
+  " Move cursor in popup → cursorline follows automatically
+  call win_execute(s:picker.results_popup, 'call cursor(' . lnum . ', 1)')
 endfunction
 
 function! s:picker_select_next() abort
