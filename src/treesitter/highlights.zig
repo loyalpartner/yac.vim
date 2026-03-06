@@ -293,27 +293,28 @@ pub fn processInjections(
 
     cursor.exec(inj_query, tree.rootNode());
 
+    var inj_count: u32 = 0;
     while (cursor.nextMatch()) |match| {
         // Extract injection.language from #set! predicates
         const inj_lang = getSetPredicate(inj_query, match.pattern_index, "injection.language") orelse continue;
 
-        // Find the injection.content capture node
-        var content_node: ?ts.Node = null;
+        // Get the content node from captures
+        var content_node_opt: ?ts.Node = null;
         for (match.captures) |cap| {
             if (cap.index == content_idx) {
-                content_node = cap.node;
+                content_node_opt = cap.node;
                 break;
             }
         }
-        const node = content_node orelse continue;
+        const content_node = content_node_opt orelse continue;
 
-        const node_start = node.startPoint();
-        const node_end = node.endPoint();
+        const node_start = content_node.startPoint();
+        const node_end = content_node.endPoint();
         // Skip nodes outside visible range
         if (node_end.row < start_line or node_start.row >= end_line) continue;
 
-        const node_start_byte = node.startByte();
-        const node_end_byte = node.endByte();
+        const node_start_byte = content_node.startByte();
+        const node_end_byte = content_node.endByte();
         if (node_start_byte >= source.len or node_end_byte > source.len) continue;
 
         const node_source = source[node_start_byte..node_end_byte];
@@ -341,8 +342,12 @@ pub fn processInjections(
             local_end,
         ) catch continue;
 
+        inj_count += 1;
         // Merge injection highlights into the main result, shifting positions
         mergeInjectionHighlights(allocator, hl_obj_ptr, inj_result, node_start) catch continue;
+    }
+    if (inj_count > 0) {
+        log.debug("processInjections: merged {d} injection regions", .{inj_count});
     }
 }
 

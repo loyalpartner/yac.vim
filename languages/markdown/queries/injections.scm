@@ -1,2 +1,2 @@
-(inline) @injection.content
-(#set! injection.language "markdown_inline")
+((inline) @injection.content
+  (#set! injection.language "markdown_inline"))

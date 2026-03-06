@@ -124,6 +124,7 @@ class VimRunner:
         env["YAC_DRIVER_VIMRC"] = str(vimrc)
         env["YAC_DRIVER_CWD"] = str(workspace)
         env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        env.setdefault("YAC_LOG_LEVEL", "debug")
 
         # Per-test vim debug log
         vim_debug_log = workspace / "yac-vim-debug.log"

@@ -176,8 +176,6 @@ fn parseSingleEntry(allocator: Allocator, lang_name: []const u8, value: std.json
         ext_count += 1;
     }
 
-    if (ext_count == 0) return error.InvalidEntry;
-
     return .{
         .name = owned_name,
         .extensions = owned_exts[0..ext_count],
@@ -251,6 +249,28 @@ test "parseConfigs without override_query_dir" {
     try parseConfigs(std.testing.allocator, json_str, "/home/user/.config/yac", null, &configs);
     try std.testing.expectEqual(@as(usize, 1), configs.items.len);
     try std.testing.expectEqualStrings("/home/user/.config/yac/queries/python", configs.items[0].query_dir);
+}
+
+test "parseConfigs empty extensions (injection-only language)" {
+    const json_str =
+        \\{
+        \\  "markdown_inline": {
+        \\    "extensions": [],
+        \\    "grammar": "grammar/parser.wasm"
+        \\  }
+        \\}
+    ;
+
+    var configs: std.ArrayList(LangConfig) = .{};
+    defer {
+        for (configs.items) |c| c.deinit(std.testing.allocator);
+        configs.deinit(std.testing.allocator);
+    }
+
+    try parseConfigs(std.testing.allocator, json_str, "/lang/markdown_inline", "/lang/markdown_inline/queries", &configs);
+    try std.testing.expectEqual(@as(usize, 1), configs.items.len);
+    try std.testing.expectEqualStrings("markdown_inline", configs.items[0].name);
+    try std.testing.expectEqual(@as(usize, 0), configs.items[0].extensions.len);
 }
 
 test "parseConfigs empty/invalid" {
