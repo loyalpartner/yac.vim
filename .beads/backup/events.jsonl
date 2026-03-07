@@ -137,3 +137,10 @@
 {"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:18Z","event_type":"closed","id":137,"issue_id":"yac-5xq","new_value":"Closed","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:18Z","event_type":"closed","id":138,"issue_id":"yac-crf","new_value":"Closed","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:18Z","event_type":"closed","id":139,"issue_id":"yac-dna","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:28Z","event_type":"created","id":140,"issue_id":"yac-ca7","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:28Z","event_type":"created","id":141,"issue_id":"yac-eh1","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:29Z","event_type":"created","id":142,"issue_id":"yac-n88","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T21:25:29Z","event_type":"created","id":143,"issue_id":"yac-ayh","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T22:09:08Z","event_type":"closed","id":144,"issue_id":"yac-ca7","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T22:09:08Z","event_type":"closed","id":145,"issue_id":"yac-eh1","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T22:09:08Z","event_type":"closed","id":146,"issue_id":"yac-n88","new_value":"Closed","old_value":""}
