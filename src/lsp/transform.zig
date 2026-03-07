@@ -1309,3 +1309,179 @@ test "transformLspResult — copilot_complete dispatches" {
     try std.testing.expectEqual(@as(usize, 1), out_items.len);
     try std.testing.expectEqualStrings("test_suggestion", json_utils.getString(out_items[0].object, "insertText").?);
 }
+
+test "formatToastCmd — without highlight" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatToastCmd(alloc, "hello world", null).?;
+    try std.testing.expectEqualStrings("call yac#toast('hello world')", cmd);
+}
+
+test "formatToastCmd — with highlight" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatToastCmd(alloc, "error!", "ErrorMsg").?;
+    try std.testing.expectEqualStrings("call yac#toast('error!', {'highlight': 'ErrorMsg'})", cmd);
+}
+
+test "formatToastCmd — escapes single quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatToastCmd(alloc, "it's a test", null).?;
+    try std.testing.expectEqualStrings("call yac#toast('it''s a test')", cmd);
+}
+
+test "formatProgressToast — title only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatProgressToast(alloc, "Indexing", null, null).?;
+    try std.testing.expectEqualStrings("call yac#toast('[yac] Indexing')", cmd);
+}
+
+test "formatProgressToast — title with percentage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatProgressToast(alloc, "Indexing", null, 42).?;
+    try std.testing.expectEqualStrings("call yac#toast('[yac] Indexing (42%)')", cmd);
+}
+
+test "formatProgressToast — title, message, and percentage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatProgressToast(alloc, "Build", "compiling", 80).?;
+    try std.testing.expectEqualStrings("call yac#toast('[yac] Build (80%): compiling')", cmd);
+}
+
+test "formatProgressToast — title and message without percentage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = formatProgressToast(alloc, "Build", "linking", null).?;
+    try std.testing.expectEqualStrings("call yac#toast('[yac] Build: linking')", cmd);
+}
+
+test "formatProgressToast — null title returns null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try std.testing.expect(formatProgressToast(alloc, null, "msg", 50) == null);
+}
+
+test "transformDocumentHighlightResult — valid highlights" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build: [{range: {start: {line: 5, character: 10}, end: {line: 5, character: 15}}, kind: 2}]
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(5));
+    try start.put("character", json_utils.jsonInteger(10));
+    var end = ObjectMap.init(alloc);
+    try end.put("line", json_utils.jsonInteger(5));
+    try end.put("character", json_utils.jsonInteger(15));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end });
+    var hl = ObjectMap.init(alloc);
+    try hl.put("range", .{ .object = range });
+    try hl.put("kind", json_utils.jsonInteger(2));
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = hl });
+
+    const result = transformLspResult(alloc, "document_highlight", .{ .array = arr }, null);
+    const highlights = json_utils.getArray(result.object, "highlights").?;
+    try std.testing.expectEqual(@as(usize, 1), highlights.len);
+    const h = highlights[0].object;
+    try std.testing.expectEqual(@as(i64, 5), json_utils.getInteger(h, "line").?);
+    try std.testing.expectEqual(@as(i64, 10), json_utils.getInteger(h, "col").?);
+    try std.testing.expectEqual(@as(i64, 5), json_utils.getInteger(h, "end_line").?);
+    try std.testing.expectEqual(@as(i64, 15), json_utils.getInteger(h, "end_col").?);
+    try std.testing.expectEqual(@as(i64, 2), json_utils.getInteger(h, "kind").?);
+}
+
+test "transformDocumentHighlightResult — non-array returns null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = transformLspResult(alloc, "document_highlight", .null, null);
+    try std.testing.expect(result == .null);
+}
+
+test "transformDocumentHighlightResult — default kind is 1" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(0));
+    try start.put("character", json_utils.jsonInteger(0));
+    var end_pos = ObjectMap.init(alloc);
+    try end_pos.put("line", json_utils.jsonInteger(0));
+    try end_pos.put("character", json_utils.jsonInteger(3));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end_pos });
+    var hl = ObjectMap.init(alloc);
+    try hl.put("range", .{ .object = range });
+    // No "kind" field — should default to 1
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = hl });
+
+    const result = transformLspResult(alloc, "document_highlight", .{ .array = arr }, null);
+    const highlights = json_utils.getArray(result.object, "highlights").?;
+    try std.testing.expectEqual(@as(usize, 1), highlights.len);
+    try std.testing.expectEqual(@as(i64, 1), json_utils.getInteger(highlights[0].object, "kind").?);
+}
+
+test "transformLspResult — range_formatting dispatches to formatting" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Build a simple text edit array
+    var edit = ObjectMap.init(alloc);
+    try edit.put("newText", json_utils.jsonString("fixed"));
+    var start = ObjectMap.init(alloc);
+    try start.put("line", json_utils.jsonInteger(0));
+    try start.put("character", json_utils.jsonInteger(0));
+    var end_pos = ObjectMap.init(alloc);
+    try end_pos.put("line", json_utils.jsonInteger(0));
+    try end_pos.put("character", json_utils.jsonInteger(5));
+    var range = ObjectMap.init(alloc);
+    try range.put("start", .{ .object = start });
+    try range.put("end", .{ .object = end_pos });
+    try edit.put("range", .{ .object = range });
+    var arr = std.json.Array.init(alloc);
+    try arr.append(.{ .object = edit });
+
+    const result = transformLspResult(alloc, "range_formatting", .{ .array = arr }, null);
+    // Should have edits array
+    const edits = json_utils.getArray(result.object, "edits").?;
+    try std.testing.expectEqual(@as(usize, 1), edits.len);
+}
+
+test "transformLspResult — unknown method passes through" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    _ = alloc;
+
+    const input = json_utils.jsonString("some_data");
+    const result = transformLspResult(std.testing.allocator, "unknown_method", input, null);
+    try std.testing.expect(std.meta.eql(result, input));
+}

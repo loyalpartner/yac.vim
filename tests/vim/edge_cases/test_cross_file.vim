@@ -41,15 +41,17 @@ call yac#open_file()
 call yac_test#log('INFO', 'Test 5: Operations on invalid positions')
 
 call cursor(3, 1)
+let v:errmsg = ''
 YacHover
 call yac_test#wait_for({-> !empty(popup_list())}, 500)
 call popup_clear()
-call yac_test#assert_true(1, 'Hover on empty line should not crash')
+call yac_test#assert_true(v:errmsg ==# '', 'Hover on empty line should not crash: ' . v:errmsg)
 
 call cursor(1, 5)
+let v:errmsg = ''
 YacDefinition
 call yac_test#wait_for({-> 1}, 500)
-call yac_test#assert_true(1, 'Goto in comment should not crash')
+call yac_test#assert_true(v:errmsg ==# '', 'Goto in comment should not crash: ' . v:errmsg)
 
 " ============================================================================
 " Test 6: Multiple buffers

@@ -31,7 +31,7 @@ if !s:hints_available
   finish
 endif
 
-call yac_test#assert_true(1, 'Inlay hints feature is available')
+call yac_test#assert_true(s:hints_available, 'Inlay hints feature is available')
 
 " ============================================================================
 " Test 1: Inlay hints produce text properties

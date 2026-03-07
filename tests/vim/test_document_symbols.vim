@@ -42,7 +42,7 @@ else
   let popups = popup_list()
   if !empty(popups)
     call yac_test#log('INFO', 'Symbols in popup')
-    call yac_test#assert_true(1, 'Symbols displayed in popup')
+    call yac_test#assert_true(!empty(popups), 'Symbols displayed in popup')
   else
     call yac_test#log('INFO', 'No symbols found (check implementation)')
   endif
@@ -74,7 +74,7 @@ if !empty(qflist)
   call yac_test#log('INFO', 'Has processUser: ' . has_process)
 
   if has_user
-    call yac_test#assert_true(1, 'Should contain User symbol')
+    call yac_test#assert_true(has_user, 'Should contain User symbol')
   endif
 endif
 

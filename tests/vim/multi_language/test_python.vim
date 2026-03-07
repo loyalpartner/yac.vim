@@ -58,7 +58,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   let end_line = line('.')
   if end_line != start_line
     call yac_test#log('INFO', 'Python goto: jumped to line ' . end_line)
-    call yac_test#assert_true(1, 'Python goto definition works')
+    call yac_test#assert_true(end_line != start_line, 'Python goto definition works')
   else
     call yac_test#log('INFO', 'Python goto: no jump (LSP may not be ready)')
   endif

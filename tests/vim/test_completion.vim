@@ -38,7 +38,7 @@ endwhile
 
 if s:method_ok
   call yac_test#log('INFO', 'Method completion popup appeared')
-  call yac_test#assert_true(1, 'Completion popup should appear for User.')
+  call yac_test#assert_true(s:method_ok, 'Completion popup should appear for User.')
 else
   call yac_test#log('INFO', 'No completion popup for User. after 20s retries')
   call yac_test#assert_true(0, 'Completion popup should appear for User.')
@@ -63,7 +63,7 @@ call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 let popups = popup_list()
 if !empty(popups) || pumvisible()
   call yac_test#log('INFO', 'Import completion triggered')
-  call yac_test#assert_true(1, 'Import completion should trigger')
+  call yac_test#assert_true(!empty(popups) || pumvisible(), 'Import completion should trigger')
 else
   call yac_test#assert_true(0, 'Import completion should trigger')
 endif
@@ -87,7 +87,7 @@ call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 let popups = popup_list()
 if !empty(popups) || pumvisible()
   call yac_test#log('INFO', 'Local variable completion triggered')
-  call yac_test#assert_true(1, 'Local variable completion should trigger')
+  call yac_test#assert_true(!empty(popups) || pumvisible(), 'Local variable completion should trigger')
 else
   call yac_test#assert_true(0, 'Local variable completion should trigger')
 endif

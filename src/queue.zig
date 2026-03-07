@@ -120,3 +120,97 @@ pub fn isTsMethod(raw_line: []const u8) bool {
     }
     return false;
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "isTsMethod — returns true for all known TS methods" {
+    const cases = [_][]const u8{
+        "\"ts_symbols\"",
+        "\"ts_folding\"",
+        "\"ts_highlights\"",
+        "\"ts_navigate\"",
+        "\"ts_textobjects\"",
+        "\"ts_hover_highlight\"",
+        "\"load_language\"",
+    };
+    for (cases) |kw| {
+        // Simulate a raw JSON-RPC line containing the method
+        const line = std.fmt.comptimePrint("[1, {s}, {{}}]", .{kw});
+        try std.testing.expect(isTsMethod(line));
+    }
+}
+
+test "isTsMethod — returns false for non-TS methods" {
+    try std.testing.expect(!isTsMethod("\"textDocument/completion\""));
+    try std.testing.expect(!isTsMethod("\"textDocument/definition\""));
+    try std.testing.expect(!isTsMethod("\"formatting\""));
+    try std.testing.expect(!isTsMethod("\"references\""));
+    try std.testing.expect(!isTsMethod(""));
+    // Partial match without quotes should not match
+    try std.testing.expect(!isTsMethod("ts_symbols"));
+}
+
+test "isTsMethod — substring in larger line" {
+    try std.testing.expect(isTsMethod("[1, \"ts_highlights\", {\"file\": \"/tmp/test.zig\"}]"));
+    try std.testing.expect(!isTsMethod("[1, \"completion\", {\"file\": \"/tmp/test.zig\"}]"));
+}
+
+test "BoundedQueue — push and pop basic behavior" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    try std.testing.expect(q.push(10));
+    try std.testing.expect(q.push(20));
+    try std.testing.expect(q.push(30));
+    try std.testing.expectEqual(@as(?u32, 10), q.pop());
+    try std.testing.expectEqual(@as(?u32, 20), q.pop());
+    try std.testing.expectEqual(@as(?u32, 30), q.pop());
+}
+
+test "BoundedQueue — push returns false when full" {
+    const Q = BoundedQueue(u32, 2);
+    var q = Q{};
+    try std.testing.expect(q.push(1));
+    try std.testing.expect(q.push(2));
+    // Queue is full now
+    try std.testing.expect(!q.push(3));
+    // Pop one and push again should work
+    try std.testing.expectEqual(@as(?u32, 1), q.pop());
+    try std.testing.expect(q.push(4));
+}
+
+test "BoundedQueue — close makes pop return null on empty" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    try std.testing.expect(q.push(42));
+    q.close();
+    // Should still return items that were pushed before close
+    try std.testing.expectEqual(@as(?u32, 42), q.pop());
+    // Now empty + closed → null
+    try std.testing.expectEqual(@as(?u32, null), q.pop());
+}
+
+test "BoundedQueue — push returns false when closed" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    q.close();
+    try std.testing.expect(!q.push(1));
+}
+
+test "BoundedQueue — wraps around correctly" {
+    const Q = BoundedQueue(u32, 3);
+    var q = Q{};
+    // Fill and drain to advance head/tail pointers
+    try std.testing.expect(q.push(1));
+    try std.testing.expect(q.push(2));
+    try std.testing.expectEqual(@as(?u32, 1), q.pop());
+    try std.testing.expectEqual(@as(?u32, 2), q.pop());
+    // Now head=2, tail=2, push 3 items wrapping around
+    try std.testing.expect(q.push(10));
+    try std.testing.expect(q.push(20));
+    try std.testing.expect(q.push(30));
+    try std.testing.expectEqual(@as(?u32, 10), q.pop());
+    try std.testing.expectEqual(@as(?u32, 20), q.pop());
+    try std.testing.expectEqual(@as(?u32, 30), q.pop());
+}

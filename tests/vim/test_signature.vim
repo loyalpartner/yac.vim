@@ -39,7 +39,7 @@ endwhile
 
 if s:sig_ok
   call yac_test#log('INFO', 'Signature popup appeared')
-  call yac_test#assert_true(1, 'Signature popup should appear after (')
+  call yac_test#assert_true(s:sig_ok, 'Signature popup should appear after (')
 else
   call yac_test#log('INFO', 'No signature popup after 10s')
   call yac_test#assert_true(0, 'Signature popup should appear after (')

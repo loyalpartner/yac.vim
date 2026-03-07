@@ -15,10 +15,12 @@ let s:original_content = getline(1, '$')
 call yac_test#log('INFO', 'Test 1: Virtual text toggle commands')
 
 if exists(':YacToggleDiagnosticVirtualText')
+  let v:errmsg = ''
   YacToggleDiagnosticVirtualText
-  call yac_test#assert_true(1, 'First toggle should not crash')
+  call yac_test#assert_true(v:errmsg ==# '', 'First toggle should not crash: ' . v:errmsg)
+  let v:errmsg = ''
   YacToggleDiagnosticVirtualText
-  call yac_test#assert_true(1, 'Second toggle should not crash')
+  call yac_test#assert_true(v:errmsg ==# '', 'Second toggle should not crash: ' . v:errmsg)
 else
   call yac_test#skip('vtext toggle', 'Command not available')
 endif
@@ -29,8 +31,9 @@ endif
 call yac_test#log('INFO', 'Test 2: Clear diagnostic virtual text')
 
 if exists(':YacClearDiagnosticVirtualText')
+  let v:errmsg = ''
   YacClearDiagnosticVirtualText
-  call yac_test#assert_true(1, 'Clear diagnostic virtual text should not crash')
+  call yac_test#assert_true(v:errmsg ==# '', 'Clear diagnostic virtual text should not crash: ' . v:errmsg)
 else
   call yac_test#skip('clear diag', 'Command not available')
 endif

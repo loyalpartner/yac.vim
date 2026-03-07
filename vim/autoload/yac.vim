@@ -3634,6 +3634,104 @@ function! yac#_copilot_notify(method, params) abort
   call s:notify(a:method, a:params)
 endfunction
 
+" === Bridge functions for future module extraction ===
+
+function! yac#_ts_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_ts_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_ts_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_diag_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_diag_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_diag_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_completion_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_completion_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_completion_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_signature_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_signature_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_signature_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_lsp_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_lsp_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_lsp_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_folding_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_folding_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_folding_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_inlay_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_inlay_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_inlay_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_doc_highlight_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_doc_highlight_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_doc_highlight_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
 " === Tree-sitter Integration ===
 
 function! yac#ts_symbols() abort

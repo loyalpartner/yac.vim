@@ -55,7 +55,7 @@ if !s:hl_available
   finish
 endif
 
-call yac_test#assert_true(1, 'Tree-sitter highlights feature is available')
+call yac_test#assert_true(s:hl_available, 'Tree-sitter highlights feature is available')
 
 " ============================================================================
 " Test 1: Basic highlights on known tokens
