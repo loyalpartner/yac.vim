@@ -516,44 +516,23 @@ function! yac#_peek_drill(file, line, col, symbol) abort
 endfunction
 
 function! yac#inlay_hints() abort
-  let l:bufnr = bufnr('%')
-  call s:request('inlay_hints', {
-    \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0,
-    \   'start_line': line('w0') - 1,
-    \   'end_line': line('w$')
-    \ }, {ch, resp -> s:handle_inlay_hints_response(ch, resp, l:bufnr)})
+  call yac_inlay#hints()
 endfunction
 
-" InsertLeave → show hints if enabled for this buffer
 function! yac#inlay_hints_on_insert_leave() abort
-  if get(b:, 'yac_inlay_hints', 0)
-    call yac#inlay_hints()
-  endif
+  call yac_inlay#on_insert_leave()
 endfunction
 
-" InsertEnter → clear hints
 function! yac#inlay_hints_on_insert_enter() abort
-  if get(b:, 'yac_inlay_hints', 0)
-    call s:clear_inlay_hints()
-  endif
+  call yac_inlay#on_insert_enter()
 endfunction
 
-" TextChanged → clear stale hints and refresh (normal mode edits like dd, p, u)
 function! yac#inlay_hints_on_text_changed() abort
-  if !get(b:, 'yac_inlay_hints', 0) | return | endif
-  call s:clear_inlay_hints()
-  call yac#inlay_hints()
+  call yac_inlay#on_text_changed()
 endfunction
 
 function! yac#inlay_hints_toggle() abort
-  let b:yac_inlay_hints = !get(b:, 'yac_inlay_hints', 0)
-  if b:yac_inlay_hints
-    call yac#inlay_hints()
-  else
-    call s:clear_inlay_hints()
-  endif
+  call yac_inlay#toggle()
 endfunction
 
 function! yac#rename(...) abort
@@ -606,9 +585,7 @@ function! yac#document_symbols() abort
 endfunction
 
 function! yac#folding_range() abort
-  call s:request('ts_folding', {
-    \   'file': expand('%:p')
-    \ }, 's:handle_ts_folding_response')
+  call yac_folding#range()
 endfunction
 
 function! yac#code_action() abort
@@ -1155,25 +1132,6 @@ function! s:handle_peek_highlights_response(channel, response, seq) abort
   endif
 endfunction
 
-" inlay_hints 响应处理器
-function! s:handle_inlay_hints_response(channel, response, ...) abort
-  call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
-
-  " Discard if response arrived for a different buffer than current
-  if a:0 > 0 && a:1 != bufnr('%')
-    return
-  endif
-
-  " Discard if hints are currently disabled for this buffer
-  if !get(b:, 'yac_inlay_hints', 0)
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'hints')
-    call s:show_inlay_hints(a:response.hints)
-  endif
-endfunction
-
 " rename 响应处理器
 function! s:handle_rename_response(channel, response) abort
   call s:debug_log(printf('[RECV]: rename response: %s', string(a:response)))
@@ -1207,13 +1165,6 @@ function! s:handle_document_symbols_response(channel, response) abort
     " Fallback to tree-sitter symbols
     call s:debug_log('[FALLBACK]: LSP symbols empty, trying tree-sitter')
     call yac#ts_symbols()
-  endif
-endfunction
-
-function! s:handle_ts_folding_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
-    call s:apply_folding_ranges(a:response.ranges)
   endif
 endfunction
 
@@ -1677,7 +1628,7 @@ function! s:apply_ts_highlights_to_buffer(bufnr, highlights) abort
   endif
   for [group, positions] in items(a:highlights)
     let l:prop_type = 'yac_hover_' . group
-    call s:ensure_ts_prop_type(l:prop_type, group)
+    call yac_treesitter#ensure_prop_type(l:prop_type, group)
     try
       call prop_add_list({'type': l:prop_type, 'bufnr': a:bufnr}, positions)
     catch
@@ -2676,8 +2627,18 @@ endfunction
 " method: 'hover', 'references', 'inlay_hints', 'folding_range', 等
 " response: 模拟的响应数据（与 daemon 返回格式一致）
 function! yac#test_inject_response(method, response) abort
-  let l:handler = 's:handle_' . a:method . '_response'
-  call call(l:handler, [v:null, a:response])
+  " Handlers extracted to separate modules
+  let l:external_handlers = {
+    \ 'document_highlight': 'yac_doc_highlight#_handle_response',
+    \ 'inlay_hints': 'yac_inlay#_handle_response',
+    \ 'ts_folding': 'yac_folding#_handle_response',
+    \ }
+  if has_key(l:external_handlers, a:method)
+    call call(l:external_handlers[a:method], [v:null, a:response])
+  else
+    let l:handler = 's:handle_' . a:method . '_response'
+    call call(l:handler, [v:null, a:response])
+  endif
 endfunction
 
 " === 日志查看功能 ===
@@ -2771,174 +2732,24 @@ function! yac#open_log() abort
   setlocal nomodeline
 endfunction
 
-" === Inlay Hints 功能 ===
+" === Inlay Hints (delegated to yac_inlay.vim) ===
 
-" 存储当前buffer的inlay hints
-let s:inlay_hints = {}
-
-" 显示inlay hints
-function! s:show_inlay_hints(hints) abort
-  call s:clear_inlay_hints()
-  if empty(a:hints) | return | endif
-  let s:inlay_hints[bufnr('%')] = a:hints
-  call s:render_inlay_hints()
-endfunction
-
-" 清除inlay hints
-function! s:clear_inlay_hints() abort
-  let bufnr = bufnr('%')
-  if has_key(s:inlay_hints, bufnr)
-    if exists('*prop_remove')
-      try
-        call prop_remove({'type': 'inlay_hint_type', 'bufnr': bufnr, 'all': 1})
-        call prop_remove({'type': 'inlay_hint_parameter', 'bufnr': bufnr, 'all': 1})
-        call prop_remove({'type': 'inlay_hint_other', 'bufnr': bufnr, 'all': 1})
-      catch
-      endtry
-    endif
-    unlet s:inlay_hints[bufnr]
-  endif
-endfunction
-
-" 公开接口：清除inlay hints
 function! yac#clear_inlay_hints() abort
-  let b:yac_inlay_hints = 0
-  call s:clear_inlay_hints()
+  call yac_inlay#clear()
 endfunction
 
-" 渲染inlay hints到buffer
-function! s:render_inlay_hints() abort
-  let bufnr = bufnr('%')
-  if !has_key(s:inlay_hints, bufnr) || !exists('*prop_type_add')
-    return
-  endif
-
-  " Ensure highlight groups exist
-  highlight default InlayHintType ctermfg=8 gui=italic guifg=#888888
-  highlight default InlayHintParameter ctermfg=6 gui=italic guifg=#008080
-  highlight default link InlayHintOther InlayHintType
-
-  " Ensure prop types exist (once per Vim session)
-  for kind in ['type', 'parameter', 'other']
-    let hl = kind ==# 'type' ? 'InlayHintType' :
-          \ kind ==# 'parameter' ? 'InlayHintParameter' : 'InlayHintOther'
-    if empty(prop_type_get('inlay_hint_' . kind))
-      call prop_type_add('inlay_hint_' . kind, {'highlight': hl})
-    endif
-  endfor
-
-  for hint in s:inlay_hints[bufnr]
-    let line_num = hint.line + 1
-    let col_num = hint.column + 1
-    try
-      call prop_add(line_num, col_num, {
-        \ 'type': 'inlay_hint_' . hint.kind,
-        \ 'text': hint.label,
-        \ 'bufnr': bufnr
-        \ })
-    catch
-    endtry
-  endfor
-endfunction
-
-" === Document Highlight ===
-" Highlight all occurrences of the symbol under cursor (LSP + tree-sitter fallback)
-
-let s:doc_hl_matches = []
-let s:doc_hl_bufnr = -1
-let s:doc_hl_timer = -1
-let s:doc_hl_delay = 300
-let s:doc_hl_word = ''
-
-hi default YacDocHighlightText  guibg=#2a2a3a ctermbg=237
-hi default link YacDocHighlightRead  YacDocHighlightText
-hi default link YacDocHighlightWrite YacDocHighlightText
+" === Document Highlight (delegated to yac_doc_highlight.vim) ===
 
 function! yac#document_highlight_debounce() abort
-  if !get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1))
-    return
-  endif
-  " Skip if word under cursor hasn't changed
-  let l:word = expand('<cword>')
-  if l:word ==# s:doc_hl_word && !empty(s:doc_hl_matches)
-    return
-  endif
-  call s:clear_document_highlights()
-  let s:doc_hl_word = l:word
-  if empty(l:word)
-    return
-  endif
-  if s:doc_hl_timer != -1
-    call timer_stop(s:doc_hl_timer)
-  endif
-  let s:doc_hl_timer = timer_start(s:doc_hl_delay, {-> yac#document_highlight()})
+  call yac_doc_highlight#debounce()
 endfunction
 
 function! yac#document_highlight() abort
-  call s:request('document_highlight', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1,
-    \   'text': join(getline(1, '$'), "\n")
-    \ }, 's:handle_document_highlight_response')
-endfunction
-
-function! s:handle_document_highlight_response(ch, response) abort
-  call s:clear_document_highlights()
-  if type(a:response) != v:t_dict
-    return
-  endif
-  let l:highlights = get(a:response, 'highlights', [])
-  if empty(l:highlights)
-    return
-  endif
-  let s:doc_hl_bufnr = bufnr('%')
-  for hl in l:highlights
-    let l:kind = get(hl, 'kind', 1)
-    let l:group = l:kind == 3 ? 'YacDocHighlightWrite' :
-          \ l:kind == 2 ? 'YacDocHighlightRead' : 'YacDocHighlightText'
-    let l:line = get(hl, 'line', 0) + 1
-    let l:col = get(hl, 'col', 0) + 1
-    let l:end_line = get(hl, 'end_line', 0) + 1
-    let l:end_col = get(hl, 'end_col', 0) + 1
-    if l:line == l:end_line
-      let l:len = l:end_col - l:col
-      if l:len > 0
-        let l:id = matchaddpos(l:group, [[l:line, l:col, l:len]], 10)
-        if l:id != -1
-          call add(s:doc_hl_matches, l:id)
-        endif
-      endif
-    else
-      let l:id = matchaddpos(l:group, [[l:line, l:col, 999]], 10)
-      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-      for l:mid_line in range(l:line + 1, l:end_line - 1)
-        let l:id = matchaddpos(l:group, [[l:mid_line]], 10)
-        if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-      endfor
-      let l:id = matchaddpos(l:group, [[l:end_line, 1, l:end_col - 1]], 10)
-      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-    endif
-  endfor
-endfunction
-
-function! s:clear_document_highlights() abort
-  if s:doc_hl_timer != -1
-    call timer_stop(s:doc_hl_timer)
-    let s:doc_hl_timer = -1
-  endif
-  if s:doc_hl_bufnr != -1 && s:doc_hl_bufnr == bufnr('%')
-    for id in s:doc_hl_matches
-      silent! call matchdelete(id)
-    endfor
-  endif
-  let s:doc_hl_matches = []
-  let s:doc_hl_bufnr = -1
-  let s:doc_hl_word = ''
+  call yac_doc_highlight#highlight()
 endfunction
 
 function! yac#clear_document_highlights() abort
-  call s:clear_document_highlights()
+  call yac_doc_highlight#clear()
 endfunction
 
 " === 重命名功能 ===
@@ -3061,121 +2872,22 @@ function! s:apply_text_edit(edit) abort
   endif
 endfunction
 
-" === 折叠范围功能 ===
-
-" 应用折叠范围
-function! s:apply_folding_ranges(ranges) abort
-  if empty(a:ranges)
-    call yac#toast('No folding ranges available')
-    return
-  endif
-
-  let nlines = line('$')
-
-  " 过滤有效 range
-  let valid = filter(copy(a:ranges), {_, r ->
-    \ r.start_line + 1 >= 1 && r.end_line + 1 <= nlines && r.start_line < r.end_line})
-
-  " 按 start_line 升序、end_line 降序排列（同 start 时大 range 在前）
-  call sort(valid, {a, b ->
-    \ a.start_line != b.start_line
-    \ ? a.start_line - b.start_line
-    \ : b.end_line - a.end_line})
-
-  " 去除冗余 range：若某 range 与栈顶 range 的 start/end 均相差 ≤1，
-  " 视为同一折叠层（如函数整体 vs 函数体），跳过该 range。
-  let filtered = []
-  let stack = []
-  for r in valid
-    while !empty(stack) && stack[-1].end_line < r.start_line
-      call remove(stack, -1)
-    endwhile
-    if !empty(stack)
-      let top = stack[-1]
-      if abs(r.start_line - top.start_line) <= 1 && abs(r.end_line - top.end_line) <= 1
-        continue
-      endif
-    endif
-    call add(filtered, r)
-    call add(stack, r)
-  endfor
-
-  " 差分数组原地前缀和求每行层级
-  let levels = repeat([0], nlines + 2)
-  for r in filtered
-    let levels[r.start_line + 1] += 1
-    let levels[r.end_line + 2] -= 1
-  endfor
-  let cur = 0
-  for lnum in range(1, nlines)
-    let cur += levels[lnum]
-    let levels[lnum] = cur
-  endfor
-
-  let b:yac_fold_levels = levels
-  let b:yac_fold_start_lines = map(copy(filtered), {_, r -> r.start_line + 1})
-  let b:yac_fold_start_set = {}
-  for lnum in b:yac_fold_start_lines
-    let b:yac_fold_start_set[lnum] = 1
-  endfor
-  setlocal foldmethod=expr
-  setlocal foldexpr=yac#foldexpr(v:lnum)
-  setlocal foldtext=yac#foldtext()
-  setlocal foldlevel=99
-  if has('patch-8.2.1516') && &l:fillchars !~# 'fold: '
-    let l:fc = substitute(&l:fillchars, ',\?fold:[^,]*', '', 'g')
-    let l:fc = substitute(l:fc, '^,\+', '', '')
-    let &l:fillchars = (empty(l:fc) ? '' : l:fc . ',') . 'fold: '
-  endif
-  setlocal foldcolumn=0
-
-  call yac#update_fold_signs()
-endfunction
+" === Folding (delegated to yac_folding.vim) ===
 
 function! yac#foldexpr(lnum) abort
-  if !exists('b:yac_fold_levels')
-    return 0
-  endif
-  let level = get(b:yac_fold_levels, a:lnum, 0)
-  if level > 0 && has_key(b:yac_fold_start_set, a:lnum)
-    return '>' . level
-  endif
-  return level
+  return yac_folding#foldexpr(a:lnum)
 endfunction
 
 function! yac#foldtext() abort
-  let line = getline(v:foldstart)
-  let hidden = max([v:foldend - v:foldstart, 1])
-  return line . '  ' . hidden . ' lines'
+  return yac_folding#foldtext()
 endfunction
 
 function! yac#update_fold_signs() abort
-  if !exists('b:yac_fold_start_lines')
-    return
-  endif
-  let l:state = {}
-  for lnum in b:yac_fold_start_lines
-    let l:state[lnum] = foldclosed(lnum) != -1 ? 'yac_fold_closed' : 'yac_fold_open'
-  endfor
-  if l:state ==# get(b:, 'yac_fold_sign_cache', {})
-    return
-  endif
-  if !exists('s:fold_signs_defined')
-    call sign_define('yac_fold_open',   {'text': '▾', 'texthl': 'FoldColumn'})
-    call sign_define('yac_fold_closed', {'text': '▸', 'texthl': 'FoldColumn'})
-    let s:fold_signs_defined = 1
-  endif
-  let bufnr = bufnr('%')
-  call sign_unplace('yac_folds', {'buffer': bufnr})
-  for [lnum, name] in items(l:state)
-    call sign_place(0, 'yac_folds', name, bufnr, {'lnum': lnum})
-  endfor
-  let b:yac_fold_sign_cache = l:state
+  call yac_folding#update_signs()
 endfunction
 
-" 测试入口：直接注入 mock ranges，供单元测试调用
 function! yac#apply_folding_ranges_test(ranges) abort
-  call s:apply_folding_ranges(a:ranges)
+  call yac_folding#apply_ranges_test(a:ranges)
 endfunction
 
 " === Code Actions 功能 ===
@@ -3648,6 +3360,18 @@ function! yac#_ts_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
+function! yac#_ts_ensure_connection() abort
+  return s:ensure_connection()
+endfunction
+
+function! yac#_ts_flush_did_change() abort
+  call s:flush_did_change()
+endfunction
+
+function! yac#_ts_show_document_symbols(symbols) abort
+  call s:show_document_symbols(a:symbols)
+endfunction
+
 function! yac#_diag_request(method, params, callback) abort
   call s:request(a:method, a:params, a:callback)
 endfunction
@@ -3732,370 +3456,58 @@ function! yac#_doc_highlight_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
-" === Tree-sitter Integration ===
+" === Tree-sitter Integration (delegated to yac_treesitter.vim) ===
 
 function! yac#ts_symbols() abort
-  call s:request('ts_symbols', {
-    \   'file': expand('%:p')
-    \ }, 's:handle_ts_symbols_response')
-endfunction
-
-function! s:handle_ts_symbols_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_symbols response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
-    call s:show_document_symbols(a:response.symbols)
-  else
-    call yac#toast('No tree-sitter symbols found')
-  endif
-endfunction
-
-function! s:ts_navigate(target, direction) abort
-  call s:request('ts_navigate', {
-    \   'file': expand('%:p'),
-    \   'target': a:target,
-    \   'direction': a:direction,
-    \   'line': line('.') - 1
-    \ }, 's:handle_ts_navigate_response')
+  call yac_treesitter#symbols()
 endfunction
 
 function! yac#ts_next_function() abort
-  call s:ts_navigate('function', 'next')
+  call yac_treesitter#next_function()
 endfunction
 
 function! yac#ts_prev_function() abort
-  call s:ts_navigate('function', 'prev')
+  call yac_treesitter#prev_function()
 endfunction
 
 function! yac#ts_next_struct() abort
-  call s:ts_navigate('struct', 'next')
+  call yac_treesitter#next_struct()
 endfunction
 
 function! yac#ts_prev_struct() abort
-  call s:ts_navigate('struct', 'prev')
-endfunction
-
-function! s:handle_ts_navigate_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'line')
-    " Convert 0-based to 1-based
-    let lnum = a:response.line + 1
-    let col = get(a:response, 'column', 0) + 1
-    call cursor(lnum, col)
-    normal! zz
-  endif
+  call yac_treesitter#prev_struct()
 endfunction
 
 function! yac#ts_select(target) abort
-  let l:ch = s:ensure_connection()
-  if l:ch is v:null || ch_status(l:ch) != 'open'
-    return
-  endif
-
-  let l:msg = {
-    \ 'method': 'ts_textobjects',
-    \ 'params': {
-    \   'file': expand('%:p'),
-    \   'target': a:target,
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }}
-
-  " Synchronous request so operator-pending mode (daf, cif, etc.) works
-  let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
-  call s:debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
-
-  if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
-    let start_line = l:response.start_line + 1
-    let start_col = l:response.start_col + 1
-    let end_line = l:response.end_line + 1
-    let end_col = l:response.end_col
-    call cursor(start_line, start_col)
-    normal! v
-    call cursor(end_line, end_col)
-  endif
+  call yac_treesitter#select(a:target)
 endfunction
-
-" ============================================================================
-" Tree-sitter syntax highlighting
-" ============================================================================
-
-" Debounce timer for ts highlights
-let s:ts_hl_timer = -1
-let s:ts_hl_last_range = ''
-let s:ts_prop_types_created = {}
-" NOTE: seq is per-buffer (b:yac_ts_hl_seq) so buffer switches don't
-" discard in-flight responses for the previous buffer.
 
 function! yac#ts_highlights_request(...) abort
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:vis_lo = line('w0') - 1  " 0-indexed
-  let l:vis_hi = line('w$')
-  let l:cov_lo = get(b:, 'yac_ts_hl_lo', -1)
-  let l:cov_hi = get(b:, 'yac_ts_hl_hi', -1)
-
-  " Already fully covered — nothing to do
-  if l:cov_lo >= 0 && l:vis_lo >= l:cov_lo && l:vis_hi <= l:cov_hi
-    return
-  endif
-
-  let l:pad = max([line('w$') - line('w0'), 20])
-  let l:is_scroll = 0
-
-  " Scroll mode: only request the uncovered delta direction
-  if a:0 > 0 && a:1 ==# 'scroll' && l:cov_lo >= 0
-    let l:need_up   = l:vis_lo < l:cov_lo
-    let l:need_down = l:vis_hi > l:cov_hi
-    if l:need_down && !l:need_up
-      let l:req_lo = l:cov_hi
-      let l:req_hi = l:vis_hi + l:pad
-      let l:is_scroll = 1
-    elseif l:need_up && !l:need_down
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      " Limit to visible area + pad (like scroll-down), not the full gap to cov_lo.
-      " Requesting all of [vis_lo..cov_lo] can be thousands of lines for G→gg on
-      " large files, causing a noticeable delay.  The gap is filled incrementally
-      " as the user scrolls back down.
-      let l:req_hi = min([l:cov_lo, l:vis_hi + l:pad])
-      let l:is_scroll = 1
-    endif
-    " Both directions exceeded (big jump) → fall through to full request
-  endif
-
-  if !l:is_scroll
-    if l:cov_lo < 0
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      let l:req_hi = l:vis_hi + l:pad
-    else
-      let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
-      let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
-    endif
-  endif
-
-  let l:params = {
-    \ 'file': expand('%:p'),
-    \ 'start_line': l:req_lo,
-    \ 'end_line': l:req_hi,
-    \ }
-  if !get(b:, 'yac_ts_hl_parsed', 0)
-    let l:params.text = join(getline(1, '$'), "\n")
-    let b:yac_ts_hl_parsed = 1
-  endif
-  let l:bufnr = bufnr('%')
-  let l:seq = get(b:, 'yac_ts_hl_seq', 0) + 1
-  let b:yac_ts_hl_seq = l:seq
-  call s:request('ts_highlights', l:params,
-    \ {ch, resp -> s:handle_ts_highlights_response(
-    \     ch, resp, l:seq, l:bufnr, l:is_scroll)})
-endfunction
-
-function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scroll) abort
-  if type(a:response) != v:t_dict
-        \ || !has_key(a:response, 'highlights')
-        \ || !has_key(a:response, 'range')
-    return
-  endif
-  " Defer prop updates while picker is open — applying text properties
-  " to the underlying buffer triggers a Vim redraw that can break popup
-  " cursorline rendering (observed with large markdown files).
-  if yac_picker#is_open()
-    return
-  endif
-  " Per-buffer seq: discard stale responses for THIS buffer, but don't
-  " discard responses just because the user switched to another buffer.
-  if a:seq != getbufvar(a:bufnr, 'yac_ts_hl_seq', 0)
-    return
-  endif
-  " Buffer may have been wiped
-  if !bufexists(a:bufnr)
-    return
-  endif
-
-  let l:bufnr = a:bufnr
-
-  if a:is_scroll
-    " Scroll path: append delta props to current generation (no flip)
-    let l:gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:cur_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-    let l:old_lo = getbufvar(l:bufnr, 'yac_ts_hl_lo', -1)
-    let l:old_hi = getbufvar(l:bufnr, 'yac_ts_hl_hi', -1)
-    " Gap detection: if the new response doesn't connect to existing coverage,
-    " clear old props first so they don't duplicate when scrolling back to that area.
-    let l:is_gap = l:old_lo >= 0 && (a:response.range[1] < l:old_lo || a:response.range[0] > l:old_hi)
-    if l:is_gap
-      for l:t in l:cur_types
-        silent! call prop_remove({'type': l:t, 'bufnr': l:bufnr, 'all': 1})
-      endfor
-      let l:cur_types = []
-    endif
-    let l:new_types = s:ts_apply_highlights(l:gen, a:response.highlights, l:bufnr)
-    " Merge new types into existing list (avoid duplicates from prior scrolls)
-    for l:t in l:new_types
-      if index(l:cur_types, l:t) < 0
-        call add(l:cur_types, l:t)
-      endif
-    endfor
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:cur_types)
-    if l:is_gap
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-    else
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo',
-            \ (l:old_lo < 0 ? a:response.range[0] : min([l:old_lo, a:response.range[0]])))
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi',
-            \ (l:old_hi < 0 ? a:response.range[1] : max([l:old_hi, a:response.range[1]])))
-    endif
-  else
-    " Edit path: double-buffered full replacement
-    let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:new_gen = 1 - l:old_gen
-    let l:old_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-
-    let l:new_types = s:ts_apply_highlights(l:new_gen, a:response.highlights, l:bufnr)
-
-    for prop_type in l:old_types
-      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-    endfor
-
-    call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
-    call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-    call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-  endif
-endfunction
-
-" Apply highlight groups for a given generation. Returns the list of
-" prop type names that were created/used.
-function! s:ts_apply_highlights(gen, highlights, bufnr) abort
-  let l:types = []
-  for [group, positions] in items(a:highlights)
-    let l:prop_type = 'yac_ts_' . a:gen . '_' . group
-    call s:ensure_ts_prop_type(l:prop_type, group)
-    call add(l:types, l:prop_type)
-    call s:ts_add_props(l:prop_type, positions, a:bufnr)
-  endfor
-  return l:types
-endfunction
-
-" Batch-add text properties.  Positions arrive from Zig already in
-" [lnum, col, end_lnum, end_col] format ready for prop_add_list.
-function! s:ts_add_props(prop_type, positions, bufnr) abort
-  if !empty(a:positions)
-    try
-      call prop_add_list({'type': a:prop_type, 'bufnr': a:bufnr}, a:positions)
-    catch
-    endtry
-  endif
-endfunction
-
-" Ensure a prop type exists for the given highlight group
-function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
-  if !has_key(s:ts_prop_types_created, a:prop_type)
-    try
-      call prop_type_add(a:prop_type, {
-            \ 'highlight': a:highlight_group,
-            \ 'start_incl': 1,
-            \ 'end_incl': 1
-            \ })
-    catch /E969/
-      " Already exists
-    endtry
-    let s:ts_prop_types_created[a:prop_type] = 1
-  endif
-endfunction
-
-function! s:clear_ts_highlights() abort
-  let l:bufnr = bufnr('%')
-  for prop_type in get(b:, 'yac_ts_hl_prop_types', [])
-    silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-  endfor
-endfunction
-
-function! s:ts_highlights_reset_coverage() abort
-  call s:clear_ts_highlights()
-  let b:yac_ts_hl_gen = 0
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let b:yac_ts_hl_prop_types = []
-  let s:ts_hl_last_range = ''
+  return call('yac_treesitter#highlights_request', a:000)
 endfunction
 
 function! yac#ts_highlights_enable() abort
-  let b:yac_ts_highlights_enabled = 1
-  call s:ts_highlights_reset_coverage()
-  call yac#ts_highlights_request()
+  call yac_treesitter#highlights_enable()
 endfunction
 
 function! yac#ts_highlights_disable() abort
-  let b:yac_ts_highlights_enabled = 0
-  call s:ts_highlights_reset_coverage()
+  call yac_treesitter#highlights_disable()
 endfunction
 
 function! yac#ts_highlights_toggle() abort
-  if get(b:, 'yac_ts_highlights_enabled', 0)
-    call yac#ts_highlights_disable()
-  else
-    call yac#ts_highlights_enable()
-  endif
+  call yac_treesitter#highlights_toggle()
 endfunction
 
 function! yac#ts_highlights_debounce() abort
-  " 忽略 popup 窗口（C-n 在 popup 中移动光标会触发 CursorMoved）
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  " Auto-enable on first BufEnter if global option is on
-  if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
-    let b:yac_ts_highlights_enabled = 1
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:range = expand('%:p') . ':' . line('w0') . ':' . line('w$')
-  if l:range ==# s:ts_hl_last_range
-    return
-  endif
-  let s:ts_hl_last_range = l:range
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-  endif
-  let s:ts_hl_timer = timer_start(30, {-> yac#ts_highlights_request('scroll')})
+  call yac_treesitter#highlights_debounce()
 endfunction
 
-" On BufLeave, reset the debounce fingerprint so BufEnter will re-check
-" coverage.  Text properties are buffer-bound (via bufnr) and don't bleed
-" into other buffers, so we keep them and the coverage metadata intact.
 function! yac#ts_highlights_detach() abort
-  let s:ts_hl_last_range = ''
+  call yac_treesitter#highlights_detach()
 endfunction
-
 
 function! yac#ts_highlights_invalidate() abort
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  " Cancel pending debounce timer — it would use stale tree state
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-    let s:ts_hl_timer = -1
-  endif
-  " Flush pending did_change so daemon's tree-sitter tree is up to date
-  " before we request highlights. Same pattern as yac#complete().
-  call s:flush_did_change()
-  " Reset metadata but keep old props on screen.
-  " The response handler does clear + apply synchronously (no gap).
-  " With prop_add, old props have auto-tracked positions so they're
-  " mostly correct during the brief async wait.
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let s:ts_hl_last_range = ''
-  call yac#ts_highlights_request()
+  call yac_treesitter#highlights_invalidate()
 endfunction
 
 " 启动定时清理任务
