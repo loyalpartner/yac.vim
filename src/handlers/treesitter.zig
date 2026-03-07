@@ -2,7 +2,7 @@ const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 const log = @import("../log.zig");
-const lsp_requests = @import("lsp_requests.zig");
+const lsp_info = @import("lsp_info.zig");
 const ts_mod = common.treesitter_mod;
 
 const Value = json.Value;
@@ -137,9 +137,9 @@ pub fn handleLoadLanguage(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     ts_state.loadFromDir(lang_dir);
 
-    var result = ObjectMap.init(ctx.allocator);
-    try result.put("ok", .{ .bool = true });
-    return .{ .data = .{ .object = result } };
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
 }
 
 pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
@@ -179,7 +179,7 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Document highlight: try LSP first (semantic), fall back to tree-sitter (textual).
 pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Try LSP — it provides semantic scope awareness
-    const lsp_result = try lsp_requests.handleDocumentHighlight(ctx, params);
+    const lsp_result = try lsp_info.handleDocumentHighlight(ctx, params);
     switch (lsp_result) {
         .pending_lsp => return lsp_result, // LSP request sent, wait for response
         .initializing => {}, // LSP not ready, fall through to tree-sitter

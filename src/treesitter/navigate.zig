@@ -45,10 +45,10 @@ pub fn navigate(
     }
 
     if (best_line) |l| {
-        var result = ObjectMap.init(allocator);
-        try result.put("line", json.jsonInteger(@intCast(l)));
-        try result.put("column", json.jsonInteger(@intCast(best_col)));
-        return .{ .object = result };
+        return json.buildObject(allocator, .{
+            .{ "line", json.jsonInteger(@intCast(l)) },
+            .{ "column", json.jsonInteger(@intCast(best_col)) },
+        });
     }
 
     return .null;

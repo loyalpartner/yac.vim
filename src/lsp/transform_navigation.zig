@@ -31,11 +31,11 @@ pub fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, co
     else
         file_path;
 
-    var loc = ObjectMap.init(alloc);
-    try loc.put("file", json_utils.jsonString(result_path));
-    try loc.put("line", json_utils.jsonInteger(line));
-    try loc.put("column", json_utils.jsonInteger(column));
-    return .{ .object = loc };
+    return json_utils.buildObject(alloc, .{
+        .{ "file", json_utils.jsonString(result_path) },
+        .{ "line", json_utils.jsonInteger(line) },
+        .{ "column", json_utils.jsonInteger(column) },
+    });
 }
 
 /// Transform a goto LSP response into a Location for Vim.
@@ -88,9 +88,9 @@ pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]c
         try locations.append(loc_val);
     }
 
-    var result_obj = ObjectMap.init(alloc);
-    try result_obj.put("locations", .{ .array = locations });
-    return .{ .object = result_obj };
+    return json_utils.buildObject(alloc, .{
+        .{ "locations", .{ .array = locations } },
+    });
 }
 
 /// Transform TextEdit[] (formatting response) into {edits: [{start_line, start_column, end_line, end_column, new_text}]}.
@@ -121,18 +121,18 @@ pub fn transformFormattingResult(alloc: Allocator, result: Value) !Value {
         };
         const new_text = json_utils.getString(edit, "newText") orelse "";
 
-        var edit_obj = ObjectMap.init(alloc);
-        try edit_obj.put("start_line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse 0));
-        try edit_obj.put("start_column", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse 0));
-        try edit_obj.put("end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse 0));
-        try edit_obj.put("end_column", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse 0));
-        try edit_obj.put("new_text", json_utils.jsonString(new_text));
-        try edits.append(.{ .object = edit_obj });
+        try edits.append(try json_utils.buildObject(alloc, .{
+            .{ "start_line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse 0) },
+            .{ "start_column", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse 0) },
+            .{ "end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse 0) },
+            .{ "end_column", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse 0) },
+            .{ "new_text", json_utils.jsonString(new_text) },
+        }));
     }
 
-    var result_obj = ObjectMap.init(alloc);
-    try result_obj.put("edits", .{ .array = edits });
-    return .{ .object = result_obj };
+    return json_utils.buildObject(alloc, .{
+        .{ "edits", .{ .array = edits } },
+    });
 }
 
 /// Transform LSP InlayHint[] into {hints: [{line, column, label, kind}]}.
@@ -208,17 +208,17 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
         else
             label;
 
-        var hint_obj = ObjectMap.init(alloc);
-        try hint_obj.put("line", json_utils.jsonInteger(line));
-        try hint_obj.put("column", json_utils.jsonInteger(character));
-        try hint_obj.put("label", json_utils.jsonString(display));
-        try hint_obj.put("kind", json_utils.jsonString(kind_str));
-        try hints.append(.{ .object = hint_obj });
+        try hints.append(try json_utils.buildObject(alloc, .{
+            .{ "line", json_utils.jsonInteger(line) },
+            .{ "column", json_utils.jsonInteger(character) },
+            .{ "label", json_utils.jsonString(display) },
+            .{ "kind", json_utils.jsonString(kind_str) },
+        }));
     }
 
-    var result_obj = ObjectMap.init(alloc);
-    try result_obj.put("hints", .{ .array = hints });
-    return .{ .object = result_obj };
+    return json_utils.buildObject(alloc, .{
+        .{ "hints", .{ .array = hints } },
+    });
 }
 
 /// Transform DocumentHighlight[] → {highlights: [{line, col, end_line, end_col, kind}]}
@@ -249,19 +249,23 @@ pub fn transformDocumentHighlightResult(alloc: Allocator, result: Value) !Value 
             else => continue,
         };
         const kind = json_utils.getInteger(obj, "kind") orelse 1;
+        const sl = json_utils.getInteger(start_obj, "line") orelse continue;
+        const sc = json_utils.getInteger(start_obj, "character") orelse continue;
+        const el = json_utils.getInteger(end_obj, "line") orelse continue;
+        const ec = json_utils.getInteger(end_obj, "character") orelse continue;
 
-        var hl = ObjectMap.init(alloc);
-        try hl.put("line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse continue));
-        try hl.put("col", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse continue));
-        try hl.put("end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse continue));
-        try hl.put("end_col", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse continue));
-        try hl.put("kind", json_utils.jsonInteger(kind));
-        try highlights.append(.{ .object = hl });
+        try highlights.append(try json_utils.buildObject(alloc, .{
+            .{ "line", json_utils.jsonInteger(sl) },
+            .{ "col", json_utils.jsonInteger(sc) },
+            .{ "end_line", json_utils.jsonInteger(el) },
+            .{ "end_col", json_utils.jsonInteger(ec) },
+            .{ "kind", json_utils.jsonInteger(kind) },
+        }));
     }
 
-    var result_obj = ObjectMap.init(alloc);
-    try result_obj.put("highlights", .{ .array = highlights });
-    return .{ .object = result_obj };
+    return json_utils.buildObject(alloc, .{
+        .{ "highlights", .{ .array = highlights } },
+    });
 }
 
 // ============================================================================

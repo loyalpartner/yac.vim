@@ -137,10 +137,10 @@ pub fn extractHighlights(
     try range_arr.append(json.jsonInteger(@intCast(start_line)));
     try range_arr.append(json.jsonInteger(@intCast(end_line)));
 
-    var result = ObjectMap.init(allocator);
-    try result.put("highlights", .{ .object = hl_obj });
-    try result.put("range", .{ .array = range_arr });
-    return .{ .object = result };
+    return json.buildObject(allocator, .{
+        .{ "highlights", .{ .object = hl_obj } },
+        .{ "range", .{ .array = range_arr } },
+    });
 }
 
 /// Walk the tree to find ERROR nodes and scan their byte ranges for identifier-like

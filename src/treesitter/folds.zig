@@ -29,14 +29,14 @@ pub fn extractFolds(
             // Only create fold if it spans multiple lines
             if (end_row <= start_row) continue;
 
-            var range = ObjectMap.init(allocator);
-            try range.put("start_line", json.jsonInteger(@intCast(start_row)));
-            try range.put("end_line", json.jsonInteger(@intCast(end_row)));
-            try ranges.append(.{ .object = range });
+            try ranges.append(try json.buildObject(allocator, .{
+                .{ "start_line", json.jsonInteger(@intCast(start_row)) },
+                .{ "end_line", json.jsonInteger(@intCast(end_row)) },
+            }));
         }
     }
 
-    var result = ObjectMap.init(allocator);
-    try result.put("ranges", .{ .array = ranges });
-    return .{ .object = result };
+    return json.buildObject(allocator, .{
+        .{ "ranges", .{ .array = ranges } },
+    });
 }

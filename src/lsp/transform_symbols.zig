@@ -67,15 +67,15 @@ fn collectDocumentSymbols(
             if (extractStartPosition(rv)) |p| pos = p;
         }
 
-        var item = ObjectMap.init(alloc);
-        try item.put("label", json_utils.jsonString(name));
-        try item.put("detail", json_utils.jsonString(lsp_detail orelse ""));
-        try item.put("file", json_utils.jsonString(file));
-        try item.put("line", json_utils.jsonInteger(pos.line));
-        try item.put("column", json_utils.jsonInteger(pos.column));
-        try item.put("depth", json_utils.jsonInteger(depth));
-        try item.put("kind", json_utils.jsonString(kind_name));
-        try items.append(.{ .object = item });
+        try items.append(try json_utils.buildObject(alloc, .{
+            .{ "label", json_utils.jsonString(name) },
+            .{ "detail", json_utils.jsonString(lsp_detail orelse "") },
+            .{ "file", json_utils.jsonString(file) },
+            .{ "line", json_utils.jsonInteger(pos.line) },
+            .{ "column", json_utils.jsonInteger(pos.column) },
+            .{ "depth", json_utils.jsonInteger(depth) },
+            .{ "kind", json_utils.jsonString(kind_name) },
+        }));
 
         // Recurse into children
         if (sym.get("children")) |children_val| {
@@ -141,22 +141,22 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
                 }
             }
 
-            var item = ObjectMap.init(alloc);
-            try item.put("label", json_utils.jsonString(name));
-            try item.put("detail", json_utils.jsonString(detail));
-            try item.put("file", json_utils.jsonString(file));
-            try item.put("line", json_utils.jsonInteger(pos.line));
-            try item.put("column", json_utils.jsonInteger(pos.column));
-            try item.put("depth", json_utils.jsonInteger(0));
-            try item.put("kind", json_utils.jsonString(kind_name));
-            try items.append(.{ .object = item });
+            try items.append(try json_utils.buildObject(alloc, .{
+                .{ "label", json_utils.jsonString(name) },
+                .{ "detail", json_utils.jsonString(detail) },
+                .{ "file", json_utils.jsonString(file) },
+                .{ "line", json_utils.jsonInteger(pos.line) },
+                .{ "column", json_utils.jsonInteger(pos.column) },
+                .{ "depth", json_utils.jsonInteger(0) },
+                .{ "kind", json_utils.jsonString(kind_name) },
+            }));
         }
     }
 
-    var result_obj = ObjectMap.init(alloc);
-    try result_obj.put("items", .{ .array = items });
-    try result_obj.put("mode", json_utils.jsonString("symbol"));
-    return .{ .object = result_obj };
+    return json_utils.buildObject(alloc, .{
+        .{ "items", .{ .array = items } },
+        .{ "mode", json_utils.jsonString("symbol") },
+    });
 }
 
 // ============================================================================

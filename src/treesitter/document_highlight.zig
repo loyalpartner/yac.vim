@@ -39,9 +39,9 @@ pub fn extractDocumentHighlights(
 
     if (highlights.items.len == 0) return .null;
 
-    var result = ObjectMap.init(alloc);
-    try result.put("highlights", .{ .array = highlights });
-    return .{ .object = result };
+    return json.buildObject(alloc, .{
+        .{ "highlights", .{ .array = highlights } },
+    });
 }
 
 /// Walk up from node to find the nearest scope-defining ancestor.
@@ -102,13 +102,13 @@ fn collectMatches(
             if (std.mem.eql(u8, text, target_text)) {
                 const start = node.startPoint();
                 const end = node.endPoint();
-                var hl = ObjectMap.init(alloc);
-                try hl.put("line", json.jsonInteger(@intCast(start.row)));
-                try hl.put("col", json.jsonInteger(@intCast(start.column)));
-                try hl.put("end_line", json.jsonInteger(@intCast(end.row)));
-                try hl.put("end_col", json.jsonInteger(@intCast(end.column)));
-                try hl.put("kind", json.jsonInteger(1));
-                try out.append(.{ .object = hl });
+                try out.append(try json.buildObject(alloc, .{
+                    .{ "line", json.jsonInteger(@intCast(start.row)) },
+                    .{ "col", json.jsonInteger(@intCast(start.column)) },
+                    .{ "end_line", json.jsonInteger(@intCast(end.row)) },
+                    .{ "end_col", json.jsonInteger(@intCast(end.column)) },
+                    .{ "kind", json.jsonInteger(1) },
+                }));
                 return; // Don't recurse into matched node's children
             }
         }

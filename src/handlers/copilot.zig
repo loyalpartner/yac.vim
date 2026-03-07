@@ -134,32 +134,30 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, params: Value) !DispatchResul
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 
     // Build textDocument/inlineCompletion params
-    var position = ObjectMap.init(ctx.allocator);
-    try position.put("line", json.jsonInteger(@intCast(line)));
-    try position.put("character", json.jsonInteger(@intCast(column)));
-
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(uri));
-
-    var context_obj = ObjectMap.init(ctx.allocator);
-    try context_obj.put("triggerKind", json.jsonInteger(1)); // Automatic
-
-    var formatting = ObjectMap.init(ctx.allocator);
     const tab_size = json.getInteger(obj, "tab_size") orelse 4;
     const insert_spaces = if (obj.get("insert_spaces")) |v| switch (v) {
         .bool => |b| b,
         else => true,
     } else true;
-    try formatting.put("tabSize", json.jsonInteger(tab_size));
-    try formatting.put("insertSpaces", json.jsonBool(insert_spaces));
 
-    var lsp_params = ObjectMap.init(ctx.allocator);
-    try lsp_params.put("textDocument", .{ .object = td });
-    try lsp_params.put("position", .{ .object = position });
-    try lsp_params.put("context", .{ .object = context_obj });
-    try lsp_params.put("formattingOptions", .{ .object = formatting });
+    const lsp_params = try json.buildObject(ctx.allocator, .{
+        .{ "textDocument", try json.buildObject(ctx.allocator, .{
+            .{ "uri", json.jsonString(uri) },
+        }) },
+        .{ "position", try json.buildObject(ctx.allocator, .{
+            .{ "line", json.jsonInteger(@intCast(line)) },
+            .{ "character", json.jsonInteger(@intCast(column)) },
+        }) },
+        .{ "context", try json.buildObject(ctx.allocator, .{
+            .{ "triggerKind", json.jsonInteger(1) },
+        }) },
+        .{ "formattingOptions", try json.buildObject(ctx.allocator, .{
+            .{ "tabSize", json.jsonInteger(tab_size) },
+            .{ "insertSpaces", json.jsonBool(insert_spaces) },
+        }) },
+    });
 
-    const request_id = try client.sendRequest("textDocument/inlineCompletion", .{ .object = lsp_params });
+    const request_id = try client.sendRequest("textDocument/inlineCompletion", lsp_params);
     return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
 }
 
@@ -179,13 +177,13 @@ pub fn handleCopilotDidFocus(ctx: *HandlerContext, params: Value) !DispatchResul
     const file = json.getString(obj, "file") orelse return .{ .empty = {} };
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 
-    var td = ObjectMap.init(ctx.allocator);
-    try td.put("uri", json.jsonString(uri));
+    const notify_params = try json.buildObject(ctx.allocator, .{
+        .{ "textDocument", try json.buildObject(ctx.allocator, .{
+            .{ "uri", json.jsonString(uri) },
+        }) },
+    });
 
-    var notify_params = ObjectMap.init(ctx.allocator);
-    try notify_params.put("textDocument", .{ .object = td });
-
-    client.sendNotification("textDocument/didFocus", .{ .object = notify_params }) catch |e| {
+    client.sendNotification("textDocument/didFocus", notify_params) catch |e| {
         log.err("Failed to send didFocus to Copilot: {any}", .{e});
     };
 
@@ -207,11 +205,12 @@ pub fn handleCopilotAccept(ctx: *HandlerContext, params: Value) !DispatchResult 
         try args.append(uuid);
     }
 
-    var cmd_params = ObjectMap.init(ctx.allocator);
-    try cmd_params.put("command", json.jsonString("github.copilot.didAcceptCompletionItem"));
-    try cmd_params.put("arguments", .{ .array = args });
+    const cmd_params = try json.buildObject(ctx.allocator, .{
+        .{ "command", json.jsonString("github.copilot.didAcceptCompletionItem") },
+        .{ "arguments", .{ .array = args } },
+    });
 
-    client.sendNotification("workspace/executeCommand", .{ .object = cmd_params }) catch |e| {
+    client.sendNotification("workspace/executeCommand", cmd_params) catch |e| {
         log.err("Failed to send Copilot accept: {any}", .{e});
     };
 
