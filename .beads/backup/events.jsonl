@@ -120,3 +120,4 @@
 {"actor":"lee","comment":null,"created_at":"2026-03-06T12:52:33Z","event_type":"closed","id":120,"issue_id":"yac-ifn","new_value":"Closed","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-06T17:13:29Z","event_type":"created","id":121,"issue_id":"yac-sst","new_value":"","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-06T17:40:51Z","event_type":"closed","id":122,"issue_id":"yac-sst","new_value":"Root cause: injections.scm 的 S-expression 语法缺少外层括号，导致 #set! predicate 被解析为独立 pattern。修复：添加外层 (()) 包裹。同时修复了 lang_config.zig 中 ext_count==0 的检查（blocking injection-only languages）","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T21:01:19Z","event_type":"created","id":123,"issue_id":"yac-bbu","new_value":"","old_value":""}
