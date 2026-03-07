@@ -1433,24 +1433,25 @@ function! s:handle_close(channel) abort
 endfunction
 
 " Channel回调，只处理服务器主动推送的通知
+" Vim JSON channel: [0, data] → callback receives data (dict) directly
 function! s:handle_response(channel, msg) abort
-  " msg 格式是 [seq, content]
-  if type(a:msg) == v:t_list && len(a:msg) >= 2
-    let content = a:msg[1]
+  if type(a:msg) != v:t_dict || !has_key(a:msg, 'action')
+    return
+  endif
 
-    " 只处理服务器主动发送的通知（如诊断、applyEdit）
-    if type(content) == v:t_dict && has_key(content, 'action')
-      if content.action == 'diagnostics'
-        call s:debug_log("Received diagnostics action with " . len(content.diagnostics) . " items")
-        call s:show_diagnostics(content.diagnostics)
-      elseif content.action == 'applyEdit'
-        call s:debug_log("Received applyEdit action")
-        if has_key(content, 'edit') && has_key(content.edit, 'changes')
-          call s:apply_workspace_edit(content.edit.changes)
-        elseif has_key(content, 'edit') && has_key(content.edit, 'documentChanges')
-          call s:apply_workspace_edit(content.edit.documentChanges)
-        endif
-      endif
+  if a:msg.action ==# 'diagnostics'
+    let diags = get(a:msg, 'params', {})
+    let items = get(diags, 'diagnostics', [])
+    let uri = get(diags, 'uri', '')
+    call s:debug_log("Received diagnostics: " . len(items) . " items for " . uri)
+    call s:handle_publish_diagnostics(uri, items)
+  elseif a:msg.action ==# 'applyEdit'
+    let params = get(a:msg, 'params', {})
+    call s:debug_log("Received applyEdit action")
+    if has_key(params, 'edit') && has_key(params.edit, 'changes')
+      call s:apply_workspace_edit(params.edit.changes)
+    elseif has_key(params, 'edit') && has_key(params.edit, 'documentChanges')
+      call s:apply_workspace_edit(params.edit.documentChanges)
     endif
   endif
 endfunction
@@ -3258,6 +3259,32 @@ function! s:execute_code_action(action) abort
   endif
 endfunction
 
+" Convert LSP publishDiagnostics params to yac format and display
+function! s:handle_publish_diagnostics(uri, lsp_diagnostics) abort
+  let severity_names = {1: 'Error', 2: 'Warning', 3: 'Info', 4: 'Hint'}
+  let file_path = substitute(a:uri, '^file://', '', '')
+
+  let diags = []
+  for d in a:lsp_diagnostics
+    let range = get(d, 'range', {})
+    let start = get(range, 'start', {})
+    let end = get(range, 'end', start)
+    call add(diags, {
+      \ 'file': file_path,
+      \ 'line': get(start, 'line', 0),
+      \ 'column': get(start, 'character', 0),
+      \ 'end_line': get(end, 'line', get(start, 'line', 0)),
+      \ 'end_column': get(end, 'character', get(start, 'character', 0)),
+      \ 'severity': get(severity_names, get(d, 'severity', 1), 'Error'),
+      \ 'message': get(d, 'message', ''),
+      \ 'source': get(d, 'source', ''),
+      \ 'code': string(get(d, 'code', '')),
+      \ })
+  endfor
+
+  call s:show_diagnostics(diags)
+endfunction
+
 function! s:show_diagnostics(diagnostics) abort
   call s:debug_log("s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics")
   call s:debug_log("virtual text enabled = " . s:diagnostic_virtual_text.enabled)
@@ -3267,11 +3294,22 @@ function! s:show_diagnostics(diagnostics) abort
     if s:diagnostic_virtual_text.enabled
       call s:update_diagnostic_virtual_text([])
     endif
-    echo "No diagnostics found"
+    if exists('b:yac_diagnostics')
+      unlet b:yac_diagnostics
+    endif
     return
   endif
 
   call s:debug_log("First diagnostic: " . string(a:diagnostics[0]))
+
+  " Store diagnostics per-buffer for tests & external queries
+  let current_file = expand('%:p')
+  for diag in a:diagnostics
+    if get(diag, 'file', '') ==# current_file
+      let b:yac_diagnostics = a:diagnostics
+      break
+    endif
+  endfor
 
   let severity_map = {'Error': 'E', 'Warning': 'W', 'Info': 'I', 'Hint': 'H'}
   let qf_list = []
@@ -3370,11 +3408,12 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
       " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
       if exists('*prop_remove')
         for severity in ['error', 'warning', 'info', 'hint']
-          try
-            call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': bufnr, 'all': 1})
-          catch
-            " 忽略错误
-          endtry
+          for prefix in ['diagnostic_', 'diagnostic_ul_']
+            try
+              call prop_remove({'type': prefix . severity, 'bufnr': bufnr, 'all': 1})
+            catch
+            endtry
+          endfor
         endfor
       endif
 
@@ -3389,94 +3428,111 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
   endfor
 endfunction
 
-" 渲染诊断虚拟文本到buffer
+" 渲染诊断标注到 buffer（波浪线 + 行尾 virtual text）
 function! s:render_diagnostic_virtual_text(bufnr) abort
-  call s:debug_log("render_diagnostic_virtual_text called for buffer " . a:bufnr)
-
   if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    call s:debug_log("No diagnostics stored for buffer " . a:bufnr)
     return
   endif
-
   let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
-  call s:debug_log("Found " . len(diagnostics) . " diagnostics to render")
+  let last_line = getbufinfo(a:bufnr)[0].linecount
 
-  " 为每个诊断添加virtual text
   for diag in diagnostics
-    let line_num = diag.line + 1  " Convert to 1-based
-    let col_num = diag.column + 1
-    let text = ' ' . diag.severity . ': ' . diag.message  " 前缀空格用于视觉分离
-    call s:debug_log("Processing diagnostic at line " . line_num . ": " . text)
+    let lnum = diag.line + 1
+    if lnum < 1 || lnum > last_line | continue | endif
+    let sev = tolower(diag.severity)
 
-    " 根据严重程度选择高亮组
-    let hl_group = get({'Error': 'DiagnosticError', 'Warning': 'DiagnosticWarning',
-      \ 'Info': 'DiagnosticInfo'}, diag.severity, 'DiagnosticHint')
-
-    " 使用文本属性（Vim 8.1+）显示diagnostic virtual text
-    if exists('*prop_type_add')
-      call s:debug_log("Using text properties for virtual text")
-      " 确保属性类型存在
-      let prop_type = 'diagnostic_' . tolower(diag.severity)
-      try
-        call prop_type_add(prop_type, {'highlight': hl_group})
-        call s:debug_log("Added prop type " . prop_type)
-      catch /E969/
-        " 属性类型已存在，忽略错误
-        call s:debug_log("Prop type " . prop_type . " already exists")
-      endtry
-
-      " 在行尾添加虚拟文本
-      try
-        call prop_add(line_num, 0, {
-          \ 'type': prop_type,
-          \ 'text': text,
-          \ 'text_align': 'after',
-          \ 'bufnr': a:bufnr
-          \ })
-        call s:debug_log("Successfully added virtual text at line " . line_num)
-      catch
-        call s:debug_log("text_align failed, trying fallback: " . v:exception)
-        " 添加失败，可能是位置无效或Vim版本不支持text_align
-        " 尝试简化版本
-        try
-          " Fallback: add virtual text at end of line (use 0 for end of line)
-          let line_end_col = len(getbufline(a:bufnr, line_num)[0]) + 1
-          call prop_add(line_num, line_end_col, {
-            \ 'type': prop_type,
-            \ 'text': text,
-            \ 'bufnr': a:bufnr
-            \ })
-          call s:debug_log("Successfully added virtual text with fallback at line " . line_num)
-        catch
-          call s:debug_log("Virtual text completely failed: " . v:exception)
-          " 完全失败，跳过这个诊断
-        endtry
-      endtry
-    else
-      call s:debug_log("Text properties not available, using echo fallback")
-      " 降级：至少在状态行显示诊断信息
-      echo "Diagnostic at line " . line_num . ": " . text
+    " --- 1. Undercurl on error range ---
+    let ul_type = 'diagnostic_ul_' . sev
+    call s:ensure_diag_prop_type(ul_type, sev, 'underline')
+    let end_lnum = get(diag, 'end_line', diag.line) + 1
+    let col_start = diag.column + 1
+    let col_end = get(diag, 'end_column', diag.column) + 1
+    " Single-point range: extend to end of word or +1
+    if end_lnum == lnum && col_end <= col_start
+      let col_end = col_start + 1
     endif
+    try
+      call prop_add(lnum, col_start, {
+        \ 'type': ul_type,
+        \ 'end_lnum': end_lnum,
+        \ 'end_col': col_end,
+        \ 'bufnr': a:bufnr
+        \ })
+    catch
+      call s:debug_log('diag underline prop_add failed: ' . v:exception
+        \ . ' lnum=' . lnum . ' col=' . col_start . '-' . col_end
+        \ . ' end_lnum=' . end_lnum . ' type=' . ul_type)
+    endtry
+
+    " --- 2. Virtual text at end of line ---
+    let vt_type = 'diagnostic_' . sev
+    call s:ensure_diag_prop_type(vt_type, sev, 'vtext')
+    let text = ' ' . diag.severity . ': ' . diag.message
+    try
+      call prop_add(lnum, 0, {
+        \ 'type': vt_type,
+        \ 'text': text,
+        \ 'text_align': 'after',
+        \ 'bufnr': a:bufnr
+        \ })
+    catch
+      call s:debug_log('diag vtext prop_add failed: ' . v:exception
+        \ . ' lnum=' . lnum . ' type=' . vt_type)
+    endtry
   endfor
+endfunction
+
+" Ensure a diagnostic prop type exists. kind = 'underline' | 'vtext'
+function! s:ensure_diag_prop_type(name, severity, kind) abort
+  if !empty(prop_type_get(a:name))
+    return
+  endif
+  if a:kind ==# 'underline'
+    let hl = 'YacDiagUL' . toupper(a:severity[0]) . a:severity[1:]
+    call s:ensure_diag_highlights()
+    call prop_type_add(a:name, {'highlight': hl})
+  else
+    let hl = 'YacDiagVT' . toupper(a:severity[0]) . a:severity[1:]
+    call s:ensure_diag_highlights()
+    call prop_type_add(a:name, {'highlight': hl})
+  endif
+endfunction
+
+let s:diag_hl_defined = 0
+function! s:ensure_diag_highlights() abort
+  if s:diag_hl_defined | return | endif
+  let s:diag_hl_defined = 1
+  " Underline highlights: undercurl when terminal supports (t_Cs set), else fallback to underline
+  if !empty(&t_Cs)
+    highlight default YacDiagULError   cterm=undercurl ctermul=Red    gui=undercurl guisp=Red
+    highlight default YacDiagULWarning cterm=undercurl ctermul=Yellow gui=undercurl guisp=Orange
+    highlight default YacDiagULInfo    cterm=undercurl ctermul=Blue   gui=undercurl guisp=LightBlue
+    highlight default YacDiagULHint    cterm=undercurl ctermul=Green  gui=undercurl guisp=Green
+  else
+    highlight default YacDiagULError   cterm=underline ctermul=Red    gui=undercurl guisp=Red
+    highlight default YacDiagULWarning cterm=underline ctermul=Yellow gui=undercurl guisp=Orange
+    highlight default YacDiagULInfo    cterm=underline ctermul=Blue   gui=undercurl guisp=LightBlue
+    highlight default YacDiagULHint    cterm=underline ctermul=Green  gui=undercurl guisp=Green
+  endif
+  " Virtual text highlights (dimmed text at end of line)
+  highlight default YacDiagVTError   ctermfg=Red    guifg=Red
+  highlight default YacDiagVTWarning ctermfg=Yellow guifg=Orange
+  highlight default YacDiagVTInfo    ctermfg=Blue   guifg=LightBlue
+  highlight default YacDiagVTHint    ctermfg=Green  guifg=Green
 endfunction
 
 " 清除指定buffer的诊断虚拟文本
 function! s:clear_diagnostic_virtual_text(bufnr) abort
-  " 无条件清除文本属性（避免叠加）
   if exists('*prop_remove')
-    " 清除所有diagnostic相关的文本属性
     for severity in ['error', 'warning', 'info', 'hint']
-      try
-        call prop_remove({'type': 'diagnostic_' . severity, 'bufnr': a:bufnr, 'all': 1})
-        call s:debug_log("Cleared diagnostic_" . severity . " from buffer " . a:bufnr)
-      catch
-        " 如果属性类型不存在，忽略错误
-        call s:debug_log("No diagnostic_" . severity . " properties found in buffer " . a:bufnr)
-      endtry
+      for prefix in ['diagnostic_', 'diagnostic_ul_']
+        try
+          call prop_remove({'type': prefix . severity, 'bufnr': a:bufnr, 'all': 1})
+        catch
+        endtry
+      endfor
     endfor
   endif
-
-  " 清除storage记录
   if has_key(s:diagnostic_virtual_text.storage, a:bufnr)
     unlet s:diagnostic_virtual_text.storage[a:bufnr]
   endif
@@ -3740,6 +3796,12 @@ function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scro
   if type(a:response) != v:t_dict
         \ || !has_key(a:response, 'highlights')
         \ || !has_key(a:response, 'range')
+    return
+  endif
+  " Defer prop updates while picker is open — applying text properties
+  " to the underlying buffer triggers a Vim redraw that can break popup
+  " cursorline rendering (observed with large markdown files).
+  if yac_picker#is_open()
     return
   endif
   " Per-buffer seq: discard stale responses for THIS buffer, but don't

@@ -16,6 +16,11 @@ set tabstop=4
 set shiftwidth=4
 set softtabstop=4
 
+" 终端 undercurl + 彩色下划线支持
+let &t_Cs = "\e[4:3m"
+let &t_Ce = "\e[4:0m"
+let &t_AU = "\e[58:5:%dm"
+
 " 语法高亮
 syntax enable
 filetype plugin indent on

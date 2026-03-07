@@ -183,12 +183,13 @@ pub fn encodeJsonRpcRequest(allocator: Allocator, id: u64, method: []const u8, p
 }
 
 /// Encode a JSON-RPC notification as a JSON line.
+/// Vim JSON channel protocol: [0, {data}] for unsolicited messages.
 pub fn encodeJsonRpcNotification(allocator: Allocator, method: []const u8, params: Value) ![]const u8 {
     var aw: Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     const w = &aw.writer;
 
-    try w.writeAll("[{\"method\":");
+    try w.writeAll("[0,{\"action\":");
     try json.stringifyToWriter(json.jsonString(method), w);
     try w.writeAll(",\"params\":");
     try json.stringifyToWriter(params, w);
