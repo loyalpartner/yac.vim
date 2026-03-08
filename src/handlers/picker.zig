@@ -15,10 +15,10 @@ pub fn handlePickerOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     };
     const cwd = json.getString(obj, "cwd") orelse return .{ .empty = {} };
 
-    var result = ObjectMap.init(ctx.allocator);
-    try result.put("action", json.jsonString("picker_init"));
-    try result.put("cwd", json.jsonString(cwd));
-
+    var result = try json.buildObjectMap(ctx.allocator, .{
+        .{ "action", json.jsonString("picker_init") },
+        .{ "cwd", json.jsonString(cwd) },
+    });
     if (obj.get("recent_files")) |rf| {
         try result.put("recent_files", rf);
     }
@@ -41,15 +41,16 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
             .not_available => return .{ .empty = {} },
         };
 
-        var ws_params = ObjectMap.init(ctx.allocator);
-        try ws_params.put("query", json.jsonString(query));
-        const request_id = try lsp_ctx.client.sendRequest("workspace/symbol", .{ .object = ws_params });
+        const ws_params = try json.buildObject(ctx.allocator, .{
+            .{ "query", json.jsonString(query) },
+        });
+        const request_id = try lsp_ctx.client.sendRequest("workspace/symbol", ws_params);
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     } else if (std.mem.eql(u8, mode, "grep")) {
-        var result = ObjectMap.init(ctx.allocator);
-        try result.put("action", json.jsonString("picker_grep_query"));
-        try result.put("query", json.jsonString(query));
-        return .{ .data = .{ .object = result } };
+        return .{ .data = try json.buildObject(ctx.allocator, .{
+            .{ "action", json.jsonString("picker_grep_query") },
+            .{ "query", json.jsonString(query) },
+        }) };
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
         const ts_state = ctx.ts orelse return .{ .empty = {} };
         const ts_obj = switch (params) {
@@ -70,16 +71,16 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
         );
         return .{ .data = result };
     } else {
-        var result = ObjectMap.init(ctx.allocator);
-        try result.put("action", json.jsonString("picker_file_query"));
-        try result.put("query", json.jsonString(query));
-        return .{ .data = .{ .object = result } };
+        return .{ .data = try json.buildObject(ctx.allocator, .{
+            .{ "action", json.jsonString("picker_file_query") },
+            .{ "query", json.jsonString(query) },
+        }) };
     }
 }
 
 pub fn handlePickerClose(ctx: *HandlerContext, params: Value) !DispatchResult {
     _ = params;
-    var result = ObjectMap.init(ctx.allocator);
-    try result.put("action", json.jsonString("picker_close"));
-    return .{ .data = .{ .object = result } };
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "action", json.jsonString("picker_close") },
+    }) };
 }

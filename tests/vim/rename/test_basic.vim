@@ -38,7 +38,7 @@ if exists(':YacRename')
 
   if user_map_count > 0 && users_count_after < users_count_before
     call yac_test#log('INFO', 'Rename successful: users -> user_map')
-    call yac_test#assert_true(1, 'Rename should work')
+    call yac_test#assert_true(user_map_count > 0 && users_count_after < users_count_before, 'Rename should work')
   else
     call yac_test#log('INFO', 'Rename may not have completed (interactive mode)')
   endif

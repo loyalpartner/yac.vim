@@ -148,6 +148,10 @@ let g:yac_copilot_auto = 1
 
 " Diagnostic virtual text (default: 1)
 let g:yac_diagnostic_virtual_text = 1
+
+" Auto-reload files modified externally (default: 1)
+" Useful when multiple Vim clients edit the same workspace
+let g:yac_autoread = 1
 ```
 
 ## Architecture
@@ -159,24 +163,25 @@ Vim ─── Unix socket (JSON-RPC) ──→ Zig daemon ──→ LSP servers
 ```
 
 - The daemon starts automatically and serves all Vim instances via a shared Unix socket
+- Multiple Vim clients share one daemon; LSP notifications are routed by workspace subscription
 - Languages are loaded on demand — the daemon starts with no languages
-- Each language plugin registers itself via `g:yac_lang_plugins` on Vim startup
-- When a file is opened, Vim tells the daemon to load the matching language plugin
+- 13 languages are bundled in `languages/`; external plugins can register via `g:yac_lang_plugins`
+
+For detailed architecture documentation (C4 diagrams, threading model, data flows), see [docs/architecture.md](docs/architecture.md).
 
 ### Language Plugin Structure
 
-Each language plugin (e.g. `yac-vim/zig`) follows this structure:
+Each language plugin follows this structure (bundled in `languages/` or as external Vim plugin):
 
 ```
-zig/
-├── plugin/yac_zig.vim     # Registers into g:yac_lang_plugins
+{lang}/
 ├── languages.json         # Extension → grammar mapping
 ├── grammar/parser.wasm    # Tree-sitter WASM grammar
 └── queries/
-    ├── highlights.scm
-    ├── symbols.scm
-    ├── folds.scm
-    └── textobjects.scm
+    ├── highlights.scm     # Syntax highlighting (from Zed)
+    ├── symbols.scm        # Document symbols
+    ├── folds.scm          # Folding ranges
+    └── textobjects.scm    # Text objects
 ```
 
 ## Development

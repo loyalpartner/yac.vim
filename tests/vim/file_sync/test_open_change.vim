@@ -42,7 +42,7 @@ if word == 'newFunction'
   let popups = popup_list()
   if !empty(popups)
     call yac_test#log('INFO', 'New function recognized by LSP after didChange')
-    call yac_test#assert_true(1, 'didChange should sync new code')
+    call yac_test#assert_true(!empty(popups), 'didChange should sync new code')
   endif
   call popup_clear()
 endif

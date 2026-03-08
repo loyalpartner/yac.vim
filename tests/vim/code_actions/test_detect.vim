@@ -36,7 +36,7 @@ call yac_test#wait_popup(3000)
 let popups = popup_list()
 if !empty(popups)
   call yac_test#log('INFO', 'Code action menu appeared')
-  call yac_test#assert_true(1, 'Code action should show options')
+  call yac_test#assert_true(!empty(popups), 'Code action should show options')
 else
   call yac_test#log('INFO', 'No popup (may use quickfix or different UI)')
 endif

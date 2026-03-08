@@ -412,24 +412,9 @@ function! yac_test#log(level, message) abort
 endfunction
 
 " 检测 Vim 运行时错误
-" ignore_patterns: channel 关闭时的异步竞争条件（E716 channel_pool）
-let s:errmsg_ignore = [
-      \ 'E716:.*channel_pool',
-      \ 'E716:.*"local"',
-      \ ]
-
 function! yac_test#check_errors() abort
   if !empty(v:errmsg)
-    let l:ignore = 0
-    for pat in s:errmsg_ignore
-      if v:errmsg =~# pat
-        let l:ignore = 1
-        break
-      endif
-    endfor
-    if !l:ignore
-      call s:record_fail('Vim error detected', v:errmsg)
-    endif
+    call s:record_fail('Vim error detected', v:errmsg)
     let v:errmsg = ''
   endif
 endfunction
@@ -476,8 +461,6 @@ function! yac_test#teardown() abort
   " 批量模式下不停止 YAC，由 finish() 负责
   if !s:batch_mode && exists(':YacStop')
     silent! YacStop
-    " YacStop 可能触发 v:errmsg（异步回调竞争），不算测试失败
-    let v:errmsg = ''
   endif
 endfunction
 

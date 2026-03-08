@@ -17,9 +17,10 @@ setlocal buftype=nofile
 set filetype=text
 call setline(1, ['This is a plain text file', 'No LSP support expected'])
 
+let v:errmsg = ''
 YacHover
 call yac_test#wait_for({-> !empty(popup_list())}, 500)
-call yac_test#assert_true(1, 'Hover on non-Zig file should not crash')
+call yac_test#assert_true(v:errmsg ==# '', 'Hover on non-Zig file should not crash: ' . v:errmsg)
 
 bdelete!
 
@@ -63,10 +64,11 @@ normal! o
 execute "normal! ipub fn unicodeTest() []const u8 { return \"你好世界\"; }"
 
 call cursor(line('$'), 8)
+let v:errmsg = ''
 YacHover
-call yac_test#wait_for({-> !empty(popup_list())}, 3000)
+let s:unicode_hover = yac_test#wait_for({-> !empty(popup_list())}, 3000)
 call popup_clear()
-call yac_test#assert_true(1, 'Hover with Unicode content should not crash')
+call yac_test#assert_true(v:errmsg ==# '', 'Hover with Unicode content should not crash: ' . v:errmsg)
 
 silent! %d
 call setline(1, original)

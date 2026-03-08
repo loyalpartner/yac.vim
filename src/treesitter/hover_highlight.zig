@@ -396,10 +396,10 @@ pub noinline fn extractHoverHighlights(
         try hl_obj.put(entry.key_ptr.*, .{ .array = entry.value_ptr.* });
     }
 
-    var result = ObjectMap.init(allocator);
-    try result.put("lines", .{ .array = lines_arr });
-    try result.put("highlights", .{ .object = hl_obj });
-    return .{ .object = result };
+    return json.buildObject(allocator, .{
+        .{ "lines", .{ .array = lines_arr } },
+        .{ "highlights", .{ .object = hl_obj } },
+    });
 }
 
 // ============================================================================

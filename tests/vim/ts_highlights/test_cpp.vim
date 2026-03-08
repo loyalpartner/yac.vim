@@ -50,7 +50,7 @@ if !s:hl_available
   finish
 endif
 
-call yac_test#assert_true(1, 'Tree-sitter highlights available for C++')
+call yac_test#assert_true(s:hl_available, 'Tree-sitter highlights available for C++')
 
 " ============================================================================
 " Test 1: #define MAX_USERS — MAX_USERS should be constant, not variable

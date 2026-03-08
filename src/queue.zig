@@ -95,8 +95,8 @@ pub const OutMessage = struct {
 // Queue type aliases
 // ============================================================================
 
-pub const InQueue = BoundedQueue(WorkItem, 256);
-pub const OutQueue = BoundedQueue(OutMessage, 1024);
+pub const InQueue = BoundedQueue(WorkItem, 1024);
+pub const OutQueue = BoundedQueue(OutMessage, 4096);
 
 // ============================================================================
 // TS method routing — fast byte-scan, no JSON parsing required.
@@ -119,4 +119,101 @@ pub fn isTsMethod(raw_line: []const u8) bool {
         if (std.mem.indexOf(u8, raw_line, kw) != null) return true;
     }
     return false;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "isTsMethod — returns true for all known TS methods" {
+    try std.testing.expect(isTsMethod("[1, \"ts_symbols\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_folding\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_highlights\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_navigate\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_textobjects\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_hover_highlight\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"load_language\", {}]"));
+}
+
+test "isTsMethod — returns false for non-TS methods" {
+    try std.testing.expect(!isTsMethod("\"textDocument/completion\""));
+    try std.testing.expect(!isTsMethod("\"textDocument/definition\""));
+    try std.testing.expect(!isTsMethod("\"formatting\""));
+    try std.testing.expect(!isTsMethod("\"references\""));
+    try std.testing.expect(!isTsMethod(""));
+    // Partial match without quotes should not match
+    try std.testing.expect(!isTsMethod("ts_symbols"));
+}
+
+test "isTsMethod — substring in larger line" {
+    try std.testing.expect(isTsMethod("[1, \"ts_highlights\", {\"file\": \"/tmp/test.zig\"}]"));
+    try std.testing.expect(!isTsMethod("[1, \"completion\", {\"file\": \"/tmp/test.zig\"}]"));
+}
+
+test "BoundedQueue — push and pop basic behavior" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    try std.testing.expect(q.push(10));
+    try std.testing.expect(q.push(20));
+    try std.testing.expect(q.push(30));
+    try std.testing.expectEqual(@as(?u32, 10), q.pop());
+    try std.testing.expectEqual(@as(?u32, 20), q.pop());
+    try std.testing.expectEqual(@as(?u32, 30), q.pop());
+}
+
+test "BoundedQueue — push returns false when full" {
+    const Q = BoundedQueue(u32, 2);
+    var q = Q{};
+    try std.testing.expect(q.push(1));
+    try std.testing.expect(q.push(2));
+    // Queue is full now
+    try std.testing.expect(!q.push(3));
+    // Pop one and push again should work
+    try std.testing.expectEqual(@as(?u32, 1), q.pop());
+    try std.testing.expect(q.push(4));
+}
+
+test "BoundedQueue — close makes pop return null on empty" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    try std.testing.expect(q.push(42));
+    q.close();
+    // Should still return items that were pushed before close
+    try std.testing.expectEqual(@as(?u32, 42), q.pop());
+    // Now empty + closed → null
+    try std.testing.expectEqual(@as(?u32, null), q.pop());
+}
+
+test "BoundedQueue — push returns false when closed" {
+    const Q = BoundedQueue(u32, 4);
+    var q = Q{};
+    q.close();
+    try std.testing.expect(!q.push(1));
+}
+
+test "InQueue capacity is 1024" {
+    const q = InQueue{};
+    try std.testing.expectEqual(@as(usize, 1024), q.buf.len);
+}
+
+test "OutQueue capacity is 4096" {
+    const q = OutQueue{};
+    try std.testing.expectEqual(@as(usize, 4096), q.buf.len);
+}
+
+test "BoundedQueue — wraps around correctly" {
+    const Q = BoundedQueue(u32, 3);
+    var q = Q{};
+    // Fill and drain to advance head/tail pointers
+    try std.testing.expect(q.push(1));
+    try std.testing.expect(q.push(2));
+    try std.testing.expectEqual(@as(?u32, 1), q.pop());
+    try std.testing.expectEqual(@as(?u32, 2), q.pop());
+    // Now head=2, tail=2, push 3 items wrapping around
+    try std.testing.expect(q.push(10));
+    try std.testing.expect(q.push(20));
+    try std.testing.expect(q.push(30));
+    try std.testing.expectEqual(@as(?u32, 10), q.pop());
+    try std.testing.expectEqual(@as(?u32, 20), q.pop());
+    try std.testing.expectEqual(@as(?u32, 30), q.pop());
 }

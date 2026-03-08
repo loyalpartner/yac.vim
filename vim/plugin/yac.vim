@@ -212,6 +212,17 @@ augroup yac_theme
   autocmd ColorScheme * call yac_theme#autoload()
 augroup END
 
+" Auto-reload files modified externally (e.g. by other Vim clients sharing the same daemon)
+" Disable with: let g:yac_autoread = 0
+if get(g:, 'yac_autoread', 1)
+  set autoread
+  augroup yac_autoread
+    autocmd!
+    autocmd FocusGained,BufEnter * silent! checktime
+    autocmd CursorHold * silent! checktime
+  augroup END
+endif
+
 " Enable Copilot by default (set g:yac_copilot_auto = 0 to disable)
 if get(g:, 'yac_copilot_auto', 1)
   call yac_copilot#enable()

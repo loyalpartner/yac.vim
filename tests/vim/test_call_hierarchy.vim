@@ -44,7 +44,7 @@ elseif !empty(loclist)
 
 elseif !empty(popups)
   call yac_test#log('INFO', 'Incoming calls in popup')
-  call yac_test#assert_true(1, 'Call hierarchy displayed')
+  call yac_test#assert_true(!empty(popups), 'Call hierarchy displayed in popup')
 
 else
   call yac_test#log('INFO', 'No incoming calls found')

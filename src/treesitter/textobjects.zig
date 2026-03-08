@@ -45,12 +45,12 @@ pub fn findTextObject(
     if (best_node) |node| {
         const start = node.startPoint();
         const end = node.endPoint();
-        var result = ObjectMap.init(allocator);
-        try result.put("start_line", json.jsonInteger(@intCast(start.row)));
-        try result.put("start_col", json.jsonInteger(@intCast(start.column)));
-        try result.put("end_line", json.jsonInteger(@intCast(end.row)));
-        try result.put("end_col", json.jsonInteger(@intCast(end.column)));
-        return .{ .object = result };
+        return json.buildObject(allocator, .{
+            .{ "start_line", json.jsonInteger(@intCast(start.row)) },
+            .{ "start_col", json.jsonInteger(@intCast(start.column)) },
+            .{ "end_line", json.jsonInteger(@intCast(end.row)) },
+            .{ "end_col", json.jsonInteger(@intCast(end.column)) },
+        });
     }
 
     return .null;

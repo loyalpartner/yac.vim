@@ -57,19 +57,19 @@ pub fn extractSymbols(
         if (seen.contains(key)) continue;
         try seen.put(key, {});
 
-        var sym = ObjectMap.init(allocator);
-        try sym.put("name", json.jsonString(name));
-        try sym.put("kind", json.jsonString(k));
-        try sym.put("file", json.jsonString(file_path));
-        try sym.put("selection_line", json.jsonInteger(@intCast(start.row)));
-        try sym.put("selection_column", json.jsonInteger(@intCast(start.column)));
-        try sym.put("end_line", json.jsonInteger(@intCast(node.endPoint().row)));
-        try symbols.append(.{ .object = sym });
+        try symbols.append(try json.buildObject(allocator, .{
+            .{ "name", json.jsonString(name) },
+            .{ "kind", json.jsonString(k) },
+            .{ "file", json.jsonString(file_path) },
+            .{ "selection_line", json.jsonInteger(@intCast(start.row)) },
+            .{ "selection_column", json.jsonInteger(@intCast(start.column)) },
+            .{ "end_line", json.jsonInteger(@intCast(node.endPoint().row)) },
+        }));
     }
 
-    var result = ObjectMap.init(allocator);
-    try result.put("symbols", .{ .array = symbols });
-    return .{ .object = result };
+    return json.buildObject(allocator, .{
+        .{ "symbols", .{ .array = symbols } },
+    });
 }
 
 /// Map tree-sitter capture name to LSP-style symbol kind.
@@ -162,16 +162,16 @@ pub fn extractPickerSymbols(
                     const prefix = containerPrefix(impl_node.kind());
                     const impl_hl = try buildItemHighlights(allocator, "Interface", prefix, itype_name, "");
                     const impl_start = impl_node.startPoint();
-                    var hdr = ObjectMap.init(allocator);
-                    try hdr.put("label", json.jsonString(itype_name));
-                    try hdr.put("prefix", json.jsonString(prefix));
-                    try hdr.put("detail", json.jsonString(""));
-                    try hdr.put("kind", json.jsonString("Interface"));
-                    try hdr.put("depth", json.jsonInteger(0));
-                    try hdr.put("line", json.jsonInteger(@intCast(impl_start.row)));
-                    try hdr.put("column", json.jsonInteger(@intCast(impl_start.column)));
-                    try hdr.put("highlights", .{ .array = impl_hl });
-                    try items.append(.{ .object = hdr });
+                    try items.append(try json.buildObject(allocator, .{
+                        .{ "label", json.jsonString(itype_name) },
+                        .{ "prefix", json.jsonString(prefix) },
+                        .{ "detail", json.jsonString("") },
+                        .{ "kind", json.jsonString("Interface") },
+                        .{ "depth", json.jsonInteger(0) },
+                        .{ "line", json.jsonInteger(@intCast(impl_start.row)) },
+                        .{ "column", json.jsonInteger(@intCast(impl_start.column)) },
+                        .{ "highlights", .{ .array = impl_hl } },
+                    }));
                 }
             }
             depth = 1;
@@ -225,16 +225,16 @@ pub fn extractPickerSymbols(
 
         const highlights = try buildItemHighlights(allocator, k, prefix_str, name, effective_detail);
 
-        var item = ObjectMap.init(allocator);
-        try item.put("label", json.jsonString(name));
-        try item.put("prefix", json.jsonString(prefix_str));
-        try item.put("detail", json.jsonString(effective_detail));
-        try item.put("kind", json.jsonString(k));
-        try item.put("depth", json.jsonInteger(depth));
-        try item.put("line", json.jsonInteger(@intCast(start.row)));
-        try item.put("column", json.jsonInteger(@intCast(start.column)));
-        try item.put("highlights", .{ .array = highlights });
-        try items.append(.{ .object = item });
+        try items.append(try json.buildObject(allocator, .{
+            .{ "label", json.jsonString(name) },
+            .{ "prefix", json.jsonString(prefix_str) },
+            .{ "detail", json.jsonString(effective_detail) },
+            .{ "kind", json.jsonString(k) },
+            .{ "depth", json.jsonInteger(depth) },
+            .{ "line", json.jsonInteger(@intCast(start.row)) },
+            .{ "column", json.jsonInteger(@intCast(start.column)) },
+            .{ "highlights", .{ .array = highlights } },
+        }));
 
         // Expand container fields (depth=1) for struct/enum/union.
         if (std.mem.eql(u8, k, "Struct") or
@@ -245,10 +245,10 @@ pub fn extractPickerSymbols(
         }
     }
 
-    var result = ObjectMap.init(allocator);
-    try result.put("items", .{ .array = items });
-    try result.put("mode", json.jsonString("symbol"));
-    return .{ .object = result };
+    return json.buildObject(allocator, .{
+        .{ "items", .{ .array = items } },
+        .{ "mode", json.jsonString("symbol") },
+    });
 }
 
 /// Build the detail string for a function declaration.
@@ -325,16 +325,16 @@ fn appendContainerFields(
             const fstart = fname_node.startPoint();
 
             const field_highlights = try buildItemHighlights(allocator, "Field", "", fname, "");
-            var fitem = ObjectMap.init(allocator);
-            try fitem.put("label", json.jsonString(fname));
-            try fitem.put("prefix", json.jsonString(""));
-            try fitem.put("detail", json.jsonString(""));
-            try fitem.put("kind", json.jsonString("Field"));
-            try fitem.put("depth", json.jsonInteger(1));
-            try fitem.put("line", json.jsonInteger(@intCast(fstart.row)));
-            try fitem.put("column", json.jsonInteger(@intCast(fstart.column)));
-            try fitem.put("highlights", .{ .array = field_highlights });
-            try items.append(.{ .object = fitem });
+            try items.append(try json.buildObject(allocator, .{
+                .{ "label", json.jsonString(fname) },
+                .{ "prefix", json.jsonString("") },
+                .{ "detail", json.jsonString("") },
+                .{ "kind", json.jsonString("Field") },
+                .{ "depth", json.jsonInteger(1) },
+                .{ "line", json.jsonInteger(@intCast(fstart.row)) },
+                .{ "column", json.jsonInteger(@intCast(fstart.column)) },
+                .{ "highlights", .{ .array = field_highlights } },
+            }));
         }
         break; // Only one body declaration expected per variable_declaration.
     }
@@ -396,41 +396,41 @@ fn buildItemHighlights(
 
     if (prefix.len > 0) {
         // Prefix (fn / pub fn / …) gets keyword-function color.
-        var h = ObjectMap.init(alloc);
-        try h.put("col", json.jsonInteger(0));
-        try h.put("len", json.jsonInteger(@intCast(prefix.len)));
-        try h.put("hl", json.jsonString("YacTsKeywordFunction"));
-        try highlights.append(.{ .object = h });
+        try highlights.append(try json.buildObject(alloc, .{
+            .{ "col", json.jsonInteger(0) },
+            .{ "len", json.jsonInteger(@intCast(prefix.len)) },
+            .{ "hl", json.jsonString("YacTsKeywordFunction") },
+        }));
 
         // Name comes after prefix + space.
         const name_hl = kindToNameHlGroup(k);
         if (name_hl.len > 0) {
             const name_col: i64 = @intCast(prefix.len + 1);
-            var h2 = ObjectMap.init(alloc);
-            try h2.put("col", json.jsonInteger(name_col));
-            try h2.put("len", json.jsonInteger(@intCast(name.len)));
-            try h2.put("hl", json.jsonString(name_hl));
-            try highlights.append(.{ .object = h2 });
+            try highlights.append(try json.buildObject(alloc, .{
+                .{ "col", json.jsonInteger(name_col) },
+                .{ "len", json.jsonInteger(@intCast(name.len)) },
+                .{ "hl", json.jsonString(name_hl) },
+            }));
         }
     } else {
         // Name at position 0.
         const name_hl = kindToNameHlGroup(k);
         if (name_hl.len > 0) {
-            var h = ObjectMap.init(alloc);
-            try h.put("col", json.jsonInteger(0));
-            try h.put("len", json.jsonInteger(@intCast(name.len)));
-            try h.put("hl", json.jsonString(name_hl));
-            try highlights.append(.{ .object = h });
+            try highlights.append(try json.buildObject(alloc, .{
+                .{ "col", json.jsonInteger(0) },
+                .{ "len", json.jsonInteger(@intCast(name.len)) },
+                .{ "hl", json.jsonString(name_hl) },
+            }));
         }
 
         // Detail (e.g. "struct {", "@import(…)") comes after name + space, dimmed.
         if (detail.len > 0) {
             const detail_col: i64 = @intCast(name.len + 1);
-            var h = ObjectMap.init(alloc);
-            try h.put("col", json.jsonInteger(detail_col));
-            try h.put("len", json.jsonInteger(@intCast(detail.len)));
-            try h.put("hl", json.jsonString("YacPickerDetail"));
-            try highlights.append(.{ .object = h });
+            try highlights.append(try json.buildObject(alloc, .{
+                .{ "col", json.jsonInteger(detail_col) },
+                .{ "len", json.jsonInteger(@intCast(detail.len)) },
+                .{ "hl", json.jsonString("YacPickerDetail") },
+            }));
         }
     }
 

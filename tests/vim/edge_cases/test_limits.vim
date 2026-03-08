@@ -58,8 +58,8 @@ execute "normal! ifn unsavedFunc() i32 { return 999; }"
 
 call cursor(line('$'), 5)
 YacHover
-call yac_test#wait_for({-> !empty(popup_list())}, 3000)
-call yac_test#assert_true(1, 'Hover on unsaved code should not crash')
+let s:hover_unsaved = yac_test#wait_for({-> !empty(popup_list())}, 3000)
+call yac_test#assert_true(s:hover_unsaved, 'Hover on unsaved code should show popup')
 call popup_clear()
 
 silent! %d

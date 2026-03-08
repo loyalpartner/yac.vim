@@ -9,18 +9,37 @@ pub const VimClient = struct {
     id: ClientId,
     stream: std.net.Stream,
     read_buf: std.ArrayList(u8),
+    subscribed_workspaces: std.StringHashMap(void),
 
-    fn init(id: ClientId, stream: std.net.Stream) VimClient {
+    fn init(allocator: Allocator, id: ClientId, stream: std.net.Stream) VimClient {
         return .{
             .id = id,
             .stream = stream,
             .read_buf = .{},
+            .subscribed_workspaces = std.StringHashMap(void).init(allocator),
         };
     }
 
     fn deinit(self: *VimClient, allocator: Allocator) void {
+        var kit = self.subscribed_workspaces.keyIterator();
+        while (kit.next()) |key_ptr| {
+            allocator.free(key_ptr.*);
+        }
+        self.subscribed_workspaces.deinit();
         self.read_buf.deinit(allocator);
         self.stream.close();
+    }
+
+    pub fn subscribeWorkspace(self: *VimClient, allocator: Allocator, workspace_uri: []const u8) void {
+        if (self.subscribed_workspaces.contains(workspace_uri)) return;
+        const key = allocator.dupe(u8, workspace_uri) catch return;
+        self.subscribed_workspaces.put(key, {}) catch {
+            allocator.free(key);
+        };
+    }
+
+    pub fn isSubscribedTo(self: *VimClient, workspace_uri: []const u8) bool {
+        return self.subscribed_workspaces.contains(workspace_uri);
     }
 };
 
@@ -60,7 +79,7 @@ pub const Clients = struct {
             conn.stream.close();
             return null;
         };
-        client.* = VimClient.init(cid, conn.stream);
+        client.* = VimClient.init(self.allocator, cid, conn.stream);
 
         self.clients.put(cid, client) catch |e| {
             log.err("failed to register client: {any}", .{e});
@@ -97,5 +116,11 @@ pub const Clients = struct {
 
     pub fn valueIterator(self: *Clients) std.AutoHashMap(ClientId, *VimClient).ValueIterator {
         return self.clients.valueIterator();
+    }
+
+    pub fn subscribeClient(self: *Clients, cid: ClientId, workspace_uri: []const u8) void {
+        if (self.clients.get(cid)) |client| {
+            client.subscribeWorkspace(self.allocator, workspace_uri);
+        }
     }
 };

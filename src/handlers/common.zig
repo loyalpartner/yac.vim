@@ -7,11 +7,13 @@ const log = @import("../log.zig");
 pub const treesitter_mod = @import("../treesitter/treesitter.zig");
 const queue_mod = @import("../queue.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
+const clients_mod = @import("../clients.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const LspRegistry = registry_mod.LspRegistry;
+const ClientId = clients_mod.ClientId;
 
 // ============================================================================
 // Handler Context - what every handler receives
@@ -25,6 +27,7 @@ pub const HandlerContext = struct {
     registry: *LspRegistry,
     lsp: *lsp_mod.Lsp,
     client_stream: std.net.Stream,
+    client_id: ClientId,
     ts: ?*treesitter_mod.TreeSitter = null,
     /// Outgoing message queue — push OutMessages here instead of writing directly.
     out_queue: *queue_mod.OutQueue,
@@ -43,6 +46,11 @@ pub const DispatchResult = union(enum) {
     },
     /// LSP client is still initializing; caller should defer and retry.
     initializing: void,
+    /// Handler produced a response AND requests workspace subscription.
+    data_with_subscribe: struct {
+        data: Value,
+        workspace_uri: []const u8,
+    },
 };
 
 // ============================================================================
@@ -120,42 +128,41 @@ pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool)
 
 /// Build textDocument/position params for LSP.
 pub fn buildTextDocumentPosition(allocator: Allocator, uri: []const u8, line: u32, column: u32) !Value {
-    var pos = ObjectMap.init(allocator);
-    try pos.put("line", json.jsonInteger(@intCast(line)));
-    try pos.put("character", json.jsonInteger(@intCast(column)));
-
-    var params = ObjectMap.init(allocator);
-    try params.put("textDocument", try buildTextDocumentValue(allocator, uri));
-    try params.put("position", .{ .object = pos });
-    return .{ .object = params };
+    return json.buildObject(allocator, .{
+        .{ "textDocument", try buildTextDocumentValue(allocator, uri) },
+        .{ "position", try json.buildObject(allocator, .{
+            .{ "line", json.jsonInteger(@intCast(line)) },
+            .{ "character", json.jsonInteger(@intCast(column)) },
+        }) },
+    });
 }
 
 /// Build an LSP Range object: {start: {line, character}, end: {line, character}}.
 pub fn buildRange(allocator: Allocator, start_line: u32, start_col: u32, end_line: u32, end_col: u32) !Value {
-    var start = ObjectMap.init(allocator);
-    try start.put("line", json.jsonInteger(@intCast(start_line)));
-    try start.put("character", json.jsonInteger(@intCast(start_col)));
-    var end = ObjectMap.init(allocator);
-    try end.put("line", json.jsonInteger(@intCast(end_line)));
-    try end.put("character", json.jsonInteger(@intCast(end_col)));
-    var range = ObjectMap.init(allocator);
-    try range.put("start", .{ .object = start });
-    try range.put("end", .{ .object = end });
-    return .{ .object = range };
+    return json.buildObject(allocator, .{
+        .{ "start", try json.buildObject(allocator, .{
+            .{ "line", json.jsonInteger(@intCast(start_line)) },
+            .{ "character", json.jsonInteger(@intCast(start_col)) },
+        }) },
+        .{ "end", try json.buildObject(allocator, .{
+            .{ "line", json.jsonInteger(@intCast(end_line)) },
+            .{ "character", json.jsonInteger(@intCast(end_col)) },
+        }) },
+    });
 }
 
 /// Build a textDocument JSON value ({uri: ...}) for embedding in LSP params.
 pub fn buildTextDocumentValue(allocator: Allocator, uri: []const u8) !Value {
-    var td = ObjectMap.init(allocator);
-    try td.put("uri", json.jsonString(uri));
-    return .{ .object = td };
+    return json.buildObject(allocator, .{
+        .{ "uri", json.jsonString(uri) },
+    });
 }
 
 /// Build textDocument identifier params for LSP ({textDocument: {uri: ...}}).
 pub fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
-    var params = ObjectMap.init(allocator);
-    try params.put("textDocument", try buildTextDocumentValue(allocator, uri));
-    return .{ .object = params };
+    return json.buildObject(allocator, .{
+        .{ "textDocument", try buildTextDocumentValue(allocator, uri) },
+    });
 }
 
 /// Send a Vim ex command via the out_queue (non-blocking; drops if queue full).
@@ -180,6 +187,55 @@ pub fn checkUnsupported(ctx: *HandlerContext, client_key: []const u8, capability
         return true;
     }
     return false;
+}
+
+// ============================================================================
+// Shared LSP request helpers (used by lsp_navigation, lsp_info, lsp_editing)
+// ============================================================================
+
+pub fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
+    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+
+    const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
+    const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+}
+
+/// Like sendPositionRequest, but first checks that the server advertises the given capability.
+pub fn sendCapabilityCheckedPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8, capability: []const u8, feature_name: []const u8) !DispatchResult {
+    const lsp_ctx = switch (try getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    if (checkUnsupported(ctx, lsp_ctx.client_key, capability, feature_name)) return .{ .empty = {} };
+
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
+    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+
+    const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
+    const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
 }
 
 /// Send a Vim call_async command via the out_queue (non-blocking; drops if queue full).

@@ -32,13 +32,13 @@ pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
     switch (lsp_ctx_result) {
         .ready => |lsp_ctx| {
             // Build didChange params
-            var td = ObjectMap.init(ctx.allocator);
-            try td.put("uri", json.jsonString(lsp_ctx.uri));
             const version = json.getInteger(obj, "version") orelse 1;
-            try td.put("version", json.jsonInteger(version));
-
-            var lsp_params = ObjectMap.init(ctx.allocator);
-            try lsp_params.put("textDocument", .{ .object = td });
+            var lsp_params = try json.buildObjectMap(ctx.allocator, .{
+                .{ "textDocument", try json.buildObject(ctx.allocator, .{
+                    .{ "uri", json.jsonString(lsp_ctx.uri) },
+                    .{ "version", json.jsonInteger(version) },
+                }) },
+            });
 
             // Forward content changes if present
             if (obj.get("changes")) |changes| {

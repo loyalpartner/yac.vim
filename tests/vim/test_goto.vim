@@ -117,7 +117,7 @@ let moved = yac_test#wait_line_change(start_line, 3000)
 if moved
   let end_line = line('.')
   call yac_test#log('INFO', 'Declaration jumped to line ' . end_line)
-  call yac_test#assert_true(1, 'Goto declaration moved cursor')
+  call yac_test#assert_true(end_line != start_line, 'Goto declaration moved cursor')
 else
   call yac_test#log('INFO', 'Declaration did not move (may be same as definition)')
 endif
@@ -143,7 +143,7 @@ let moved = yac_test#wait_line_change(start_line, 3000)
 if moved
   let end_line = line('.')
   call yac_test#log('INFO', 'TypeDefinition jumped to line ' . end_line)
-  call yac_test#assert_true(1, 'Goto type definition moved cursor')
+  call yac_test#assert_true(end_line != start_line, 'Goto type definition moved cursor')
 else
   call yac_test#log('INFO', 'TypeDefinition did not move (may need different target)')
 endif
@@ -169,7 +169,7 @@ let moved = yac_test#wait_line_change(start_line, 3000)
 if moved
   let end_line = line('.')
   call yac_test#log('INFO', 'Implementation jumped to line ' . end_line)
-  call yac_test#assert_true(1, 'Goto implementation moved cursor')
+  call yac_test#assert_true(end_line != start_line, 'Goto implementation moved cursor')
 else
   call yac_test#log('INFO', 'Implementation did not move')
 endif

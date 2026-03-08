@@ -3,76 +3,6 @@
 " Plugin root directory (parent of vim/)
 let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
 
-" 定义补全匹配字符的高亮组
-if !hlexists('YacBridgeMatchChar')
-  highlight YacBridgeMatchChar ctermfg=Yellow ctermbg=NONE gui=bold guifg=#ffff00 guibg=NONE
-endif
-
-" 补全项类型高亮组 — link 到 tree-sitter 主题，跟随 colorscheme
-hi def link YacCompletionFunction  YacTsFunction
-hi def link YacCompletionVariable  YacTsVariable
-hi def link YacCompletionStruct    YacTsType
-hi def link YacCompletionKeyword   YacTsKeyword
-hi def link YacCompletionModule    YacTsModule
-
-" 补全项 detail 灰色高亮
-if !hlexists('YacCompletionDetail')
-  highlight YacCompletionDetail guifg=#6a6a6a ctermfg=242
-endif
-
-" 补全弹窗高亮组 — link 到通用 Yac/Vim 组，跟随 colorscheme
-hi def link YacCompletionNormal  YacPickerNormal
-hi def link YacCompletionSelect  PmenuSel
-
-" 补全项类型图标映射
-let s:completion_icons = {
-  \ 'Function': '󰊕 ',
-  \ 'Method': '󰊕 ',
-  \ 'Variable': '󰀫 ',
-  \ 'Field': '󰆧 ',
-  \ 'TypeParameter': '󰅲 ',
-  \ 'Constant': '󰏿 ',
-  \ 'Class': '󰠱 ',
-  \ 'Interface': '󰜰 ',
-  \ 'Struct': '󰌗 ',
-  \ 'Enum': ' ',
-  \ 'EnumMember': ' ',
-  \ 'Module': '󰆧 ',
-  \ 'Property': '󰜢 ',
-  \ 'Unit': '󰑭 ',
-  \ 'Value': '󰎠 ',
-  \ 'Keyword': '󰌋 ',
-  \ 'Snippet': '󰅴 ',
-  \ 'Text': '󰉿 ',
-  \ 'File': '󰈙 ',
-  \ 'Reference': '󰈇 ',
-  \ 'Folder': '󰉋 ',
-  \ 'Color': '󰏘 ',
-  \ 'Constructor': '󰆧 ',
-  \ 'Operator': '󰆕 ',
-  \ 'Event': '󱐋 ',
-  \ }
-
-" 补全项 kind → highlight 映射表
-let s:completion_kind_highlights = {
-  \ 'Function': 'YacCompletionFunction',
-  \ 'Method': 'YacCompletionFunction',
-  \ 'Constructor': 'YacCompletionFunction',
-  \ 'Variable': 'YacCompletionVariable',
-  \ 'Field': 'YacCompletionVariable',
-  \ 'Property': 'YacCompletionVariable',
-  \ 'Constant': 'YacCompletionVariable',
-  \ 'Struct': 'YacCompletionStruct',
-  \ 'Class': 'YacCompletionStruct',
-  \ 'Interface': 'YacCompletionStruct',
-  \ 'Enum': 'YacCompletionStruct',
-  \ 'EnumMember': 'YacCompletionStruct',
-  \ 'TypeParameter': 'YacCompletionStruct',
-  \ 'Keyword': 'YacCompletionKeyword',
-  \ 'Module': 'YacCompletionModule',
-  \ 'Snippet': 'YacCompletionKeyword',
-  \ }
-
 " Tree-sitter highlight groups (linked to standard Vim groups)
 hi def link YacTsVariable            NONE
 hi def link YacTsVariableParameter   Identifier
@@ -134,36 +64,14 @@ hi def link YacTsMarkupStrikethrough Comment
 let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
 let s:current_connection_key = 'local'  " 用于调试显示
 let s:daemon_started = 0
-let s:log_file = ''
 let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-debug.log'
-let s:hover_popup_id = -1
 
-" 补全状态 - 分离数据和显示
-let s:completion = {}
-let s:completion.popup_id = -1
-let s:completion.doc_popup_id = -1  " 文档popup窗口ID
-let s:completion.items = []
-let s:completion.original_items = []
-let s:completion.selected = 0
-let s:completion.mappings_installed = 0
-let s:completion.saved_mappings = {}
-let s:completion.trigger_col = 0
-let s:completion.suppress_until = 0
-let s:completion.timer_id = -1
-let s:completion.bg_timer_id = -1    " 后台补全请求的 timer ID
-let s:completion.seq = 0
-let s:completion.doc_timer_id = -1   " 文档请求 debounce timer
-let s:completion.cache = []         " 上次补全的 items 缓存（跨 session 复用）
-let s:completion.cache_file = ''    " 缓存对应的文件
-let s:completion.cache_line = -1    " 缓存对应的行号
+" Completion — delegated to yac_completion.vim
 
 " didChange debounce timer
 let s:did_change_timer = -1
 
-" 诊断虚拟文本状态
-let s:diagnostic_virtual_text = {}
-let s:diagnostic_virtual_text.enabled = get(g:, 'yac_diagnostic_virtual_text', 1)
-let s:diagnostic_virtual_text.storage = {}  " buffer_id -> diagnostics
+" Diagnostics — delegated to yac_diagnostics.vim
 
 " Picker — delegated to yac_picker.vim
 
@@ -242,7 +150,9 @@ function! s:ensure_connection() abort
   if has_key(s:channel_pool, l:key) && ch_status(s:channel_pool[l:key]) == 'open'
     return s:channel_pool[l:key]
   endif
-  silent! unlet s:channel_pool[l:key]
+  if has_key(s:channel_pool, l:key)
+    unlet s:channel_pool[l:key]
+  endif
 
   " 开启 channel 日志（仅第一次）
   if !exists('s:log_started')
@@ -388,310 +298,137 @@ function! s:notify(method, params) abort
   return 0
 endfunction
 
-" LSP 方法
+" LSP operations — delegated to yac_lsp.vim
+let g:yac_lsp_status = {}
+
 function! yac#goto_definition() abort
-  call s:request('goto_definition', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_goto_response')
+  call yac_lsp#goto_definition()
 endfunction
 
 function! yac#goto_declaration() abort
-  call s:request('goto_declaration', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_goto_response')
+  call yac_lsp#goto_declaration()
 endfunction
 
 function! yac#goto_type_definition() abort
-  call s:request('goto_type_definition', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_goto_response')
+  call yac_lsp#goto_type_definition()
 endfunction
 
 function! yac#goto_implementation() abort
-  call s:request('goto_implementation', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_goto_response')
+  call yac_lsp#goto_implementation()
 endfunction
 
 function! yac#hover() abort
-  call s:request('hover', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_hover_response')
+  call yac_lsp#hover()
 endfunction
 
-" Query daemon-internal LSP status (no LSP round-trip)
-let g:yac_lsp_status = {}
 function! yac#lsp_status(file) abort
-  call s:request('lsp_status', {'file': a:file}, function('s:on_lsp_status'))
-endfunction
-
-function! s:on_lsp_status(ch, response) abort
-  let g:yac_lsp_status = a:response
+  call yac_lsp#lsp_status(a:file)
 endfunction
 
 function! yac#open_file() abort
-  call s:request('file_open', {
-    \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0,
-    \   'text': join(getline(1, '$'), "\n")
-    \ }, 's:handle_file_open_response')
+  call yac_lsp#open_file()
+endfunction
+
+function! yac#close_hover() abort
+  call yac_lsp#close_hover()
+endfunction
+
+function! yac#get_hover_popup_id() abort
+  return yac_lsp#get_hover_popup_id()
+endfunction
+
+function! yac#_peek_highlights_request(file, text, start_line, end_line, seq) abort
+  call yac_lsp#peek_highlights_request(a:file, a:text, a:start_line, a:end_line, a:seq)
 endfunction
 
 function! yac#complete() abort
-  call s:flush_did_change()
-
-  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤
-  if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    if !s:at_trigger_char()
-      call s:filter_completions()
-      return
-    endif
-    call s:close_completion_popup()
-  endif
-
-  " 即时弹出：缓存 → buffer words → 等 LSP
-  if s:completion.popup_id == -1 && !s:at_trigger_char()
-    let l:instant_items = []
-    if !empty(s:completion.cache) && s:completion.cache_file ==# expand('%:p')
-      let l:instant_items = s:completion.cache
-    else
-      let l:instant_items = s:collect_buffer_words()
-    endif
-    if !empty(l:instant_items)
-      let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
-      let s:completion.original_items = l:instant_items
-      call s:filter_completions()
-    endif
-  endif
-
-  " 递增序列号，丢弃旧请求的响应
-  let s:completion.seq += 1
-  let l:seq = s:completion.seq
-
-  let l:lsp_col = s:cursor_lsp_col()
-
-  call s:request('completion', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': l:lsp_col
-    \ }, {ch, resp -> s:handle_completion_response(ch, resp, l:seq)})
+  call yac_completion#complete()
 endfunction
 
 function! yac#references() abort
-  call s:request('references', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_references_response')
+  call yac_lsp#references()
 endfunction
 
 function! yac#peek() abort
-  let s:peek_initial_symbol = expand('<cword>')
-  call s:request('references', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_peek_response')
+  call yac_lsp#peek()
 endfunction
 
-" Bridge for peek drill-in: send references request for a specific position
 function! yac#_peek_drill(file, line, col, symbol) abort
-  let s:peek_drill_symbol = a:symbol
-  call s:request('references', {
-    \   'file': a:file,
-    \   'line': a:line,
-    \   'column': a:col
-    \ }, 's:handle_peek_drill_response')
+  call yac_lsp#peek_drill(a:file, a:line, a:col, a:symbol)
 endfunction
 
 function! yac#inlay_hints() abort
-  let l:bufnr = bufnr('%')
-  call s:request('inlay_hints', {
-    \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0,
-    \   'start_line': line('w0') - 1,
-    \   'end_line': line('w$')
-    \ }, {ch, resp -> s:handle_inlay_hints_response(ch, resp, l:bufnr)})
+  call yac_inlay#hints()
 endfunction
 
-" InsertLeave → show hints if enabled for this buffer
 function! yac#inlay_hints_on_insert_leave() abort
-  if get(b:, 'yac_inlay_hints', 0)
-    call yac#inlay_hints()
-  endif
+  call yac_inlay#on_insert_leave()
 endfunction
 
-" InsertEnter → clear hints
 function! yac#inlay_hints_on_insert_enter() abort
-  if get(b:, 'yac_inlay_hints', 0)
-    call s:clear_inlay_hints()
-  endif
+  call yac_inlay#on_insert_enter()
 endfunction
 
-" TextChanged → clear stale hints and refresh (normal mode edits like dd, p, u)
 function! yac#inlay_hints_on_text_changed() abort
-  if !get(b:, 'yac_inlay_hints', 0) | return | endif
-  call s:clear_inlay_hints()
-  call yac#inlay_hints()
+  call yac_inlay#on_text_changed()
 endfunction
 
 function! yac#inlay_hints_toggle() abort
-  let b:yac_inlay_hints = !get(b:, 'yac_inlay_hints', 0)
-  if b:yac_inlay_hints
-    call yac#inlay_hints()
-  else
-    call s:clear_inlay_hints()
-  endif
+  call yac_inlay#toggle()
 endfunction
 
 function! yac#rename(...) abort
-  " 获取新名称，可以是参数传入或用户输入
-  let new_name = ''
-
-  if a:0 > 0 && !empty(a:1)
-    let new_name = a:1
-  else
-    " 获取光标下的当前符号作为默认值
-    let current_symbol = expand('<cword>')
-    let new_name = input('Rename symbol to: ', current_symbol)
-    if empty(new_name)
-      call yac#toast('Rename cancelled')
-      return
-    endif
-  endif
-
-  call s:request('rename', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1,
-    \   'new_name': new_name
-    \ }, 's:handle_rename_response')
+  call call('yac_lsp#rename', a:000)
 endfunction
 
 function! yac#call_hierarchy_incoming() abort
-  call s:call_hierarchy_request('incoming')
+  call yac_lsp#call_hierarchy_incoming()
 endfunction
 
 function! yac#call_hierarchy_outgoing() abort
-  call s:call_hierarchy_request('outgoing')
-endfunction
-
-function! s:call_hierarchy_request(direction) abort
-  call s:request('call_hierarchy_' . a:direction, {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1,
-    \   'direction': a:direction
-    \ }, 's:handle_call_hierarchy_response')
+  call yac_lsp#call_hierarchy_outgoing()
 endfunction
 
 function! yac#document_symbols() abort
-  call s:request('document_symbols', {
-    \   'file': expand('%:p'),
-    \   'line': 0,
-    \   'column': 0
-    \ }, 's:handle_document_symbols_response')
+  call yac_lsp#document_symbols()
 endfunction
 
 function! yac#folding_range() abort
-  call s:request('ts_folding', {
-    \   'file': expand('%:p')
-    \ }, 's:handle_ts_folding_response')
+  call yac_folding#range()
 endfunction
 
 function! yac#code_action() abort
-  call s:request('code_action', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 's:handle_code_action_response')
+  call yac_lsp#code_action()
 endfunction
 
 " === Document Formatting ===
 
 function! yac#format() abort
-  " Sync buffer before formatting
-  call yac#did_change(join(getline(1, '$'), "\n"))
-  call s:request('formatting', {
-    \   'file': expand('%:p'),
-    \   'tab_size': &tabstop,
-    \   'insert_spaces': &expandtab ? v:true : v:false
-    \ }, 's:handle_formatting_response')
+  call yac_lsp#format()
 endfunction
 
 function! yac#range_format() abort
-  let [l:start_line, l:start_col] = [line("'<") - 1, col("'<") - 1]
-  let [l:end_line, l:end_col] = [line("'>") - 1, col("'>")]
-  call yac#did_change(join(getline(1, '$'), "\n"))
-  call s:request('range_formatting', {
-    \   'file': expand('%:p'),
-    \   'tab_size': &tabstop,
-    \   'insert_spaces': &expandtab ? v:true : v:false,
-    \   'start_line': l:start_line,
-    \   'start_column': l:start_col,
-    \   'end_line': l:end_line,
-    \   'end_column': l:end_col
-    \ }, 's:handle_formatting_response')
+  call yac_lsp#range_format()
 endfunction
 
 " === Signature Help ===
 
 function! yac#signature_help() abort
-  call s:flush_did_change()
-
-  let l:lsp_col = s:cursor_lsp_col()
-
-  call s:request('signature_help', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': l:lsp_col
-    \ }, 's:handle_signature_help_response')
+  call yac_signature#help()
 endfunction
 
 " === Type Hierarchy ===
 
 function! yac#type_hierarchy_supertypes() abort
-  call s:type_hierarchy_request('supertypes')
+  call yac_lsp#type_hierarchy_supertypes()
 endfunction
 
 function! yac#type_hierarchy_subtypes() abort
-  call s:type_hierarchy_request('subtypes')
-endfunction
-
-function! s:type_hierarchy_request(direction) abort
-  call s:request('type_hierarchy', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1,
-    \   'direction': a:direction
-    \ }, 's:handle_type_hierarchy_response')
+  call yac_lsp#type_hierarchy_subtypes()
 endfunction
 
 function! yac#execute_command(...) abort
-  if a:0 == 0
-    echoerr 'Usage: LspExecuteCommand <command_name> [arg1] [arg2] ...'
-    return
-  endif
-
-  let command_name = a:1
-  let arguments = a:000[1:]  " Rest of the arguments
-
-  call s:request('execute_command', {
-    \   'command_name': command_name,
-    \   'arguments': arguments
-    \ }, 's:handle_execute_command_response')
+  call call('yac_lsp#execute_command', a:000)
 endfunction
 
 function! yac#did_save(...) abort
@@ -732,108 +469,12 @@ function! s:send_did_change(file_path, text_content) abort
     \ })
 endfunction
 
-" 自动补全触发检查
 function! yac#auto_complete_trigger() abort
-  if !get(g:, 'yac_auto_complete', 1) || !get(b:, 'yac_lsp_supported', 0)
-    return
-  endif
-
-  " 补全插入后短暂抑制，避免 feedkeys 触发的 TextChangedI 重新弹出菜单
-  if type(s:completion.suppress_until) != v:t_number
-    let elapsed = reltimefloat(reltime(s:completion.suppress_until))
-    let s:completion.suppress_until = 0
-    if elapsed < 0.3
-      return
-    endif
-  endif
-
-  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤 + 后台 racing
-  if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    if s:at_trigger_char()
-      call s:close_completion_popup()
-      " 触发字符继续走下面的完整请求流程
-    else
-      let l:line = getline('.')
-      let l:cc = s:cursor_lsp_col() - 1
-      if l:cc >= 0 && l:line[l:cc] =~ '\w'
-        " 即时本地过滤
-        call s:filter_completions()
-        " 同时安排后台 LSP 请求（200ms debounce），带来更精确的结果
-        call s:schedule_background_completion()
-        return
-      else
-        call s:close_completion_popup()
-      endif
-    endif
-  endif
-
-  if mode() != 'i'
-    return
-  endif
-
-  if s:in_string_or_comment()
-    return
-  endif
-
-  " 前缀不够长且不在触发字符后 → 跳过
-  let prefix = s:get_current_word_prefix()
-  let l:is_trigger = s:at_trigger_char()
-  if len(prefix) < get(g:, 'yac_auto_complete_min_chars', 1) && !l:is_trigger
-    return
-  endif
-
-  " 触发字符 → 立即 flush did_change 并直接请求，跳过 timer
-  if l:is_trigger
-    call s:flush_did_change()
-    let s:completion.seq += 1
-    call yac#complete()
-    return
-  endif
-
-  " Timer 已在等待 → 不重置，让它尽快触发（避免快速输入时不断重启 timer）
-  if s:completion.timer_id != -1
-    return
-  endif
-
-  " 首次触发用 timer_start(0)：下一个事件循环即刻发出请求
-  let s:completion.timer_id = timer_start(0, 'yac#delayed_complete')
+  call yac_completion#auto_complete_trigger()
 endfunction
 
-" 延迟补全触发
 function! yac#delayed_complete(timer_id) abort
-  let s:completion.timer_id = -1
-
-  " 确保仍在插入模式
-  if mode() != 'i'
-    return
-  endif
-
-  " 触发补全
-  call yac#complete()
-endfunction
-
-" 后台补全请求调度（Racing 模式：本地过滤 + 后台 LSP 竞速）
-function! s:schedule_background_completion() abort
-  if s:completion.bg_timer_id != -1
-    call timer_stop(s:completion.bg_timer_id)
-  endif
-  let s:completion.bg_timer_id = timer_start(200, 's:bg_completion_fire')
-endfunction
-
-function! s:bg_completion_fire(timer_id) abort
-  let s:completion.bg_timer_id = -1
-  if mode() != 'i' || s:completion.popup_id == -1
-    return
-  endif
-  call s:flush_did_change()
-  let s:completion.seq += 1
-  let l:seq = s:completion.seq
-  let l:lsp_col = s:cursor_lsp_col()
-  call s:request('completion', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': l:lsp_col
-    \ }, {ch, resp -> s:handle_completion_response(ch, resp, l:seq)})
+  call yac_completion#delayed_complete(a:timer_id)
 endfunction
 
 function! yac#will_save(...) abort
@@ -903,526 +544,12 @@ function! s:in_string_or_comment() abort
   return synname =~? 'comment\|string\|char'
 endfunction
 
-" hover 响应处理器 - 简化：有 content 就显示
-" goto 响应处理器 - 跳转到定义/声明/类型定义/实现
-function! s:handle_goto_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: goto response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Goto error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  let l:loc = a:response
-
-  " 处理 raw LSP Location 数组格式 (fallback)
-  if type(l:loc) == v:t_list
-    if empty(l:loc)
-      call yac#toast('No definition found')
-      return
-    endif
-    let l:loc = l:loc[0]
-  endif
-
-  if type(l:loc) != v:t_dict || empty(l:loc)
-    if l:loc isnot v:null
-      call yac#toast('No definition found')
-    endif
-    return
-  endif
-
-  " 支持两种格式：bridge 转换后的 {file, line, column} 和 raw LSP {uri, range}
-  if has_key(l:loc, 'file')
-    let l:file = l:loc.file
-    let l:line = get(l:loc, 'line', 0) + 1
-    let l:col = get(l:loc, 'column', 0) + 1
-  elseif has_key(l:loc, 'uri')
-    let l:uri = l:loc.uri
-    let l:file = substitute(l:uri, '^file://', '', '')
-    let l:range = get(l:loc, 'range', {})
-    let l:start = get(l:range, 'start', {})
-    let l:line = get(l:start, 'line', 0) + 1
-    let l:col = get(l:start, 'character', 0) + 1
-  else
-    return
-  endif
-
-  " Save current position to jumplist
-  normal! m'
-
-  if l:file != expand('%:p')
-    execute 'edit ' . fnameescape(l:file)
-  endif
-  call cursor(l:line, l:col)
-endfunction
-
-" Convert plaintext hover (e.g. zls) into markdown with proper code fences.
-" zls format: "declaration\n(type_info)\n\ndoc_text"
-" We wrap only the code declaration in a code fence, leaving doc as plain text.
-function! s:wrap_plaintext_hover(text, filetype) abort
-  let l:lines = split(a:text, "\n", 1)
-
-  " Find the first blank line — separates code/type from doc
-  let l:blank_idx = -1
-  for i in range(len(l:lines))
-    if l:lines[i] =~# '^\s*$'
-      let l:blank_idx = i
-      break
-    endif
-  endfor
-
-  " Separate code lines and doc lines
-  if l:blank_idx >= 0
-    let l:code_lines = l:lines[:l:blank_idx - 1]
-    let l:doc_lines = l:lines[l:blank_idx + 1:]
-  else
-    let l:code_lines = l:lines
-    let l:doc_lines = []
-  endif
-
-  " Remove type info line: "(fn ...)" or "(type)" — starts with "("
-  let l:code_lines = filter(copy(l:code_lines), {_, v -> v !~# '^('})
-
-  " Build markdown: code fence + doc text
-  let l:md = '```' . a:filetype . "\n" . join(l:code_lines, "\n") . "\n```"
-  if !empty(l:doc_lines)
-    let l:md .= "\n\n" . join(l:doc_lines, "\n")
-  endif
-  return l:md
-endfunction
-
-function! s:handle_hover_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: hover response: %s', string(a:response)))
-
-  if type(a:response) != v:t_dict
-    return
-  endif
-
-  if has_key(a:response, 'error')
-    call yac#toast('[yac] Hover error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  " Extract hover text from LSP response
-  let l:md = ''
-  let l:kind = ''
-  if has_key(a:response, 'content') && !empty(a:response.content)
-    let l:md = a:response.content
-  elseif has_key(a:response, 'contents')
-    let l:c = a:response.contents
-    if type(l:c) == v:t_string
-      let l:md = l:c
-    elseif type(l:c) == v:t_dict && has_key(l:c, 'value')
-      let l:md = l:c.value
-      let l:kind = get(l:c, 'kind', '')
-    endif
-  endif
-
-  if empty(l:md)
-    return
-  endif
-
-  " Plaintext hover (e.g. zls): split into code declaration + doc text
-  " zls format: "declaration\n(type_info)\n\ndoc_text" (with real newlines)
-  if l:kind ==# 'plaintext' && !empty(&filetype)
-    let l:md = s:wrap_plaintext_hover(l:md, &filetype)
-  endif
-
-  " Send to TS thread for markdown parsing + code block highlighting
-  call s:request('ts_hover_highlight', {
-    \ 'markdown': l:md,
-    \ 'filetype': &filetype
-    \ }, function('s:handle_ts_hover_hl_response'))
-endfunction
-
-function! s:handle_ts_hover_hl_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_hover_highlight response: %s', string(a:response)))
-
-  if type(a:response) != v:t_dict || !has_key(a:response, 'lines')
-    call s:debug_log('[HOVER_HL]: invalid response, no lines key')
-    return
-  endif
-
-  let l:lines = a:response.lines
-  if empty(l:lines)
-    call s:debug_log('[HOVER_HL]: empty lines')
-    return
-  endif
-
-  let l:highlights = get(a:response, 'highlights', {})
-  call s:debug_log(printf('[HOVER_HL]: %d lines, %d highlight groups: %s',
-    \ len(l:lines), len(l:highlights), join(keys(l:highlights), ', ')))
-  call s:show_hover_popup_highlighted(l:lines, l:highlights)
-endfunction
-
-" completion 响应处理器 - 简化：有 items 就显示
-function! s:handle_completion_response(channel, response, ...) abort
-  call s:debug_log(printf('[RECV]: completion response: %s', string(a:response)))
-
-  " 序列号不匹配 → 丢弃过时响应
-  if a:0 > 0 && a:1 != s:completion.seq
-    call s:debug_log(printf('[SKIP]: stale completion response (seq %d, current %d)', a:1, s:completion.seq))
-    return
-  endif
-
-  " suppress 窗口内 → 忽略（用户刚关闭/接受补全）
-  if type(s:completion.suppress_until) != v:t_number
-    if reltimefloat(reltime(s:completion.suppress_until)) < 0.3
-      return
-    endif
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call s:debug_log('[yac] Completion error: ' . string(a:response.error))
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'items') && !empty(a:response.items)
-    call s:show_completion_popup(a:response.items)
-  else
-    " Close completion popup when no completions available
-    call s:close_completion_popup()
-  endif
-endfunction
-
-" references 响应处理器
-function! s:handle_references_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: references response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] References error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
-    call yac_picker#open_references(a:response.locations)
-    return
-  endif
-
-  call yac#toast('No references found')
-endfunction
-
-" peek 响应处理器
-function! s:handle_peek_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: peek response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
-    call yac_peek#show(a:response.locations, get(s:, 'peek_initial_symbol', ''))
-    return
-  endif
-
-  call yac#toast('No results found')
-endfunction
-
-" peek drill-in 响应处理器
-function! s:handle_peek_drill_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: peek drill response: %s', string(a:response)))
-
-  let symbol = get(s:, 'peek_drill_symbol', '?')
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'locations')
-    call yac_peek#drill_response(a:response.locations, symbol)
-    return
-  endif
-
-  call yac#toast('No results for ' . symbol)
-endfunction
-
-" Bridge for peek syntax highlighting: send ts_highlights for preview
-function! yac#_peek_highlights_request(file, text, start_line, end_line, seq) abort
-  let l:seq = a:seq
-  call s:request('ts_highlights', {
-    \   'file': a:file,
-    \   'text': a:text,
-    \   'start_line': a:start_line,
-    \   'end_line': a:end_line,
-    \ }, {ch, resp -> s:handle_peek_highlights_response(ch, resp, l:seq)})
-endfunction
-
-function! s:handle_peek_highlights_response(channel, response, seq) abort
-  if type(a:response) == v:t_dict
-    call yac_peek#highlights_response(a:response, a:seq)
-  endif
-endfunction
-
-" inlay_hints 响应处理器
-function! s:handle_inlay_hints_response(channel, response, ...) abort
-  call s:debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
-
-  " Discard if response arrived for a different buffer than current
-  if a:0 > 0 && a:1 != bufnr('%')
-    return
-  endif
-
-  " Discard if hints are currently disabled for this buffer
-  if !get(b:, 'yac_inlay_hints', 0)
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'hints')
-    call s:show_inlay_hints(a:response.hints)
-  endif
-endfunction
-
-" rename 响应处理器
-function! s:handle_rename_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: rename response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Rename error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    call s:apply_workspace_edit(a:response.edits)
-  endif
-endfunction
-
-" call_hierarchy 响应处理器（同时处理incoming和outgoing）
-function! s:handle_call_hierarchy_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: call_hierarchy response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'items')
-    call s:show_call_hierarchy(a:response.items)
-  endif
-endfunction
-
-" document_symbols 响应处理器
-function! s:handle_document_symbols_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: document_symbols response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'symbols') && !empty(a:response.symbols)
-    call s:show_document_symbols(a:response.symbols)
-  else
-    " Fallback to tree-sitter symbols
-    call s:debug_log('[FALLBACK]: LSP symbols empty, trying tree-sitter')
-    call yac#ts_symbols()
-  endif
-endfunction
-
-function! s:handle_ts_folding_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
-    call s:apply_folding_ranges(a:response.ranges)
-  endif
-endfunction
-
-" code_action 响应处理器
-function! s:handle_code_action_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: code_action response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'actions')
-    call s:show_code_actions(a:response.actions)
-  elseif type(a:response) == v:t_list && !empty(a:response)
-    " Raw LSP CodeAction[] — pass through (title/kind keys match)
-    call s:show_code_actions(a:response)
-  endif
-endfunction
-
-" execute_command 响应处理器
-function! s:handle_execute_command_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: execute_command response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    call s:apply_workspace_edit(a:response.edits)
-  endif
-endfunction
-
-" formatting 响应处理器
-function! s:handle_formatting_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: formatting response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Format error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    call s:apply_text_edits(a:response.edits)
-  elseif type(a:response) == v:t_list
-    call s:apply_text_edits(a:response)
-  else
-    call yac#toast('No formatting changes')
-  endif
-endfunction
-
-" Apply TextEdit[] to current buffer (reverse order to preserve line numbers)
-function! s:apply_text_edits(edits) abort
-  if empty(a:edits)
-    call yac#toast('No formatting changes')
-    return
-  endif
-
-  " Save view state for restoration
-  let l:view = winsaveview()
-
-  " Sort edits in reverse order (bottom to top) to avoid line number shifts
-  let l:sorted = sort(copy(a:edits), {a, b ->
-    \ a.start_line == b.start_line ?
-    \   (b.start_column - a.start_column) :
-    \   (b.start_line - a.start_line)})
-
-  for edit in l:sorted
-    call s:apply_text_edit(edit)
-  endfor
-
-  call winrestview(l:view)
-  call yac#toast(printf('Applied %d formatting edits', len(a:edits)))
-endfunction
-
-" signature_help 响应处理器
-function! s:handle_signature_help_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: signature_help response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    return
-  endif
-
-  " Handle null/empty response
-  if type(a:response) != v:t_dict || a:response is v:null
-    call s:close_signature_popup()
-    return
-  endif
-
-  " LSP SignatureHelp response has 'signatures' array
-  let l:signatures = get(a:response, 'signatures', [])
-  if empty(l:signatures)
-    call s:close_signature_popup()
-    return
-  endif
-
-  let l:active_sig = get(a:response, 'activeSignature', 0)
-  if l:active_sig >= len(l:signatures)
-    let l:active_sig = 0
-  endif
-  let l:sig = l:signatures[l:active_sig]
-  let l:label = get(l:sig, 'label', '')
-  if empty(l:label)
-    call s:close_signature_popup()
-    return
-  endif
-
-  " Build display lines
-  let l:lines = [l:label]
-
-  " Add documentation if available
-  let l:doc = get(l:sig, 'documentation', '')
-  if type(l:doc) == v:t_dict
-    let l:doc = get(l:doc, 'value', '')
-  endif
-  if !empty(l:doc)
-    let l:lines += ['', l:doc]
-  endif
-
-  " Determine active parameter highlight
-  let l:active_param = get(a:response, 'activeParameter', get(l:sig, 'activeParameter', -1))
-  let l:params = get(l:sig, 'parameters', [])
-  let l:hl_start = -1
-  let l:hl_end = -1
-  if l:active_param >= 0 && l:active_param < len(l:params)
-    let l:param_label = get(l:params[l:active_param], 'label', '')
-    if type(l:param_label) == v:t_list && len(l:param_label) == 2
-      " [start, end] offset pair
-      let l:hl_start = l:param_label[0]
-      let l:hl_end = l:param_label[1]
-    elseif type(l:param_label) == v:t_string && !empty(l:param_label)
-      " String label — find it in the signature
-      let l:idx = stridx(l:label, l:param_label)
-      if l:idx >= 0
-        let l:hl_start = l:idx
-        let l:hl_end = l:idx + len(l:param_label)
-      endif
-    endif
-  endif
-
-  call s:show_signature_popup(l:lines, l:hl_start, l:hl_end)
-
-  " Save active parameter highlight range for re-application after hl response
-  let s:signature_hl_start = l:hl_start
-  let s:signature_hl_end = l:hl_end
-
-  " Build markdown with code fence for signature label, plain text for docs
-  let l:md_parts = ['```' . &filetype, l:label, '```']
-  if !empty(l:doc)
-    call add(l:md_parts, '')
-    call extend(l:md_parts, split(l:doc, '\n'))
-  endif
-
-  " Request tree-sitter syntax highlighting asynchronously
-  call s:request('ts_hover_highlight', {
-    \ 'markdown': join(l:md_parts, "\n"),
-    \ 'filetype': &filetype
-    \ }, function('s:handle_signature_hl_response'))
-endfunction
-
-" 签名帮助语法高亮回调 — popup 已存在，更新文本和高亮
-function! s:handle_signature_hl_response(channel, response) abort
-  if s:signature_popup_id == -1
-    return
-  endif
-  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
-    return
-  endif
-
-  " Replace plain text with highlighted version
-  call popup_settext(s:signature_popup_id, a:response.lines)
-
-  " Apply tree-sitter highlights
-  let l:highlights = get(a:response, 'highlights', {})
-  if !empty(l:highlights)
-    call s:apply_ts_highlights_to_buffer(winbufnr(s:signature_popup_id), l:highlights)
-  endif
-
-  " Re-apply active parameter highlight (popup_settext clears previous matches)
-  if s:signature_hl_start >= 0 && s:signature_hl_end > s:signature_hl_start
-    call matchaddpos('Special', [[1, s:signature_hl_start + 1, s:signature_hl_end - s:signature_hl_start]], 10, -1, #{window: s:signature_popup_id})
-  endif
-endfunction
-
-" type_hierarchy 响应处理器
-function! s:handle_type_hierarchy_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: type_hierarchy response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'items')
-    call s:show_call_hierarchy(a:response.items)
-  elseif type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Type hierarchy error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-  else
-    call yac#toast('No type hierarchy found')
-  endif
-endfunction
-
-" file_open 响应处理器
-function! s:handle_file_open_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: file_open response: %s', string(a:response)))
-
-  if type(a:response) == v:t_dict && has_key(a:response, 'log_file')
-    let s:log_file = a:response.log_file
-    " Silent init - log file path available via :YacDebugStatus
-    call s:debug_log('yacd initialized with log: ' . s:log_file)
-  endif
-
-  " 文件已解析完成，自动触发折叠指示器（内容变化前只触发一次）
-  if get(b:, 'yac_lsp_supported', 0) && !exists('b:yac_fold_levels')
-    call yac#folding_range()
-  endif
-endfunction
 
 " will_save_wait_until 响应处理器
 function! s:handle_will_save_wait_until_response(channel, response) abort
   call s:debug_log(printf('[RECV]: will_save_wait_until response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    call s:apply_workspace_edit(a:response.edits)
+    call yac_lsp#apply_workspace_edit(a:response.edits)
   endif
 endfunction
 
@@ -1444,14 +571,14 @@ function! s:handle_response(channel, msg) abort
     let items = get(diags, 'diagnostics', [])
     let uri = get(diags, 'uri', '')
     call s:debug_log("Received diagnostics: " . len(items) . " items for " . uri)
-    call s:handle_publish_diagnostics(uri, items)
+    call yac_diagnostics#handle_publish(uri, items)
   elseif a:msg.action ==# 'applyEdit'
     let params = get(a:msg, 'params', {})
     call s:debug_log("Received applyEdit action")
     if has_key(params, 'edit') && has_key(params.edit, 'changes')
-      call s:apply_workspace_edit(params.edit.changes)
+      call yac_lsp#apply_workspace_edit(params.edit.changes)
     elseif has_key(params, 'edit') && has_key(params.edit, 'documentChanges')
-      call s:apply_workspace_edit(params.edit.documentChanges)
+      call yac_lsp#apply_workspace_edit(params.edit.documentChanges)
     endif
   endif
 endfunction
@@ -1612,8 +739,10 @@ function! s:cleanup_dead_connections() abort
   endfor
 
   for key in dead_keys
-    call s:debug_log(printf('Removing dead connection: %s', key))
-    unlet s:channel_pool[key]
+    if has_key(s:channel_pool, key)
+      call s:debug_log(printf('Removing dead connection: %s', key))
+      unlet s:channel_pool[key]
+    endif
   endfor
 
   return len(dead_keys)
@@ -1625,1128 +754,131 @@ function! yac#cleanup_connections() abort
   echo printf('Cleaned up %d dead connections', cleaned)
 endfunction
 
-" Show hover popup with syntax-highlighted code blocks.
-" lines: list of display strings (fences already stripped by daemon)
-" highlights: dict of {GroupName: [[lnum,col,end_lnum,end_col], ...]}
-function! s:show_hover_popup_highlighted(lines, highlights) abort
-  call s:close_hover_popup()
-
-  if empty(a:lines)
-    return
-  endif
-
-  let content_width = 0
-  for line in a:lines
-    let content_width = max([content_width, strdisplaywidth(line)])
-  endfor
-  let max_width = &columns - 4
-  let width = min([content_width + 2, max_width])
-  let height = min([len(a:lines), 15])
-
-  let line_num = line('.')
-
-  if !exists('*popup_create')
-    echo join(a:lines, "\n")
-    return
-  endif
-
-  let opts = {
-    \ 'line': 'cursor+1',
-    \ 'col': 'cursor',
-    \ 'maxwidth': width,
-    \ 'maxheight': height,
-    \ 'close': 'click',
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
-    \ 'highlight': 'YacPickerNormal',
-    \ 'scrollbar': 0,
-    \ 'moved': [line_num - 5, line_num + 5]
-    \ }
-
-  let s:hover_popup_id = popup_create(a:lines, opts)
-
-  " Apply syntax highlights to popup buffer
-  call s:apply_ts_highlights_to_buffer(winbufnr(s:hover_popup_id), a:highlights)
-endfunction
-
-" Apply tree-sitter highlights to a popup buffer (shared by hover and completion doc)
-function! s:apply_ts_highlights_to_buffer(bufnr, highlights) abort
-  if empty(a:highlights) || a:bufnr == -1
-    return
-  endif
-  for [group, positions] in items(a:highlights)
-    let l:prop_type = 'yac_hover_' . group
-    call s:ensure_ts_prop_type(l:prop_type, group)
-    try
-      call prop_add_list({'type': l:prop_type, 'bufnr': a:bufnr}, positions)
-    catch
-      call s:debug_log(printf('[HL]: ERROR applying %s: %s',
-        \ l:prop_type, v:exception))
-    endtry
-  endfor
-endfunction
-
-" 关闭hover窗口
-function! s:close_hover_popup() abort
-  if s:hover_popup_id != -1 && exists('*popup_close')
-    try
-      call popup_close(s:hover_popup_id)
-    catch
-      " 窗口可能已经关闭
-    endtry
-    let s:hover_popup_id = -1
-  endif
-endfunction
-
-" Close hover popup (public, for keybindings and testing)
-function! yac#close_hover() abort
-  call s:close_hover_popup()
-endfunction
-
-" Get hover popup ID (for testing — avoids confusing hover with toast popups)
-function! yac#get_hover_popup_id() abort
-  return s:hover_popup_id
-endfunction
-
-" === Signature Help Popup ===
-let s:signature_popup_id = -1
-let s:signature_help_timer = -1
-let s:signature_hl_start = -1
-let s:signature_hl_end = -1
-
-function! s:show_signature_popup(lines, hl_start, hl_end) abort
-  call s:close_signature_popup()
-
-  if empty(a:lines)
-    return
-  endif
-
-  let l:max_width = 80
-  let l:width = 0
-  for l:line in a:lines
-    let l:width = max([l:width, strwidth(l:line)])
-  endfor
-  let l:width = min([l:width + 2, l:max_width])
-
-  let s:signature_popup_id = popup_create(a:lines, #{
-    \ line: 'cursor-1',
-    \ col: 'cursor',
-    \ pos: 'botleft',
-    \ maxwidth: l:width,
-    \ maxheight: 8,
-    \ border: [],
-    \ borderchars: ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ borderhighlight: ['YacPickerBorder'],
-    \ padding: [0,0,0,0],
-    \ highlight: 'YacPickerNormal',
-    \ moved: 'any',
-    \ zindex: 200,
-    \ })
-
-  " Highlight active parameter in first line
-  if a:hl_start >= 0 && a:hl_end > a:hl_start
-    call matchaddpos('Special', [[1, a:hl_start + 1, a:hl_end - a:hl_start]], 10, -1, #{window: s:signature_popup_id})
-  endif
-endfunction
-
-function! s:close_signature_popup() abort
-  if s:signature_popup_id != -1
-    silent! call popup_close(s:signature_popup_id)
-    let s:signature_popup_id = -1
-  endif
-endfunction
+" Signature Help — delegated to yac_signature.vim
 
 function! yac#close_signature() abort
-  call s:close_signature_popup()
+  call yac_signature#close()
 endfunction
 
-" Auto-trigger signature help on ( and ,
 function! yac#signature_help_trigger() abort
-  if mode() != 'i' || !get(b:, 'yac_lsp_supported', 0)
-    return
-  endif
-
-  " Don't trigger while completion popup is open
-  if s:completion.popup_id != -1
-    return
-  endif
-
-  let l:line = getline('.')
-  let l:col = col('.') - 1
-  if l:col <= 0
-    return
-  endif
-
-  let l:char = l:line[l:col - 1]
-  if l:char ==# '(' || l:char ==# ','
-    " Debounce
-    if s:signature_help_timer != -1
-      call timer_stop(s:signature_help_timer)
-    endif
-    let s:signature_help_timer = timer_start(100, {-> s:trigger_signature_help()})
-  elseif l:char ==# ')'
-    call s:close_signature_popup()
-  endif
+  call yac_signature#trigger()
 endfunction
 
-function! s:trigger_signature_help() abort
-  let s:signature_help_timer = -1
-  if mode() != 'i' || s:completion.popup_id != -1
-    return
-  endif
-  call yac#signature_help()
-endfunction
+" Completion — all popup/filter/render code delegated to yac_completion.vim
 
-" 从当前 buffer 可见区域收集单词，作为即时补全源
-function! s:collect_buffer_words() abort
-  let l:cur_word = s:get_current_word_prefix()
-  if empty(l:cur_word) | return [] | endif
 
-  " 扫描可见区域 ± 50 行
-  let l:top = max([1, line('w0') - 50])
-  let l:bot = min([line('$'), line('w$') + 50])
-  let l:lines = getline(l:top, l:bot)
+" Completion forwarding — delegated to yac_completion.vim
 
-  " 提取所有 >= 3 字符的单词，去重
-  let l:seen = {}
-  let l:items = []
-  for l:line in l:lines
-    for l:word in split(l:line, '\W\+')
-      if len(l:word) >= 3 && !has_key(l:seen, l:word) && l:word !=# l:cur_word
-        let l:seen[l:word] = 1
-        call add(l:items, {'label': l:word, 'kind': 'Text'})
-      endif
-    endfor
-  endfor
-  return l:items
-endfunction
-
-" 显示补全popup窗口
-function! s:show_completion_popup(items) abort
-  if s:completion.popup_id == -1
-    " 没有现有 popup → 正常创建
-    let s:completion.trigger_col = col('.') - len(s:get_current_word_prefix())
-    let s:completion.selected = 0
-  endif
-  " popup 已存在（LSP 异步更新）→ 保留 selected 位置，只更新 items
-
-  " 存储原始补全项目
-  let s:completion.original_items = a:items
-
-  " 应用当前前缀的过滤（会复用或创建 popup）
-  call s:filter_completions()
-endfunction
-
-" 格式化补全项显示（无 marker，选中由 cursorline 高亮）
-function! s:format_completion_item(item) abort
-  let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
-  let icon = get(s:completion_icons, kind_str, '󰉿 ')
-  let label = a:item.label
-  let display = icon . label
-
-  " 右侧 detail — 动态对齐，按实际显示宽度计算
-  if has_key(a:item, 'detail') && !empty(a:item.detail)
-    let detail = substitute(a:item.detail, '[\n\r].*', '', '')  " 只取第一行
-    let label_width = strdisplaywidth(display)
-    " detail 列：至少在 label 后留 2 格间距
-    let detail_col = max([label_width + 2, 30])
-    let pad = detail_col - label_width
-    " 截断 detail 使总宽度不超过 popup maxwidth
-    let max_detail_width = 70 - detail_col
-    if max_detail_width > 3 && strdisplaywidth(detail) > max_detail_width
-      " 按显示宽度截断
-      let detail = s:truncate_display(detail, max_detail_width - 3) . '...'
-    endif
-    if max_detail_width > 3
-      let display .= repeat(' ', pad) . detail
-    endif
-  endif
-
-  return display
-endfunction
-
-" 按显示宽度截断字符串
-function! s:truncate_display(str, max_width) abort
-  let result = ''
-  let width = 0
-  for char in split(a:str, '\zs')
-    let cw = strdisplaywidth(char)
-    if width + cw > a:max_width
-      break
-    endif
-    let result .= char
-    let width += cw
-  endfor
-  return result
-endfunction
-
-" 渲染补全窗口 - cursorline 驱动选中高亮
-function! s:render_completion_window() abort
-  let lines = map(copy(s:completion.items), {_, item -> s:format_completion_item(item)})
-
-  call s:create_or_update_completion_popup(lines)
-  call s:apply_completion_highlights()
-  call s:completion_highlight_selected()
-
-  " 显示选中项的文档
-  call s:show_completion_documentation()
-endfunction
-
-" 确保 popup buffer 上注册了补全高亮 prop types
-function! s:ensure_completion_prop_types(bufnr) abort
-  " 注册 kind 高亮 prop types
-  for [kind, hl] in items(s:completion_kind_highlights)
-    let type_name = 'yac_ck_' . kind
-    try
-      call prop_type_add(type_name, {'highlight': hl, 'bufnr': a:bufnr, 'priority': 10})
-    catch /E969/
-      " 已存在，忽略
-    endtry
-  endfor
-  " 注册匹配字符 prop type
-  try
-    call prop_type_add('yac_match', {'highlight': 'YacBridgeMatchChar', 'bufnr': a:bufnr, 'priority': 20, 'combine': 0})
-  catch /E969/
-  endtry
-  " 注册 detail prop type
-  try
-    call prop_type_add('yac_detail', {'highlight': 'YacCompletionDetail', 'bufnr': a:bufnr, 'priority': 5})
-  catch /E969/
-  endtry
-endfunction
-
-" 选中行高亮 — cursorline + win_execute（popup filter 已拦截按键，不走 insert 管线）
-function! s:completion_highlight_selected() abort
-  if s:completion.popup_id == -1 | return | endif
-  let lnum = s:completion.selected + 1
-  call win_execute(s:completion.popup_id, 'noautocmd call cursor(' . lnum . ', 1)')
-endfunction
-
-" 为补全弹窗添加 text property 高亮
-function! s:apply_completion_highlights() abort
-  if s:completion.popup_id == -1 | return | endif
-  let bufnr = winbufnr(s:completion.popup_id)
-  if bufnr == -1 | return | endif
-
-  " 清除旧的 text properties
-  call prop_clear(1, len(s:completion.items), {'bufnr': bufnr})
-
-  " 确保 prop types 已注册到此 buffer
-  call s:ensure_completion_prop_types(bufnr)
-
-  let lnum = 1
-  for item in s:completion.items
-    let kind_str = s:normalize_kind(get(item, 'kind', ''))
-    let hl_type = get(s:completion_kind_highlights, kind_str, '')
-
-    let icon = get(s:completion_icons, kind_str, '󰉿 ')
-    let icon_bytes = strlen(icon)
-    let label_bytes = strlen(item.label)
-
-    " 1. icon + label 按 kind 着色
-    if !empty(hl_type)
-      call prop_add(lnum, 1, {
-        \ 'type': 'yac_ck_' . kind_str,
-        \ 'length': icon_bytes + label_bytes,
-        \ 'bufnr': bufnr
-        \ })
-    endif
-
-    " 2. 模糊匹配字符高亮（合并连续字符位置减少 prop_add 调用）
-    " matchfuzzypos 返回字符位置，需转成字节偏移给 prop_add
-    if has_key(item, '_match_positions') && !empty(item._match_positions)
-      let l:label = item.label
-      let l:positions = item._match_positions
-      let l:i = 0
-      while l:i < len(l:positions)
-        let l:char_start = l:positions[l:i]
-        let l:run = 1
-        while l:i + l:run < len(l:positions) && l:positions[l:i + l:run] == l:char_start + l:run
-          let l:run += 1
-        endwhile
-        " 字符位置 → 字节偏移：byteidx(label, char_idx)
-        let l:byte_start = byteidx(l:label, l:char_start)
-        let l:byte_end = byteidx(l:label, l:char_start + l:run)
-        if l:byte_start >= 0 && l:byte_end >= 0
-          call prop_add(lnum, icon_bytes + l:byte_start + 1, {
-            \ 'type': 'yac_match',
-            \ 'length': l:byte_end - l:byte_start,
-            \ 'bufnr': bufnr
-            \ })
-        endif
-        let l:i += l:run
-      endwhile
-    endif
-
-    " 3. detail 灰色
-    let display = s:format_completion_item(item)
-    if has_key(item, 'detail') && !empty(item.detail)
-      " 找到 detail 在 display 中的起始位置
-      let detail_text = item.detail
-      if len(detail_text) > 25
-        let detail_text = detail_text[:22] . '...'
-      endif
-      let detail_start = stridx(display, detail_text, icon_bytes + label_bytes)
-      if detail_start >= 0
-        call prop_add(lnum, detail_start + 1, {
-          \ 'type': 'yac_detail',
-          \ 'length': strlen(detail_text),
-          \ 'bufnr': bufnr
-          \ })
-      endif
-    endif
-
-    let lnum += 1
-  endfor
-endfunction
-
-" 计算模糊匹配评分
-function! s:fuzzy_match_score(text, pattern) abort
-  if empty(a:pattern)
-    return {'score': 1000, 'positions': []}  " 空模式匹配所有项目，给高分
-  endif
-
-  let text_lower = tolower(a:text)
-  let pattern_lower = tolower(a:pattern)
-  let pat_len = len(a:pattern)
-
-  " Case-sensitive 精确前缀 — 最高优先级
-  if a:text =~# '^' . escape(a:pattern, '[]^$.*\~')
-    return {'score': 5000 + (1000 - len(a:text)), 'positions': range(pat_len)}
-  endif
-
-  " Case-insensitive 前缀匹配
-  if text_lower =~# '^' . escape(pattern_lower, '[]^$.*\~')
-    return {'score': 2000 + (1000 - len(a:text)), 'positions': range(pat_len)}
-  endif
-
-  " 子序列匹配（case-insensitive）
-  let idx = 0
-  let match_positions = []
-
-  for char in split(pattern_lower, '\zs')
-    let pos = stridx(text_lower, char, idx)
-    if pos == -1
-      return {'score': 0, 'positions': []}  " 没有匹配
-    endif
-    call add(match_positions, pos)
-    let idx = pos + 1
-  endfor
-
-  let score = 1000
-
-  " 首字符匹配加分
-  if match_positions[0] == 0
-    let score += 500
-  endif
-
-  " 连续匹配加分
-  for i in range(1, len(match_positions) - 1)
-    if match_positions[i] == match_positions[i-1] + 1
-      let score += 100
-    endif
-  endfor
-
-  " CamelCase 边界匹配加分
-  for pos in match_positions
-    if pos > 0
-      let prev_char = a:text[pos - 1]
-      let curr_char = a:text[pos]
-      " 大写字母边界 (createUser 中的 U)
-      if curr_char =~# '[A-Z]' && prev_char =~# '[a-z]'
-        let score += 150
-      endif
-      " 词首 (_ 或 - 后的字符)
-      if prev_char =~# '[_\-]'
-        let score += 120
-      endif
-    endif
-  endfor
-
-  " 间隔惩罚（匹配字符之间的间距）
-  for i in range(1, len(match_positions) - 1)
-    let gap = match_positions[i] - match_positions[i-1] - 1
-    if gap > 0
-      let score -= gap * 10
-    endif
-  endfor
-
-  " 匹配密度加分
-  let density = len(a:pattern) * 100 / len(a:text)
-  let score += density
-
-  " 总长度短的优先
-  let score -= len(a:text)
-
-  return {'score': score, 'positions': match_positions}
-endfunction
-
-" 智能过滤补全项（使用 Vim 内置 C 实现的 matchfuzzypos）
-function! s:filter_completions() abort
-  let current_prefix = s:get_current_word_prefix()
-
-  if empty(current_prefix)
-    " 空前缀：保留全部（LSP 已按相关性排序）
-    for item in s:completion.original_items
-      let item._match_positions = []
-    endfor
-    let s:completion.items = s:completion.original_items
-  else
-    " matchfuzzypos: C 实现的 fuzzy match + sort + 位置提取，一次调用
-    " 返回 [matched_items, char_positions_list, scores]
-    let [matched, positions, scores] = matchfuzzypos(
-      \ s:completion.original_items, current_prefix, {'key': 'label'})
-    for i in range(len(matched))
-      let matched[i]._match_positions = positions[i]
-    endfor
-    let s:completion.items = matched
-  endif
-
-  " clamp selected 防止越界（LSP 更新后 items 可能变少）
-  if s:completion.selected >= len(s:completion.items)
-    let s:completion.selected = max([0, len(s:completion.items) - 1])
-  endif
-
-  " 0 结果时自动关闭弹窗
-  if empty(s:completion.items)
-    call s:close_completion_popup()
-    return
-  endif
-
-  call s:render_completion_window()
-endfunction
-
-" 计算补全 popup 的位置参数
-function! s:completion_popup_position() abort
-  let screen_cursor_row = screenrow()
-  let popup_height = min([len(s:completion.items), 10])
-  let space_below = &lines - screen_cursor_row - 1
-  if space_below >= popup_height
-    return {'line': screen_cursor_row + 1, 'pos': 'topleft'}
-  else
-    return {'line': screen_cursor_row - 1, 'pos': 'botleft'}
-  endif
-endfunction
-
-" 被动式 popup 创建/更新（不拦截任何按键）
-function! s:create_or_update_completion_popup(lines) abort
-  if !exists('*popup_create')
-    echo "Completions: " . join(a:lines, " | ")
-    return
-  endif
-
-  if s:completion.popup_id != -1
-    " 复用已有 popup：只更新文本和 col（方向锁定，避免上下抖动）
-    call popup_settext(s:completion.popup_id, a:lines)
-    call popup_move(s:completion.popup_id, {
-      \ 'col': s:completion.trigger_col,
-      \ })
-    return
-  endif
-
-  let l:pos = s:completion_popup_position()
-
-  let opts = {
-    \ 'line': l:pos.line,
-    \ 'col': s:completion.trigger_col,
-    \ 'pos': l:pos.pos,
-    \ 'fixed': 1,
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
-    \ 'padding': [0,0,0,0],
-    \ 'cursorline': 1,
-    \ 'highlight': 'YacCompletionNormal',
-    \ 'maxheight': 10,
-    \ 'minwidth': 25,
-    \ 'maxwidth': 70,
-    \ 'zindex': 1000,
-    \ 'filter': function('s:completion_filter'),
-    \ }
-  if has('patch-9.0.0')
-    let opts['cursorlinehighlight'] = 'YacCompletionSelect'
-  endif
-
-  let s:completion.popup_id = popup_create(a:lines, opts)
-
-  " 初始选中高亮
-  call s:completion_highlight_selected()
-endfunction
-
-" 显示补全项文档
-function! s:show_completion_documentation() abort
-  " 关闭之前的文档popup
-  call s:close_completion_documentation()
-
-  " 检查是否有补全项和popup支持
-  if !exists('*popup_create') || empty(s:completion.items) || s:completion.selected >= len(s:completion.items)
-    return
-  endif
-
-  let item = s:completion.items[s:completion.selected]
-
-  " 收集纯文本行（detail + documentation）
-  let plain_lines = []
-  if has_key(item, 'detail') && !empty(item.detail)
-    call extend(plain_lines, split(item.detail, '\n'))
-  endif
-  if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(plain_lines)
-      call add(plain_lines, '')
-    endif
-    let doc_raw = item.documentation
-    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
-      let doc_raw = doc_raw.value
-    endif
-    if type(doc_raw) == v:t_string
-      call extend(plain_lines, split(doc_raw, '\n'))
-    endif
-  endif
-
-  if empty(plain_lines)
-    return
-  endif
-
-  " 立即创建 doc popup（纯文本，无需等 daemon）
-  call s:create_completion_doc_popup(plain_lines)
-
-  " 异步请求语法高亮，回调时更新
-  let md_parts = []
-  if has_key(item, 'detail') && !empty(item.detail)
-    call add(md_parts, '```' . &filetype)
-    call add(md_parts, item.detail)
-    call add(md_parts, '```')
-  endif
-  if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(md_parts) | call add(md_parts, '') | endif
-    let doc_raw = item.documentation
-    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
-      let doc_raw = doc_raw.value
-    endif
-    if type(doc_raw) == v:t_string
-      call extend(md_parts, split(doc_raw, '\n'))
-    endif
-  endif
-  call s:request('ts_hover_highlight', {
-    \ 'markdown': join(md_parts, "\n"),
-    \ 'filetype': &filetype
-    \ }, function('s:handle_completion_doc_hl_response'))
-endfunction
-
-" 创建/更新文档 popup（位置跟随补全 popup）
-function! s:create_completion_doc_popup(lines) abort
-  let pos = popup_getpos(s:completion.popup_id)
-  if empty(pos) | return | endif
-
-  let doc_min_width = 30
-  let right_space = &columns - (pos.col + pos.width)
-  let left_space = pos.col - 1
-
-  if right_space >= doc_min_width + 2
-    let doc_col = pos.col + pos.width + 1
-    let doc_maxwidth = min([60, right_space - 2])
-  elseif left_space >= doc_min_width + 2
-    let doc_maxwidth = min([60, left_space - 2])
-    let doc_col = max([1, pos.col - doc_maxwidth - 2])
-  else
-    return
-  endif
-
-  if s:completion.doc_popup_id != -1
-    " 复用已有 doc popup
-    call popup_settext(s:completion.doc_popup_id, a:lines)
-    call popup_move(s:completion.doc_popup_id, {'col': doc_col})
-    return
-  endif
-
-  let s:completion.doc_popup_id = popup_create(a:lines, {
-    \ 'line': pos.line,
-    \ 'col': doc_col,
-    \ 'pos': 'topleft',
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
-    \ 'padding': [0,1,0,1],
-    \ 'highlight': 'YacPickerNormal',
-    \ 'scrollbar': 0,
-    \ 'minwidth': doc_min_width,
-    \ 'maxwidth': doc_maxwidth,
-    \ 'maxheight': 15,
-    \ 'wrap': 1,
-    \ 'zindex': 1001,
-    \ })
-endfunction
-
-" 补全文档高亮回调 — doc popup 已存在，只更新文本和高亮
-function! s:handle_completion_doc_hl_response(channel, response) abort
-  if s:completion.popup_id == -1 || s:completion.doc_popup_id == -1
-    return
-  endif
-  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
-    return
-  endif
-
-  " 用高亮版文本替换纯文本
-  call popup_settext(s:completion.doc_popup_id, a:response.lines)
-
-  " 应用 tree-sitter 高亮
-  let l:highlights = get(a:response, 'highlights', {})
-  if !empty(l:highlights)
-    call s:apply_ts_highlights_to_buffer(winbufnr(s:completion.doc_popup_id), l:highlights)
-  endif
-endfunction
-
-" 关闭补全文档popup
-function! s:close_completion_documentation() abort
-  if s:completion.doc_popup_id != -1 && exists('*popup_close')
-    call popup_close(s:completion.doc_popup_id)
-    let s:completion.doc_popup_id = -1
-  endif
-endfunction
-
-" 补全 popup filter — 直接在 popup 层拦截按键，不走 insert 模式 mapping 管线
-function! s:completion_filter(winid, key) abort
-  " popup 已被代码关闭但 Vim 仍路由按键 — 透传
-  if s:completion.popup_id == -1
-    return 0
-  endif
-  let nr = char2nr(a:key)
-
-  " C-n / Down / Tab: 下一项
-  if nr == 14 || a:key == "\<Down>"
-    call s:move_completion_selection(1)
-    return 1
-  endif
-
-  " C-p / Up / S-Tab: 上一项
-  if nr == 16 || a:key == "\<Up>"
-    call s:move_completion_selection(-1)
-    return 1
-  endif
-
-  " CR: 接受补全
-  if a:key == "\<CR>"
-    if !empty(s:completion.items)
-      call s:insert_completion(s:completion.items[s:completion.selected])
-    endif
-    return 1
-  endif
-
-  " Tab: accept completion item (ghost text already handled by <expr> mapping)
-  if a:key == "\<Tab>"
-    if !empty(s:completion.items)
-      call s:insert_completion(s:completion.items[s:completion.selected])
-    endif
-    return 1
-  endif
-
-  " Esc / C-e: 关闭补全
-  if a:key == "\<Esc>" || nr == 5
-    call s:close_completion_popup()
-    let s:completion.suppress_until = reltime()
-    " Esc 还要退出 insert 模式
-    if a:key == "\<Esc>"
-      call feedkeys("\<Esc>", 'nt')
-    endif
-    return 1
-  endif
-
-  " BS / C-h: 手动删字符 + 重新过滤（不关闭 popup，避免闪烁）
-  " 不走 feedkeys/return 0，因为 delimitMate 等 <expr> 映射的 <CR> 会被 filter 截断
-  if a:key == "\<BS>" || nr == 8
-    let l:col = col('.')
-    if l:col <= 1
-      " 行首：关闭 popup，让正常 BS 合并行
-      call s:close_completion_popup()
-      return 0
-    endif
-    " 删除光标前一个字符（支持多字节）
-    let l:line = getline('.')
-    let l:before = strpart(l:line, 0, l:col - 1)
-    let l:char = matchstr(l:before, '.$')
-    let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
-    let l:after = strpart(l:line, l:col - 1)
-    call setline('.', l:new_before . l:after)
-    call cursor(line('.'), strlen(l:new_before) + 1)
-    " 通知 LSP 文本变化
-    call yac#did_change()
-    " 重新过滤补全列表
-    call s:filter_completions()
-    return 1
-  endif
-
-  " 其他按键：透传给 insert 模式
-  return 0
-endfunction
-
-" 简单选择移动 — prop_add 方式，不触发 CursorMoved autocmd
-function! s:move_completion_selection(direction) abort
-  let new_idx = s:completion.selected + a:direction
-
-  " 边界 clamp
-  if new_idx < 0 || new_idx >= len(s:completion.items)
-    return
-  endif
-
-  let s:completion.selected = new_idx
-  call s:completion_highlight_selected()
-
-  " debounce 文档请求
-  if s:completion.doc_timer_id != -1
-    call timer_stop(s:completion.doc_timer_id)
-  endif
-  let s:completion.doc_timer_id = timer_start(100, {-> s:show_completion_documentation()})
-endfunction
-
-" LSP CompletionItemKind: 数字 → 字符串
-let s:lsp_kind_map = {
-  \ 1: 'Text', 2: 'Method', 3: 'Function', 4: 'Constructor',
-  \ 5: 'Field', 6: 'Variable', 7: 'Class', 8: 'Interface',
-  \ 9: 'Module', 10: 'Property', 11: 'Unit', 12: 'Value',
-  \ 13: 'Enum', 14: 'Keyword', 15: 'Snippet', 16: 'Color',
-  \ 17: 'File', 18: 'Reference', 19: 'Folder', 20: 'EnumMember',
-  \ 21: 'Constant', 22: 'Struct', 23: 'Event', 24: 'Operator',
-  \ 25: 'TypeParameter'
-  \ }
-
-" 规范化 kind：数字转字符串，字符串原样返回
-function! s:normalize_kind(kind) abort
-  if type(a:kind) == v:t_number
-    return get(s:lsp_kind_map, a:kind, 'Text')
-  endif
-  return a:kind
-endfunction
-
-" 需要自动加括号的补全项类型
-let s:callable_kinds = {'Function': 1, 'Method': 1, 'Constructor': 1}
-
-" 插入选择的补全项
-function! s:insert_completion(item) abort
-  call s:close_completion_popup()
-
-  " 抑制接下来的自动补全触发（文本变更会触发 TextChangedI）
-  let s:completion.suppress_until = reltime()
-
-  " 确保在插入模式下
-  if mode() !=# 'i'
-    return
-  endif
-
-  " 优先使用 insertText（LSP 字段），其次 label
-  let insert_text = get(a:item, 'insertText', a:item.label)
-  if empty(insert_text)
-    let insert_text = a:item.label
-  endif
-
-  " 使用 setline() 直接替换文本（正确处理多字节字符）
-  let line = getline('.')
-  let cursor_byte_col = col('.') - 1  " 0-based byte offset
-
-  " 函数/方法自动加括号
-  let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
-  let add_parens = has_key(s:callable_kinds, kind_str)
-        \ && !(cursor_byte_col < len(line) && line[cursor_byte_col] ==# '(')
-  let current_prefix = s:get_current_word_prefix()
-  let prefix_byte_len = len(current_prefix)  " len() returns byte length
-  let before = cursor_byte_col - prefix_byte_len > 0 ? line[: cursor_byte_col - prefix_byte_len - 1] : ''
-  let after = line[cursor_byte_col :]
-  let new_line = before . insert_text . after
-  call setline('.', new_line)
-
-  " 移动光标到插入文本之后
-  let new_cursor_byte = len(before) + len(insert_text) + 1  " 1-based
-  call cursor(line('.'), new_cursor_byte)
-
-  " 只在需要加括号时使用 feedkeys
-  if add_parens
-    call feedkeys("()\<Left>", 'n')
-  endif
-endfunction
-
-" 关闭补全窗口
-function! s:close_completion_popup() abort
-  " 停止待发的补全 timer
-  if s:completion.timer_id != -1
-    call timer_stop(s:completion.timer_id)
-    let s:completion.timer_id = -1
-  endif
-
-  " 停止后台补全 timer（Racing 模式）
-  if s:completion.bg_timer_id != -1
-    call timer_stop(s:completion.bg_timer_id)
-    let s:completion.bg_timer_id = -1
-  endif
-
-  " 停止文档 debounce timer
-  if s:completion.doc_timer_id != -1
-    call timer_stop(s:completion.doc_timer_id)
-    let s:completion.doc_timer_id = -1
-  endif
-
-  if s:completion.popup_id != -1 && exists('*popup_close')
-    " 保留 items 到缓存：下次补全可立即弹出
-    if !empty(s:completion.original_items)
-      let s:completion.cache = s:completion.original_items
-      let s:completion.cache_file = expand('%:p')
-      let s:completion.cache_line = line('.')
-    endif
-    call popup_close(s:completion.popup_id)
-    let s:completion.popup_id = -1
-    let s:completion.items = []
-    let s:completion.original_items = []
-    let s:completion.selected = 0
-    let s:completion.trigger_col = 0
-  endif
-  " 同时关闭文档popup
-  call s:close_completion_documentation()
-endfunction
-
-" 公开接口：关闭补全弹窗（供 InsertLeave autocmd 调用）
 function! yac#close_completion() abort
-  call s:close_completion_popup()
+  call yac_completion#close()
 endfunction
 
-" <expr> BS mapping: handle BS inline when popup is open, delegate to
-" original mapping (delimitMate, auto-pairs, etc.) when popup is closed.
-" Without this, plugins using imap <BS> <C-R>=Func()<CR> break because
-" the popup filter intercepts <CR> as "accept completion".
-let s:saved_bs_map = {}
 function! yac#install_bs_mapping() abort
-  let s:saved_bs_map = maparg('<BS>', 'i', 0, 1)
-  inoremap <silent><expr> <BS> yac#bs_key()
+  call yac_completion#install_bs_mapping()
 endfunction
 
 function! yac#uninstall_bs_mapping() abort
-  if !empty(s:saved_bs_map)
-    call mapset('i', 0, s:saved_bs_map)
-    let s:saved_bs_map = {}
-  else
-    silent! iunmap <BS>
-  endif
+  call yac_completion#uninstall_bs_mapping()
 endfunction
 
 function! yac#bs_key() abort
-  if s:completion.popup_id != -1
-    let l:col = col('.')
-    if l:col <= 1
-      call s:close_completion_popup()
-      return s:invoke_original_bs()
-    endif
-    " Defer BS to timer (can't call setline in <expr>)
-    call timer_start(0, {-> s:deferred_completion_bs()})
-    return ''
-  endif
-  return s:invoke_original_bs()
+  return yac_completion#bs_key()
 endfunction
 
-function! s:invoke_original_bs() abort
-  if !empty(s:saved_bs_map) && get(s:saved_bs_map, 'expr', 0)
-    " Original was <expr> mapping (e.g. inoremap <expr> <BS> delimitMate#BS())
-    return eval(s:saved_bs_map.rhs)
-  elseif !empty(s:saved_bs_map) && !empty(get(s:saved_bs_map, 'rhs', ''))
-    " Original was imap <BS> <C-R>=Func()<CR> — return rhs keys
-    return s:saved_bs_map.rhs
-  endif
-  return "\<BS>"
-endfunction
-
-function! s:deferred_completion_bs() abort
-  if s:completion.popup_id == -1
-    return
-  endif
-  let l:col = col('.')
-  if l:col <= 1
-    call s:close_completion_popup()
-    return
-  endif
-  let l:line = getline('.')
-  let l:before = strpart(l:line, 0, l:col - 1)
-  let l:char = matchstr(l:before, '.$')
-  let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
-  let l:after = strpart(l:line, l:col - 1)
-  call setline('.', l:new_before . l:after)
-  call cursor(line('.'), strlen(l:new_before) + 1)
-  call yac#did_change()
-  call s:filter_completions()
-endfunction
-
-" 公开接口：获取补全状态（供测试使用）
 function! yac#get_completion_state() abort
-  return {
-    \ 'popup_id': s:completion.popup_id,
-    \ 'items': s:completion.items,
-    \ 'selected': s:completion.selected,
-    \ 'suppress_until': s:completion.suppress_until,
-    \ }
+  return yac_completion#get_state()
 endfunction
 
-" 公开接口：模拟补全响应到达（供测试使用，绕过 mode/suppress 守卫）
 function! yac#test_inject_completion_response(items) abort
-  call s:show_completion_popup(a:items)
+  call yac_completion#test_inject_response(a:items)
 endfunction
 
-" 公开接口：模拟异步响应经过守卫（供 ghost popup 测试）
 function! yac#test_inject_async_response(items) abort
-  call s:handle_completion_response(v:null, {'items': a:items})
+  call yac_completion#test_inject_async_response(a:items)
 endfunction
 
-" 公开接口：模拟带 seq 的异步响应（测试过时响应丢弃）
 function! yac#test_inject_response_with_seq(items, seq) abort
-  call s:handle_completion_response(v:null, {'items': a:items}, a:seq)
+  call yac_completion#test_inject_response_with_seq(a:items, a:seq)
 endfunction
 
-" 公开接口：获取/设置 seq（供测试用）
 function! yac#test_get_seq() abort
-  return s:completion.seq
-endfunction
-function! yac#test_bump_seq() abort
-  let s:completion.seq += 1
-  return s:completion.seq
+  return yac_completion#test_get_seq()
 endfunction
 
-" 公开接口：测试用操作函数（通过 filter 模拟按键）
+function! yac#test_bump_seq() abort
+  return yac_completion#test_bump_seq()
+endfunction
+
 function! yac#test_do_cr() abort
-  if s:completion.popup_id != -1
-    call s:completion_filter(s:completion.popup_id, "\<CR>")
-  endif
+  call yac_completion#test_do_cr()
 endfunction
+
 function! yac#test_do_esc() abort
-  if s:completion.popup_id != -1
-    call s:completion_filter(s:completion.popup_id, "\<Esc>")
-  endif
+  call yac_completion#test_do_esc()
 endfunction
+
 function! yac#test_do_nav(direction) abort
-  if s:completion.popup_id != -1
-    let key = a:direction > 0 ? "\<Down>" : "\<Up>"
-    call s:completion_filter(s:completion.popup_id, key)
-  endif
+  call yac_completion#test_do_nav(a:direction)
 endfunction
+
 function! yac#test_do_bs() abort
-  " Simulate real mapping:1 flow: <expr> mapping fires first
-  let l:result = yac#bs_key()
-  if l:result == ''
-    " BS was handled by deferred timer
-    return 1
-  endif
-  " BS produced keys — feed them (in test, just delete a char)
-  if s:completion.popup_id != -1
-    return s:completion_filter(s:completion.popup_id, "\<BS>")
-  endif
-  return 0
+  return yac_completion#test_do_bs()
 endfunction
 
 function! yac#test_do_tab() abort
-  " Simulate real mapping:1 flow: <expr> mapping fires first, then filter
-  let l:result = yac_copilot#tab_key()
-  if l:result == ''
-    " Ghost text was accepted by tab_key (timer deferred)
-    return 1
-  endif
-  " No ghost — pass Tab to filter if popup is open
-  if s:completion.popup_id != -1
-    return s:completion_filter(s:completion.popup_id, "\<Tab>")
-  endif
-  return 0
+  return yac_completion#test_do_tab()
 endfunction
 
+" Signature Help forwarding — delegated to yac_signature.vim
+
 function! yac#get_signature_popup_id() abort
-  return s:signature_popup_id
+  return yac_signature#get_popup_id()
 endfunction
 
 function! yac#test_inject_signature_response(response) abort
-  call s:handle_signature_help_response(v:null, a:response)
+  call yac_signature#test_inject_response(a:response)
 endfunction
 
 function! yac#get_signature_popup_options() abort
-  if s:signature_popup_id == -1
-    return {}
-  endif
-  return popup_getoptions(s:signature_popup_id)
+  return yac_signature#get_popup_options()
 endfunction
 
 function! yac#get_completion_popup_options() abort
-  if s:completion.popup_id == -1
-    return {}
-  endif
-  return popup_getoptions(s:completion.popup_id)
+  return yac_completion#get_popup_options()
 endfunction
 
 " 通用响应注入：直接调用任意 feature 的 response handler
 " method: 'hover', 'references', 'inlay_hints', 'folding_range', 等
 " response: 模拟的响应数据（与 daemon 返回格式一致）
 function! yac#test_inject_response(method, response) abort
-  let l:handler = 's:handle_' . a:method . '_response'
-  call call(l:handler, [v:null, a:response])
+  " Handlers extracted to separate modules
+  let l:external_handlers = {
+    \ 'document_highlight': 'yac_doc_highlight#_handle_response',
+    \ 'inlay_hints': 'yac_inlay#_handle_response',
+    \ 'ts_folding': 'yac_folding#_handle_response',
+    \ 'goto': 'yac_lsp#_handle_goto_response',
+    \ 'hover': 'yac_lsp#_handle_hover_response',
+    \ 'references': 'yac_lsp#_handle_references_response',
+    \ 'peek': 'yac_lsp#_handle_peek_response',
+    \ 'peek_drill': 'yac_lsp#_handle_peek_drill_response',
+    \ 'rename': 'yac_lsp#_handle_rename_response',
+    \ 'call_hierarchy': 'yac_lsp#_handle_call_hierarchy_response',
+    \ 'document_symbols': 'yac_lsp#_handle_document_symbols_response',
+    \ 'code_action': 'yac_lsp#_handle_code_action_response',
+    \ 'execute_command': 'yac_lsp#_handle_execute_command_response',
+    \ 'formatting': 'yac_lsp#_handle_formatting_response',
+    \ 'type_hierarchy': 'yac_lsp#_handle_type_hierarchy_response',
+    \ 'file_open': 'yac_lsp#_handle_file_open_response',
+    \ }
+  if has_key(l:external_handlers, a:method)
+    call call(l:external_handlers[a:method], [v:null, a:response])
+  else
+    let l:handler = 's:handle_' . a:method . '_response'
+    call call(l:handler, [v:null, a:response])
+  endif
 endfunction
 
 " === 日志查看功能 ===
-
-
-" 显示 call hierarchy 结果
-function! s:show_call_hierarchy(items) abort
-  if empty(a:items)
-    echo "No call hierarchy found"
-    return
-  endif
-
-  let qf_list = []
-  for item in a:items
-    let text = item.name . ' (' . item.kind . ')'
-    if has_key(item, 'detail') && !empty(item.detail)
-      let text .= ' - ' . item.detail
-    endif
-
-    call add(qf_list, {
-      \ 'filename': item.file,
-      \ 'lnum': item.selection_line + 1,
-      \ 'col': item.selection_column + 1,
-      \ 'text': text
-      \ })
-  endfor
-
-  call setqflist(qf_list)
-  copen
-  echo 'Found ' . len(a:items) . ' call hierarchy items'
-endfunction
-
-" 显示文档符号结果
-function! s:show_document_symbols(symbols) abort
-  if empty(a:symbols)
-    call yac#toast('No document symbols found')
-    return
-  endif
-
-  let qf_list = []
-  call s:collect_symbols_recursive(a:symbols, qf_list, 0)
-
-  call setqflist(qf_list)
-  copen
-  echo 'Found ' . len(qf_list) . ' document symbols'
-endfunction
-
-" 递归收集符号到quickfix列表（支持嵌套符号）
-function! s:collect_symbols_recursive(symbols, qf_list, depth) abort
-  for symbol in a:symbols
-    let indent = repeat('  ', a:depth)
-    let text = indent . symbol.name . ' (' . symbol.kind . ')'
-    if has_key(symbol, 'detail') && !empty(symbol.detail)
-      let text .= ' - ' . symbol.detail
-    endif
-
-    call add(a:qf_list, {
-      \ 'filename': symbol.file,
-      \ 'lnum': symbol.selection_line + 1,
-      \ 'col': symbol.selection_column + 1,
-      \ 'text': text
-      \ })
-
-    " 递归处理子符号
-    if has_key(symbol, 'children') && !empty(symbol.children)
-      call s:collect_symbols_recursive(symbol.children, a:qf_list, a:depth + 1)
-    endif
-  endfor
-endfunction
 
 " 简单打开日志文件
 function! yac#open_log() abort
@@ -2771,796 +903,51 @@ function! yac#open_log() abort
   setlocal nomodeline
 endfunction
 
-" === Inlay Hints 功能 ===
+" === Inlay Hints (delegated to yac_inlay.vim) ===
 
-" 存储当前buffer的inlay hints
-let s:inlay_hints = {}
-
-" 显示inlay hints
-function! s:show_inlay_hints(hints) abort
-  call s:clear_inlay_hints()
-  if empty(a:hints) | return | endif
-  let s:inlay_hints[bufnr('%')] = a:hints
-  call s:render_inlay_hints()
-endfunction
-
-" 清除inlay hints
-function! s:clear_inlay_hints() abort
-  let bufnr = bufnr('%')
-  if has_key(s:inlay_hints, bufnr)
-    if exists('*prop_remove')
-      try
-        call prop_remove({'type': 'inlay_hint_type', 'bufnr': bufnr, 'all': 1})
-        call prop_remove({'type': 'inlay_hint_parameter', 'bufnr': bufnr, 'all': 1})
-        call prop_remove({'type': 'inlay_hint_other', 'bufnr': bufnr, 'all': 1})
-      catch
-      endtry
-    endif
-    unlet s:inlay_hints[bufnr]
-  endif
-endfunction
-
-" 公开接口：清除inlay hints
 function! yac#clear_inlay_hints() abort
-  let b:yac_inlay_hints = 0
-  call s:clear_inlay_hints()
+  call yac_inlay#clear()
 endfunction
 
-" 渲染inlay hints到buffer
-function! s:render_inlay_hints() abort
-  let bufnr = bufnr('%')
-  if !has_key(s:inlay_hints, bufnr) || !exists('*prop_type_add')
-    return
-  endif
-
-  " Ensure highlight groups exist
-  highlight default InlayHintType ctermfg=8 gui=italic guifg=#888888
-  highlight default InlayHintParameter ctermfg=6 gui=italic guifg=#008080
-  highlight default link InlayHintOther InlayHintType
-
-  " Ensure prop types exist (once per Vim session)
-  for kind in ['type', 'parameter', 'other']
-    let hl = kind ==# 'type' ? 'InlayHintType' :
-          \ kind ==# 'parameter' ? 'InlayHintParameter' : 'InlayHintOther'
-    if empty(prop_type_get('inlay_hint_' . kind))
-      call prop_type_add('inlay_hint_' . kind, {'highlight': hl})
-    endif
-  endfor
-
-  for hint in s:inlay_hints[bufnr]
-    let line_num = hint.line + 1
-    let col_num = hint.column + 1
-    try
-      call prop_add(line_num, col_num, {
-        \ 'type': 'inlay_hint_' . hint.kind,
-        \ 'text': hint.label,
-        \ 'bufnr': bufnr
-        \ })
-    catch
-    endtry
-  endfor
-endfunction
-
-" === Document Highlight ===
-" Highlight all occurrences of the symbol under cursor (LSP + tree-sitter fallback)
-
-let s:doc_hl_matches = []
-let s:doc_hl_bufnr = -1
-let s:doc_hl_timer = -1
-let s:doc_hl_delay = 300
-let s:doc_hl_word = ''
-
-hi default YacDocHighlightText  guibg=#2a2a3a ctermbg=237
-hi default link YacDocHighlightRead  YacDocHighlightText
-hi default link YacDocHighlightWrite YacDocHighlightText
+" === Document Highlight (delegated to yac_doc_highlight.vim) ===
 
 function! yac#document_highlight_debounce() abort
-  if !get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1))
-    return
-  endif
-  " Skip if word under cursor hasn't changed
-  let l:word = expand('<cword>')
-  if l:word ==# s:doc_hl_word && !empty(s:doc_hl_matches)
-    return
-  endif
-  call s:clear_document_highlights()
-  let s:doc_hl_word = l:word
-  if empty(l:word)
-    return
-  endif
-  if s:doc_hl_timer != -1
-    call timer_stop(s:doc_hl_timer)
-  endif
-  let s:doc_hl_timer = timer_start(s:doc_hl_delay, {-> yac#document_highlight()})
+  call yac_doc_highlight#debounce()
 endfunction
 
 function! yac#document_highlight() abort
-  call s:request('document_highlight', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1,
-    \   'text': join(getline(1, '$'), "\n")
-    \ }, 's:handle_document_highlight_response')
-endfunction
-
-function! s:handle_document_highlight_response(ch, response) abort
-  call s:clear_document_highlights()
-  if type(a:response) != v:t_dict
-    return
-  endif
-  let l:highlights = get(a:response, 'highlights', [])
-  if empty(l:highlights)
-    return
-  endif
-  let s:doc_hl_bufnr = bufnr('%')
-  for hl in l:highlights
-    let l:kind = get(hl, 'kind', 1)
-    let l:group = l:kind == 3 ? 'YacDocHighlightWrite' :
-          \ l:kind == 2 ? 'YacDocHighlightRead' : 'YacDocHighlightText'
-    let l:line = get(hl, 'line', 0) + 1
-    let l:col = get(hl, 'col', 0) + 1
-    let l:end_line = get(hl, 'end_line', 0) + 1
-    let l:end_col = get(hl, 'end_col', 0) + 1
-    if l:line == l:end_line
-      let l:len = l:end_col - l:col
-      if l:len > 0
-        let l:id = matchaddpos(l:group, [[l:line, l:col, l:len]], 10)
-        if l:id != -1
-          call add(s:doc_hl_matches, l:id)
-        endif
-      endif
-    else
-      let l:id = matchaddpos(l:group, [[l:line, l:col, 999]], 10)
-      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-      for l:mid_line in range(l:line + 1, l:end_line - 1)
-        let l:id = matchaddpos(l:group, [[l:mid_line]], 10)
-        if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-      endfor
-      let l:id = matchaddpos(l:group, [[l:end_line, 1, l:end_col - 1]], 10)
-      if l:id != -1 | call add(s:doc_hl_matches, l:id) | endif
-    endif
-  endfor
-endfunction
-
-function! s:clear_document_highlights() abort
-  if s:doc_hl_timer != -1
-    call timer_stop(s:doc_hl_timer)
-    let s:doc_hl_timer = -1
-  endif
-  if s:doc_hl_bufnr != -1 && s:doc_hl_bufnr == bufnr('%')
-    for id in s:doc_hl_matches
-      silent! call matchdelete(id)
-    endfor
-  endif
-  let s:doc_hl_matches = []
-  let s:doc_hl_bufnr = -1
-  let s:doc_hl_word = ''
+  call yac_doc_highlight#highlight()
 endfunction
 
 function! yac#clear_document_highlights() abort
-  call s:clear_document_highlights()
+  call yac_doc_highlight#clear()
 endfunction
 
-" === 重命名功能 ===
-
-" 应用工作区编辑
-function! s:apply_workspace_edit(edits) abort
-  if empty(a:edits)
-    call yac#toast('No changes to apply')
-    return
-  endif
-
-  let total_changes = 0
-  let files_changed = 0
-
-  " 保存当前光标位置和缓冲区
-  let current_buf = bufnr('%')
-  let current_pos = getpos('.')
-
-  try
-    " 处理每个文件的编辑
-    for file_edit in a:edits
-      let file_path = file_edit.file
-      let edits = file_edit.edits
-
-      if empty(edits)
-        continue
-      endif
-
-      " 打开文件（如果尚未打开）
-      let file_buf = bufnr(file_path)
-      if file_buf == -1
-        execute 'edit ' . fnameescape(file_path)
-        let file_buf = bufnr('%')
-      else
-        execute 'buffer ' . file_buf
-      endif
-
-      " 按行号逆序排序编辑，避免行号偏移问题
-      let sorted_edits = sort(copy(edits), {a, b ->
-        \ a.start_line == b.start_line ?
-        \   (b.start_column - a.start_column) :
-        \   (b.start_line - a.start_line)})
-
-      " 应用编辑
-      for edit in sorted_edits
-        call s:apply_text_edit(edit)
-        let total_changes += 1
-      endfor
-
-      let files_changed += 1
-    endfor
-
-    " 返回到原始缓冲区和位置
-    if bufexists(current_buf)
-      execute 'buffer ' . current_buf
-      call setpos('.', current_pos)
-    endif
-
-    call yac#toast(printf('Applied %d changes across %d files', total_changes, files_changed))
-
-  catch
-    echoerr 'Error applying workspace edit: ' . v:exception
-  endtry
-endfunction
-
-" 应用单个文本编辑
-function! s:apply_text_edit(edit) abort
-  " 转换为1-based行号和列号
-  let start_line = a:edit.start_line + 1
-  let start_col = a:edit.start_column + 1
-  let end_line = a:edit.end_line + 1
-  let end_col = a:edit.end_column + 1
-
-  " 定位到编辑位置
-  call cursor(start_line, start_col)
-
-  " 如果是插入操作（开始和结束位置相同）
-  if start_line == end_line && start_col == end_col
-    " 纯插入
-    let current_line = getline(start_line)
-    let before = current_line[0 : start_col - 2]
-    let after = current_line[start_col - 1 :]
-    call setline(start_line, before . a:edit.new_text . after)
-  else
-    " 替换操作
-    if start_line == end_line
-      " 同一行替换
-      let current_line = getline(start_line)
-      let before = current_line[0 : start_col - 2]
-      let after = current_line[end_col - 1 :]
-      call setline(start_line, before . a:edit.new_text . after)
-    else
-      " 跨行替换
-      let lines = []
-
-      " 第一行：保留开头，替换剩余部分
-      let first_line = getline(start_line)
-      let first_part = first_line[0 : start_col - 2]
-
-      " 最后一行：替换开头，保留剩余部分
-      let last_line = getline(end_line)
-      let last_part = last_line[end_col - 1 :]
-
-      " 合并新文本
-      let new_text_lines = split(a:edit.new_text, '\n', 1)
-      if empty(new_text_lines)
-        let new_text_lines = ['']
-      endif
-
-      " 构建最终行
-      let new_text_lines[0] = first_part . new_text_lines[0]
-      let new_text_lines[-1] = new_text_lines[-1] . last_part
-
-      " 删除原有行
-      execute start_line . ',' . end_line . 'delete'
-
-      " 插入新行
-      call append(start_line - 1, new_text_lines)
-    endif
-  endif
-endfunction
-
-" === 折叠范围功能 ===
-
-" 应用折叠范围
-function! s:apply_folding_ranges(ranges) abort
-  if empty(a:ranges)
-    call yac#toast('No folding ranges available')
-    return
-  endif
-
-  let nlines = line('$')
-
-  " 过滤有效 range
-  let valid = filter(copy(a:ranges), {_, r ->
-    \ r.start_line + 1 >= 1 && r.end_line + 1 <= nlines && r.start_line < r.end_line})
-
-  " 按 start_line 升序、end_line 降序排列（同 start 时大 range 在前）
-  call sort(valid, {a, b ->
-    \ a.start_line != b.start_line
-    \ ? a.start_line - b.start_line
-    \ : b.end_line - a.end_line})
-
-  " 去除冗余 range：若某 range 与栈顶 range 的 start/end 均相差 ≤1，
-  " 视为同一折叠层（如函数整体 vs 函数体），跳过该 range。
-  let filtered = []
-  let stack = []
-  for r in valid
-    while !empty(stack) && stack[-1].end_line < r.start_line
-      call remove(stack, -1)
-    endwhile
-    if !empty(stack)
-      let top = stack[-1]
-      if abs(r.start_line - top.start_line) <= 1 && abs(r.end_line - top.end_line) <= 1
-        continue
-      endif
-    endif
-    call add(filtered, r)
-    call add(stack, r)
-  endfor
-
-  " 差分数组原地前缀和求每行层级
-  let levels = repeat([0], nlines + 2)
-  for r in filtered
-    let levels[r.start_line + 1] += 1
-    let levels[r.end_line + 2] -= 1
-  endfor
-  let cur = 0
-  for lnum in range(1, nlines)
-    let cur += levels[lnum]
-    let levels[lnum] = cur
-  endfor
-
-  let b:yac_fold_levels = levels
-  let b:yac_fold_start_lines = map(copy(filtered), {_, r -> r.start_line + 1})
-  let b:yac_fold_start_set = {}
-  for lnum in b:yac_fold_start_lines
-    let b:yac_fold_start_set[lnum] = 1
-  endfor
-  setlocal foldmethod=expr
-  setlocal foldexpr=yac#foldexpr(v:lnum)
-  setlocal foldtext=yac#foldtext()
-  setlocal foldlevel=99
-  if has('patch-8.2.1516') && &l:fillchars !~# 'fold: '
-    let l:fc = substitute(&l:fillchars, ',\?fold:[^,]*', '', 'g')
-    let l:fc = substitute(l:fc, '^,\+', '', '')
-    let &l:fillchars = (empty(l:fc) ? '' : l:fc . ',') . 'fold: '
-  endif
-  setlocal foldcolumn=0
-
-  call yac#update_fold_signs()
-endfunction
+" === Folding (delegated to yac_folding.vim) ===
 
 function! yac#foldexpr(lnum) abort
-  if !exists('b:yac_fold_levels')
-    return 0
-  endif
-  let level = get(b:yac_fold_levels, a:lnum, 0)
-  if level > 0 && has_key(b:yac_fold_start_set, a:lnum)
-    return '>' . level
-  endif
-  return level
+  return yac_folding#foldexpr(a:lnum)
 endfunction
 
 function! yac#foldtext() abort
-  let line = getline(v:foldstart)
-  let hidden = max([v:foldend - v:foldstart, 1])
-  return line . '  ' . hidden . ' lines'
+  return yac_folding#foldtext()
 endfunction
 
 function! yac#update_fold_signs() abort
-  if !exists('b:yac_fold_start_lines')
-    return
-  endif
-  let l:state = {}
-  for lnum in b:yac_fold_start_lines
-    let l:state[lnum] = foldclosed(lnum) != -1 ? 'yac_fold_closed' : 'yac_fold_open'
-  endfor
-  if l:state ==# get(b:, 'yac_fold_sign_cache', {})
-    return
-  endif
-  if !exists('s:fold_signs_defined')
-    call sign_define('yac_fold_open',   {'text': '▾', 'texthl': 'FoldColumn'})
-    call sign_define('yac_fold_closed', {'text': '▸', 'texthl': 'FoldColumn'})
-    let s:fold_signs_defined = 1
-  endif
-  let bufnr = bufnr('%')
-  call sign_unplace('yac_folds', {'buffer': bufnr})
-  for [lnum, name] in items(l:state)
-    call sign_place(0, 'yac_folds', name, bufnr, {'lnum': lnum})
-  endfor
-  let b:yac_fold_sign_cache = l:state
+  call yac_folding#update_signs()
 endfunction
 
-" 测试入口：直接注入 mock ranges，供单元测试调用
 function! yac#apply_folding_ranges_test(ranges) abort
-  call s:apply_folding_ranges(a:ranges)
+  call yac_folding#apply_ranges_test(a:ranges)
 endfunction
 
-" === Code Actions 功能 ===
-
-" 显示代码操作
-function! s:show_code_actions(actions) abort
-  if empty(a:actions)
-    call yac#toast('No code actions available')
-    return
-  endif
-
-  " 存储当前 actions 以供回调使用
-  let s:pending_code_actions = a:actions
-
-  " 构建显示列表
-  let lines = []
-  for action in a:actions
-    let display = action.title
-    if has_key(action, 'kind') && !empty(action.kind)
-      let display .= " (" . action.kind . ")"
-    endif
-    call add(lines, display)
-  endfor
-
-  if exists('*popup_menu')
-    " 使用 popup_menu 显示代码操作选择器
-    call popup_menu(lines, {
-          \ 'title': ' Code Actions ',
-          \ 'callback': function('s:code_action_callback'),
-          \ 'border': [],
-          \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-          \ 'borderhighlight': ['YacPickerBorder'],
-          \ })
-  else
-    " 降级到 input() 选择
-    echo "Available code actions:"
-    let index = 1
-    for line in lines
-      echo printf("[%d] %s", index, line)
-      let index += 1
-    endfor
-
-    let choice = input("Select action (1-" . len(a:actions) . ", or <Enter> to cancel): ")
-    if empty(choice) | return | endif
-    let choice_num = str2nr(choice)
-    if choice_num >= 1 && choice_num <= len(a:actions)
-      call s:execute_code_action(a:actions[choice_num - 1])
-    endif
-  endif
-endfunction
-
-" popup_menu 回调
-function! s:code_action_callback(id, result) abort
-  if a:result <= 0 || !exists('s:pending_code_actions')
-    return
-  endif
-  if a:result <= len(s:pending_code_actions)
-    call s:execute_code_action(s:pending_code_actions[a:result - 1])
-  endif
-endfunction
-
-" 执行选定的代码操作
-function! s:execute_code_action(action) abort
-  if has_key(a:action, 'has_edit') && a:action.has_edit
-    " This action has a direct workspace edit - we need to request it again
-    " For now, show a message that this isn't fully implemented
-    echo "Direct edit actions not yet supported. Use command-based actions."
-    return
-  endif
-
-  if has_key(a:action, 'command') && !empty(a:action.command)
-    " Execute the command
-    let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
-    call s:request('execute_command', {
-      \ 'command_name': a:action.command,
-      \ 'arguments': arguments
-      \ }, '')
-    echo "Executing: " . a:action.title
-  else
-    echo "Action has no executable command"
-  endif
-endfunction
-
-" Convert LSP publishDiagnostics params to yac format and display
-function! s:handle_publish_diagnostics(uri, lsp_diagnostics) abort
-  let severity_names = {1: 'Error', 2: 'Warning', 3: 'Info', 4: 'Hint'}
-  let file_path = substitute(a:uri, '^file://', '', '')
-
-  let diags = []
-  for d in a:lsp_diagnostics
-    let range = get(d, 'range', {})
-    let start = get(range, 'start', {})
-    let end = get(range, 'end', start)
-    call add(diags, {
-      \ 'file': file_path,
-      \ 'line': get(start, 'line', 0),
-      \ 'column': get(start, 'character', 0),
-      \ 'end_line': get(end, 'line', get(start, 'line', 0)),
-      \ 'end_column': get(end, 'character', get(start, 'character', 0)),
-      \ 'severity': get(severity_names, get(d, 'severity', 1), 'Error'),
-      \ 'message': get(d, 'message', ''),
-      \ 'source': get(d, 'source', ''),
-      \ 'code': string(get(d, 'code', '')),
-      \ })
-  endfor
-
-  call s:show_diagnostics(diags)
-endfunction
-
-function! s:show_diagnostics(diagnostics) abort
-  call s:debug_log("s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics")
-  call s:debug_log("virtual text enabled = " . s:diagnostic_virtual_text.enabled)
-
-  if empty(a:diagnostics)
-    " Clear virtual text when no diagnostics
-    if s:diagnostic_virtual_text.enabled
-      call s:update_diagnostic_virtual_text([])
-    endif
-    if exists('b:yac_diagnostics')
-      unlet b:yac_diagnostics
-    endif
-    return
-  endif
-
-  call s:debug_log("First diagnostic: " . string(a:diagnostics[0]))
-
-  " Store diagnostics per-buffer for tests & external queries
-  let current_file = expand('%:p')
-  for diag in a:diagnostics
-    if get(diag, 'file', '') ==# current_file
-      let b:yac_diagnostics = a:diagnostics
-      break
-    endif
-  endfor
-
-  let severity_map = {'Error': 'E', 'Warning': 'W', 'Info': 'I', 'Hint': 'H'}
-  let qf_list = []
-  for diag in a:diagnostics
-    let type = get(severity_map, diag.severity, diag.severity)
-
-    let text = diag.severity . ': ' . diag.message
-    if has_key(diag, 'source') && !empty(diag.source)
-      let text = '[' . diag.source . '] ' . text
-    endif
-    if has_key(diag, 'code') && !empty(diag.code)
-      let text = text . ' (' . diag.code . ')'
-    endif
-
-    call add(qf_list, {
-      \ 'filename': diag.file,
-      \ 'lnum': diag.line + 1,
-      \ 'col': diag.column + 1,
-      \ 'type': type,
-      \ 'text': text
-      \ })
-  endfor
-
-  " Update quickfix list but don't auto-open it
-  call setqflist(qf_list)
-
-  " Update virtual text if enabled
-  if s:diagnostic_virtual_text.enabled
-    call s:update_diagnostic_virtual_text(a:diagnostics)
-  else
-    " Only show quickfix if virtual text is disabled
-    copen
-  endif
-endfunction
-
-" === 诊断虚拟文本功能 ===
-
-" 定义诊断虚拟文本高亮组
-if !hlexists('DiagnosticError')
-  highlight DiagnosticError ctermfg=Red ctermbg=NONE gui=italic guifg=#ff6c6b guibg=NONE
-endif
-if !hlexists('DiagnosticWarning')
-  highlight DiagnosticWarning ctermfg=Yellow ctermbg=NONE gui=italic guifg=#ECBE7B guibg=NONE
-endif
-if !hlexists('DiagnosticInfo')
-  highlight DiagnosticInfo ctermfg=Blue ctermbg=NONE gui=italic guifg=#51afef guibg=NONE
-endif
-if !hlexists('DiagnosticHint')
-  highlight DiagnosticHint ctermfg=Gray ctermbg=NONE gui=italic guifg=#888888 guibg=NONE
-endif
-
-" 更新诊断虚拟文本
-function! s:update_diagnostic_virtual_text(diagnostics) abort
-  " 如果诊断列表为空，清除当前缓冲区的虚拟文本
-  if empty(a:diagnostics)
-    " 清除当前缓冲区的虚拟文本（而不是所有缓冲区）
-    let current_bufnr = bufnr('%')
-    call s:clear_diagnostic_virtual_text(current_bufnr)
-    call s:debug_log("Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics")
-    return
-  endif
-
-  " 诊断按文件分组
-  let diagnostics_by_file = {}
-
-  for diag in a:diagnostics
-    let file_path = diag.file
-    if !has_key(diagnostics_by_file, file_path)
-      let diagnostics_by_file[file_path] = []
-    endif
-    call add(diagnostics_by_file[file_path], diag)
-  endfor
-
-  " 清除不再有诊断的buffer（复制keys避免在循环中修改字典）
-  let buffers_to_clear = []
-  for bufnr in keys(s:diagnostic_virtual_text.storage)
-    let file_path = bufname(bufnr)
-    if !has_key(diagnostics_by_file, file_path)
-      call add(buffers_to_clear, bufnr)
-    endif
-  endfor
-
-  " 安全地清除buffer
-  for bufnr in buffers_to_clear
-    call s:clear_diagnostic_virtual_text(bufnr)
-  endfor
-
-  " 为每个文件更新虚拟文本
-  for [file_path, file_diagnostics] in items(diagnostics_by_file)
-    let bufnr = bufnr(file_path)
-
-    " 只有当文件在缓冲区中时才处理
-    if bufnr != -1
-      call s:debug_log("update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics")
-
-      " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
-      if exists('*prop_remove')
-        for severity in ['error', 'warning', 'info', 'hint']
-          for prefix in ['diagnostic_', 'diagnostic_ul_']
-            try
-              call prop_remove({'type': prefix . severity, 'bufnr': bufnr, 'all': 1})
-            catch
-            endtry
-          endfor
-        endfor
-      endif
-
-      " 存储诊断数据
-      let s:diagnostic_virtual_text.storage[bufnr] = file_diagnostics
-
-      " 渲染虚拟文本
-      call s:render_diagnostic_virtual_text(bufnr)
-    else
-      call s:debug_log("file " . file_path . " not loaded in buffer, skipping virtual text")
-    endif
-  endfor
-endfunction
-
-" 渲染诊断标注到 buffer（波浪线 + 行尾 virtual text）
-function! s:render_diagnostic_virtual_text(bufnr) abort
-  if !has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    return
-  endif
-  let diagnostics = s:diagnostic_virtual_text.storage[a:bufnr]
-  let last_line = getbufinfo(a:bufnr)[0].linecount
-
-  for diag in diagnostics
-    let lnum = diag.line + 1
-    if lnum < 1 || lnum > last_line | continue | endif
-    let sev = tolower(diag.severity)
-
-    " --- 1. Undercurl on error range ---
-    let ul_type = 'diagnostic_ul_' . sev
-    call s:ensure_diag_prop_type(ul_type, sev, 'underline')
-    let end_lnum = get(diag, 'end_line', diag.line) + 1
-    let col_start = diag.column + 1
-    let col_end = get(diag, 'end_column', diag.column) + 1
-    " Single-point range: extend to end of word or +1
-    if end_lnum == lnum && col_end <= col_start
-      let col_end = col_start + 1
-    endif
-    try
-      call prop_add(lnum, col_start, {
-        \ 'type': ul_type,
-        \ 'end_lnum': end_lnum,
-        \ 'end_col': col_end,
-        \ 'bufnr': a:bufnr
-        \ })
-    catch
-      call s:debug_log('diag underline prop_add failed: ' . v:exception
-        \ . ' lnum=' . lnum . ' col=' . col_start . '-' . col_end
-        \ . ' end_lnum=' . end_lnum . ' type=' . ul_type)
-    endtry
-
-    " --- 2. Virtual text at end of line ---
-    let vt_type = 'diagnostic_' . sev
-    call s:ensure_diag_prop_type(vt_type, sev, 'vtext')
-    let text = ' ' . diag.severity . ': ' . diag.message
-    try
-      call prop_add(lnum, 0, {
-        \ 'type': vt_type,
-        \ 'text': text,
-        \ 'text_align': 'after',
-        \ 'bufnr': a:bufnr
-        \ })
-    catch
-      call s:debug_log('diag vtext prop_add failed: ' . v:exception
-        \ . ' lnum=' . lnum . ' type=' . vt_type)
-    endtry
-  endfor
-endfunction
-
-" Ensure a diagnostic prop type exists. kind = 'underline' | 'vtext'
-function! s:ensure_diag_prop_type(name, severity, kind) abort
-  if !empty(prop_type_get(a:name))
-    return
-  endif
-  if a:kind ==# 'underline'
-    let hl = 'YacDiagUL' . toupper(a:severity[0]) . a:severity[1:]
-    call s:ensure_diag_highlights()
-    call prop_type_add(a:name, {'highlight': hl})
-  else
-    let hl = 'YacDiagVT' . toupper(a:severity[0]) . a:severity[1:]
-    call s:ensure_diag_highlights()
-    call prop_type_add(a:name, {'highlight': hl})
-  endif
-endfunction
-
-let s:diag_hl_defined = 0
-function! s:ensure_diag_highlights() abort
-  if s:diag_hl_defined | return | endif
-  let s:diag_hl_defined = 1
-  " Underline highlights: undercurl when terminal supports (t_Cs set), else fallback to underline
-  if !empty(&t_Cs)
-    highlight default YacDiagULError   cterm=undercurl ctermul=Red    gui=undercurl guisp=Red
-    highlight default YacDiagULWarning cterm=undercurl ctermul=Yellow gui=undercurl guisp=Orange
-    highlight default YacDiagULInfo    cterm=undercurl ctermul=Blue   gui=undercurl guisp=LightBlue
-    highlight default YacDiagULHint    cterm=undercurl ctermul=Green  gui=undercurl guisp=Green
-  else
-    highlight default YacDiagULError   cterm=underline ctermul=Red    gui=undercurl guisp=Red
-    highlight default YacDiagULWarning cterm=underline ctermul=Yellow gui=undercurl guisp=Orange
-    highlight default YacDiagULInfo    cterm=underline ctermul=Blue   gui=undercurl guisp=LightBlue
-    highlight default YacDiagULHint    cterm=underline ctermul=Green  gui=undercurl guisp=Green
-  endif
-  " Virtual text highlights (dimmed text at end of line)
-  highlight default YacDiagVTError   ctermfg=Red    guifg=Red
-  highlight default YacDiagVTWarning ctermfg=Yellow guifg=Orange
-  highlight default YacDiagVTInfo    ctermfg=Blue   guifg=LightBlue
-  highlight default YacDiagVTHint    ctermfg=Green  guifg=Green
-endfunction
-
-" 清除指定buffer的诊断虚拟文本
-function! s:clear_diagnostic_virtual_text(bufnr) abort
-  if exists('*prop_remove')
-    for severity in ['error', 'warning', 'info', 'hint']
-      for prefix in ['diagnostic_', 'diagnostic_ul_']
-        try
-          call prop_remove({'type': prefix . severity, 'bufnr': a:bufnr, 'all': 1})
-        catch
-        endtry
-      endfor
-    endfor
-  endif
-  if has_key(s:diagnostic_virtual_text.storage, a:bufnr)
-    unlet s:diagnostic_virtual_text.storage[a:bufnr]
-  endif
-endfunction
-
-" 切换诊断虚拟文本显示
+" Diagnostic forwarding — delegated to yac_diagnostics.vim
 function! yac#toggle_diagnostic_virtual_text() abort
-  let s:diagnostic_virtual_text.enabled = !s:diagnostic_virtual_text.enabled
-  let bufnr = bufnr('%')
-
-  if s:diagnostic_virtual_text.enabled
-    " 重新渲染当前buffer的诊断
-    call s:render_diagnostic_virtual_text(bufnr)
-    echo 'Diagnostic virtual text enabled'
-  else
-    " 清除当前buffer的虚拟文本
-    call s:clear_diagnostic_virtual_text(bufnr)
-    echo 'Diagnostic virtual text disabled'
-  endif
+  call yac_diagnostics#toggle_virtual_text()
 endfunction
 
-" 清除所有诊断虚拟文本
 function! yac#clear_diagnostic_virtual_text() abort
-  for bufnr in keys(s:diagnostic_virtual_text.storage)
-    call s:clear_diagnostic_virtual_text(bufnr)
-  endfor
-  let s:diagnostic_virtual_text.storage = {}
-  echo 'All diagnostic virtual text cleared'
+  call yac_diagnostics#clear_virtual_text()
 endfunction
 
 " === 文件搜索功能 ===
@@ -3634,370 +1021,199 @@ function! yac#_copilot_notify(method, params) abort
   call s:notify(a:method, a:params)
 endfunction
 
-" === Tree-sitter Integration ===
+" === Bridge functions for future module extraction ===
+
+function! yac#_ts_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_ts_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_ts_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_ts_ensure_connection() abort
+  return s:ensure_connection()
+endfunction
+
+function! yac#_ts_flush_did_change() abort
+  call s:flush_did_change()
+endfunction
+
+function! yac#_ts_show_document_symbols(symbols) abort
+  call yac_lsp#show_document_symbols(a:symbols)
+endfunction
+
+function! yac#_diag_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_diag_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_diag_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+" === Completion & Signature Bridge Functions ===
+
+function! yac#_completion_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_completion_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_completion_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_signature_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_signature_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_signature_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+" Shared utility bridges for completion/signature modules
+function! yac#_at_trigger_char() abort
+  return s:at_trigger_char()
+endfunction
+
+function! yac#_get_current_word_prefix() abort
+  return s:get_current_word_prefix()
+endfunction
+
+function! yac#_in_string_or_comment() abort
+  return s:in_string_or_comment()
+endfunction
+
+function! yac#_cursor_lsp_col() abort
+  return s:cursor_lsp_col()
+endfunction
+
+function! yac#_flush_did_change() abort
+  call s:flush_did_change()
+endfunction
+
+function! yac#_ensure_connection() abort
+  return s:ensure_connection()
+endfunction
+
+function! yac#_completion_popup_visible() abort
+  return yac_completion#popup_visible()
+endfunction
+
+function! yac#_lsp_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_lsp_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_lsp_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_folding_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_folding_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_folding_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_inlay_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_inlay_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_inlay_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+function! yac#_doc_highlight_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_doc_highlight_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_doc_highlight_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+" === Tree-sitter Integration (delegated to yac_treesitter.vim) ===
 
 function! yac#ts_symbols() abort
-  call s:request('ts_symbols', {
-    \   'file': expand('%:p')
-    \ }, 's:handle_ts_symbols_response')
-endfunction
-
-function! s:handle_ts_symbols_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_symbols response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
-    call s:show_document_symbols(a:response.symbols)
-  else
-    call yac#toast('No tree-sitter symbols found')
-  endif
-endfunction
-
-function! s:ts_navigate(target, direction) abort
-  call s:request('ts_navigate', {
-    \   'file': expand('%:p'),
-    \   'target': a:target,
-    \   'direction': a:direction,
-    \   'line': line('.') - 1
-    \ }, 's:handle_ts_navigate_response')
+  call yac_treesitter#symbols()
 endfunction
 
 function! yac#ts_next_function() abort
-  call s:ts_navigate('function', 'next')
+  call yac_treesitter#next_function()
 endfunction
 
 function! yac#ts_prev_function() abort
-  call s:ts_navigate('function', 'prev')
+  call yac_treesitter#prev_function()
 endfunction
 
 function! yac#ts_next_struct() abort
-  call s:ts_navigate('struct', 'next')
+  call yac_treesitter#next_struct()
 endfunction
 
 function! yac#ts_prev_struct() abort
-  call s:ts_navigate('struct', 'prev')
-endfunction
-
-function! s:handle_ts_navigate_response(channel, response) abort
-  call s:debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'line')
-    " Convert 0-based to 1-based
-    let lnum = a:response.line + 1
-    let col = get(a:response, 'column', 0) + 1
-    call cursor(lnum, col)
-    normal! zz
-  endif
+  call yac_treesitter#prev_struct()
 endfunction
 
 function! yac#ts_select(target) abort
-  let l:ch = s:ensure_connection()
-  if l:ch is v:null || ch_status(l:ch) != 'open'
-    return
-  endif
-
-  let l:msg = {
-    \ 'method': 'ts_textobjects',
-    \ 'params': {
-    \   'file': expand('%:p'),
-    \   'target': a:target,
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }}
-
-  " Synchronous request so operator-pending mode (daf, cif, etc.) works
-  let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
-  call s:debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
-
-  if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
-    let start_line = l:response.start_line + 1
-    let start_col = l:response.start_col + 1
-    let end_line = l:response.end_line + 1
-    let end_col = l:response.end_col
-    call cursor(start_line, start_col)
-    normal! v
-    call cursor(end_line, end_col)
-  endif
+  call yac_treesitter#select(a:target)
 endfunction
-
-" ============================================================================
-" Tree-sitter syntax highlighting
-" ============================================================================
-
-" Debounce timer for ts highlights
-let s:ts_hl_timer = -1
-let s:ts_hl_last_range = ''
-let s:ts_prop_types_created = {}
-" NOTE: seq is per-buffer (b:yac_ts_hl_seq) so buffer switches don't
-" discard in-flight responses for the previous buffer.
 
 function! yac#ts_highlights_request(...) abort
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:vis_lo = line('w0') - 1  " 0-indexed
-  let l:vis_hi = line('w$')
-  let l:cov_lo = get(b:, 'yac_ts_hl_lo', -1)
-  let l:cov_hi = get(b:, 'yac_ts_hl_hi', -1)
-
-  " Already fully covered — nothing to do
-  if l:cov_lo >= 0 && l:vis_lo >= l:cov_lo && l:vis_hi <= l:cov_hi
-    return
-  endif
-
-  let l:pad = max([line('w$') - line('w0'), 20])
-  let l:is_scroll = 0
-
-  " Scroll mode: only request the uncovered delta direction
-  if a:0 > 0 && a:1 ==# 'scroll' && l:cov_lo >= 0
-    let l:need_up   = l:vis_lo < l:cov_lo
-    let l:need_down = l:vis_hi > l:cov_hi
-    if l:need_down && !l:need_up
-      let l:req_lo = l:cov_hi
-      let l:req_hi = l:vis_hi + l:pad
-      let l:is_scroll = 1
-    elseif l:need_up && !l:need_down
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      " Limit to visible area + pad (like scroll-down), not the full gap to cov_lo.
-      " Requesting all of [vis_lo..cov_lo] can be thousands of lines for G→gg on
-      " large files, causing a noticeable delay.  The gap is filled incrementally
-      " as the user scrolls back down.
-      let l:req_hi = min([l:cov_lo, l:vis_hi + l:pad])
-      let l:is_scroll = 1
-    endif
-    " Both directions exceeded (big jump) → fall through to full request
-  endif
-
-  if !l:is_scroll
-    if l:cov_lo < 0
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      let l:req_hi = l:vis_hi + l:pad
-    else
-      let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
-      let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
-    endif
-  endif
-
-  let l:params = {
-    \ 'file': expand('%:p'),
-    \ 'start_line': l:req_lo,
-    \ 'end_line': l:req_hi,
-    \ }
-  if !get(b:, 'yac_ts_hl_parsed', 0)
-    let l:params.text = join(getline(1, '$'), "\n")
-    let b:yac_ts_hl_parsed = 1
-  endif
-  let l:bufnr = bufnr('%')
-  let l:seq = get(b:, 'yac_ts_hl_seq', 0) + 1
-  let b:yac_ts_hl_seq = l:seq
-  call s:request('ts_highlights', l:params,
-    \ {ch, resp -> s:handle_ts_highlights_response(
-    \     ch, resp, l:seq, l:bufnr, l:is_scroll)})
-endfunction
-
-function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scroll) abort
-  if type(a:response) != v:t_dict
-        \ || !has_key(a:response, 'highlights')
-        \ || !has_key(a:response, 'range')
-    return
-  endif
-  " Defer prop updates while picker is open — applying text properties
-  " to the underlying buffer triggers a Vim redraw that can break popup
-  " cursorline rendering (observed with large markdown files).
-  if yac_picker#is_open()
-    return
-  endif
-  " Per-buffer seq: discard stale responses for THIS buffer, but don't
-  " discard responses just because the user switched to another buffer.
-  if a:seq != getbufvar(a:bufnr, 'yac_ts_hl_seq', 0)
-    return
-  endif
-  " Buffer may have been wiped
-  if !bufexists(a:bufnr)
-    return
-  endif
-
-  let l:bufnr = a:bufnr
-
-  if a:is_scroll
-    " Scroll path: append delta props to current generation (no flip)
-    let l:gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:cur_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-    let l:old_lo = getbufvar(l:bufnr, 'yac_ts_hl_lo', -1)
-    let l:old_hi = getbufvar(l:bufnr, 'yac_ts_hl_hi', -1)
-    " Gap detection: if the new response doesn't connect to existing coverage,
-    " clear old props first so they don't duplicate when scrolling back to that area.
-    let l:is_gap = l:old_lo >= 0 && (a:response.range[1] < l:old_lo || a:response.range[0] > l:old_hi)
-    if l:is_gap
-      for l:t in l:cur_types
-        silent! call prop_remove({'type': l:t, 'bufnr': l:bufnr, 'all': 1})
-      endfor
-      let l:cur_types = []
-    endif
-    let l:new_types = s:ts_apply_highlights(l:gen, a:response.highlights, l:bufnr)
-    " Merge new types into existing list (avoid duplicates from prior scrolls)
-    for l:t in l:new_types
-      if index(l:cur_types, l:t) < 0
-        call add(l:cur_types, l:t)
-      endif
-    endfor
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:cur_types)
-    if l:is_gap
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-    else
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo',
-            \ (l:old_lo < 0 ? a:response.range[0] : min([l:old_lo, a:response.range[0]])))
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi',
-            \ (l:old_hi < 0 ? a:response.range[1] : max([l:old_hi, a:response.range[1]])))
-    endif
-  else
-    " Edit path: double-buffered full replacement
-    let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:new_gen = 1 - l:old_gen
-    let l:old_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-
-    let l:new_types = s:ts_apply_highlights(l:new_gen, a:response.highlights, l:bufnr)
-
-    for prop_type in l:old_types
-      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-    endfor
-
-    call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
-    call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-    call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-  endif
-endfunction
-
-" Apply highlight groups for a given generation. Returns the list of
-" prop type names that were created/used.
-function! s:ts_apply_highlights(gen, highlights, bufnr) abort
-  let l:types = []
-  for [group, positions] in items(a:highlights)
-    let l:prop_type = 'yac_ts_' . a:gen . '_' . group
-    call s:ensure_ts_prop_type(l:prop_type, group)
-    call add(l:types, l:prop_type)
-    call s:ts_add_props(l:prop_type, positions, a:bufnr)
-  endfor
-  return l:types
-endfunction
-
-" Batch-add text properties.  Positions arrive from Zig already in
-" [lnum, col, end_lnum, end_col] format ready for prop_add_list.
-function! s:ts_add_props(prop_type, positions, bufnr) abort
-  if !empty(a:positions)
-    try
-      call prop_add_list({'type': a:prop_type, 'bufnr': a:bufnr}, a:positions)
-    catch
-    endtry
-  endif
-endfunction
-
-" Ensure a prop type exists for the given highlight group
-function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
-  if !has_key(s:ts_prop_types_created, a:prop_type)
-    try
-      call prop_type_add(a:prop_type, {
-            \ 'highlight': a:highlight_group,
-            \ 'start_incl': 1,
-            \ 'end_incl': 1
-            \ })
-    catch /E969/
-      " Already exists
-    endtry
-    let s:ts_prop_types_created[a:prop_type] = 1
-  endif
-endfunction
-
-function! s:clear_ts_highlights() abort
-  let l:bufnr = bufnr('%')
-  for prop_type in get(b:, 'yac_ts_hl_prop_types', [])
-    silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-  endfor
-endfunction
-
-function! s:ts_highlights_reset_coverage() abort
-  call s:clear_ts_highlights()
-  let b:yac_ts_hl_gen = 0
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let b:yac_ts_hl_prop_types = []
-  let s:ts_hl_last_range = ''
+  return call('yac_treesitter#highlights_request', a:000)
 endfunction
 
 function! yac#ts_highlights_enable() abort
-  let b:yac_ts_highlights_enabled = 1
-  call s:ts_highlights_reset_coverage()
-  call yac#ts_highlights_request()
+  call yac_treesitter#highlights_enable()
 endfunction
 
 function! yac#ts_highlights_disable() abort
-  let b:yac_ts_highlights_enabled = 0
-  call s:ts_highlights_reset_coverage()
+  call yac_treesitter#highlights_disable()
 endfunction
 
 function! yac#ts_highlights_toggle() abort
-  if get(b:, 'yac_ts_highlights_enabled', 0)
-    call yac#ts_highlights_disable()
-  else
-    call yac#ts_highlights_enable()
-  endif
+  call yac_treesitter#highlights_toggle()
 endfunction
 
 function! yac#ts_highlights_debounce() abort
-  " 忽略 popup 窗口（C-n 在 popup 中移动光标会触发 CursorMoved）
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  " Auto-enable on first BufEnter if global option is on
-  if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
-    let b:yac_ts_highlights_enabled = 1
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:range = expand('%:p') . ':' . line('w0') . ':' . line('w$')
-  if l:range ==# s:ts_hl_last_range
-    return
-  endif
-  let s:ts_hl_last_range = l:range
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-  endif
-  let s:ts_hl_timer = timer_start(30, {-> yac#ts_highlights_request('scroll')})
+  call yac_treesitter#highlights_debounce()
 endfunction
 
-" On BufLeave, reset the debounce fingerprint so BufEnter will re-check
-" coverage.  Text properties are buffer-bound (via bufnr) and don't bleed
-" into other buffers, so we keep them and the coverage metadata intact.
 function! yac#ts_highlights_detach() abort
-  let s:ts_hl_last_range = ''
+  call yac_treesitter#highlights_detach()
 endfunction
-
 
 function! yac#ts_highlights_invalidate() abort
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  " Cancel pending debounce timer — it would use stale tree state
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-    let s:ts_hl_timer = -1
-  endif
-  " Flush pending did_change so daemon's tree-sitter tree is up to date
-  " before we request highlights. Same pattern as yac#complete().
-  call s:flush_did_change()
-  " Reset metadata but keep old props on screen.
-  " The response handler does clear + apply synchronously (no gap).
-  " With prop_add, old props have auto-tracked positions so they're
-  " mostly correct during the brief async wait.
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let s:ts_hl_last_range = ''
-  call yac#ts_highlights_request()
+  call yac_treesitter#highlights_invalidate()
 endfunction
 
 " 启动定时清理任务
