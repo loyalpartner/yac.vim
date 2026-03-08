@@ -78,15 +78,13 @@ pub const Requests = struct {
     /// Result of cancelling pending requests.
     pub const CancelResult = struct {
         /// LSP request IDs that were cancelled (for sending $/cancelRequest).
-        items: []u32,
+        lsp_ids: std.ArrayList(u32),
         /// Vim client info for each cancelled request (for sending null responses).
         cancelled_vim_info: std.ArrayList(CancelledVimInfo),
 
         allocator: Allocator,
-        lsp_ids: std.ArrayList(u32),
 
-        pub fn deinit(self: *CancelResult, allocator: Allocator) void {
-            _ = allocator;
+        pub fn deinit(self: *CancelResult) void {
             self.lsp_ids.deinit(self.allocator);
             self.cancelled_vim_info.deinit(self.allocator);
         }
@@ -110,8 +108,15 @@ pub const Requests = struct {
                         vim_info.append(self.allocator, .{
                             .vim_request_id = pending.vim_request_id,
                             .client_id = pending.client_id,
-                        }) catch continue;
-                        to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
+                        }) catch {
+                            _ = lsp_ids.pop();
+                            continue;
+                        };
+                        to_remove.append(self.allocator, entry.key_ptr.*) catch {
+                            _ = lsp_ids.pop();
+                            _ = vim_info.pop();
+                            continue;
+                        };
                     }
                 }
             }
@@ -124,10 +129,9 @@ pub const Requests = struct {
         }
 
         return .{
-            .items = lsp_ids.items,
+            .lsp_ids = lsp_ids,
             .cancelled_vim_info = vim_info,
             .allocator = self.allocator,
-            .lsp_ids = lsp_ids,
         };
     }
 
@@ -203,10 +207,10 @@ test "cancelByMethodAndClientKey removes matching entries" {
     });
 
     var cancelled = reqs.cancelByMethodAndClientKey("textDocument/completion", "typescript");
-    defer cancelled.deinit(allocator);
+    defer cancelled.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), cancelled.items.len);
-    try std.testing.expectEqual(@as(u32, 1), cancelled.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), cancelled.lsp_ids.items.len);
+    try std.testing.expectEqual(@as(u32, 1), cancelled.lsp_ids.items[0]);
 
     // cancelled entry should be gone
     try std.testing.expect(reqs.removeLsp(1) == null);
@@ -231,9 +235,9 @@ test "cancelByMethodAndClientKey returns vim info for cancelled requests" {
     });
 
     var result = reqs.cancelByMethodAndClientKey("textDocument/completion", "zls");
-    defer result.deinit(allocator);
+    defer result.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.lsp_ids.items.len);
 
     // After cancel, the vim_request_id info should be available
     // via cancelled_vim_info for sending null responses back to Vim

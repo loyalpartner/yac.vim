@@ -534,10 +534,10 @@ pub const EventLoop = struct {
         // Cancel older in-flight requests of the same method+client (e.g. completion)
         if (client_key) |key| {
             var cancelled = self.requests.cancelByMethodAndClientKey(method, key);
-            defer cancelled.deinit(self.allocator);
-            if (cancelled.items.len > 0) {
+            defer cancelled.deinit();
+            if (cancelled.lsp_ids.items.len > 0) {
                 if (self.lsp.registry.getClient(key)) |lsp_client| {
-                    for (cancelled.items) |old_id| {
+                    for (cancelled.lsp_ids.items) |old_id| {
                         lsp_client.sendCancelNotification(old_id) catch |e| {
                             log.warn("Failed to send $/cancelRequest for id={d}: {any}", .{ old_id, e });
                         };
@@ -547,7 +547,7 @@ pub const EventLoop = struct {
                 for (cancelled.cancelled_vim_info.items) |info| {
                     self.sendVimResponseTo(info.client_id, self.allocator, info.vim_request_id, .null);
                 }
-                log.debug("Cancelled {d} old {s} request(s)", .{ cancelled.items.len, method });
+                log.debug("Cancelled {d} old {s} request(s)", .{ cancelled.lsp_ids.items.len, method });
             }
         }
 
