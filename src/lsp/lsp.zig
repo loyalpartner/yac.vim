@@ -11,6 +11,8 @@ pub const Lsp = struct {
     registry: lsp_registry_mod.LspRegistry,
     indexing_counts: std.StringHashMap(u32),
     deferred_requests: std.ArrayList(DeferredRequest),
+    /// URI → client that last sent didChange (for diagnostics routing).
+    active_editors: std.StringHashMap(ClientId),
 
     pub const DeferredRequest = struct {
         client_id: ClientId,
@@ -27,6 +29,7 @@ pub const Lsp = struct {
             .registry = lsp_registry_mod.LspRegistry.init(allocator),
             .indexing_counts = std.StringHashMap(u32).init(allocator),
             .deferred_requests = .{},
+            .active_editors = std.StringHashMap(ClientId).init(allocator),
         };
     }
 
@@ -42,6 +45,13 @@ pub const Lsp = struct {
         }
         for (self.deferred_requests.items) |req| self.allocator.free(req.raw_line);
         self.deferred_requests.deinit(self.allocator);
+        {
+            var aeit = self.active_editors.keyIterator();
+            while (aeit.next()) |key_ptr| {
+                self.allocator.free(key_ptr.*);
+            }
+            self.active_editors.deinit();
+        }
     }
 
     // ====================================================================
@@ -152,6 +162,61 @@ pub const Lsp = struct {
         }
 
         return result;
+    }
+
+    // ====================================================================
+    // Active editors (diagnostics routing)
+    // ====================================================================
+
+    /// Record that `cid` is the active editor for `uri` (last didChange sender).
+    pub fn setActiveEditor(self: *Lsp, uri: []const u8, cid: ClientId) void {
+        if (self.active_editors.getPtr(uri)) |cid_ptr| {
+            cid_ptr.* = cid;
+            return;
+        }
+        const key = self.allocator.dupe(u8, uri) catch return;
+        self.active_editors.put(key, cid) catch {
+            self.allocator.free(key);
+        };
+    }
+
+    /// Clear active editor for `uri` (e.g. after save — disk state is canonical).
+    pub fn clearActiveEditor(self: *Lsp, uri: []const u8) void {
+        if (self.active_editors.fetchRemove(uri)) |entry| {
+            self.allocator.free(entry.key);
+        }
+    }
+
+    /// Clear active editor only if `cid` is the current editor (e.g. didClose).
+    pub fn clearActiveEditorIfMatch(self: *Lsp, uri: []const u8, cid: ClientId) void {
+        if (self.active_editors.get(uri)) |active_cid| {
+            if (active_cid == cid) {
+                if (self.active_editors.fetchRemove(uri)) |entry| {
+                    self.allocator.free(entry.key);
+                }
+            }
+        }
+    }
+
+    /// Get the active editor for a URI, if any.
+    pub fn getActiveEditor(self: *Lsp, uri: []const u8) ?ClientId {
+        return self.active_editors.get(uri);
+    }
+
+    /// Remove all active editor entries for a disconnected client.
+    pub fn clearActiveEditorsForClient(self: *Lsp, cid: ClientId) void {
+        var to_remove: std.ArrayList([]const u8) = .{};
+        defer to_remove.deinit(self.allocator);
+        var it = self.active_editors.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == cid) {
+                to_remove.append(self.allocator, entry.key_ptr.*) catch {};
+            }
+        }
+        for (to_remove.items) |key| {
+            _ = self.active_editors.remove(key);
+            self.allocator.free(key);
+        }
     }
 };
 

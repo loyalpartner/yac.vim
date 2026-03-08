@@ -4,6 +4,7 @@ const common = @import("common.zig");
 const log = @import("../log.zig");
 const ts_handlers = @import("treesitter.zig");
 const registry_mod = @import("../lsp/registry.zig");
+const lsp_mod = @import("../lsp/lsp.zig");
 
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
@@ -31,6 +32,9 @@ pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
     const lsp_ctx_result = try common.getLspContext(ctx, params);
     switch (lsp_ctx_result) {
         .ready => |lsp_ctx| {
+            // Track active editor for diagnostics routing
+            ctx.lsp.setActiveEditor(lsp_ctx.uri, ctx.client_id);
+
             // Build didChange params
             const version = json.getInteger(obj, "version") orelse 1;
             var lsp_params = try json.buildObjectMap(ctx.allocator, .{
@@ -102,6 +106,9 @@ pub fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
         .initializing, .not_available => return .{ .empty = {} },
     };
 
+    // Clear active editor: saved state is canonical, diagnostics go to all subscribers
+    ctx.lsp.clearActiveEditor(lsp_ctx.uri);
+
     const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
     lsp_ctx.client.sendNotification("textDocument/didSave", lsp_params) catch |e| {
@@ -119,6 +126,9 @@ pub fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
         .ready => |c| c,
         .initializing, .not_available => return .{ .empty = {} },
     };
+
+    // Clear active editor if this client was the editor
+    ctx.lsp.clearActiveEditorIfMatch(lsp_ctx.uri, ctx.client_id);
 
     const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
 
