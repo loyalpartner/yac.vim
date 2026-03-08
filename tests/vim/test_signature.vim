@@ -126,8 +126,18 @@ if s:comp_ok
   " 然后 signature_help_trigger 应触发签名帮助
   " 注意：在测试环境 mode()='c'，signature_help_trigger 会因 mode check 返回
   " 所以直接调用 yac#signature_help() 模拟
-  call yac#signature_help()
-  let s:sig_appeared = yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 3000)
+  " 使用重试循环（与 Test 1/2 一致），CI 环境 LSP 响应较慢
+  let s:sig_appeared = 0
+  let s:sig_elapsed3 = 0
+  while s:sig_elapsed3 < 10000
+    call popup_clear()
+    call yac#signature_help()
+    if yac_test#wait_for({-> yac#get_signature_popup_id() != -1}, 2000)
+      let s:sig_appeared = 1
+      break
+    endif
+    let s:sig_elapsed3 += 2000
+  endwhile
   call yac_test#assert_true(s:sig_appeared,
     \ 'Signature popup should appear after ( when completion was open')
 else

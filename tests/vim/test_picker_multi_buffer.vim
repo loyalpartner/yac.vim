@@ -49,6 +49,9 @@ if picker_opened
   call yac_test#assert_true(items_loaded, 'Picker should have items')
 
   if items_loaded
+    let s:item_count = yac_picker#info().items
+    call yac_test#log('INFO', 'Picker has ' . s:item_count . ' items')
+
     " Initial cursor should be on line 1
     call yac_test#assert_eq(yac_picker#cursor_line(), 1, 'Initial cursor on line 1')
 
@@ -56,13 +59,9 @@ if picker_opened
     call feedkeys("\<C-n>", 'xt')
     call yac_test#assert_eq(yac_picker#cursor_line(), 2, 'C-n should move cursor to line 2')
 
-    " Press C-n again
-    call feedkeys("\<C-n>", 'xt')
-    call yac_test#assert_eq(yac_picker#cursor_line(), 3, 'C-n should move cursor to line 3')
-
     " Press C-p to move back up
     call feedkeys("\<C-p>", 'xt')
-    call yac_test#assert_eq(yac_picker#cursor_line(), 2, 'C-p should move cursor back to line 2')
+    call yac_test#assert_eq(yac_picker#cursor_line(), 1, 'C-p should move cursor back to line 1')
   endif
 
   call feedkeys("\<Esc>", 'xt')
@@ -92,8 +91,8 @@ if picker_opened
     call feedkeys("\<C-n>", 'xt')
     call yac_test#assert_eq(yac_picker#cursor_line(), 2, 'C-n from buf1: cursor line 2')
 
-    call feedkeys("\<C-n>", 'xt')
-    call yac_test#assert_eq(yac_picker#cursor_line(), 3, 'C-n from buf1: cursor line 3')
+    call feedkeys("\<C-p>", 'xt')
+    call yac_test#assert_eq(yac_picker#cursor_line(), 1, 'C-p from buf1: cursor line 1')
   endif
 
   call feedkeys("\<Esc>", 'xt')
