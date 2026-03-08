@@ -350,6 +350,11 @@ function! yac_treesitter#highlights_debounce() abort
   if win_gettype() ==# 'popup'
     return
   endif
+  " Skip while picker is open — WinScrolled from popup scroll fires with
+  " main window as current, bypassing the popup guard above.
+  if yac_picker#is_open()
+    return
+  endif
   " Auto-enable on first BufEnter if global option is on
   if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
     let b:yac_ts_highlights_enabled = 1
@@ -377,6 +382,9 @@ endfunction
 
 function! yac_treesitter#highlights_invalidate() abort
   if win_gettype() ==# 'popup'
+    return
+  endif
+  if yac_picker#is_open()
     return
   endif
   if !get(b:, 'yac_ts_highlights_enabled', 0)

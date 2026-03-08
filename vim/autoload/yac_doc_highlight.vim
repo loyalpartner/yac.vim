@@ -19,6 +19,11 @@ hi default link YacDocHighlightWrite YacDocHighlightText
 " === Public API ===
 
 function! yac_doc_highlight#debounce() abort
+  " Skip when picker is open — matchaddpos/matchdelete redraws on the main
+  " window can break popup cursorline rendering.
+  if yac_picker#is_open()
+    return
+  endif
   if !get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1))
     return
   endif
@@ -54,6 +59,10 @@ endfunction
 " === Response Handler (callback) ===
 
 function! yac_doc_highlight#_handle_response(ch, response) abort
+  " Skip when picker is open — same guard as tree-sitter highlights.
+  if yac_picker#is_open()
+    return
+  endif
   call s:clear_document_highlights()
   if type(a:response) != v:t_dict
     return
