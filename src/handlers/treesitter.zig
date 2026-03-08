@@ -184,7 +184,7 @@ pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchRes
         .pending_lsp => return lsp_result, // LSP request sent, wait for response
         .initializing => {}, // LSP not ready, fall through to tree-sitter
         .empty => {}, // No LSP available, fall through
-        .data => return lsp_result,
+        .data, .data_with_subscribe => return lsp_result,
     }
 
     // Fallback: tree-sitter based (textual match within scope)

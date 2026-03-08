@@ -7,11 +7,13 @@ const log = @import("../log.zig");
 pub const treesitter_mod = @import("../treesitter/treesitter.zig");
 const queue_mod = @import("../queue.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
+const clients_mod = @import("../clients.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const LspRegistry = registry_mod.LspRegistry;
+const ClientId = clients_mod.ClientId;
 
 // ============================================================================
 // Handler Context - what every handler receives
@@ -25,6 +27,7 @@ pub const HandlerContext = struct {
     registry: *LspRegistry,
     lsp: *lsp_mod.Lsp,
     client_stream: std.net.Stream,
+    client_id: ClientId,
     ts: ?*treesitter_mod.TreeSitter = null,
     /// Outgoing message queue — push OutMessages here instead of writing directly.
     out_queue: *queue_mod.OutQueue,
@@ -43,6 +46,11 @@ pub const DispatchResult = union(enum) {
     },
     /// LSP client is still initializing; caller should defer and retry.
     initializing: void,
+    /// Handler produced a response AND requests workspace subscription.
+    data_with_subscribe: struct {
+        data: Value,
+        workspace_uri: []const u8,
+    },
 };
 
 // ============================================================================

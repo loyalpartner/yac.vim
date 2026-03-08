@@ -60,9 +60,13 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     const lsp_ctx_result = try common.getLspContextEx(ctx, params, false);
 
+    var workspace_uri: ?[]const u8 = null;
+
     // Send didOpen to language-specific LSP if available
     switch (lsp_ctx_result) {
         .ready => |lsp_ctx| {
+            workspace_uri = lsp_mod.extractWorkspaceFromKey(lsp_ctx.client_key);
+
             const content_to_use = json.getString(obj, "text") orelse
                 (std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
                     log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
@@ -94,9 +98,14 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Also send didOpen to Copilot client if it exists and is ready
     forwardDidOpenToCopilot(ctx, obj);
 
-    return .{ .data = try json.buildObject(ctx.allocator, .{
+    const result_data = try json.buildObject(ctx.allocator, .{
         .{ "action", json.jsonString("none") },
-    }) };
+    });
+
+    if (workspace_uri) |ws| {
+        return .{ .data_with_subscribe = .{ .data = result_data, .workspace_uri = ws } };
+    }
+    return .{ .data = result_data };
 }
 
 /// Forward didOpen to the Copilot client (if active and initialized).

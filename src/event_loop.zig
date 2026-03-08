@@ -471,6 +471,7 @@ pub const EventLoop = struct {
             .registry = &self.lsp.registry,
             .lsp = &self.lsp,
             .client_stream = client_stream,
+            .client_id = cid,
             .ts = &self.ts,
             .out_queue = &self.out_queue,
         };
@@ -508,6 +509,10 @@ pub const EventLoop = struct {
             },
             .pending_lsp => |pending| {
                 self.trackPendingRequest(pending.lsp_request_id, cid, vim_id, method, params, pending.client_key);
+            },
+            .data_with_subscribe => |ds| {
+                self.clients.subscribeClient(cid, ds.workspace_uri);
+                self.sendVimResponseTo(cid, alloc, vim_id, ds.data);
             },
         }
     }
@@ -665,11 +670,12 @@ pub const EventLoop = struct {
                 log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
             };
 
-            // Forward the edit to all Vim clients as a notification
+            // Forward the edit to subscribed Vim clients
+            const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "applyEdit", params) catch return;
-            self.broadcastRaw(encoded);
+            self.sendToWorkspace(workspace_uri, encoded);
             return;
         }
 
@@ -688,6 +694,8 @@ pub const EventLoop = struct {
     /// Handle an LSP server that has died (HUP/ERR on its stdout fd).
     fn handleLspDeath(self: *EventLoop, client_key: []const u8) void {
         log.err("LSP server died: {s}", .{client_key});
+
+        const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -709,13 +717,15 @@ pub const EventLoop = struct {
         else
             "[yac] LSP server crashed (no stderr output)";
         if (lsp_transform.formatToastCmd(alloc, crash_msg, "ErrorMsg")) |cmd|
-            self.broadcastVimEx(alloc, cmd);
+            self.sendVimExToWorkspace(workspace_uri, alloc, cmd);
 
         self.lsp.registry.removeClient(client_key);
     }
 
     /// Handle LSP server notifications.
     fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
+        const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
+
         if (std.mem.eql(u8, method, "$/progress")) {
             const language = lsp_mod.extractLanguageFromKey(client_key);
             const params_obj = switch (params) {
@@ -746,28 +756,27 @@ pub const EventLoop = struct {
                 const title = json_utils.getString(value_obj, "title");
                 if (token_key) |tk| if (title) |t| self.progress.storeTitle(tk, t);
                 if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
-                    self.broadcastVimEx(alloc, echo_cmd);
+                    self.sendVimExToWorkspace(workspace_uri, alloc, echo_cmd);
                 }
             } else if (std.mem.eql(u8, kind, "report")) {
                 const title = if (token_key) |tk| self.progress.getTitle(tk) else null;
                 if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
-                    self.broadcastVimEx(alloc, echo_cmd);
+                    self.sendVimExToWorkspace(workspace_uri, alloc, echo_cmd);
                 }
             } else if (std.mem.eql(u8, kind, "end")) {
                 if (token_key) |tk| self.progress.removeTitle(tk);
                 self.lsp.decrementIndexingCount(language);
                 if (!self.lsp.isAnyLanguageIndexing()) {
                     if (lsp_transform.formatToastCmd(alloc, "[yac] Indexing complete", null)) |cmd|
-                        self.broadcastVimEx(alloc, cmd);
+                        self.sendVimExToWorkspace(workspace_uri, alloc, cmd);
                     self.flushDeferredRequests();
                 }
             }
         } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
-            // Broadcast diagnostics to ALL connected clients
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "diagnostics", params) catch return;
-            self.broadcastRaw(encoded);
+            self.sendToWorkspace(workspace_uri, encoded);
         } else {
             log.debug("LSP notification: {s}", .{method});
         }
@@ -869,6 +878,28 @@ pub const EventLoop = struct {
                 self.sendVimResponseTo(pending.cid, alloc, pending.vim_id, picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file"));
             },
         }
+    }
+
+    /// Send a raw encoded message to clients subscribed to a workspace.
+    /// Falls back to broadcast if workspace_uri is null (e.g. copilot notifications).
+    fn sendToWorkspace(self: *EventLoop, workspace_uri: ?[]const u8, encoded: []const u8) void {
+        if (workspace_uri == null) {
+            self.broadcastRaw(encoded);
+            return;
+        }
+        var cit = self.clients.valueIterator();
+        while (cit.next()) |client_ptr| {
+            if (client_ptr.*.isSubscribedTo(workspace_uri.?)) {
+                self.pushToOutQueue(client_ptr.*.stream, encoded);
+            }
+        }
+    }
+
+    /// Send a Vim ex command to clients subscribed to a workspace.
+    fn sendVimExToWorkspace(self: *EventLoop, workspace_uri: ?[]const u8, alloc: Allocator, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        self.sendToWorkspace(workspace_uri, encoded);
     }
 
     /// Send a Vim ex command to ALL connected clients.

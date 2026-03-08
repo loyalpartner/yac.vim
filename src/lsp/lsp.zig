@@ -165,6 +165,13 @@ pub fn extractLanguageFromKey(client_key: []const u8) []const u8 {
     return client_key[0..pos];
 }
 
+/// Extract workspace URI from a client_key ("language\x00workspace_uri").
+/// Returns null if no workspace (bare "language" key).
+pub fn extractWorkspaceFromKey(client_key: []const u8) ?[]const u8 {
+    const pos = std.mem.indexOfScalar(u8, client_key, 0) orelse return null;
+    return client_key[pos + 1 ..];
+}
+
 /// Check if a Vim method is a query that should be deferred during LSP indexing.
 pub fn isQueryMethod(method: []const u8) bool {
     const query_methods = [_][]const u8{
@@ -227,4 +234,14 @@ test "isQueryMethod - non-query methods return false" {
     try std.testing.expect(!isQueryMethod("unknown_method"));
     // picker does not depend on LSP, must never be deferred during indexing
     try std.testing.expect(!isQueryMethod("picker_query"));
+}
+
+test "extractWorkspaceFromKey - with workspace" {
+    const key = "zig" ++ [_]u8{0} ++ "/home/user/project";
+    try std.testing.expectEqualStrings("/home/user/project", extractWorkspaceFromKey(key).?);
+}
+
+test "extractWorkspaceFromKey - bare language key" {
+    try std.testing.expect(extractWorkspaceFromKey("zig") == null);
+    try std.testing.expect(extractWorkspaceFromKey("copilot") == null);
 }
