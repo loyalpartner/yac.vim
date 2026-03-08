@@ -157,3 +157,8 @@
 {"actor":"lee","comment":null,"created_at":"2026-03-07T22:33:47Z","event_type":"closed","id":157,"issue_id":"yac-c1p","new_value":"Closed","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-07T22:33:47Z","event_type":"closed","id":158,"issue_id":"yac-df5","new_value":"Closed","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-07T22:33:47Z","event_type":"closed","id":159,"issue_id":"yac-i2k","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T22:33:56Z","event_type":"created","id":160,"issue_id":"yac-02t","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-07T22:33:56Z","event_type":"created","id":161,"issue_id":"yac-sla","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-08T08:48:46Z","event_type":"closed","id":162,"issue_id":"yac-02t","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-08T08:48:46Z","event_type":"closed","id":163,"issue_id":"yac-sla","new_value":"Closed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-08T08:48:46Z","event_type":"closed","id":164,"issue_id":"yac-bbu","new_value":"Closed","old_value":""}
