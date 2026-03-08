@@ -67,6 +67,8 @@ See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 - Read the relevant code thoroughly before attempting any fix. Do not cycle through multiple wrong approaches.
 - If the first approach fails, step back and re-analyze the root cause rather than trying variations blindly.
 - Understand the user's actual goal before trying solutions.
+- **UI/rendering bugs: log first, fix second.** Add diagnostic logging (echom or debug_log) to confirm whether the issue is logical (wrong values) or visual (correct values, wrong rendering). Do not guess — one round of logging beats three rounds of speculative fixes.
+- **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_picker_debug_log`). Enable with `:YacDebugToggle`, check with `:YacOpenLog`. Only use `echom` as a last resort when debug_log infrastructure is unavailable.
 
 ## Bug Fix Workflow
 
@@ -90,6 +92,8 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 
 ## Vim Popup Gotchas
 
+- **`win_execute` + `cursorline` needs `redraw`**: When the buffer behind a popup has many text properties (tree-sitter highlights), `win_execute(popup, 'call cursor(...)')` moves the cursor correctly but Vim may not refresh the `cursorline` highlight. Always follow with `redraw`.
+- **Picker sets `eventignore`**: While the picker is open, `CursorMoved`, `CursorMovedI`, `WinScrolled` are suppressed via `eventignore` to prevent tree-sitter/doc-highlight operations from interfering with popup rendering. Restored on close in `s:picker_close_popups()`.
 - **Never use `mapping: 0`** on completion popup — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim).
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
 - Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
