@@ -150,7 +150,9 @@ function! s:ensure_connection() abort
   if has_key(s:channel_pool, l:key) && ch_status(s:channel_pool[l:key]) == 'open'
     return s:channel_pool[l:key]
   endif
-  silent! unlet s:channel_pool[l:key]
+  if has_key(s:channel_pool, l:key)
+    unlet s:channel_pool[l:key]
+  endif
 
   " 开启 channel 日志（仅第一次）
   if !exists('s:log_started')
@@ -737,8 +739,10 @@ function! s:cleanup_dead_connections() abort
   endfor
 
   for key in dead_keys
-    call s:debug_log(printf('Removing dead connection: %s', key))
-    unlet s:channel_pool[key]
+    if has_key(s:channel_pool, key)
+      call s:debug_log(printf('Removing dead connection: %s', key))
+      unlet s:channel_pool[key]
+    endif
   endfor
 
   return len(dead_keys)
