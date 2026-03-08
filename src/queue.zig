@@ -95,8 +95,8 @@ pub const OutMessage = struct {
 // Queue type aliases
 // ============================================================================
 
-pub const InQueue = BoundedQueue(WorkItem, 256);
-pub const OutQueue = BoundedQueue(OutMessage, 1024);
+pub const InQueue = BoundedQueue(WorkItem, 1024);
+pub const OutQueue = BoundedQueue(OutMessage, 4096);
 
 // ============================================================================
 // TS method routing — fast byte-scan, no JSON parsing required.
@@ -126,20 +126,13 @@ pub fn isTsMethod(raw_line: []const u8) bool {
 // ============================================================================
 
 test "isTsMethod — returns true for all known TS methods" {
-    const cases = [_][]const u8{
-        "\"ts_symbols\"",
-        "\"ts_folding\"",
-        "\"ts_highlights\"",
-        "\"ts_navigate\"",
-        "\"ts_textobjects\"",
-        "\"ts_hover_highlight\"",
-        "\"load_language\"",
-    };
-    for (cases) |kw| {
-        // Simulate a raw JSON-RPC line containing the method
-        const line = std.fmt.comptimePrint("[1, {s}, {{}}]", .{kw});
-        try std.testing.expect(isTsMethod(line));
-    }
+    try std.testing.expect(isTsMethod("[1, \"ts_symbols\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_folding\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_highlights\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_navigate\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_textobjects\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"ts_hover_highlight\", {}]"));
+    try std.testing.expect(isTsMethod("[1, \"load_language\", {}]"));
 }
 
 test "isTsMethod — returns false for non-TS methods" {
@@ -196,6 +189,16 @@ test "BoundedQueue — push returns false when closed" {
     var q = Q{};
     q.close();
     try std.testing.expect(!q.push(1));
+}
+
+test "InQueue capacity is 1024" {
+    const q = InQueue{};
+    try std.testing.expectEqual(@as(usize, 1024), q.buf.len);
+}
+
+test "OutQueue capacity is 4096" {
+    const q = OutQueue{};
+    try std.testing.expectEqual(@as(usize, 4096), q.buf.len);
 }
 
 test "BoundedQueue — wraps around correctly" {

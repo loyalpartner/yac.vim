@@ -59,6 +59,9 @@ pub fn main() !void {
 // ============================================================================
 
 test {
+    _ = @import("queue.zig");
+    _ = @import("requests.zig");
+    _ = @import("event_loop.zig");
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
     _ = @import("lsp/protocol.zig");

@@ -69,10 +69,34 @@ pub const Requests = struct {
         return null;
     }
 
+    /// Info about a cancelled request needed to notify the Vim client.
+    pub const CancelledVimInfo = struct {
+        vim_request_id: ?u64,
+        client_id: ClientId,
+    };
+
+    /// Result of cancelling pending requests.
+    pub const CancelResult = struct {
+        /// LSP request IDs that were cancelled (for sending $/cancelRequest).
+        items: []u32,
+        /// Vim client info for each cancelled request (for sending null responses).
+        cancelled_vim_info: std.ArrayList(CancelledVimInfo),
+
+        allocator: Allocator,
+        lsp_ids: std.ArrayList(u32),
+
+        pub fn deinit(self: *CancelResult, allocator: Allocator) void {
+            _ = allocator;
+            self.lsp_ids.deinit(self.allocator);
+            self.cancelled_vim_info.deinit(self.allocator);
+        }
+    };
+
     /// Cancel pending requests with the same method and LSP client key.
-    /// Returns a list of LSP request IDs that were cancelled.
-    pub fn cancelByMethodAndClientKey(self: *Requests, method: []const u8, client_key: []const u8) std.ArrayList(u32) {
-        var cancelled: std.ArrayList(u32) = .{};
+    /// Returns cancelled LSP IDs and Vim client info for sending responses.
+    pub fn cancelByMethodAndClientKey(self: *Requests, method: []const u8, client_key: []const u8) CancelResult {
+        var lsp_ids: std.ArrayList(u32) = .{};
+        var vim_info: std.ArrayList(CancelledVimInfo) = .{};
         var to_remove: std.ArrayList(u32) = .{};
         defer to_remove.deinit(self.allocator);
 
@@ -82,7 +106,11 @@ pub const Requests = struct {
             if (std.mem.eql(u8, pending.method, method)) {
                 if (pending.lsp_client_key) |key| {
                     if (std.mem.eql(u8, key, client_key)) {
-                        cancelled.append(self.allocator, entry.key_ptr.*) catch continue;
+                        lsp_ids.append(self.allocator, entry.key_ptr.*) catch continue;
+                        vim_info.append(self.allocator, .{
+                            .vim_request_id = pending.vim_request_id,
+                            .client_id = pending.client_id,
+                        }) catch continue;
                         to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
                     }
                 }
@@ -95,7 +123,12 @@ pub const Requests = struct {
             }
         }
 
-        return cancelled;
+        return .{
+            .items = lsp_ids.items,
+            .cancelled_vim_info = vim_info,
+            .allocator = self.allocator,
+            .lsp_ids = lsp_ids,
+        };
     }
 
     pub fn lspIterator(self: *Requests) std.AutoHashMap(u32, PendingLspRequest).Iterator {
@@ -113,3 +146,98 @@ pub const Requests = struct {
         return null;
     }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "addLsp then removeLsp returns entry" {
+    const allocator = std.testing.allocator;
+    var reqs = Requests.init(allocator);
+    defer reqs.deinit();
+
+    try reqs.addLsp(42, .{
+        .vim_request_id = 100,
+        .method = try allocator.dupe(u8, "textDocument/hover"),
+        .ssh_host = null,
+        .file = null,
+        .client_id = 1,
+        .lsp_client_key = null,
+    });
+
+    const pending = reqs.removeLsp(42);
+    try std.testing.expect(pending != null);
+    try std.testing.expectEqual(@as(?u64, 100), pending.?.vim_request_id);
+    pending.?.deinit(allocator);
+}
+
+test "removeLsp returns null for unknown id" {
+    const allocator = std.testing.allocator;
+    var reqs = Requests.init(allocator);
+    defer reqs.deinit();
+
+    try std.testing.expect(reqs.removeLsp(999) == null);
+    try std.testing.expect(reqs.removeLsp(999) == null);
+}
+
+test "cancelByMethodAndClientKey removes matching entries" {
+    const allocator = std.testing.allocator;
+    var reqs = Requests.init(allocator);
+    defer reqs.deinit();
+
+    try reqs.addLsp(1, .{
+        .vim_request_id = 10,
+        .method = try allocator.dupe(u8, "textDocument/completion"),
+        .ssh_host = null,
+        .file = null,
+        .client_id = 1,
+        .lsp_client_key = try allocator.dupe(u8, "typescript"),
+    });
+    try reqs.addLsp(2, .{
+        .vim_request_id = 20,
+        .method = try allocator.dupe(u8, "textDocument/hover"),
+        .ssh_host = null,
+        .file = null,
+        .client_id = 1,
+        .lsp_client_key = try allocator.dupe(u8, "typescript"),
+    });
+
+    var cancelled = reqs.cancelByMethodAndClientKey("textDocument/completion", "typescript");
+    defer cancelled.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), cancelled.items.len);
+    try std.testing.expectEqual(@as(u32, 1), cancelled.items[0]);
+
+    // cancelled entry should be gone
+    try std.testing.expect(reqs.removeLsp(1) == null);
+    // unrelated entry should remain
+    const remaining = reqs.removeLsp(2);
+    try std.testing.expect(remaining != null);
+    remaining.?.deinit(allocator);
+}
+
+test "cancelByMethodAndClientKey returns vim info for cancelled requests" {
+    const allocator = std.testing.allocator;
+    var reqs = Requests.init(allocator);
+    defer reqs.deinit();
+
+    try reqs.addLsp(7, .{
+        .vim_request_id = 55,
+        .method = try allocator.dupe(u8, "textDocument/completion"),
+        .ssh_host = null,
+        .file = null,
+        .client_id = 3,
+        .lsp_client_key = try allocator.dupe(u8, "zls"),
+    });
+
+    var result = reqs.cancelByMethodAndClientKey("textDocument/completion", "zls");
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+
+    // After cancel, the vim_request_id info should be available
+    // via cancelled_vim_info for sending null responses back to Vim
+    try std.testing.expectEqual(@as(usize, 1), result.cancelled_vim_info.items.len);
+    try std.testing.expectEqual(@as(?u64, 55), result.cancelled_vim_info.items[0].vim_request_id);
+    try std.testing.expectEqual(@as(ClientId, 3), result.cancelled_vim_info.items[0].client_id);
+}

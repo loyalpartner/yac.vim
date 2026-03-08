@@ -533,6 +533,10 @@ pub const EventLoop = struct {
                         };
                     }
                 }
+                // Send null responses to Vim for cancelled requests so callbacks don't hang
+                for (cancelled.cancelled_vim_info.items) |info| {
+                    self.sendVimResponseTo(info.client_id, self.allocator, info.vim_request_id, .null);
+                }
                 log.debug("Cancelled {d} old {s} request(s)", .{ cancelled.items.len, method });
             }
         }
