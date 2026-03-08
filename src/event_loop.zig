@@ -334,9 +334,6 @@ pub const EventLoop = struct {
         // Remove deferred requests for this client
         self.lsp.removeDeferredForClient(cid);
 
-        // Clear active editor entries for this client
-        self.lsp.clearActiveEditorsForClient(cid);
-
         self.clients.remove(cid);
 
         log.info("Client {d} removed (remaining: {d})", .{ cid, self.clients.count() });
@@ -779,23 +776,6 @@ pub const EventLoop = struct {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "diagnostics", params) catch return;
-
-            // If a client has unsaved changes (active editor), only send diagnostics to them
-            const diag_uri = blk: {
-                const p = switch (params) {
-                    .object => |o| o,
-                    else => break :blk null,
-                };
-                break :blk json_utils.getString(p, "uri");
-            };
-            if (diag_uri) |uri| {
-                if (self.lsp.getActiveEditor(uri)) |editor_cid| {
-                    if (self.clients.get(editor_cid)) |client| {
-                        self.pushToOutQueue(client.stream, encoded);
-                        return;
-                    }
-                }
-            }
             self.sendToWorkspace(workspace_uri, encoded);
         } else {
             log.debug("LSP notification: {s}", .{method});
