@@ -515,6 +515,11 @@ pub const EventLoop = struct {
                 self.sendVimResponseTo(cid, alloc, vim_id, ds.data);
             },
         }
+
+        // After did_save: notify other clients in the same workspace to reload
+        if (std.mem.eql(u8, method, "did_save")) {
+            self.broadcastChecktimeToOthers(cid, alloc, params);
+        }
     }
 
     /// Track a pending LSP request so the response can be routed back to the correct Vim client.
@@ -877,6 +882,30 @@ pub const EventLoop = struct {
                 }
                 self.sendVimResponseTo(pending.cid, alloc, pending.vim_id, picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file"));
             },
+        }
+    }
+
+    /// After did_save, tell other clients in the same workspace to checktime
+    /// so they reload externally modified files immediately.
+    fn broadcastChecktimeToOthers(self: *EventLoop, sender_cid: ClientId, alloc: Allocator, params: Value) void {
+        const obj = switch (params) {
+            .object => |o| o,
+            else => return,
+        };
+        const file = json_utils.getString(obj, "file") orelse return;
+        const real_path = lsp_registry_mod.extractRealPath(file);
+        const language = lsp_registry_mod.LspRegistry.detectLanguage(real_path) orelse return;
+        const client_result = self.lsp.registry.findClient(language, real_path) orelse return;
+        const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_result.client_key) orelse return;
+
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = "silent! checktime" } }) catch return;
+        defer alloc.free(encoded);
+
+        var cit = self.clients.valueIterator();
+        while (cit.next()) |client_ptr| {
+            if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
+                self.pushToOutQueue(client_ptr.*.stream, encoded);
+            }
         }
     }
 
