@@ -840,6 +840,8 @@ function! s:picker_has_locations(mode) abort
 endfunction
 
 function! s:picker_update_results(items) abort
+  call yac#_picker_debug_log(printf('[PICKER] update_results: %d items (was %d), popup=%d',
+    \ type(a:items) == v:t_list ? len(a:items) : 0, len(s:picker.items), s:picker.results_popup))
   let s:picker.loading = 0
   let s:picker.items = type(a:items) == v:t_list ? a:items : []
   let s:picker.selected = 0
@@ -1004,6 +1006,7 @@ function! s:picker_highlight_selected() abort
   " Force redraw: when text properties exist on the underlying buffer,
   " Vim may not automatically refresh the popup's cursorline highlight.
   call win_execute(s:picker.results_popup, 'call cursor(' . lnum . ', 1)')
+  call yac#_picker_debug_log(printf('[PICKER] highlight: lnum=%d, actual=%d', lnum, line('.', s:picker.results_popup)))
   redraw
 endfunction
 
@@ -1013,6 +1016,7 @@ function! s:picker_select_next() abort
     call s:picker_move_grouped(1)
   else
     let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
+    call yac#_picker_debug_log(printf('[PICKER] select_next: selected=%d/%d', s:picker.selected, len(s:picker.items)))
     call s:picker_highlight_selected()
     call s:picker_on_selection_changed()
   endif
@@ -1024,6 +1028,7 @@ function! s:picker_select_prev() abort
     call s:picker_move_grouped(-1)
   else
     let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
+    call yac#_picker_debug_log(printf('[PICKER] select_prev: selected=%d/%d', s:picker.selected, len(s:picker.items)))
     call s:picker_highlight_selected()
     call s:picker_on_selection_changed()
   endif
