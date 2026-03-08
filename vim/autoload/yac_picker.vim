@@ -76,6 +76,11 @@ function! yac_picker#mru_load() abort
   let f = s:picker_mru_file()
   if filereadable(f)
     let s:picker_mru = readfile(f)
+    let s:filtered = filter(copy(s:picker_mru), 'filereadable(v:val)')
+    if len(s:filtered) < len(s:picker_mru)
+      let s:picker_mru = s:filtered
+      call s:picker_mru_save()
+    endif
   endif
 endfunction
 
@@ -167,7 +172,7 @@ function! yac_picker#open(...) abort
   call yac#_picker_request('picker_open', {
     \ 'cwd': getcwd(),
     \ 'file': expand('%:p'),
-    \ 'recent_files': map(copy(s:picker_mru), 'fnamemodify(v:val, ":.")'),
+    \ 'recent_files': map(filter(copy(s:picker_mru), 'filereadable(v:val)'), 'fnamemodify(v:val, ":.")'),
     \ }, 'yac_picker#_handle_open_response')
 
   let initial = get(opts, 'initial', '')
@@ -1217,6 +1222,7 @@ endfunction
 function! s:query_mru(query) abort
   let items = []
   for f in s:picker_mru
+    if !filereadable(f) | continue | endif
     let rel = fnamemodify(f, ':.')
     if empty(a:query) || stridx(tolower(rel), tolower(a:query)) >= 0
       call add(items, {'label': rel, 'file': f})
