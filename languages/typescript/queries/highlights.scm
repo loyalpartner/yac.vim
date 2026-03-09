@@ -180,8 +180,6 @@
     (arrow_function)
   ])
 
-(arrow_function) @function
-
 ; Parameters
 (required_parameter
   (identifier) @variable.parameter)
