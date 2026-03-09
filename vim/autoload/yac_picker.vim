@@ -1236,6 +1236,10 @@ function! yac_picker#test_set_mru(files) abort
   let s:picker_mru = a:files
 endfunction
 
+function! yac_picker#get_commands() abort
+  return s:yac_commands
+endfunction
+
 function! s:query_buffer(query) abort
   if empty(a:query) | return [] | endif
   let bufnr = bufnr(s:picker.orig_file)
@@ -1319,21 +1323,45 @@ let s:references_mode = {
   \ }
 
 let s:yac_commands = [
-  \ {'label': 'Format', 'cmd': 'YacFormat'},
-  \ {'label': 'Rename', 'cmd': 'YacRename'},
-  \ {'label': 'Restart LSP', 'cmd': 'YacStop | YacStart'},
-  \ {'label': 'Code Action', 'cmd': 'YacCodeAction'},
-  \ {'label': 'Hover', 'cmd': 'YacHover'},
-  \ {'label': 'References', 'cmd': 'YacReferences'},
   \ {'label': 'Definition', 'cmd': 'YacDefinition'},
   \ {'label': 'Declaration', 'cmd': 'YacDeclaration'},
   \ {'label': 'Type Definition', 'cmd': 'YacTypeDefinition'},
   \ {'label': 'Implementation', 'cmd': 'YacImplementation'},
+  \ {'label': 'References', 'cmd': 'YacReferences'},
+  \ {'label': 'Peek Definition', 'cmd': 'YacPeek'},
+  \ {'label': 'Rename', 'cmd': 'YacRename'},
+  \ {'label': 'Code Action', 'cmd': 'YacCodeAction'},
+  \ {'label': 'Format', 'cmd': 'YacFormat'},
+  \ {'label': 'Range Format', 'cmd': 'YacRangeFormat'},
+  \ {'label': 'Hover', 'cmd': 'YacHover'},
   \ {'label': 'Document Symbols', 'cmd': 'YacDocumentSymbols'},
   \ {'label': 'Signature Help', 'cmd': 'YacSignatureHelp'},
   \ {'label': 'Inlay Hints Toggle', 'cmd': 'YacInlayHintsToggle'},
   \ {'label': 'Folding Range', 'cmd': 'YacFoldingRange'},
+  \ {'label': 'Call Hierarchy Incoming', 'cmd': 'YacCallHierarchyIncoming'},
+  \ {'label': 'Call Hierarchy Outgoing', 'cmd': 'YacCallHierarchyOutgoing'},
+  \ {'label': 'Type Hierarchy Supertypes', 'cmd': 'YacTypeHierarchySupertypes'},
+  \ {'label': 'Type Hierarchy Subtypes', 'cmd': 'YacTypeHierarchySubtypes'},
+  \ {'label': 'Diagnostic Virtual Text Toggle', 'cmd': 'YacToggleDiagnosticVirtualText'},
+  \ {'label': 'Tree-sitter Symbols', 'cmd': 'YacTsSymbols'},
+  \ {'label': 'Tree-sitter Highlights Toggle', 'cmd': 'YacTsHighlightsToggle'},
+  \ {'label': 'File Picker', 'cmd': 'YacPicker'},
+  \ {'label': 'Grep', 'cmd': 'YacGrep'},
   \ {'label': 'Theme Picker', 'cmd': 'YacThemePicker'},
+  \ {'label': 'Theme Default', 'cmd': 'YacThemeDefault'},
+  \ {'label': 'Copilot Sign In', 'cmd': 'CopilotSignIn'},
+  \ {'label': 'Copilot Sign Out', 'cmd': 'CopilotSignOut'},
+  \ {'label': 'Copilot Status', 'cmd': 'CopilotStatus'},
+  \ {'label': 'Copilot Enable', 'cmd': 'CopilotEnable'},
+  \ {'label': 'Copilot Disable', 'cmd': 'CopilotDisable'},
+  \ {'label': 'LSP Install', 'cmd': 'YacLspInstall'},
+  \ {'label': 'LSP Update', 'cmd': 'YacLspUpdate'},
+  \ {'label': 'LSP Status', 'cmd': 'YacLspStatus'},
+  \ {'label': 'Restart LSP', 'cmd': 'YacStop | YacStart'},
+  \ {'label': 'Status', 'cmd': 'YacStatus'},
+  \ {'label': 'Open Log', 'cmd': 'YacOpenLog'},
+  \ {'label': 'Connections', 'cmd': 'YacConnections'},
+  \ {'label': 'Stop Daemon', 'cmd': 'YacDaemonStop'},
   \ {'label': 'Debug Toggle', 'cmd': 'YacDebugToggle'},
   \ {'label': 'Debug Status', 'cmd': 'YacDebugStatus'},
   \ ]

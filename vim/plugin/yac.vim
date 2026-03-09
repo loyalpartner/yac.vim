@@ -20,6 +20,12 @@ let g:yac_ts_highlights = get(g:, 'yac_ts_highlights', 1)
 " LSP server auto-install (0=prompt, 1=auto-install without asking)
 let g:yac_auto_install_lsp = get(g:, 'yac_auto_install_lsp', 1)
 
+" Auto bracket/quote pairing
+let g:yac_auto_pairs = get(g:, 'yac_auto_pairs', 1)
+
+" Git signs in sign column
+let g:yac_git_signs = get(g:, 'yac_git_signs', 1)
+
 " Language plugin registry: {"lang_name": "/path/to/plugin_root", ...}
 " Each language plugin's plugin/yac_*.vim registers itself here.
 if !exists('g:yac_lang_plugins')
@@ -85,6 +91,7 @@ command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>
 command! -nargs=? YacLspInstall  call yac_install#install(<f-args>)
 command! -nargs=? YacLspUpdate   call yac_install#update(<f-args>)
 command! YacLspStatus            call yac_install#status()
+command! YacStatus               call yac#status()
 
 command! CopilotSignIn  call yac_copilot#sign_in()
 command! CopilotSignOut call yac_copilot#sign_out()
@@ -206,6 +213,21 @@ if get(g:, 'yac_auto_start', 1)
     autocmd CursorHold * if s:not_preview_loading() && exists('b:yac_fold_start_lines') | call yac#update_fold_signs() | endif
   augroup END
 endif
+
+" Git signs — diff markers in sign column
+if get(g:, 'yac_git_signs', 1)
+  call yac_gitsigns#define_signs()
+  augroup yac_gitsigns
+    autocmd!
+    autocmd BufReadPost,BufWritePost * call yac_gitsigns#update_debounce()
+  augroup END
+endif
+
+" Auto-pairs — bracket/quote auto-closing
+augroup yac_autopairs
+  autocmd!
+  autocmd BufReadPost,BufNewFile * call yac_autopairs#setup()
+augroup END
 
 " Tree-sitter highlights autocommands
 " Use * pattern — handlers check per-buffer enablement
