@@ -17,6 +17,9 @@ let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', '
 " Tree-sitter highlights (auto-enable for supported filetypes)
 let g:yac_ts_highlights = get(g:, 'yac_ts_highlights', 1)
 
+" Semantic tokens from LSP (overlays on tree-sitter highlights)
+let g:yac_semantic_tokens = get(g:, 'yac_semantic_tokens', 1)
+
 " LSP server auto-install (0=prompt, 1=auto-install without asking)
 let g:yac_auto_install_lsp = get(g:, 'yac_auto_install_lsp', 1)
 
@@ -92,6 +95,8 @@ command! -nargs=? YacLspInstall  call yac_install#install(<f-args>)
 command! -nargs=? YacLspUpdate   call yac_install#update(<f-args>)
 command! YacLspStatus            call yac_install#status()
 command! YacStatus               call yac#status()
+command! YacSemanticTokens       call yac#semantic_tokens()
+command! YacSemanticTokensToggle call yac#semantic_tokens_toggle()
 
 command! CopilotSignIn  call yac_copilot#sign_in()
 command! CopilotSignOut call yac_copilot#sign_out()
@@ -240,6 +245,15 @@ augroup yac_ts_highlights
   autocmd BufReadPost * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
   autocmd BufLeave * if s:not_preview_loading() | call yac#ts_highlights_detach() | endif
 augroup END
+
+" Semantic tokens — request after save and on buffer enter (debounced)
+if get(g:, 'yac_semantic_tokens', 1)
+  augroup yac_semantic_tokens
+    autocmd!
+    autocmd BufWritePost * if s:not_preview_loading() | call yac#semantic_tokens_debounce() | endif
+    autocmd InsertLeave * if s:not_preview_loading() | call yac#semantic_tokens_debounce() | endif
+  augroup END
+endif
 
 " Load saved theme on startup; reapply after colorscheme changes
 call yac_theme#autoload()

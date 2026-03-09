@@ -90,3 +90,18 @@ pub fn handleFoldingRange(ctx: *HandlerContext, params: Value) !DispatchResult {
 pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchResult {
     return common.sendPositionRequest(ctx, params, "textDocument/documentHighlight");
 }
+
+pub fn handleSemanticTokens(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
+        .ready => |c| c,
+        .initializing => return .{ .initializing = {} },
+        .not_available => return .{ .empty = {} },
+    };
+
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "semanticTokensProvider", "semantic tokens")) return .{ .empty = {} };
+
+    const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
+    const request_id = try lsp_ctx.client.sendRequest("textDocument/semanticTokens/full", lsp_params);
+
+    return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = lsp_ctx.client_key } };
+}

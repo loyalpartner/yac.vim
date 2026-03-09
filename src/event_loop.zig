@@ -640,7 +640,18 @@ pub const EventLoop = struct {
                             log.err("LSP error for request {d} ({s}): {s}", .{ resp.id, pending.method, err_str });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
                         } else {
-                            const transformed = lsp_transform.transformLspResult(
+                            const transformed = if (std.mem.eql(u8, pending.method, "semantic_tokens")) blk: {
+                                // Semantic tokens need the server capabilities to decode the legend
+                                const caps_val = if (pending.lsp_client_key) |key|
+                                    if (self.lsp.registry.server_capabilities.get(key)) |parsed| parsed.value else null
+                                else
+                                    null;
+                                break :blk lsp_transform.transformSemanticTokensResult(
+                                    arena.allocator(),
+                                    resp.result,
+                                    caps_val,
+                                ) catch .null;
+                            } else lsp_transform.transformLspResult(
                                 arena.allocator(),
                                 pending.method,
                                 resp.result,

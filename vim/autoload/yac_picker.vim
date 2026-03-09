@@ -1337,6 +1337,8 @@ let s:yac_commands = [
   \ {'label': 'Document Symbols', 'cmd': 'YacDocumentSymbols'},
   \ {'label': 'Signature Help', 'cmd': 'YacSignatureHelp'},
   \ {'label': 'Inlay Hints Toggle', 'cmd': 'YacInlayHintsToggle'},
+  \ {'label': 'Semantic Tokens', 'cmd': 'YacSemanticTokens'},
+  \ {'label': 'Semantic Tokens Toggle', 'cmd': 'YacSemanticTokensToggle'},
   \ {'label': 'Folding Range', 'cmd': 'YacFoldingRange'},
   \ {'label': 'Call Hierarchy Incoming', 'cmd': 'YacCallHierarchyIncoming'},
   \ {'label': 'Call Hierarchy Outgoing', 'cmd': 'YacCallHierarchyOutgoing'},

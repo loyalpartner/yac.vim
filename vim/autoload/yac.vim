@@ -871,6 +871,7 @@ function! yac#test_inject_response(method, response) abort
     \ 'formatting': 'yac_lsp#_handle_formatting_response',
     \ 'type_hierarchy': 'yac_lsp#_handle_type_hierarchy_response',
     \ 'file_open': 'yac_lsp#_handle_file_open_response',
+    \ 'semantic_tokens': 'yac_semantic_tokens#_handle_response',
     \ }
   if has_key(l:external_handlers, a:method)
     call call(l:external_handlers[a:method], [v:null, a:response])
@@ -1175,6 +1176,28 @@ function! yac#_doc_highlight_notify(method, params) abort
 endfunction
 
 function! yac#_doc_highlight_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
+" === Semantic Tokens (delegated to yac_semantic_tokens.vim) ===
+
+function! yac#semantic_tokens() abort
+  call yac_semantic_tokens#request()
+endfunction
+
+function! yac#semantic_tokens_toggle() abort
+  call yac_semantic_tokens#toggle()
+endfunction
+
+function! yac#semantic_tokens_debounce() abort
+  call yac_semantic_tokens#request_debounce()
+endfunction
+
+function! yac#_semantic_tokens_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_semantic_tokens_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 

@@ -53,6 +53,7 @@ pub const handlers = [_]Handler{
     .{ .name = "formatting", .handleFn = lsp_editing.handleFormatting },
     .{ .name = "range_formatting", .handleFn = lsp_editing.handleRangeFormatting },
     .{ .name = "signature_help", .handleFn = lsp_info.handleSignatureHelp },
+    .{ .name = "semantic_tokens", .handleFn = lsp_info.handleSemanticTokens },
     .{ .name = "execute_command", .handleFn = lsp_editing.handleExecuteCommand },
     .{ .name = "picker_open", .handleFn = picker_handlers.handlePickerOpen },
     .{ .name = "picker_query", .handleFn = picker_handlers.handlePickerQuery },

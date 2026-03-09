@@ -9,6 +9,7 @@ const ObjectMap = json_utils.ObjectMap;
 pub const completion = @import("transform_completion.zig");
 pub const navigation = @import("transform_navigation.zig");
 pub const symbols = @import("transform_symbols.zig");
+pub const semantic_tokens = @import("transform_semantic_tokens.zig");
 
 // Re-export all public transform functions for backward compatibility.
 // Callers can continue to use @import("lsp/transform.zig").transformGotoResult, etc.
@@ -27,6 +28,8 @@ pub const Position = navigation.Position;
 
 pub const transformPickerSymbolResult = symbols.transformPickerSymbolResult;
 pub const symbolKindName = symbols.symbolKindName;
+
+pub const transformSemanticTokensResult = semantic_tokens.transformSemanticTokensResult;
 
 /// Escape a string for safe use in Vim's echo '...' syntax.
 /// Handles single quotes, backslashes, newlines/carriage returns, and truncates long messages.
@@ -151,6 +154,7 @@ comptime {
     _ = completion;
     _ = navigation;
     _ = symbols;
+    _ = semantic_tokens;
 }
 
 test "escapeVimString — plain text passes through" {
