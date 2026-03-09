@@ -97,18 +97,26 @@ pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool)
         return .{ .not_available = {} };
     };
 
+    // Skip repeated spawn attempts for servers known to be unavailable
+    if (ctx.registry.hasSpawnFailed(language)) {
+        return .{ .not_available = {} };
+    }
+
     const result = ctx.registry.getOrCreateClient(language, real_path) catch |e| {
-        log.err("Failed to get LSP client for {s}: {any}", .{ language, e });
-        // Notify user once per language when LSP server cannot be started
-        if (!ctx.registry.hasSpawnFailed(language)) {
-            ctx.registry.markSpawnFailed(language);
-            const config = LspRegistry.getConfig(language);
-            const cmd = if (config) |c| c.command else language;
-            const msg = std.fmt.allocPrint(ctx.allocator, "echoerr '[yac] LSP server \"{s}\" not found. Please install it for {s} support.'", .{ cmd, language }) catch {
-                return .{ .not_available = {} };
-            };
-            vimEx(ctx, msg) catch {};
+        log.err("LSP server not available for {s}: {any}", .{ language, e });
+        ctx.registry.markSpawnFailed(language);
+        const config = LspRegistry.getConfig(language);
+        const cmd = if (config) |c| c.command else language;
+        // Safety: reject values containing single quotes to prevent Vim command injection
+        if (std.mem.indexOfScalar(u8, language, '\'') != null or
+            std.mem.indexOfScalar(u8, cmd, '\'') != null)
+        {
+            return .{ .not_available = {} };
         }
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac_install#on_spawn_failed('{s}', '{s}')", .{ language, cmd }) catch {
+            return .{ .not_available = {} };
+        };
+        vimEx(ctx, msg) catch {};
         return .{ .not_available = {} };
     };
 

@@ -4,6 +4,16 @@
       ".ts",
       ".tsx"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"],
+      "workspace_markers": ["package.json", "tsconfig.json"],
+      "install": {
+        "method": "npm",
+        "package": "typescript-language-server typescript",
+        "bin_name": "typescript-language-server"
+      }
+    }
   }
 }

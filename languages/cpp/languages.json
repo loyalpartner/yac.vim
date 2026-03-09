@@ -8,6 +8,15 @@
       ".hpp",
       ".hxx"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "clangd",
+      "args": [],
+      "workspace_markers": ["compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile"],
+      "install": {
+        "method": "system",
+        "package": "clangd"
+      }
+    }
   }
 }

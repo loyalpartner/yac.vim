@@ -17,6 +17,9 @@ let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', '
 " Tree-sitter highlights (auto-enable for supported filetypes)
 let g:yac_ts_highlights = get(g:, 'yac_ts_highlights', 1)
 
+" LSP server auto-install (0=prompt, 1=auto-install without asking)
+let g:yac_auto_install_lsp = get(g:, 'yac_auto_install_lsp', 1)
+
 " Language plugin registry: {"lang_name": "/path/to/plugin_root", ...}
 " Each language plugin's plugin/yac_*.vim registers itself here.
 if !exists('g:yac_lang_plugins')
@@ -79,6 +82,10 @@ command! YacTsHighlightsToggle    call yac#ts_highlights_toggle()
 command! YacThemePicker           call yac#picker_open({'initial': '%'})
 command! YacThemeDefault          call yac_theme#apply_default() | call yac_theme#save_selection('')
 command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>) | call yac_theme#save_selection(<q-args>)
+command! -nargs=? YacLspInstall  call yac_install#install(<f-args>)
+command! -nargs=? YacLspUpdate   call yac_install#update(<f-args>)
+command! YacLspStatus            call yac_install#status()
+
 command! CopilotSignIn  call yac_copilot#sign_in()
 command! CopilotSignOut call yac_copilot#sign_out()
 command! CopilotStatus  call yac_copilot#status()
@@ -133,8 +140,12 @@ function! s:build_ext_map() abort
       let l:config = json_decode(join(readfile(l:json_path), "\n"))
       for [name, info] in items(l:config)
         let l:has_lsp = get(info, 'lsp', 1)
+        let l:lsp_server = get(info, 'lsp_server', {})
+        let l:install = get(l:lsp_server, 'install', {})
+        let l:lsp_command = get(l:lsp_server, 'command', '')
         for ext in get(info, 'extensions', [])
-          let l:ext_map[ext] = {'dir': lang_dir, 'lsp': l:has_lsp}
+          let l:ext_map[ext] = {'dir': lang_dir, 'lsp': l:has_lsp,
+              \ 'install': l:install, 'lsp_command': l:lsp_command}
         endfor
       endfor
     catch
@@ -156,6 +167,8 @@ function! s:yac_check_language() abort
         let b:yac_lsp_supported = 1
       endif
       let b:yac_lang_dir = info.dir
+      let b:yac_lsp_install = info.install
+      let b:yac_lsp_command = info.lsp_command
       call yac#ensure_language(info.dir)
       return
     endif

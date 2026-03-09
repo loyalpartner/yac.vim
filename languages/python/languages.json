@@ -4,6 +4,16 @@
       ".py",
       ".pyi"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "pyright-langserver",
+      "args": ["--stdio"],
+      "workspace_markers": ["pyproject.toml", "setup.py"],
+      "install": {
+        "method": "npm",
+        "package": "pyright",
+        "bin_name": "pyright-langserver"
+      }
+    }
   }
 }

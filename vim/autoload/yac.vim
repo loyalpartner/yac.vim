@@ -1013,6 +1013,20 @@ function! yac#_picker_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
+" === Install Bridge ===
+
+function! yac#_install_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#_install_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
+function! yac#_install_debug_log(msg) abort
+  call s:debug_log(a:msg)
+endfunction
+
 " === Copilot Bridge ===
 
 function! yac#_copilot_request(method, params, callback) abort

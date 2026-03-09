@@ -108,6 +108,21 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     return .{ .data = result_data };
 }
 
+/// Reset the spawn-failed flag for a language so the daemon will retry spawning.
+pub fn handleLspResetFailed(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+    const language = json.getString(obj, "language") orelse return .{ .empty = {} };
+
+    ctx.registry.resetSpawnFailed(language);
+
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
 /// Forward didOpen to the Copilot client (if active and initialized).
 fn forwardDidOpenToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
     if (ctx.registry.copilot_client == null) return;

@@ -136,6 +136,13 @@ pub const LspRegistry = struct {
         };
     }
 
+    /// Reset a language's spawn failure flag (called after successful install).
+    pub fn resetSpawnFailed(self: *LspRegistry, language: []const u8) void {
+        if (self.failed_spawns.fetchRemove(language)) |entry| {
+            self.allocator.free(entry.key);
+        }
+    }
+
     /// Get an existing client by client key (includes copilot).
     pub fn getClient(self: *LspRegistry, client_key: []const u8) ?*LspClient {
         if (std.mem.eql(u8, client_key, copilot_key)) return self.copilot_client;
@@ -277,8 +284,18 @@ pub const LspRegistry = struct {
             }
         }
 
-        log.info("Starting {s} for {s} (workspace: {s})", .{ config.command, language, workspace_uri orelse "(none)" });
-        const client = try LspClient.spawn(self.allocator, config.command, config.args, &self.next_id);
+        // Resolve command: check PATH first, then managed binary dir
+        var managed_path: ?[]const u8 = null;
+        const command_to_use: []const u8 = if (commandExistsInPath(config.command))
+            config.command
+        else blk: {
+            managed_path = getManagedBinaryPath(self.allocator, config.command);
+            break :blk managed_path orelse return error.SpawnFailed;
+        };
+        defer if (managed_path) |mp| self.allocator.free(mp);
+
+        log.info("Starting {s} for {s} (workspace: {s})", .{ command_to_use, language, workspace_uri orelse "(none)" });
+        const client = try LspClient.spawn(self.allocator, command_to_use, config.args, &self.next_id);
         errdefer client.deinit();
         const key = try self.allocator.dupe(u8, lookup_key);
         errdefer self.allocator.free(key);
@@ -473,6 +490,43 @@ pub const LspRegistry = struct {
         }
     }
 };
+
+/// Check if a command exists in PATH (no allocation).
+fn commandExistsInPath(command: []const u8) bool {
+    // Absolute/relative path: check directly
+    if (std.mem.indexOfScalar(u8, command, '/') != null) {
+        std.fs.accessAbsolute(command, .{}) catch return false;
+        return true;
+    }
+    const path_env = std.posix.getenv("PATH") orelse return false;
+    var it = std.mem.splitScalar(u8, path_env, ':');
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    while (it.next()) |dir| {
+        if (dir.len + 1 + command.len >= buf.len) continue;
+        @memcpy(buf[0..dir.len], dir);
+        buf[dir.len] = '/';
+        @memcpy(buf[dir.len + 1 ..][0..command.len], command);
+        const full = buf[0 .. dir.len + 1 + command.len];
+        std.fs.accessAbsolute(full, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
+/// Check ~/.local/share/yac/bin/{command} for a managed binary.
+/// Returns an allocated path string if the binary exists, null otherwise.
+fn getManagedBinaryPath(allocator: Allocator, command: []const u8) ?[]const u8 {
+    // Reject path traversal characters
+    if (std.mem.indexOfScalar(u8, command, '/') != null) return null;
+    if (std.mem.indexOf(u8, command, "..") != null) return null;
+    const home = std.posix.getenv("HOME") orelse return null;
+    const path = std.fmt.allocPrint(allocator, "{s}/.local/share/yac/bin/{s}", .{ home, command }) catch return null;
+    std.fs.accessAbsolute(path, .{}) catch {
+        allocator.free(path);
+        return null;
+    };
+    return path;
+}
 
 /// Check if a client_key belongs to a given language.
 /// Key format: "language" (no workspace) or "language\x00workspace_uri".

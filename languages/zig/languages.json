@@ -3,6 +3,18 @@
     "extensions": [
       ".zig"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "zls",
+      "args": [],
+      "workspace_markers": ["build.zig"],
+      "install": {
+        "method": "github_release",
+        "repo": "zigtools/zls",
+        "asset": "zls-{ARCH}-{PLATFORM}.tar.xz",
+        "platform_map": {"Linux": "linux", "Darwin": "macos"},
+        "bin_name": "zls"
+      }
+    }
   }
 }

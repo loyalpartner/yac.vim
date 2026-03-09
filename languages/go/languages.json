@@ -3,6 +3,16 @@
     "extensions": [
       ".go"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "gopls",
+      "args": [],
+      "workspace_markers": ["go.mod"],
+      "install": {
+        "method": "go_install",
+        "package": "golang.org/x/tools/gopls@latest",
+        "bin_name": "gopls"
+      }
+    }
   }
 }

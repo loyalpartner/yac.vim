@@ -3,6 +3,18 @@
     "extensions": [
       ".rs"
     ],
-    "grammar": "grammar/parser.wasm"
+    "grammar": "grammar/parser.wasm",
+    "lsp_server": {
+      "command": "rust-analyzer",
+      "args": [],
+      "workspace_markers": ["Cargo.toml"],
+      "install": {
+        "method": "github_release",
+        "repo": "rust-lang/rust-analyzer",
+        "asset": "rust-analyzer-{ARCH}-{PLATFORM}.gz",
+        "platform_map": {"Linux": "unknown-linux-gnu", "Darwin": "apple-darwin"},
+        "bin_name": "rust-analyzer"
+      }
+    }
   }
 }
