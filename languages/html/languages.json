@@ -1,0 +1,9 @@
+{
+  "html": {
+    "extensions": [
+      ".html",
+      ".htm"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "yaml": {
+    "extensions": [
+      ".yaml",
+      ".yml"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

@@ -6,8 +6,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Extract all capture names from highlights.scm files (strip @, deduplicate)
-captures=$(grep -ohP '@[\w.]+' "$ROOT"/languages/*/queries/highlights.scm 2>/dev/null \
-  | sort -u | sed 's/^@//')
+# First strip quoted strings (e.g., "@media" in CSS) to avoid false positives
+captures=$(sed 's/"[^"]*"//g' "$ROOT"/languages/*/queries/highlights.scm 2>/dev/null \
+  | grep -ohP '@[\w.]+' | sort -u | sed 's/^@//')
 
 # Internal/anchor captures that should NOT be mapped (used in predicates only)
 SKIP_PATTERN='^(_|none$|nested$)'

@@ -1,0 +1,10 @@
+{
+  "bash": {
+    "extensions": [
+      ".sh",
+      ".bash",
+      ".zsh"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}

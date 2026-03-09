@@ -1,0 +1,9 @@
+{
+  "json": {
+    "extensions": [
+      ".json",
+      ".jsonc"
+    ],
+    "grammar": "grammar/parser.wasm"
+  }
+}
