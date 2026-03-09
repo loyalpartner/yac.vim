@@ -14,15 +14,15 @@ let s:original_content = getline(1, '$')
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Virtual text toggle commands')
 
-if exists(':YacToggleDiagnosticVirtualText')
+if exists('*yac#toggle_diagnostic_virtual_text')
   let v:errmsg = ''
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
   call yac_test#assert_true(v:errmsg ==# '', 'First toggle should not crash: ' . v:errmsg)
   let v:errmsg = ''
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
   call yac_test#assert_true(v:errmsg ==# '', 'Second toggle should not crash: ' . v:errmsg)
 else
-  call yac_test#skip('vtext toggle', 'Command not available')
+  call yac_test#skip('vtext toggle', 'Function not available')
 endif
 
 " ============================================================================
@@ -30,12 +30,12 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: Clear diagnostic virtual text')
 
-if exists(':YacClearDiagnosticVirtualText')
+if exists('*yac#clear_diagnostic_virtual_text')
   let v:errmsg = ''
-  YacClearDiagnosticVirtualText
+  call yac#clear_diagnostic_virtual_text()
   call yac_test#assert_true(v:errmsg ==# '', 'Clear diagnostic virtual text should not crash: ' . v:errmsg)
 else
-  call yac_test#skip('clear diag', 'Command not available')
+  call yac_test#skip('clear diag', 'Function not available')
 endif
 
 " ============================================================================
@@ -85,7 +85,7 @@ if s:got_diag
 
   " Test 4: Toggle off clears both
   call yac_test#log('INFO', 'Test 4: Toggle off clears all diagnostic props')
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
   let s:after_toggle = 0
   for lnum in range(1, line('$'))
     for p in prop_list(lnum)
@@ -97,7 +97,7 @@ if s:got_diag
   call yac_test#assert_true(s:after_toggle == 0,
     \ 'Toggle off should clear all props (found ' . s:after_toggle . ')')
 
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
 endif
 
 " Restore

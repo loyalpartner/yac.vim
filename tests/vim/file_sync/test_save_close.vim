@@ -12,8 +12,8 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 " ============================================================================
 call yac_test#log('INFO', 'Test 5: willSaveWaitUntil')
 
-if exists(':YacWillSaveWaitUntil')
-  YacWillSaveWaitUntil
+if exists('*yac#will_save_wait_until')
+  call yac#will_save_wait_until()
   call yac_test#log('INFO', 'willSaveWaitUntil executed')
 else
   call yac_test#skip('willSaveWaitUntil', 'Command not available')
@@ -37,7 +37,7 @@ call yac_test#log('INFO', 'Buffer closed, didClose should be sent')
 edit! test_data/src/main.zig
 call yac#open_file()
 call cursor(14, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()

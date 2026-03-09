@@ -17,9 +17,9 @@ call search('User', 'c', line('.'))
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
-if exists(':YacTypeHierarchySupertypes')
+if exists('*yac#type_hierarchy_supertypes')
   let v:errmsg = ''
-  YacTypeHierarchySupertypes
+  call yac#type_hierarchy_supertypes()
   " Give it time to process
   sleep 2000m
   call popup_clear()
@@ -37,9 +37,9 @@ call yac_test#log('INFO', 'Test 2: Type hierarchy subtypes command')
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 
-if exists(':YacTypeHierarchySubtypes')
+if exists('*yac#type_hierarchy_subtypes')
   let v:errmsg = ''
-  YacTypeHierarchySubtypes
+  call yac#type_hierarchy_subtypes()
   sleep 2000m
   call popup_clear()
   call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
@@ -56,9 +56,9 @@ call yac_test#log('INFO', 'Test 3: Type hierarchy on function')
 call cursor(30, 1)
 call search('createUserMap', 'c', line('.'))
 
-if exists(':YacTypeHierarchySupertypes')
+if exists('*yac#type_hierarchy_supertypes')
   let v:errmsg = ''
-  YacTypeHierarchySupertypes
+  call yac#type_hierarchy_supertypes()
   sleep 2000m
   call popup_clear()
   " Should not crash even if no hierarchy is available

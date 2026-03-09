@@ -24,7 +24,7 @@ let start_file = expand('%:p')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'user', 'Cursor should be on "user"')
 
-YacTypeDefinition
+call yac#goto_type_definition()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved
@@ -52,7 +52,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'result', 'Cursor should be on "result"')
 
-YacTypeDefinition
+call yac#goto_type_definition()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved
@@ -79,7 +79,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
-YacDeclaration
+call yac#goto_declaration()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved
@@ -108,7 +108,7 @@ let start_col = col('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'Allocator', 'Cursor should be on "Allocator"')
 
-YacDeclaration
+call yac#goto_declaration()
 let moved = yac_test#wait_cursor_move(start_line, start_col, 5000)
 
 if moved
@@ -133,7 +133,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
-YacImplementation
+call yac#goto_implementation()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved
@@ -160,7 +160,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User" type annotation')
 
-YacTypeDefinition
+call yac#goto_type_definition()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved
@@ -187,7 +187,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
-YacImplementation
+call yac#goto_implementation()
 let moved = yac_test#wait_line_change(start_line, 5000)
 
 if moved

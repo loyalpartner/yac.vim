@@ -86,10 +86,10 @@ call yac_test#assert_eq(
   \ 'match_cols: case-insensitive')
 
 " ============================================================================
-" Test 1: YacPicker command exists
+" Test 1: picker function exists
 " ============================================================================
-call yac_test#log('INFO', 'Test 1: YacPicker command exists')
-call yac_test#assert_true(exists(':YacPicker'), 'YacPicker command should exist')
+call yac_test#log('INFO', 'Test 1: picker function exists')
+call yac_test#assert_true(exists('*yac#picker_open'), 'yac#picker_open function should exist')
 
 " ============================================================================
 " Test 2: Picker open creates popups
@@ -97,7 +97,7 @@ call yac_test#assert_true(exists(':YacPicker'), 'YacPicker command should exist'
 call yac_test#log('INFO', 'Test 2: Picker open creates popups')
 
 " Open the picker
-YacPicker
+call yac#picker_open()
 
 " Wait for picker to appear (precise check, ignores toast popups)
 let picker_opened = yac_test#wait_picker(3000)
@@ -124,7 +124,7 @@ call yac_test#assert_true(picker_closed, 'All popups should be closed after Esc'
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Picker toggle')
 
-YacPicker
+call yac#picker_open()
 let picker_opened = yac_test#wait_picker(3000)
 call yac_test#assert_true(picker_opened, 'Picker should open')
 

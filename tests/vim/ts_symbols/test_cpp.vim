@@ -12,7 +12,7 @@ call yac_test#open_test_file('test_data/src/example.h', 8000)
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Extract symbols from C++ header')
 
-YacTsSymbols
+call yac#ts_symbols()
 call yac_test#wait_qflist(5000)
 
 let qflist = getqflist()

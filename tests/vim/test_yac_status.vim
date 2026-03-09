@@ -1,16 +1,16 @@
 " ============================================================================
-" Unit Test: YacStatus — verify status buffer output
+" Unit Test: call yac#status() — verify status buffer output
 " ============================================================================
 
 call yac_test#begin('yac_status')
 
 " ============================================================================
-" Test 1: YacStatus creates a scratch buffer with correct settings
+" Test 1: call yac#status() creates a scratch buffer with correct settings
 " ============================================================================
-call yac_test#log('INFO', 'Test 1: YacStatus buffer creation')
+call yac_test#log('INFO', 'Test 1: call yac#status() buffer creation')
 
-" Run YacStatus (no daemon needed — should still produce output)
-YacStatus
+" Run call yac#status() (no daemon needed — should still produce output)
+call yac#status()
 
 " Buffer should be created
 call yac_test#assert_eq(
@@ -59,17 +59,17 @@ call yac_test#assert_true(
   \ 'should have Copilot section')
 
 " ============================================================================
-" Test 3: Running YacStatus again reuses the buffer
+" Test 3: Running call yac#status() again reuses the buffer
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: Buffer reuse')
 
 let s:first_bufnr = bufnr('%')
-YacStatus
+call yac#status()
 let s:second_bufnr = bufnr('%')
 
 call yac_test#assert_eq(
   \ s:first_bufnr, s:second_bufnr,
-  \ 'running YacStatus again should reuse the same buffer')
+  \ 'running call yac#status() again should reuse the same buffer')
 
 " Clean up — close the status buffer
 bwipeout

@@ -28,7 +28,7 @@ let s:method_ok = 0
 let s:method_elapsed = 0
 while s:method_elapsed < 20000
   call popup_clear()
-  YacComplete
+  call yac#complete()
   if yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 2000)
     let s:method_ok = 1
     break
@@ -57,7 +57,7 @@ normal! gg
 normal! O
 execute "normal! iconst x = @import(\"s"
 
-YacComplete
+call yac#complete()
 call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
@@ -81,7 +81,7 @@ call yac_test#log('INFO', 'Test 3: Local variable completion')
 call cursor(45, 1)
 normal! O
 execute "normal! i    const name = us"
-YacComplete
+call yac#complete()
 call yac_test#wait_for({-> pumvisible() || !empty(popup_list())}, 3000)
 
 let popups = popup_list()
@@ -303,7 +303,7 @@ let s:dot_items = []
 let s:dot_elapsed = 0
 while s:dot_elapsed < 10000
   call popup_clear()
-  YacComplete
+  call yac#complete()
   if yac_test#wait_for({-> !empty(popup_list())}, 2000)
     let s:dot_ok = 1
     " 收集补全项
@@ -333,7 +333,7 @@ let s:ctx_items = []
 let s:ctx_elapsed = 0
 while s:ctx_elapsed < 10000
   call popup_clear()
-  YacComplete
+  call yac#complete()
   if yac_test#wait_for({-> !empty(popup_list())}, 2000)
     let s:ctx_ok = 1
     let s:ctx_items = yac#get_completion_state().items

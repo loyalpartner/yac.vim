@@ -13,7 +13,7 @@ call yac_test#log('INFO', 'Test 1: File open (didOpen)')
 call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()
@@ -36,7 +36,7 @@ call cursor(line('$'), 5)
 let word = expand('<cword>')
 
 if word == 'newFunction'
-  YacHover
+  call yac#hover()
   call yac_test#wait_popup(3000)
 
   let popups = popup_list()
@@ -57,7 +57,7 @@ for i in range(1, 5)
 endfor
 
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()

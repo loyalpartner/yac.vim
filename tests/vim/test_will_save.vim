@@ -10,12 +10,12 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 let s:original_content = getline(1, '$')
 
 " ============================================================================
-" Test 1: YacWillSaveWaitUntil command exists
+" Test 1: call yac#will_save_wait_until() command exists
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: WillSaveWaitUntil command exists')
 
-call yac_test#assert_true(exists(':YacWillSaveWaitUntil'),
-  \ 'YacWillSaveWaitUntil command should exist')
+call yac_test#assert_true(exists('*yac#will_save_wait_until'),
+  \ 'yac#will_save_wait_until function should exist')
 
 " ============================================================================
 " Test 2: WillSaveWaitUntil on clean file (no-op)
@@ -25,7 +25,7 @@ call yac_test#log('INFO', 'Test 2: WillSaveWaitUntil on clean file')
 let s:before = getline(1, '$')
 let v:errmsg = ''
 
-YacWillSaveWaitUntil
+call yac#will_save_wait_until()
 sleep 2000m
 
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
@@ -45,7 +45,7 @@ call setline(45, '        const result = user.getName();')
 let s:messy = getline(45)
 let v:errmsg = ''
 
-YacWillSaveWaitUntil
+call yac#will_save_wait_until()
 sleep 3000m
 
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',

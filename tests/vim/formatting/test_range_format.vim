@@ -101,7 +101,7 @@ call setline(45, '        const result = user.getName();')
 silent write
 sleep 500m
 
-YacFormat
+call yac#format()
 
 let s:full_format = yac_test#wait_for(
   \ {-> getline(45) !~# '^\s\{8\}'},

@@ -18,7 +18,7 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 call yac_test#log('INFO', 'Test 1: Get document symbols')
 
 " 执行文档符号命令
-YacDocumentSymbols
+call yac#document_symbols()
 call yac_test#wait_qflist(3000)
 
 " 检查 quickfix 或 location list
@@ -111,7 +111,7 @@ call yac_test#log('INFO', 'Test 4: Nested symbols (impl methods)')
 " impl User 下应该有 new, get_name, get_email 等方法
 " 这取决于 LSP 返回的符号结构
 
-YacDocumentSymbols
+call yac#document_symbols()
 call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
@@ -140,7 +140,7 @@ normal! o
 execute "normal! ipub fn newTestFunction() i32 { return 42; }"
 
 " 重新获取符号
-YacDocumentSymbols
+call yac#document_symbols()
 call yac_test#wait_qflist(3000)
 
 let qflist = getqflist()
@@ -165,7 +165,7 @@ setlocal buftype=nofile
 call setline(1, ['// empty zig file', ''])
 set filetype=zig
 
-YacDocumentSymbols
+call yac#document_symbols()
 call yac_test#wait_qflist(500)
 
 let qflist = getqflist()

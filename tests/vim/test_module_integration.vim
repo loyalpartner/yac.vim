@@ -23,7 +23,7 @@ call yac_test#log('INFO', 'Test 1: Hover then Goto')
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok, 'Hover should appear on User struct')
 
@@ -36,7 +36,7 @@ call cursor(34, 5)
 call search('init', 'c', line('.'))
 let start_line = line('.')
 
-YacDefinition
+call yac#goto_definition()
 let moved = yac_test#wait_line_change(start_line, 5000)
 call yac_test#assert_true(moved, 'Goto should work after hover was closed')
 
@@ -85,7 +85,7 @@ normal! u
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok2 = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok2, 'Hover should work after completion was dismissed')
 
@@ -170,7 +170,7 @@ normal! u
 call cursor(30, 1)
 call search('createUserMap', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok3 = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok3, 'Hover should work after signature help')
 
@@ -193,7 +193,7 @@ call yac#open_file()
 call cursor(34, 5)
 call search('init', 'c', line('.'))
 let pos1_line = line('.')
-YacDefinition
+call yac#goto_definition()
 let moved1 = yac_test#wait_line_change(pos1_line, 5000)
 call yac_test#assert_true(moved1, 'First goto should move')
 let goto1_dest = line('.')
@@ -202,7 +202,7 @@ let goto1_dest = line('.')
 call cursor(45, 25)
 call search('getName', 'c', line('.'))
 let pos2_line = line('.')
-YacDefinition
+call yac#goto_definition()
 let moved2 = yac_test#wait_line_change(pos2_line, 5000)
 call yac_test#assert_true(moved2, 'Second goto should move')
 let goto2_dest = line('.')
@@ -226,7 +226,7 @@ call yac#open_file()
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 
-YacReferences
+call yac#references()
 " References populates quickfix or picker — wait briefly
 sleep 2000m
 
@@ -234,7 +234,7 @@ sleep 2000m
 call cursor(19, 1)
 call search('getName', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok4 = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok4, 'Hover should work after finding references')
 call yac_test#clear_popups()
@@ -249,7 +249,7 @@ call yac#open_file()
 
 " Trigger code action (may or may not have results)
 call cursor(14, 12)
-YacCodeAction
+call yac#code_action()
 sleep 1000m
 call popup_clear()
 
@@ -257,7 +257,7 @@ call popup_clear()
 call cursor(34, 5)
 call search('init', 'c', line('.'))
 let start_line = line('.')
-YacDefinition
+call yac#goto_definition()
 let moved3 = yac_test#wait_line_change(start_line, 5000)
 call yac_test#assert_true(moved3, 'Goto should work after code action')
 

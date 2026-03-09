@@ -20,7 +20,7 @@ endfunction
 " ============================================================================
 " Feature probe: 检测 inlay hints 是否可用
 " ============================================================================
-YacInlayHints
+call yac#inlay_hints()
 let s:hints_available = yac_test#wait_for({-> s:has_inlay_props()}, 5000)
 
 if !s:hints_available
@@ -38,7 +38,7 @@ call yac_test#assert_true(s:hints_available, 'Inlay hints feature is available')
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Inlay hints produce text properties')
 
-YacInlayHints
+call yac#inlay_hints()
 call yac_test#wait_assert(
   \ {-> s:has_inlay_props()},
   \ 3000, 'Inlay hints should create text properties')
@@ -48,13 +48,13 @@ call yac_test#wait_assert(
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: Clear inlay hints')
 
-YacInlayHints
+call yac#inlay_hints()
 call yac_test#wait_for({-> s:has_inlay_props()}, 3000)
 
-YacClearInlayHints
+call yac#clear_inlay_hints()
 call yac_test#wait_assert(
   \ {-> s:no_inlay_props()},
-  \ 3000, 'Props should be empty after YacClearInlayHints')
+  \ 3000, 'Props should be empty after call yac#clear_inlay_hints()')
 
 " ============================================================================
 " Test 3: Toggle inlay hints
@@ -62,7 +62,7 @@ call yac_test#wait_assert(
 call yac_test#log('INFO', 'Test 3: Toggle inlay hints')
 
 " Enable
-YacInlayHintsToggle
+call yac#inlay_hints_toggle()
 call yac_test#wait_assert(
   \ {-> get(b:, 'yac_inlay_hints', 0)},
   \ 1000, 'b:yac_inlay_hints should be 1 after first toggle')
@@ -72,7 +72,7 @@ call yac_test#wait_assert(
   \ 5000, 'Hints should appear after toggle on')
 
 " Disable
-YacInlayHintsToggle
+call yac#inlay_hints_toggle()
 call yac_test#assert_eq(get(b:, 'yac_inlay_hints', 0), 0,
   \ 'b:yac_inlay_hints should be 0 after second toggle')
 
@@ -80,6 +80,6 @@ call yac_test#wait_assert(
   \ {-> s:no_inlay_props()},
   \ 3000, 'Hints should be cleared after toggle off')
 
-YacClearInlayHints
+call yac#clear_inlay_hints()
 call yac_test#teardown()
 call yac_test#end()

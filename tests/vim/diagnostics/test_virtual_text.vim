@@ -54,8 +54,8 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: Clear virtual text')
 
-if s:got_diag && exists(':YacClearDiagnosticVirtualText')
-  YacClearDiagnosticVirtualText
+if s:got_diag && exists('*yac#clear_diagnostic_virtual_text')
+  call yac#clear_diagnostic_virtual_text()
 
   let s:after_clear = 0
   for lnum in range(1, line('$'))
@@ -77,16 +77,16 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Toggle virtual text off and on')
 
-if exists(':YacToggleDiagnosticVirtualText')
+if exists('*yac#toggle_diagnostic_virtual_text')
   let v:errmsg = ''
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
   call yac_test#assert_true(v:errmsg ==# '', 'Toggle off should not error')
 
   let v:errmsg = ''
-  YacToggleDiagnosticVirtualText
+  call yac#toggle_diagnostic_virtual_text()
   call yac_test#assert_true(v:errmsg ==# '', 'Toggle on should not error')
 else
-  call yac_test#skip('toggle_vtext', 'Command unavailable')
+  call yac_test#skip('toggle_vtext', 'Function unavailable')
 endif
 
 " ============================================================================

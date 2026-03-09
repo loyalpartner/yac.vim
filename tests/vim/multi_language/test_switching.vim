@@ -17,7 +17,7 @@ call yac_test#log('INFO', 'Test 4: Switch between languages')
 call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(1000)
 call yac_test#log('INFO', 'Rust hover works after language switch')
 call popup_clear()
@@ -38,14 +38,14 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   let python_buf = bufnr('%')
 
   call cursor(1, 5)
-  YacHover
+  call yac#hover()
   call yac_test#wait_popup(1000)
   call yac_test#log('INFO', 'Python hover in multi-buffer')
   call popup_clear()
 
   execute 'buffer ' . rust_buf
   call cursor(14, 12)
-  YacHover
+  call yac#hover()
   call yac_test#wait_popup(1000)
   call yac_test#log('INFO', 'Rust hover after buffer switch')
   call popup_clear()
@@ -63,12 +63,12 @@ setlocal buftype=nofile
 set filetype=markdown
 call setline(1, ['# Markdown file', '', 'This is not code.'])
 
-YacHover
+call yac#hover()
 call yac_test#wait_popup(500)
 call yac_test#log('INFO', 'Markdown hover handled gracefully')
 
 let start_line = line('.')
-YacDefinition
+call yac#goto_definition()
 call yac_test#wait_line_change(start_line, 500)
 call yac_test#log('INFO', 'Markdown goto handled gracefully')
 

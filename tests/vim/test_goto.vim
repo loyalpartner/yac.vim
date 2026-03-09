@@ -29,7 +29,7 @@ let word = expand('<cword>')
 call yac_test#log('INFO', 'Start: line=' . start_line . ', col=' . start_col . ', word=' . word)
 
 " 执行跳转
-YacDefinition
+call yac#goto_definition()
 
 " 等待光标移动（最多 5 秒）
 let moved = yac_test#wait_line_change(start_line, 3000)
@@ -60,7 +60,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
-YacDefinition
+call yac#goto_definition()
 let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
@@ -87,7 +87,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
-YacDefinition
+call yac#goto_definition()
 let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
@@ -111,7 +111,7 @@ call cursor(34, 5)
 call search('init', 'c', line('.'))
 let start_line = line('.')
 
-YacDeclaration
+call yac#goto_declaration()
 let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
@@ -137,7 +137,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
-YacTypeDefinition
+call yac#goto_type_definition()
 let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved
@@ -163,7 +163,7 @@ let start_line = line('.')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'init', 'Cursor should be on "init"')
 
-YacImplementation
+call yac#goto_implementation()
 let moved = yac_test#wait_line_change(start_line, 3000)
 
 if moved

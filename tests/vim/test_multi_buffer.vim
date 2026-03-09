@@ -51,7 +51,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok, 'Hover should work after buffer switch')
 
@@ -74,7 +74,7 @@ call cursor(34, 5)
 call search('init', 'c', line('.'))
 let start_line = line('.')
 
-YacDefinition
+call yac#goto_definition()
 let moved = yac_test#wait_line_change(start_line, 5000)
 call yac_test#assert_true(moved, 'Goto definition should work after buffer round-trip')
 
@@ -140,7 +140,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok2 = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok2, 'Hover should work after rapid buffer switches')
 call yac_test#clear_popups()
@@ -161,7 +161,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok3 = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok3, 'Hover should work after closing secondary buffer')
 call yac_test#clear_popups()

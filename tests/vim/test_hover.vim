@@ -24,7 +24,7 @@ call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 " 清掉残留 popup（如 toast），然后触发 hover
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(3000)
 
 " 检查 hover popup 内容（精确定位，不会拿到 toast）
@@ -51,7 +51,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on "getName"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(3000)
 
 let content = yac_test#get_hover_content()
@@ -74,7 +74,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(3000)
 
 let content = yac_test#get_hover_content()
@@ -97,7 +97,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(3000)
 
 let content = yac_test#get_hover_content()
@@ -117,7 +117,7 @@ call yac_test#log('INFO', 'Test 5: Hover on empty space')
 call cursor(3, 1)
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_no_popup(3000)
 
 " 空白处不应该有 hover
@@ -134,7 +134,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on "User"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 " 两次 round-trip: hover→LSP + ts_hover_highlight→TS thread，需要更多时间
 call yac_test#wait_hover_popup(5000)
 
@@ -188,7 +188,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on "createUserMap"')
 
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(5000)
 
 let pid = yac#get_hover_popup_id()
@@ -239,7 +239,7 @@ call yac_test#log('INFO', 'Test 8: Hover twice — highlights should persist')
 " Hover first time on User struct
 call cursor(6, 12)
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(5000)
 
 let pid1 = yac#get_hover_popup_id()
@@ -258,7 +258,7 @@ call yac_test#assert_true(props1 > 0, 'First hover should have highlight props')
 " Close and hover again on same symbol
 call yac_test#clear_popups()
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_hover_popup(5000)
 
 let pid2 = yac#get_hover_popup_id()

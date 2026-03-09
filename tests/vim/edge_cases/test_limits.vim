@@ -39,7 +39,7 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 call cursor(14, 12)
 for i in range(1, 5)
-  YacHover
+  call yac#hover()
 endfor
 
 call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
@@ -57,7 +57,7 @@ normal! o
 execute "normal! ifn unsavedFunc() i32 { return 999; }"
 
 call cursor(line('$'), 5)
-YacHover
+call yac#hover()
 let s:hover_unsaved = yac_test#wait_for({-> !empty(popup_list())}, 3000)
 call yac_test#assert_true(s:hover_unsaved, 'Hover on unsaved code should show popup')
 call popup_clear()

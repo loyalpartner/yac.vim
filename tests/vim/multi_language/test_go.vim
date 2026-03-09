@@ -52,7 +52,7 @@ if s:lsp_available('gopls')
   call cursor(19, 12)
   let start_line = line('.')
 
-  YacDefinition
+  call yac#goto_definition()
   call yac_test#wait_line_change(start_line, 1000)
 
   let end_line = line('.')
@@ -63,7 +63,7 @@ if s:lsp_available('gopls')
   call cursor(5, 6)
   call popup_clear()
 
-  YacHover
+  call yac#hover()
   call yac_test#wait_popup(1000)
 
   let popups = popup_list()

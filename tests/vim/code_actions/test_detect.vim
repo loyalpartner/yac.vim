@@ -30,7 +30,7 @@ call search('unused_var', 'w')
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'unused_var', 'Cursor should be on unused_var')
 
-YacCodeAction
+call yac#code_action()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()
@@ -48,7 +48,7 @@ call popup_clear()
 call yac_test#log('INFO', 'Test 2: Code action for type error')
 
 call search('"hello"', 'w')
-YacCodeAction
+call yac#code_action()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()

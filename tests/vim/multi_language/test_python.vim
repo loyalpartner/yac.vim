@@ -52,7 +52,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   call cursor(13, 20)
   let start_line = line('.')
 
-  YacDefinition
+  call yac#goto_definition()
   call yac_test#wait_line_change(start_line, 1000)
 
   let end_line = line('.')
@@ -68,7 +68,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   call cursor(3, 7)
   call popup_clear()
 
-  YacHover
+  call yac#hover()
   call yac_test#wait_popup(1000)
 
   let popups = popup_list()
@@ -81,7 +81,7 @@ if s:lsp_available('pyright-langserver') || s:lsp_available('pyright')
   normal! o
   execute "normal! iusers[0]."
 
-  YacComplete
+  call yac#complete()
   call yac_test#wait_completion(1000)
 
   let popups = popup_list()

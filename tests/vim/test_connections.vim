@@ -13,13 +13,13 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: YacConnections command')
 
-call yac_test#assert_true(exists(':YacConnections'),
-  \ 'YacConnections command should exist')
+call yac_test#assert_true(exists('*yac#connections'),
+  \ 'yac#connections function should exist')
 
 let v:errmsg = ''
 " Capture echoed output
 redir => s:conn_output
-silent! YacConnections
+silent! call yac#connections()
 redir END
 
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
@@ -31,11 +31,11 @@ call yac_test#log('INFO', 'Connections output: ' . substitute(s:conn_output, '\n
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: YacCleanupConnections command')
 
-call yac_test#assert_true(exists(':YacCleanupConnections'),
-  \ 'YacCleanupConnections command should exist')
+call yac_test#assert_true(exists('*yac#cleanup_connections'),
+  \ 'yac#cleanup_connections function should exist')
 
 let v:errmsg = ''
-YacCleanupConnections
+call yac#cleanup_connections()
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
   \ 'YacCleanupConnections should not crash: ' . v:errmsg)
 
@@ -44,10 +44,10 @@ call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: YacDebugStatus command')
 
-if exists(':YacDebugStatus')
+if exists('*yac#debug_status')
   let v:errmsg = ''
   redir => s:debug_output
-  silent! YacDebugStatus
+  silent! call yac#debug_status()
   redir END
   call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
     \ 'YacDebugStatus should not crash: ' . v:errmsg)
@@ -65,7 +65,7 @@ call yac_test#log('INFO', 'Test 4: LSP works after connection cleanup')
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok, 'Hover should work after connection cleanup')
 call yac_test#clear_popups()

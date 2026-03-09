@@ -36,13 +36,13 @@ call yac_test#log('INFO', 'Struct rename would affect multiple locations')
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: Rename preview')
 
-if exists(':YacPrepareRename')
+if exists('*yac#prepare_rename')
   call cursor(31, 13)
-  YacPrepareRename
+  call yac#prepare_rename()
   call yac_test#wait_popup(3000)
   call yac_test#log('INFO', 'PrepareRename completed')
 else
-  call yac_test#skip('Rename preview', 'YacPrepareRename not available')
+  call yac_test#skip('Rename preview', 'prepare_rename not available')
 endif
 
 " Cleanup

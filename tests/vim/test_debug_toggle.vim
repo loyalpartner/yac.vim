@@ -13,16 +13,16 @@ call yac_test#open_test_file('test_data/src/main.zig', 8000)
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: YacDebugToggle command')
 
-call yac_test#assert_true(exists(':YacDebugToggle'),
-  \ 'YacDebugToggle command should exist')
+call yac_test#assert_true(exists('*yac#debug_toggle'),
+  \ 'yac#debug_toggle function should exist')
 
 let v:errmsg = ''
-YacDebugToggle
+call yac#debug_toggle()
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
   \ 'First debug toggle should not crash: ' . v:errmsg)
 
 let v:errmsg = ''
-YacDebugToggle
+call yac#debug_toggle()
 call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
   \ 'Second debug toggle should not crash: ' . v:errmsg)
 
@@ -31,10 +31,10 @@ call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: YacDebugStatus')
 
-if exists(':YacDebugStatus')
+if exists('*yac#debug_status')
   let v:errmsg = ''
   redir => s:status
-  silent! YacDebugStatus
+  silent! call yac#debug_status()
   redir END
   call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
     \ 'Debug status should not crash: ' . v:errmsg)
@@ -46,29 +46,29 @@ endif
 call yac_test#log('INFO', 'Test 3: LSP works with debug on')
 
 " Enable debug
-YacDebugToggle
+call yac#debug_toggle()
 
 " Hover should still work
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 call yac_test#clear_popups()
-YacHover
+call yac#hover()
 let hover_ok = yac_test#wait_hover_popup(5000)
 call yac_test#assert_true(hover_ok, 'Hover should work with debug mode enabled')
 call yac_test#clear_popups()
 
 " Disable debug
-YacDebugToggle
+call yac#debug_toggle()
 
 " ============================================================================
 " Test 4: OpenLog command exists
 " ============================================================================
 call yac_test#log('INFO', 'Test 4: YacOpenLog command')
 
-if exists(':YacOpenLog')
-  call yac_test#assert_true(1, 'YacOpenLog command exists')
+if exists('*yac#open_log')
+  call yac_test#assert_true(1, 'yac#open_log function exists')
 else
-  call yac_test#skip('open_log', 'Command not available')
+  call yac_test#skip('open_log', 'Function not available')
 endif
 
 " ============================================================================

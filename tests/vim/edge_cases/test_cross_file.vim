@@ -20,7 +20,7 @@ let start_buf = bufnr('%')
 let start_line = line('.')
 let start_col = col('.')
 
-YacDefinition
+call yac#goto_definition()
 call yac_test#wait_cursor_move(start_line, start_col, 3000)
 
 let end_buf = bufnr('%')
@@ -42,14 +42,14 @@ call yac_test#log('INFO', 'Test 5: Operations on invalid positions')
 
 call cursor(3, 1)
 let v:errmsg = ''
-YacHover
+call yac#hover()
 call yac_test#wait_for({-> !empty(popup_list())}, 500)
 call popup_clear()
 call yac_test#assert_true(v:errmsg ==# '', 'Hover on empty line should not crash: ' . v:errmsg)
 
 call cursor(1, 5)
 let v:errmsg = ''
-YacDefinition
+call yac#goto_definition()
 call yac_test#wait_for({-> 1}, 500)
 call yac_test#assert_true(v:errmsg ==# '', 'Goto in comment should not crash: ' . v:errmsg)
 
@@ -70,7 +70,7 @@ let buf2 = bufnr('%')
 
 execute 'buffer ' . buf1
 call cursor(14, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
   \ 'Hover should work after buffer switch')
 call popup_clear()

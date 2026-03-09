@@ -23,7 +23,7 @@ normal! G
 call append('.', new_lines)
 
 call cursor(line('$') - 25, 5)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()

@@ -38,7 +38,7 @@ call yac_test#assert_true(s:buf1 != s:buf2, 'Should have two distinct buffers')
 call yac_test#log('INFO', 'Test 1: Picker C-n with multiple tree-sitter buffers')
 
 " Open picker from second markdown buffer
-YacPicker
+call yac#picker_open()
 let picker_opened = yac_test#wait_picker(3000)
 call yac_test#assert_true(picker_opened, 'Picker should open')
 
@@ -77,7 +77,7 @@ call yac_test#log('INFO', 'Test 2: Picker C-n from first markdown buffer')
 execute 'buffer ' . s:buf1
 sleep 200m
 
-YacPicker
+call yac#picker_open()
 let picker_opened = yac_test#wait_picker(3000)
 call yac_test#assert_true(picker_opened, 'Picker should open from buf1')
 

@@ -20,7 +20,7 @@ call setline(46, '        return result;')
 silent write
 sleep 500m
 
-YacFormat
+call yac#format()
 
 let s:format_ok = yac_test#wait_for(
   \ {-> getline(45) !~# '^\s\{8\}'},
@@ -48,7 +48,7 @@ sleep 500m
 
 let s:lines_before = line('$')
 
-YacFormat
+call yac#format()
 
 " Wait for format response (or timeout)
 let s:format2_ok = yac_test#wait_for(

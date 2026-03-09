@@ -18,7 +18,7 @@ set filetype=text
 call setline(1, ['This is a plain text file', 'No LSP support expected'])
 
 let v:errmsg = ''
-YacHover
+call yac#hover()
 call yac_test#wait_for({-> !empty(popup_list())}, 500)
 call yac_test#assert_true(v:errmsg ==# '', 'Hover on non-Zig file should not crash: ' . v:errmsg)
 
@@ -31,24 +31,24 @@ call yac_test#log('INFO', 'Test 8: LSP connection recovery')
 
 edit! test_data/src/main.zig
 call cursor(14, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_for({-> !empty(popup_list())}, 3000)
 call popup_clear()
 
-if exists(':YacStop')
-  YacStop
+if exists('*yac#stop')
+  call yac#stop()
   call yac_test#reset_lsp_ready()
 endif
 
-if exists(':YacStart')
-  YacStart
+if exists('*yac#start')
+  call yac#start()
   call yac_test#open_test_file('test_data/src/main.zig', 8000)
 endif
 
 call cursor(14, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_assert({-> !empty(popup_list())}, 3000,
-  \ 'Hover should work after YacStop/YacStart')
+  \ 'Hover should work after stop/start')
 call popup_clear()
 
 " ============================================================================
@@ -65,7 +65,7 @@ execute "normal! ipub fn unicodeTest() []const u8 { return \"你好世界\"; }"
 
 call cursor(line('$'), 8)
 let v:errmsg = ''
-YacHover
+call yac#hover()
 let s:unicode_hover = yac_test#wait_for({-> !empty(popup_list())}, 3000)
 call popup_clear()
 call yac_test#assert_true(v:errmsg ==# '', 'Hover with Unicode content should not crash: ' . v:errmsg)

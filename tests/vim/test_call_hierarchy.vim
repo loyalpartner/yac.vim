@@ -23,7 +23,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'init', 'Cursor should be on "init"')
 
 " 查找调用者（谁调用了这个函数）
-YacCallHierarchyIncoming
+call yac#call_hierarchy_incoming()
 call yac_test#wait_qflist(500)
 
 " 检查结果
@@ -61,7 +61,7 @@ let word = expand('<cword>')
 call yac_test#assert_eq(word, 'createUserMap', 'Cursor should be on createUserMap')
 
 " 查找被调用的函数
-YacCallHierarchyOutgoing
+call yac#call_hierarchy_outgoing()
 call yac_test#wait_qflist(500)
 
 let qflist = getqflist()
@@ -90,7 +90,7 @@ call cursor(19, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'getName', 'Cursor should be on getName')
 
-YacCallHierarchyIncoming
+call yac#call_hierarchy_incoming()
 call yac_test#wait_qflist(500)
 
 let qflist = getqflist()
@@ -136,7 +136,7 @@ call cursor(6, 12)
 let word = expand('<cword>')
 call yac_test#assert_eq(word, 'User', 'Cursor should be on User struct')
 
-YacCallHierarchyIncoming
+call yac#call_hierarchy_incoming()
 call yac_test#wait_qflist(500)
 
 " struct 通常没有调用层次
@@ -153,7 +153,7 @@ call yac_test#log('INFO', 'Test 6: Call hierarchy depth')
 " test_user_creation -> User.init, getName
 
 call cursor(44, 8)  " processUser
-YacCallHierarchyIncoming
+call yac#call_hierarchy_incoming()
 call yac_test#wait_qflist(500)
 
 let qflist = getqflist()

@@ -20,7 +20,7 @@ endfunction
 " ============================================================================
 " Feature probe
 " ============================================================================
-YacInlayHints
+call yac#inlay_hints()
 let s:hints_available = yac_test#wait_for({-> s:has_inlay_props()}, 5000)
 
 if !s:hints_available
@@ -38,7 +38,7 @@ call yac_test#log('INFO', 'Test 4: InsertLeave restores hints')
 
 " Enable hints
 if !get(b:, 'yac_inlay_hints', 0)
-  YacInlayHintsToggle
+  call yac#inlay_hints_toggle()
 endif
 call yac_test#wait_for({-> s:has_inlay_props()}, 3000)
 
@@ -54,7 +54,7 @@ call yac_test#wait_assert(
   \ {-> s:has_inlay_props()},
   \ 3000, 'Hints should reappear on InsertLeave')
 
-YacClearInlayHints
+call yac#clear_inlay_hints()
 
 " ============================================================================
 " Test 5: Hints not shown when disabled
@@ -70,6 +70,6 @@ sleep 200m
 call yac_test#assert_true(s:no_inlay_props(),
   \ 'InsertLeave should not show hints when b:yac_inlay_hints=0')
 
-YacClearInlayHints
+call yac#clear_inlay_hints()
 call yac_test#teardown()
 call yac_test#end()

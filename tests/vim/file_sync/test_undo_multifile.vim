@@ -21,7 +21,7 @@ execute "normal! ifn undoTest() void {}"
 normal! u
 
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()
@@ -64,14 +64,14 @@ execute "normal! i// another mod"
 
 execute 'buffer ' . buf1
 call cursor(6, 12)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'File 1 LSP works')
 call popup_clear()
 
 execute 'buffer ' . buf2
 call cursor(1, 5)
-YacHover
+call yac#hover()
 call yac_test#wait_popup(3000)
 call yac_test#log('INFO', 'File 2 LSP works')
 call popup_clear()

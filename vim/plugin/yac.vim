@@ -47,98 +47,100 @@ if isdirectory(s:_builtin)
 endif
 unlet s:_builtin
 
-" 用户命令
-command! YacStart          call yac#start()
-command! YacStop           call yac#stop()
-command! YacDefinition     call yac#goto_definition()
-command! YacDeclaration    call yac#goto_declaration()
-command! YacTypeDefinition call yac#goto_type_definition()
-command! YacImplementation call yac#goto_implementation()
-command! YacHover          call yac#hover()
-command! YacComplete       call yac#complete()
-command! YacReferences     call yac#references()
-command! YacPeek           call yac#peek()
-command! YacInlayHints       call yac#inlay_hints()
-command! YacClearInlayHints  call yac#clear_inlay_hints()
-command! YacInlayHintsToggle call yac#inlay_hints_toggle()
+" Commands (only those requiring -nargs or special flags)
 command! -nargs=? YacRename call yac#rename(<args>)
-command! YacCallHierarchyIncoming call yac#call_hierarchy_incoming()
-command! YacCallHierarchyOutgoing call yac#call_hierarchy_outgoing()
-command! YacDocumentSymbols call yac#document_symbols()
-command! YacFoldingRange   call yac#folding_range()
-command! YacCodeAction    call yac#code_action()
 command! -nargs=+ YacExecuteCommand call yac#execute_command(<f-args>)
-command! YacFormat          call yac#format()
 command! -range YacRangeFormat call yac#range_format()
-command! YacSignatureHelp   call yac#signature_help()
-command! YacTypeHierarchySupertypes call yac#type_hierarchy_supertypes()
-command! YacTypeHierarchySubtypes call yac#type_hierarchy_subtypes()
-command! -nargs=? YacWillSaveWaitUntil call yac#will_save_wait_until(<args>)
-command! YacOpenLog        call yac#open_log()
-command! YacToggleDiagnosticVirtualText call yac#toggle_diagnostic_virtual_text()
-command! YacClearDiagnosticVirtualText call yac#clear_diagnostic_virtual_text()
-command! YacDebugToggle    call yac#debug_toggle()
-command! YacDebugStatus    call yac#debug_status()
-command! YacConnections    call yac#connections()
-command! YacCleanupConnections call yac#cleanup_connections()
-command! YacDaemonStop     call yac#daemon_stop()
-command! YacPicker      call yac#picker_open()
-command! YacGrep        call yac#picker_open({'initial': '>'})
-command! YacTsSymbols             call yac#ts_symbols()
-command! YacTsHighlightsEnable    call yac#ts_highlights_enable()
-command! YacTsHighlightsDisable   call yac#ts_highlights_disable()
-command! YacTsHighlightsToggle    call yac#ts_highlights_toggle()
-command! YacThemePicker           call yac#picker_open({'initial': '%'})
-command! YacThemeDefault          call yac_theme#apply_default() | call yac_theme#save_selection('')
 command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>) | call yac_theme#save_selection(<q-args>)
 command! -nargs=? YacLspInstall  call yac_install#install(<f-args>)
 command! -nargs=? YacLspUpdate   call yac_install#update(<f-args>)
-command! YacLspStatus            call yac_install#status()
-command! YacStatus               call yac#status()
-command! YacSemanticTokens       call yac#semantic_tokens()
-command! YacSemanticTokensToggle call yac#semantic_tokens_toggle()
 
-command! CopilotSignIn  call yac_copilot#sign_in()
-command! CopilotSignOut call yac_copilot#sign_out()
-command! CopilotStatus  call yac_copilot#status()
-command! CopilotEnable  call yac_copilot#enable()
-command! CopilotDisable call yac_copilot#disable()
+" <Plug> mappings — LSP navigation
+nnoremap <silent> <Plug>(YacDefinition)     :call yac#goto_definition()<CR>
+nnoremap <silent> <Plug>(YacDeclaration)    :call yac#goto_declaration()<CR>
+nnoremap <silent> <Plug>(YacTypeDefinition) :call yac#goto_type_definition()<CR>
+nnoremap <silent> <Plug>(YacImplementation) :call yac#goto_implementation()<CR>
+nnoremap <silent> <Plug>(YacReferences)     :call yac#references()<CR>
+nnoremap <silent> <Plug>(YacPeek)           :call yac#peek()<CR>
 
-" 默认快捷键
-nnoremap <silent> gd :YacDefinition<CR>
-nnoremap <silent> gD :YacPeek<CR>
-nnoremap <silent> gy :YacTypeDefinition<CR>
-nnoremap <silent> gi :YacImplementation<CR>
-nnoremap <silent> gr :YacReferences<CR>
-nnoremap <silent> K  :YacHover<CR>
-nnoremap <silent> <leader>rn :YacRename<CR>
-nnoremap <silent> <leader>ci :YacCallHierarchyIncoming<CR>
-nnoremap <silent> <leader>co :YacCallHierarchyOutgoing<CR>
-nnoremap <silent> <leader>s :YacDocumentSymbols<CR>
-nnoremap <silent> <leader>f :YacFoldingRange<CR>
-nnoremap <silent> <leader>ca :YacCodeAction<CR>
-nnoremap <silent> <leader>fm :YacFormat<CR>
-xnoremap <silent> <leader>fm :YacRangeFormat<CR>
-nnoremap <silent> <leader>ts :YacTypeHierarchySupertypes<CR>
-nnoremap <silent> <leader>tt :YacTypeHierarchySubtypes<CR>
-nnoremap <silent> <leader>ih :YacInlayHintsToggle<CR>
-nnoremap <silent> <leader>dt :YacToggleDiagnosticVirtualText<CR>
-nnoremap <silent> <C-p> :YacPicker<CR>
-nnoremap <silent> g/ :YacGrep<CR>
+" <Plug> mappings — LSP editing
+nnoremap <silent> <Plug>(YacRename)     :call yac#rename()<CR>
+nnoremap <silent> <Plug>(YacCodeAction) :call yac#code_action()<CR>
+nnoremap <silent> <Plug>(YacFormat)     :call yac#format()<CR>
+xnoremap <silent> <Plug>(YacRangeFormat) :YacRangeFormat<CR>
 
-" Tree-sitter navigation
-nnoremap <silent> ]f :call yac#ts_next_function()<CR>
-nnoremap <silent> [f :call yac#ts_prev_function()<CR>
-nnoremap <silent> ]s :call yac#ts_next_struct()<CR>
-nnoremap <silent> [s :call yac#ts_prev_struct()<CR>
+" <Plug> mappings — LSP info
+nnoremap <silent> <Plug>(YacHover)         :call yac#hover()<CR>
+nnoremap <silent> <Plug>(YacSignatureHelp) :call yac#signature_help()<CR>
+nnoremap <silent> <Plug>(YacDocumentSymbols) :call yac#document_symbols()<CR>
 
-" Tree-sitter text objects
-xnoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
-xnoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
-xnoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
-onoremap <silent> af :<C-u>call yac#ts_select('function.outer')<CR>
-onoremap <silent> if :<C-u>call yac#ts_select('function.inner')<CR>
-onoremap <silent> ac :<C-u>call yac#ts_select('class.outer')<CR>
+" <Plug> mappings — LSP hierarchy
+nnoremap <silent> <Plug>(YacCallHierarchyIncoming) :call yac#call_hierarchy_incoming()<CR>
+nnoremap <silent> <Plug>(YacCallHierarchyOutgoing) :call yac#call_hierarchy_outgoing()<CR>
+nnoremap <silent> <Plug>(YacTypeHierarchySupertypes) :call yac#type_hierarchy_supertypes()<CR>
+nnoremap <silent> <Plug>(YacTypeHierarchySubtypes)   :call yac#type_hierarchy_subtypes()<CR>
+
+" <Plug> mappings — LSP toggles
+nnoremap <silent> <Plug>(YacInlayHintsToggle)    :call yac#inlay_hints_toggle()<CR>
+nnoremap <silent> <Plug>(YacDiagnosticVTToggle)  :call yac#toggle_diagnostic_virtual_text()<CR>
+nnoremap <silent> <Plug>(YacSemanticTokensToggle) :call yac#semantic_tokens_toggle()<CR>
+
+" <Plug> mappings — folding
+nnoremap <silent> <Plug>(YacFoldingRange) :call yac#folding_range()<CR>
+
+" <Plug> mappings — picker
+nnoremap <silent> <Plug>(YacPicker) :call yac#picker_open()<CR>
+nnoremap <silent> <Plug>(YacGrep)   :call yac#picker_open({'initial': '/'})<CR>
+
+" <Plug> mappings — tree-sitter navigation
+nnoremap <silent> <Plug>(YacTsNextFunction) :call yac#ts_next_function()<CR>
+nnoremap <silent> <Plug>(YacTsPrevFunction) :call yac#ts_prev_function()<CR>
+nnoremap <silent> <Plug>(YacTsNextStruct)   :call yac#ts_next_struct()<CR>
+nnoremap <silent> <Plug>(YacTsPrevStruct)   :call yac#ts_prev_struct()<CR>
+
+" <Plug> mappings — tree-sitter text objects
+xnoremap <silent> <Plug>(YacTsFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
+xnoremap <silent> <Plug>(YacTsFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
+xnoremap <silent> <Plug>(YacTsClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
+onoremap <silent> <Plug>(YacTsFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
+onoremap <silent> <Plug>(YacTsFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
+onoremap <silent> <Plug>(YacTsClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
+
+" Default key mappings (use nmap so <Plug> triggers; user can override)
+nmap <silent> gd <Plug>(YacDefinition)
+nmap <silent> gD <Plug>(YacPeek)
+nmap <silent> gy <Plug>(YacTypeDefinition)
+nmap <silent> gi <Plug>(YacImplementation)
+nmap <silent> gr <Plug>(YacReferences)
+nmap <silent> K  <Plug>(YacHover)
+nmap <silent> <leader>rn <Plug>(YacRename)
+nmap <silent> <leader>ci <Plug>(YacCallHierarchyIncoming)
+nmap <silent> <leader>co <Plug>(YacCallHierarchyOutgoing)
+nmap <silent> <leader>s  <Plug>(YacDocumentSymbols)
+nmap <silent> <leader>f  <Plug>(YacFoldingRange)
+nmap <silent> <leader>ca <Plug>(YacCodeAction)
+nmap <silent> <leader>fm <Plug>(YacFormat)
+xmap <silent> <leader>fm <Plug>(YacRangeFormat)
+nmap <silent> <leader>ts <Plug>(YacTypeHierarchySupertypes)
+nmap <silent> <leader>tt <Plug>(YacTypeHierarchySubtypes)
+nmap <silent> <leader>ih <Plug>(YacInlayHintsToggle)
+nmap <silent> <leader>dt <Plug>(YacDiagnosticVTToggle)
+nmap <silent> <C-p>      <Plug>(YacPicker)
+nmap <silent> g/         <Plug>(YacGrep)
+
+" Tree-sitter navigation defaults
+nmap <silent> ]f <Plug>(YacTsNextFunction)
+nmap <silent> [f <Plug>(YacTsPrevFunction)
+nmap <silent> ]s <Plug>(YacTsNextStruct)
+nmap <silent> [s <Plug>(YacTsPrevStruct)
+
+" Tree-sitter text object defaults
+xmap <silent> af <Plug>(YacTsFunctionOuter)
+xmap <silent> if <Plug>(YacTsFunctionInner)
+xmap <silent> ac <Plug>(YacTsClassOuter)
+omap <silent> af <Plug>(YacTsFunctionOuter)
+omap <silent> if <Plug>(YacTsFunctionInner)
+omap <silent> ac <Plug>(YacTsClassOuter)
 
 " Build extension-to-plugin mapping from g:yac_lang_plugins.
 " Each plugin has a languages.json with {"lang": {"extensions": [".ext", ...], ...}}.

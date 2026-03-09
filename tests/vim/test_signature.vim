@@ -100,7 +100,7 @@ let s:comp_ok = 0
 let s:comp_elapsed = 0
 while s:comp_elapsed < 10000
   call popup_clear()
-  YacComplete
+  call yac#complete()
   if yac_test#wait_for({-> yac#get_completion_state().popup_id != -1}, 2000)
     let s:comp_ok = 1
     break

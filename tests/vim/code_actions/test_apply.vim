@@ -19,7 +19,7 @@ call setline(1, s:original_content)
 
 call cursor(34, 20)  " User.init 调用
 
-YacCodeAction
+call yac#code_action()
 call yac_test#wait_popup(3000)
 
 let popups = popup_list()
@@ -36,7 +36,7 @@ call cursor(34, 1)
 normal! V
 normal! j
 
-YacCodeAction
+call yac#code_action()
 call yac_test#wait_popup(3000)
 
 execute "normal! \<Esc>"
