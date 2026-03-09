@@ -698,7 +698,9 @@ function! yac#debug_status() abort
   endif
 
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
-  let l:log_files = glob(fnamemodify(s:get_socket_path(), ':h') . '/yacd-*.log', 0, 1)
+  let l:log_dir = resolve(fnamemodify(s:get_socket_path(), ':h'))
+  let l:log_files = map(filter(readdir(l:log_dir), 'v:val =~# "^yacd-.*\\.log$"'),
+    \ {_, v -> l:log_dir . '/' . v})
   call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
   echo '  Daemon Log: ' . (empty(l:log_files) ? 'Not available' : l:log_files[0])
   echo ''
@@ -887,12 +889,12 @@ endfunction
 function! yac#open_log() abort
   " Find per-process log: yacd-{pid}.log in the same dir as the socket
   let l:sock = s:get_socket_path()
-  let l:dir = fnamemodify(l:sock, ':h')
-  let l:pattern = l:dir . '/yacd-*.log'
-  let l:files = glob(l:pattern, 0, 1)
+  let l:dir = resolve(fnamemodify(l:sock, ':h'))
+  let l:files = map(filter(readdir(l:dir), 'v:val =~# "^yacd-.*\\.log$"'),
+    \ {_, v -> l:dir . '/' . v})
 
   if empty(l:files)
-    echo 'No log files found matching: ' . l:pattern
+    echo 'No log files found in: ' . l:dir
     return
   endif
 

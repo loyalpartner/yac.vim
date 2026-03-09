@@ -1,8 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ts = @import("tree_sitter");
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
+
+// Wasmtime C API — used to disable mach ports on macOS 26+ (crash workaround)
+extern fn wasm_config_new() ?*ts.WasmEngine.Config;
+extern fn wasmtime_config_macos_use_mach_ports_set(*ts.WasmEngine.Config, bool) void;
 
 pub const WasmLoader = struct {
     engine: *ts.WasmEngine,
@@ -11,7 +16,20 @@ pub const WasmLoader = struct {
     const max_wasm_size = 10 * 1024 * 1024; // 10 MB
 
     pub fn init(allocator: Allocator) !WasmLoader {
-        const engine = ts.WasmEngine.init(null) catch |e| {
+        // On macOS, disable mach ports for wasmtime trap handling.
+        // Wasmtime's mach exception handler crashes on macOS 26 (SIGABRT in handler_thread).
+        // Falling back to Unix signal-based handling avoids this.
+        const config: ?*ts.WasmEngine.Config = if (comptime builtin.os.tag == .macos) blk: {
+            const cfg = wasm_config_new() orelse {
+                log.err("WasmLoader: failed to create WasmConfig", .{});
+                break :blk null;
+            };
+            wasmtime_config_macos_use_mach_ports_set(cfg, false);
+            log.info("WasmLoader: disabled mach ports (macOS workaround)", .{});
+            break :blk cfg;
+        } else null;
+
+        const engine = ts.WasmEngine.init(config) catch |e| {
             log.err("WasmLoader: failed to create WasmEngine: {any}", .{e});
             return e;
         };

@@ -111,6 +111,19 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - **Theme group registration**: New `YacTs*` highlight groups need 3 places: `captureToGroup` (Zig), `s:TS_GROUPS` list + `s:default_groups` dict (`yac_theme.vim`), `hi def link` (`yac.vim`), and theme JSON files.
 - **highlights.scm sourced from Zed**: Query files match Zed's tree-sitter queries exactly. When comparing rendering, note that Zed also applies LSP semantic tokens which yac.vim does not.
 
+## Platform & Cross-Platform Gotchas
+
+- **Never use `std.os.linux.*` on macOS**: `std.os.linux.getpid()` compiles but executes a Linux syscall (`svc #0`) on ARM64 macOS, causing SIGSYS. Use `std.c.getpid()` or `std.process` equivalents. In ReleaseFast the optimizer may inline/eliminate the call, masking the bug until a different code path triggers it.
+- **wasmtime mach ports crash on macOS 26**: Wasmtime's default mach exception handler (`machports::handler_thread`) panics on macOS 26. Fix: create engine with `wasmtime_config_macos_use_mach_ports_set(config, false)` to fall back to Unix signal-based trap handling. See `src/treesitter/wasm_loader.zig`.
+- **macOS `/tmp` ↔ `/private/tmp` symlink**: Vim's `glob()` fails on `/tmp` paths on macOS 26 due to security hardening. Use `readdir()` + regex filter instead. `resolve()` alone is not sufficient.
+- **After fixing a platform-specific bug, grep for similar patterns**: e.g. after finding `std.os.linux.getpid()`, search the entire codebase for other `std.os.linux.*` usages that need cross-platform alternatives.
+
+## Debugging Workflow (Crashes)
+
+- **For crashes, use lldb/debugger FIRST** — do not speculate about causes (WASM, stack sizes, threading). One backtrace is worth more than five hypotheses. Example command: `lldb -- ./zig-out/bin/yacd` then `run`.
+- **Check macOS crash reports**: `ls -lt ~/Library/Logs/DiagnosticReports/yacd*` — these contain symbolicated backtraces even for release builds.
+- **Check daemon logs**: `ls -lt /tmp/yacd-$USER-*.log` — logs that end abruptly (no shutdown message) indicate a crash.
+
 ## Known LSP Limitations
 
 - **zls 0.15**: `workspaceSymbolProvider: false` — `workspace/symbol` returns `null` (unimplemented)
