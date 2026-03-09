@@ -29,7 +29,7 @@ yac.vim 系统与外部参与者的关系。
   │ Servers   │  │ WASM       │  │ Copilot      │
   │           │  │ Grammars   │  │ Language     │
   │ zls       │  │            │  │ Server       │
-  │ rust-     │  │ 13 种      │  │              │
+  │ rust-     │  │ 13 种语言  │  │              │
   │ analyzer  │  │ 内置语言   │  │              │
   │ pyright   │  │            │  │              │
   │ ...       │  │            │  │              │
