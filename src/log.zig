@@ -17,7 +17,7 @@ var min_level: Level = .info;
 
 /// Compute per-process log path: yacd-{pid}.log in $XDG_RUNTIME_DIR or /tmp
 fn getLogPath(buf: []u8) ?[]const u8 {
-    const pid = std.os.linux.getpid();
+    const pid = std.c.getpid();
     if (std.posix.getenv("XDG_RUNTIME_DIR")) |xdg| {
         return std.fmt.bufPrint(buf, "{s}/yacd-{d}.log", .{ xdg, pid }) catch null;
     }
@@ -46,7 +46,7 @@ pub fn init() void {
     log_file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch null;
     // Always log the startup message regardless of level
     writeLog("INFO", "yacd started, pid={d}, log={s}, level={s}", .{
-        std.os.linux.getpid(),
+        std.c.getpid(),
         path,
         @tagName(min_level),
     });

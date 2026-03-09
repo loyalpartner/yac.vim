@@ -232,7 +232,7 @@ pub const LspClient = struct {
 
         // Build initialize params
         var params = ObjectMap.init(self.allocator);
-        try params.put("processId", json.jsonInteger(@intCast(std.os.linux.getpid())));
+        try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
 
         // capabilities
         var capabilities = ObjectMap.init(self.allocator);
@@ -345,7 +345,7 @@ pub const LspClient = struct {
         self.state = .initializing;
 
         var params = ObjectMap.init(self.allocator);
-        try params.put("processId", json.jsonInteger(@intCast(std.os.linux.getpid())));
+        try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
 
         // capabilities — minimal, with inlineCompletion support
         var capabilities = ObjectMap.init(self.allocator);
