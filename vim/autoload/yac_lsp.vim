@@ -131,8 +131,9 @@ function! s:wrap_plaintext_hover(text, filetype) abort
     let l:doc_lines = []
   endif
 
-  " Remove type info line: "(fn ...)" or "(type)" — starts with "("
-  let l:code_lines = filter(copy(l:code_lines), {_, v -> v !~# '^('})
+  " Strip pyright-style type prefix: "(method) ", "(function) ", "(class) ", etc.
+  let l:code_lines = map(copy(l:code_lines),
+    \ {_, v -> substitute(v, '^(\w\+)\s\+', '', '')})
 
   " Build markdown: code fence + doc text
   let l:md = '```' . a:filetype . "\n" . join(l:code_lines, "\n") . "\n```"
