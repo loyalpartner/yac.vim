@@ -131,7 +131,7 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
             var pos: Position = .{ .line = 0, .column = 0 };
             if (json_utils.getObject(sym, "location")) |loc| {
                 if (json_utils.getString(loc, "uri")) |uri| {
-                    file = lsp_registry_mod.uriToFilePath(uri) orelse "";
+                    file = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse "";
                     if (ssh_host) |host| {
                         file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
                     }

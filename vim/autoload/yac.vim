@@ -204,14 +204,16 @@ function! yac#ensure_language(lang_dir) abort
   if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
   if has_key(s:loaded_langs, a:lang_dir) | return | endif
 
-  let s:loaded_langs[a:lang_dir] = 'loading'
-
   " Load dependencies first (works even without daemon connection)
   call s:load_language_deps(a:lang_dir)
 
   let l:key = s:get_connection_key()
   let l:ch = get(s:channel_pool, l:key, '')
   if empty(l:ch) || ch_status(l:ch) !=# 'open' | return | endif
+
+  " Only mark as loading AFTER confirming channel is open.
+  " Otherwise a failed send (daemon not started yet) permanently blocks retries.
+  let s:loaded_langs[a:lang_dir] = 'loading'
 
   call s:request('load_language', {'lang_dir': a:lang_dir},
     \ 's:handle_load_language_response')

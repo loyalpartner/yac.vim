@@ -23,10 +23,6 @@
 (class_declaration
   body: (class_body) @class.inner)
 
-(class_expression) @class.outer
-(class_expression
-  body: (class_body) @class.inner)
-
 ; Interfaces
 (interface_declaration) @class.outer
 (interface_declaration

@@ -48,7 +48,63 @@ pub fn filePathToUri(allocator: Allocator, file_path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "file://{s}", .{real_path});
 }
 
-/// Convert file:// URI to file path.
+/// Convert file:// URI to file path, decoding percent-encoded characters.
+/// Returns an allocated string (caller must free with the same allocator).
+pub fn uriToFilePathAlloc(allocator: Allocator, uri: []const u8) ?[]const u8 {
+    const prefix = "file://";
+    if (!std.mem.startsWith(u8, uri, prefix)) return null;
+    const raw = uri[prefix.len..];
+
+    // Fast path: no percent encoding
+    if (std.mem.indexOfScalar(u8, raw, '%') == null) return raw;
+
+    // Decode percent-encoded characters (e.g., %40 → @, %20 → space)
+    var buf = allocator.alloc(u8, raw.len) catch return null;
+    var out: usize = 0;
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '%' and i + 2 < raw.len) {
+            const hi = hexDigit(raw[i + 1]) orelse {
+                buf[out] = raw[i];
+                out += 1;
+                i += 1;
+                continue;
+            };
+            const lo = hexDigit(raw[i + 2]) orelse {
+                buf[out] = raw[i];
+                out += 1;
+                i += 1;
+                continue;
+            };
+            buf[out] = (@as(u8, hi) << 4) | lo;
+            out += 1;
+            i += 3;
+        } else {
+            buf[out] = raw[i];
+            out += 1;
+            i += 1;
+        }
+    }
+    // Allocate exact-size result and free the oversized work buffer
+    const result = allocator.dupe(u8, buf[0..out]) catch {
+        allocator.free(buf);
+        return null;
+    };
+    allocator.free(buf);
+    return result;
+}
+
+fn hexDigit(c: u8) ?u4 {
+    return switch (c) {
+        '0'...'9' => @intCast(c - '0'),
+        'a'...'f' => @intCast(c - 'a' + 10),
+        'A'...'F' => @intCast(c - 'A' + 10),
+        else => null,
+    };
+}
+
+/// Convert file:// URI to file path (non-allocating, no percent decoding).
+/// Only use when percent-encoded paths are impossible.
 pub fn uriToFilePath(uri: []const u8) ?[]const u8 {
     const prefix = "file://";
     if (std.mem.startsWith(u8, uri, prefix)) {
@@ -255,4 +311,30 @@ test "uri to file path" {
         uriToFilePath("file:///home/user/test.rs").?,
     );
     try std.testing.expect(uriToFilePath("http://example.com") == null);
+}
+
+test "uri to file path — percent decoding" {
+    const alloc = std.testing.allocator;
+
+    // No encoding — returns slice into original (no alloc)
+    const plain = uriToFilePathAlloc(alloc, "file:///home/user/test.rs").?;
+    try std.testing.expectEqualStrings("/home/user/test.rs", plain);
+
+    // %40 → @  (pnpm directory pattern)
+    const at = uriToFilePathAlloc(alloc, "file:///node_modules/.pnpm/pkg%401.0/types.d.ts").?;
+    defer alloc.free(at);
+    try std.testing.expectEqualStrings("/node_modules/.pnpm/pkg@1.0/types.d.ts", at);
+
+    // %20 → space
+    const space = uriToFilePathAlloc(alloc, "file:///my%20project/file.ts").?;
+    defer alloc.free(space);
+    try std.testing.expectEqualStrings("/my project/file.ts", space);
+
+    // Multiple encodings
+    const multi = uriToFilePathAlloc(alloc, "file:///a%20b%2Fc%40d").?;
+    defer alloc.free(multi);
+    try std.testing.expectEqualStrings("/a b/c@d", multi);
+
+    // Non file:// URI
+    try std.testing.expect(uriToFilePathAlloc(alloc, "http://example.com") == null);
 }

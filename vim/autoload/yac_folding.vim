@@ -12,9 +12,13 @@ let s:fold_signs_defined = 0
 " === Public API ===
 
 function! yac_folding#range() abort
-  call yac#_folding_request('ts_folding', {
-    \   'file': expand('%:p')
-    \ }, 'yac_folding#_handle_response')
+  let l:params = {'file': expand('%:p')}
+  " Include text so daemon can auto-parse if buffer wasn't parsed yet
+  " (e.g. load_language raced with file_open on different threads).
+  if !exists('b:yac_fold_levels')
+    let l:params.text = join(getline(1, '$'), "\n")
+  endif
+  call yac#_folding_request('ts_folding', l:params, 'yac_folding#_handle_response')
 endfunction
 
 function! yac_folding#foldexpr(lnum) abort

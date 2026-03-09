@@ -57,13 +57,6 @@
 (enum_declaration
   name: (type_identifier) @name) @enum
 
-; Namespace declarations
-(module_declaration
-  name: [
-    (identifier)
-    (string)
-  ] @name) @namespace
-
 ; Exported function declarations
 (export_statement
   declaration: (function_declaration

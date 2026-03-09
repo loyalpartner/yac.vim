@@ -155,6 +155,7 @@ function! s:yac_check_language() abort
       if info.lsp
         let b:yac_lsp_supported = 1
       endif
+      let b:yac_lang_dir = info.dir
       call yac#ensure_language(info.dir)
       return
     endif

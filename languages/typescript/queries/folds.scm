@@ -15,4 +15,3 @@
 (catch_clause) @fold
 (finally_clause) @fold
 (enum_body) @fold
-(module_block) @fold

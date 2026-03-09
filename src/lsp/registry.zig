@@ -15,6 +15,7 @@ pub const extractSshHost = path_utils.extractSshHost;
 pub const restoreSshPath = path_utils.restoreSshPath;
 pub const filePathToUri = path_utils.filePathToUri;
 pub const uriToFilePath = path_utils.uriToFilePath;
+pub const uriToFilePathAlloc = path_utils.uriToFilePathAlloc;
 pub const findWorkspaceUri = path_utils.findWorkspaceUri;
 
 // ============================================================================

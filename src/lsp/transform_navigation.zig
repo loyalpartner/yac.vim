@@ -60,7 +60,7 @@ pub fn transformGotoResult(alloc: Allocator, result: Value, ssh_host: ?[]const u
         json_utils.getString(loc_obj, "targetUri") orelse
         return .null;
 
-    const file_path = lsp_registry_mod.uriToFilePath(uri) orelse return .null;
+    const file_path = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse return .null;
 
     const range_val = loc_obj.get("range") orelse loc_obj.get("targetSelectionRange") orelse return .null;
     const pos = extractStartPosition(range_val) orelse return .null;
@@ -82,7 +82,7 @@ pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]c
             else => continue,
         };
         const uri = json_utils.getString(loc, "uri") orelse continue;
-        const file_path = lsp_registry_mod.uriToFilePath(uri) orelse continue;
+        const file_path = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse continue;
         const pos = extractStartPosition(loc.get("range") orelse continue) orelse continue;
         const loc_val = makeLocationObject(alloc, file_path, pos.line, pos.column, ssh_host) catch continue;
         try locations.append(loc_val);

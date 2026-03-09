@@ -17,6 +17,12 @@ function! yac_remote#enhanced_lsp_start() abort
   elseif get(b:, 'yac_lsp_supported', 0)
     " Local LSP file - use standard mode
     call yac#start()
+    " Retry language loading now that the channel is open.
+    " ensure_language may have been called before yac#start() (channel not
+    " ready), so the load_language request was never sent.
+    if exists('b:yac_lang_dir')
+      call yac#ensure_language(b:yac_lang_dir)
+    endif
     call yac#open_file()
   endif
 
@@ -41,6 +47,9 @@ function! s:start_ssh_master_mode(ssh_path) abort
   " 连接池会自动管理 SSH 连接，无需手动创建 Master
   " Start LSP - connection pool will handle SSH automatically
   if yac#start()
+    if exists('b:yac_lang_dir')
+      call yac#ensure_language(b:yac_lang_dir)
+    endif
     call yac#open_file()
     return 1
   else
