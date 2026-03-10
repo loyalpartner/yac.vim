@@ -45,20 +45,20 @@ hi def link YacTsFunctionMacro       Macro
 hi def link YacTsFunctionMethod      Function
 hi def link YacTsProperty            Identifier
 hi def link YacTsPreproc             PreProc
-hi def link YacTsMarkupHeading       Title
-hi def link YacTsMarkupHeadingMarker Delimiter
-hi def link YacTsMarkupRawBlock      String
-hi def link YacTsMarkupRawInline     String
-hi def link YacTsMarkupLink          Underlined
-hi def link YacTsMarkupLinkUrl       Underlined
-hi def link YacTsMarkupLinkLabel     Label
-hi def link YacTsMarkupListMarker    Delimiter
-hi def link YacTsMarkupListChecked   DiagnosticOk
-hi def link YacTsMarkupListUnchecked Comment
-hi def link YacTsMarkupQuote         Comment
-hi def link YacTsMarkupItalic        Italic
-hi def link YacTsMarkupBold          Bold
-hi def link YacTsMarkupStrikethrough Comment
+hi def link YacTsMarkupHeading       YacTsProperty
+hi def link YacTsMarkupHeadingMarker YacTsProperty
+hi def link YacTsMarkupRawBlock      YacTsString
+hi def link YacTsMarkupRawInline     YacTsString
+hi def link YacTsMarkupLink          YacTsFunction
+hi def link YacTsMarkupLinkUrl       YacTsType
+hi def link YacTsMarkupLinkLabel     YacTsFunction
+hi def link YacTsMarkupListMarker    YacTsProperty
+hi def link YacTsMarkupListChecked   YacTsString
+hi def link YacTsMarkupListUnchecked YacTsComment
+hi def link YacTsMarkupQuote         YacTsComment
+hi def link YacTsMarkupItalic        YacTsLabel
+hi def link YacTsMarkupBold          YacTsConstantBuiltin
+hi def link YacTsMarkupStrikethrough YacTsComment
 
 " 连接池管理 - daemon socket mode
 let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}

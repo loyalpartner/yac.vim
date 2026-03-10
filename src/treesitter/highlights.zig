@@ -80,19 +80,32 @@ pub fn extractHighlights(
 
             if (line_end_col <= col) continue;
 
+            const len = line_end_col - col;
             const pos_key = (@as(u64, row) << 32) | @as(u64, col);
             const idx = entries.items.len;
             const gop = try best.getOrPut(pos_key);
             if (gop.found_existing) {
-                // Later capture = higher priority → overwrite
-                entries.items[gop.value_ptr.*].group_name = group_name;
-                entries.items[gop.value_ptr.*].length = line_end_col - col;
+                const existing = &entries.items[gop.value_ptr.*];
+                if (len == existing.length) {
+                    // Same span → later capture overrides (higher priority)
+                    existing.group_name = group_name;
+                } else {
+                    // Different span → parent/child overlap (e.g. heading vs
+                    // heading.marker, string vs embedded). Keep both; Vim's
+                    // text property priority resolves the overlap.
+                    try entries.append(allocator, .{
+                        .row = row,
+                        .col = col,
+                        .length = len,
+                        .group_name = group_name,
+                    });
+                }
             } else {
                 gop.value_ptr.* = idx;
                 try entries.append(allocator, .{
                     .row = row,
                     .col = col,
-                    .length = line_end_col - col,
+                    .length = len,
                     .group_name = group_name,
                 });
             }
