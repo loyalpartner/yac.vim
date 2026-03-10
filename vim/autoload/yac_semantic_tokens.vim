@@ -132,10 +132,10 @@ endfunction
 function! s:ensure_prop_type(prop_type, highlight_group) abort
   if !has_key(s:st_prop_types_created, a:prop_type)
     try
-      " Higher priority than tree-sitter (default priority=0, semantic=10)
+      " Higher priority than tree-sitter (container=5, leaf=10, semantic=15)
       call prop_type_add(a:prop_type, {
             \ 'highlight': a:highlight_group,
-            \ 'priority': 10,
+            \ 'priority': 15,
             \ 'start_incl': 1,
             \ 'end_incl': 1
             \ })

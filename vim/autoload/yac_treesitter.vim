@@ -301,6 +301,7 @@ function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
     try
       call prop_type_add(a:prop_type, {
             \ 'highlight': a:highlight_group,
+            \ 'priority': s:ts_prop_priority(a:highlight_group),
             \ 'start_incl': 1,
             \ 'end_incl': 1
             \ })
@@ -309,6 +310,17 @@ function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
     endtry
     let s:ts_prop_types_created[a:prop_type] = 1
   endif
+endfunction
+
+" Container groups (string, comment) get lower priority so that child
+" captures (escape, embedded/variable, punctuation) override them when
+" overlapping — e.g. f-string interpolation {var} inside a string.
+function! s:ts_prop_priority(group) abort
+  if a:group ==# 'YacTsString' || a:group ==# 'YacTsComment'
+        \ || a:group ==# 'YacTsCommentDocumentation'
+    return 5
+  endif
+  return 10
 endfunction
 
 function! s:clear_ts_highlights() abort

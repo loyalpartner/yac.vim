@@ -27,6 +27,14 @@ function! yac_doc_highlight#debounce() abort
   if !get(b:, 'yac_doc_highlight', get(g:, 'yac_doc_highlight', 1))
     return
   endif
+  " Skip if cursor is not on an identifier character — avoids LSP returning
+  " overly large ranges (e.g. entire JSON object when cursor is on whitespace
+  " or brackets inside { }).
+  let l:char = getline('.')[col('.') - 1]
+  if l:char !~# '\k'
+    call s:clear_document_highlights()
+    return
+  endif
   " Skip if word under cursor hasn't changed
   let l:word = expand('<cword>')
   if l:word ==# s:doc_hl_word && !empty(s:doc_hl_matches)
