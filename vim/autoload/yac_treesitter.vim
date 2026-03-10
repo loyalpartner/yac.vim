@@ -254,6 +254,16 @@ function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scro
     call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
     call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
   endif
+
+  " Disable Vim's built-in syntax for this buffer once tree-sitter highlights
+  " are active — prevents conflicts (e.g. JSON syntax marking // as Error).
+  if !getbufvar(l:bufnr, 'yac_ts_syntax_off', 0)
+    let l:win = bufwinid(l:bufnr)
+    if l:win != -1
+      call win_execute(l:win, 'setlocal syntax=OFF')
+    endif
+    call setbufvar(l:bufnr, 'yac_ts_syntax_off', 1)
+  endif
 endfunction
 
 " Apply highlight groups for a given generation. Returns the list of
@@ -331,6 +341,11 @@ endfunction
 function! yac_treesitter#highlights_disable() abort
   let b:yac_ts_highlights_enabled = 0
   call s:ts_highlights_reset_coverage()
+  " Restore Vim's built-in syntax when tree-sitter is disabled
+  if get(b:, 'yac_ts_syntax_off', 0)
+    let &l:syntax = &filetype
+    let b:yac_ts_syntax_off = 0
+  endif
 endfunction
 
 function! yac_treesitter#highlights_toggle() abort
