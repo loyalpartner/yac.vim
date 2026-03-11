@@ -35,7 +35,58 @@ endfunction
 function! yac_folding#foldtext() abort
   let line = getline(v:foldstart)
   let hidden = max([v:foldend - v:foldstart, 1])
-  return line . '  ' . hidden . ' lines'
+  let suffix = '  ' . hidden . ' lines'
+
+  " Vim 9.1.0766+ 支持 foldtext 返回 [[text, hlgroup], ...] 列表
+  if !has('patch-9.1.0766')
+    return line . suffix
+  endif
+
+  let props = prop_list(v:foldstart)
+  if empty(props)
+    return [[line . suffix, 'Folded']]
+  endif
+
+  " 按列位置排序（prop_list 通常已排序，但不保证）
+  call sort(props, {a, b -> a.col - b.col})
+
+  " 构建 [text, hlgroup] 列表，处理重叠属性（取最后出现的，即最高优先级）
+  let result = []
+  let pos = 1
+  let line_len = len(line)
+
+  for p in props
+    let pcol = p.col
+    let pend = pcol + p.length - 1
+    if pcol > line_len | break | endif
+    " 跳过已被更高优先级属性覆盖的区域
+    if pend < pos | continue | endif
+    if pcol < pos
+      let pcol = pos
+    endif
+    let pend = min([pend, line_len])
+
+    " 属性前的无高亮文本
+    if pcol > pos
+      call add(result, [line[pos-1 : pcol-2], 'Folded'])
+    endif
+
+    " 获取 prop type 对应的高亮组
+    let pinfo = prop_type_get(p.type)
+    let hl = get(pinfo, 'highlight', 'Folded')
+    call add(result, [line[pcol-1 : pend-1], hl])
+    let pos = pend + 1
+  endfor
+
+  " 剩余无高亮文本
+  if pos <= line_len
+    call add(result, [line[pos-1 :], 'Folded'])
+  endif
+
+  " 折叠行数后缀
+  call add(result, [suffix, 'Comment'])
+
+  return result
 endfunction
 
 function! yac_folding#update_signs() abort

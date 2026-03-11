@@ -619,21 +619,32 @@ function! yac#toast(msg, ...) abort
 endfunction
 
 " 关闭当前连接的 channel
+" Send exit request to daemon, then close all channels.
 function! yac#stop() abort
-  let l:key = s:get_connection_key()
-
-  if has_key(s:channel_pool, l:key)
-    let l:ch = s:channel_pool[l:key]
-    if ch_status(l:ch) == 'open'
-      call s:debug_log(printf('Closing channel for %s', l:key))
-      call ch_close(l:ch)
+  " Send exit to daemon via any open channel
+  for [key, ch] in items(s:channel_pool)
+    if ch_status(ch) == 'open'
+      call s:debug_log(printf('Sending exit to daemon via %s', key))
+      try
+        call ch_sendraw(ch, json_encode([{'method': 'exit', 'params': {}}]) . "\n")
+      catch
+      endtry
     endif
-    " ch_close() may trigger close_cb → cleanup_dead_connections() which
-    " already removed the key, so guard again before unlet.
-    if has_key(s:channel_pool, l:key)
-      unlet s:channel_pool[l:key]
-    endif
+    break
+  endfor
+  call s:stop_all_channels()
+  " Reset so next start() can launch a new daemon
+  let s:daemon_started = 0
+  if exists('s:loaded_langs')
+    let s:loaded_langs = {}
   endif
+endfunction
+
+function! yac#restart() abort
+  call yac#stop()
+  " Brief delay to let daemon clean up socket
+  sleep 200m
+  call yac#start()
 endfunction
 
 " 关闭所有 channel 连接（内部使用）
@@ -645,11 +656,6 @@ function! s:stop_all_channels() abort
     endif
   endfor
   let s:channel_pool = {}
-endfunction
-
-" 断开与 daemon 的连接（daemon 自行管理生命周期和 socket 清理）
-function! yac#daemon_stop() abort
-  call s:stop_all_channels()
 endfunction
 
 " === Debug 功能 ===

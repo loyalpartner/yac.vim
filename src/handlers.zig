@@ -73,7 +73,14 @@ pub const handlers = [_]Handler{
     .{ .name = "copilot_did_focus", .handleFn = copilot.handleCopilotDidFocus },
     .{ .name = "copilot_accept", .handleFn = copilot.handleCopilotAccept },
     .{ .name = "copilot_partial_accept", .handleFn = copilot.handleCopilotPartialAccept },
+    .{ .name = "exit", .handleFn = handleExit },
 };
+
+fn handleExit(ctx: *HandlerContext, _: Value) !DispatchResult {
+    log.info("Exit requested by client {d}", .{ctx.client_id});
+    ctx.shutdown_flag.* = true;
+    return .{ .data = .{ .string = "ok" } };
+}
 
 pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !DispatchResult {
     inline for (handlers) |h| {

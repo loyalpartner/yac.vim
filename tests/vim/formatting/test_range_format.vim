@@ -32,7 +32,9 @@ sleep 500m
 
 " Select lines 44-47 and range format
 " Use ex-command range syntax since visual mode is hard in scripts
-44,47YacRangeFormat
+call setpos("'<", [0, 44, 1, 0])
+call setpos("'>", [0, 47, 999, 0])
+call yac#range_format()
 
 " Wait for formatting to take effect
 let s:format_applied = yac_test#wait_for(
@@ -74,7 +76,9 @@ silent write
 sleep 500m
 
 " Format only lines 14-16
-14,16YacRangeFormat
+call setpos("'<", [0, 14, 1, 0])
+call setpos("'>", [0, 16, 999, 0])
+call yac#range_format()
 
 " Wait a bit for formatting
 sleep 2000m
@@ -128,7 +132,9 @@ sleep 500m
 
 let s:clean_before = getline(14, 16)
 
-14,16YacRangeFormat
+call setpos("'<", [0, 14, 1, 0])
+call setpos("'>", [0, 16, 999, 0])
+call yac#range_format()
 sleep 2000m
 
 let s:clean_after = getline(14, 16)

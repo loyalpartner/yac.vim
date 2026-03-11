@@ -80,7 +80,7 @@ for s:expected in ['Copilot Sign In', 'Copilot Sign Out', 'Copilot Status',
 endfor
 
 " LSP Management
-for s:expected in ['LSP Install', 'LSP Update', 'LSP Status', 'Restart LSP']
+for s:expected in ['LSP Install', 'LSP Update', 'LSP Status', 'Restart']
   call yac_test#assert_true(
     \ index(s:labels, s:expected) >= 0,
     \ 'command palette should have "' . s:expected . '"')

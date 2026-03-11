@@ -29,6 +29,8 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 - `vim/autoload/yac_picker.vim` — Fuzzy picker component
 - `vim/autoload/yac_peek.vim` — Reference peek window with tree navigation
 - `vim/autoload/yac_theme.vim` — Tree-sitter highlight theme management
+- `vim/autoload/yac_alternate.vim` — C/C++ header/implementation file switching
+- `vim/autoload/yac_install.vim` — LSP server auto-install/update
 - `vim/autoload/yac_test.vim` — E2E test helpers (term_start mode)
 
 **Zig daemon:**
@@ -106,7 +108,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 
 ## Tree-sitter Gotchas
 
-- **`simplePatternMatch` only supports hardcoded patterns**: `src/treesitter/predicates.zig` does NOT use a regex engine. Each `#match?` pattern in highlights.scm must have a corresponding case in `simplePatternMatch()`. Unknown patterns return `true` (permissive), which silently breaks priority — e.g., `@constant.builtin` overrides `@function` for ALL identifiers.
+- **`simplePatternMatch` only supports hardcoded patterns**: `src/treesitter/predicates.zig` does NOT use a regex engine. Each `#match?` pattern in highlights.scm must have a corresponding case in `simplePatternMatch()`. Unknown patterns return `false` (conservative) and log a warning. Currently supported: `^[A-Z_]...` (type names), `^[A-Z][A-Z_0-9]+$` (UPPER_CASE), `^//!` (doc comments), `^[A-Z]` (starts upper), `^_*[A-Z]...` (C/C++ constants), Go builtins, `^-` (bash flags), `^#![ \t]*/` (shebang).
 - **`captureToGroup` registration required**: New `@capture` names in highlights.scm must be added to `captureToGroup()` in `src/treesitter/highlights.zig`. Unregistered captures are silently ignored (no highlighting).
 - **Theme group registration**: New `YacTs*` highlight groups need 3 places: `captureToGroup` (Zig), `s:TS_GROUPS` list + `s:default_groups` dict (`yac_theme.vim`), `hi def link` (`yac.vim`), and theme JSON files.
 - **highlights.scm sourced from Zed**: Query files match Zed's tree-sitter queries exactly. When comparing rendering, note that Zed also applies LSP semantic tokens which yac.vim does not.
@@ -117,6 +119,12 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - **wasmtime mach ports crash on macOS 26**: Wasmtime's default mach exception handler (`machports::handler_thread`) panics on macOS 26. Fix: create engine with `wasmtime_config_macos_use_mach_ports_set(config, false)` to fall back to Unix signal-based trap handling. See `src/treesitter/wasm_loader.zig`.
 - **macOS `/tmp` ↔ `/private/tmp` symlink**: Vim's `glob()` fails on `/tmp` paths on macOS 26 due to security hardening. Use `readdir()` + regex filter instead. `resolve()` alone is not sufficient.
 - **After fixing a platform-specific bug, grep for similar patterns**: e.g. after finding `std.os.linux.getpid()`, search the entire codebase for other `std.os.linux.*` usages that need cross-platform alternatives.
+
+## Daemon Lifecycle
+
+- **Graceful shutdown**: `yac#stop()` sends `exit` request to daemon via JSON-RPC, which sets `EventLoop.shutdown_requested = true`. The daemon exits after the current poll cycle completes. Vim side resets `s:daemon_started` and `s:loaded_langs`.
+- **Restart**: `yac#restart()` = `stop()` + `sleep 200m` (let daemon release socket) + `start()`.
+- **Idle timeout**: Daemon also exits after inactivity timeout if no clients are connected (see `shouldExitIdle`).
 
 ## Debugging Workflow (Crashes)
 

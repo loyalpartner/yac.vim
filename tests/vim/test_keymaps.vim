@@ -97,12 +97,11 @@ for [key, desc] in [
 endfor
 
 " ============================================================================
-" Test 6: Yac commands exist (only -nargs commands remain)
+" Test 6: Yac commands exist (only core lifecycle commands)
 " ============================================================================
 call yac_test#log('INFO', 'Test 6: Yac commands')
 
-for cmd in ['YacRename', 'YacExecuteCommand', 'YacRangeFormat',
-      \ 'YacLspInstall', 'YacLspUpdate', 'YacThemeLoad']
+for cmd in ['YacStart', 'YacStop', 'YacRestart']
   call yac_test#assert_true(exists(':' . cmd) == 2,
     \ printf(':%s command should exist', cmd))
 endfor

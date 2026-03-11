@@ -37,6 +37,8 @@ pub const EventLoop = struct {
     picker: picker_mod.Picker,
     /// Tree-sitter state
     ts: treesitter_mod.TreeSitter,
+    /// Set by "exit" handler to trigger clean shutdown.
+    shutdown_requested: bool = false,
     /// Protects all shared mutable state when accessed from worker threads.
     state_lock: std.Thread.Mutex = .{},
     /// Work queue for general (non-TS) requests: reader thread → worker threads.
@@ -129,6 +131,10 @@ pub const EventLoop = struct {
     }
 
     fn shouldExitIdle(self: *EventLoop) bool {
+        if (self.shutdown_requested) {
+            log.info("Shutdown requested, exiting", .{});
+            return true;
+        }
         const deadline = self.idle_deadline orelse return false;
         if (std.time.nanoTimestamp() >= deadline and self.clients.count() == 0) {
             log.info("Idle timeout reached with no clients, shutting down", .{});
@@ -300,7 +306,9 @@ pub const EventLoop = struct {
             self.handleClientFds(poll_fds.items, poll_setup.client_count, client_id_order.items, buf[0..]);
             self.handleLspFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
             self.handlePickerFd(poll_fds.items, poll_setup.picker_fd_index);
+            const should_exit = self.shutdown_requested;
             self.state_lock.unlock();
+            if (should_exit) break;
         }
     }
 
@@ -474,6 +482,7 @@ pub const EventLoop = struct {
             .client_id = cid,
             .ts = &self.ts,
             .out_queue = &self.out_queue,
+            .shutdown_flag = &self.shutdown_requested,
         };
 
         const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {

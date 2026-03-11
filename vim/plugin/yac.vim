@@ -47,13 +47,12 @@ if isdirectory(s:_builtin)
 endif
 unlet s:_builtin
 
-" Commands (only those requiring -nargs or special flags)
-command! -nargs=? YacRename call yac#rename(<args>)
-command! -nargs=+ YacExecuteCommand call yac#execute_command(<f-args>)
-command! -range YacRangeFormat call yac#range_format()
-command! -nargs=1 -complete=file YacThemeLoad call yac_theme#apply_file(<q-args>) | call yac_theme#save_selection(<q-args>)
-command! -nargs=? YacLspInstall  call yac_install#install(<f-args>)
-command! -nargs=? YacLspUpdate   call yac_install#update(<f-args>)
+" Core commands
+command! YacStart   call yac#start()
+command! YacStop    call yac#stop()
+command! YacRestart call yac#restart()
+
+" Everything else via <Plug> mappings and <C-p> command palette
 
 " <Plug> mappings — LSP navigation
 nnoremap <silent> <Plug>(YacDefinition)     :call yac#goto_definition()<CR>
@@ -67,7 +66,7 @@ nnoremap <silent> <Plug>(YacPeek)           :call yac#peek()<CR>
 nnoremap <silent> <Plug>(YacRename)     :call yac#rename()<CR>
 nnoremap <silent> <Plug>(YacCodeAction) :call yac#code_action()<CR>
 nnoremap <silent> <Plug>(YacFormat)     :call yac#format()<CR>
-xnoremap <silent> <Plug>(YacRangeFormat) :YacRangeFormat<CR>
+xnoremap <silent> <Plug>(YacRangeFormat) :<C-u>call yac#range_format()<CR>
 
 " <Plug> mappings — LSP info
 nnoremap <silent> <Plug>(YacHover)         :call yac#hover()<CR>
@@ -91,6 +90,9 @@ nnoremap <silent> <Plug>(YacFoldingRange) :call yac#folding_range()<CR>
 " <Plug> mappings — picker
 nnoremap <silent> <Plug>(YacPicker) :call yac#picker_open()<CR>
 nnoremap <silent> <Plug>(YacGrep)   :call yac#picker_open({'initial': '/'})<CR>
+
+" <Plug> mappings — alternate file (C/C++ header ↔ implementation)
+nnoremap <silent> <Plug>(YacAlternate) :call yac_alternate#switch()<CR>
 
 " <Plug> mappings — tree-sitter navigation
 nnoremap <silent> <Plug>(YacTsNextFunction) :call yac#ts_next_function()<CR>
@@ -210,7 +212,7 @@ if get(g:, 'yac_auto_start', 1)
     autocmd InsertEnter * if s:not_preview_loading() | call yac#inlay_hints_on_insert_enter() | endif
     autocmd CursorMoved * if s:not_preview_loading() | call yac#document_highlight_debounce() | endif
     autocmd CursorMovedI,InsertEnter * if s:not_preview_loading() | call yac#clear_document_highlights() | endif
-    autocmd VimLeave * call yac#daemon_stop()
+    autocmd VimLeave * call yac#stop()
   augroup END
 endif
 

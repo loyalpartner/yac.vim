@@ -4,13 +4,16 @@ A lightweight LSP bridge and tree-sitter integration for Vim, powered by a Zig d
 
 ## Features
 
-- **LSP Bridge**: Go-to-definition, hover, completion, references, rename, code actions, inlay hints, folding, call hierarchy, signature help, formatting, document highlight
-- **Tree-sitter**: Syntax highlighting, symbols, text objects, navigation, folding
+- **LSP Bridge**: Go-to-definition, peek, hover, completion, references, rename, code actions, inlay hints, folding, call hierarchy, signature help, formatting, document highlight, semantic tokens
+- **Tree-sitter**: Syntax highlighting, symbols, text objects, navigation, folding, predicates
 - **Copilot**: Inline ghost text completion via GitHub Copilot Language Server
-- **Fuzzy Picker**: File finder, grep, theme picker (built-in, no dependencies)
+- **Fuzzy Picker**: File finder, grep, command palette, workspace/document symbols, theme picker, MRU history (built-in, no dependencies)
+- **Alternate File**: Quick toggle between C/C++ header and implementation files
 - **SSH Remote Editing**: Seamless remote LSP via SSH tunnels
 - **Daemon Architecture**: Single daemon serves all Vim instances, auto-starts on demand
-- **Plugin-based Languages**: Each language is a separate Vim plugin — install only what you need
+- **Language Plugins**: Each language is a separate directory with tree-sitter grammar and queries
+- **Git Integration**: Diff markers (git signs) in sign column
+- **Auto-pairs**: Smart bracket and quote auto-closing
 
 ## Installation
 
@@ -40,118 +43,124 @@ Plug 'yac-vim/vim'
 
 Each language plugin provides a tree-sitter WASM grammar and query files (highlights, symbols, folds, text objects). The daemon loads them on demand when you open a matching file.
 
-You also need the LSP servers installed for the languages you use (e.g. `rust-analyzer`, `zls`, `gopls`, `pyright`).
+You also need the LSP servers installed for the languages you use (e.g. `rust-analyzer`, `zls`, `gopls`, `pyright`). Run `:YacLspInstall` to auto-install supported servers.
 
 ## Key Mappings
 
-| Key | Action |
-|-----|--------|
-| `gd` | Go to definition |
-| `gD` | Peek definition |
-| `gy` | Go to type definition |
-| `gi` | Go to implementation |
-| `gr` | Find references |
-| `K` | Hover |
-| `<leader>rn` | Rename |
-| `<leader>ca` | Code action |
-| `<leader>fm` | Format (normal: file, visual: range) |
-| `<leader>s` | Document symbols |
-| `<leader>f` | Folding range |
-| `<leader>ci` / `<leader>co` | Call hierarchy (incoming/outgoing) |
-| `<leader>ts` / `<leader>tt` | Type hierarchy (supertypes/subtypes) |
-| `<leader>ih` | Toggle inlay hints |
-| `<leader>dt` | Toggle diagnostic virtual text |
-| `<C-p>` | Fuzzy file picker |
-| `g/` | Grep picker |
-| `]f` / `[f` | Next/prev function (tree-sitter) |
-| `]s` / `[s` | Next/prev struct (tree-sitter) |
-| `af` / `if` | Around/inside function (text object) |
-| `ac` | Around class (text object) |
-| `Tab` | Accept Copilot ghost text / completion |
-| `Alt-]` / `Alt-[` | Next/prev Copilot suggestion |
-| `Alt-Right` | Accept Copilot word |
+All features are accessed via `<Plug>` mappings. Default bindings:
 
-## Commands
+| Key | Plug Mapping | Action |
+|-----|-------------|--------|
+| `gd` | `<Plug>(YacDefinition)` | Go to definition |
+| `gD` | `<Plug>(YacPeek)` | Peek definition |
+| `gy` | `<Plug>(YacTypeDefinition)` | Go to type definition |
+| `gi` | `<Plug>(YacImplementation)` | Go to implementation |
+| `gr` | `<Plug>(YacReferences)` | Find references |
+| `K` | `<Plug>(YacHover)` | Hover |
+| `<leader>rn` | `<Plug>(YacRename)` | Rename |
+| `<leader>ca` | `<Plug>(YacCodeAction)` | Code action |
+| `<leader>fm` | `<Plug>(YacFormat)` | Format (normal: file, visual: range) |
+| `<leader>s` | `<Plug>(YacDocumentSymbols)` | Document symbols |
+| `<leader>f` | `<Plug>(YacFoldingRange)` | Folding range |
+| `<leader>ci` / `<leader>co` | `<Plug>(YacCallHierarchy*)` | Call hierarchy (incoming/outgoing) |
+| `<leader>ts` / `<leader>tt` | `<Plug>(YacTypeHierarchy*)` | Type hierarchy (supertypes/subtypes) |
+| `<leader>ih` | `<Plug>(YacInlayHintsToggle)` | Toggle inlay hints |
+| `<leader>dt` | `<Plug>(YacDiagnosticVTToggle)` | Toggle diagnostic virtual text |
+| `<C-p>` | `<Plug>(YacPicker)` | Fuzzy file picker / command palette |
+| `g/` | `<Plug>(YacGrep)` | Grep picker |
+| `]f` / `[f` | `<Plug>(YacTsNextFunction)` / `Prev` | Next/prev function (tree-sitter) |
+| `]s` / `[s` | `<Plug>(YacTsNextStruct)` / `Prev` | Next/prev struct (tree-sitter) |
+| `af` / `if` | `<Plug>(YacTsFunctionOuter)` / `Inner` | Around/inside function (text object) |
+| `ac` | `<Plug>(YacTsClassOuter)` | Around class (text object) |
+| `Tab` | — | Accept Copilot ghost text / completion |
+| `Alt-]` / `Alt-[` | — | Next/prev Copilot suggestion |
+| `Alt-Right` | — | Accept Copilot word |
+
+Additional `<Plug>` mappings without default keys (bind them yourself):
+
+| Plug Mapping | Action |
+|-------------|--------|
+| `<Plug>(YacDeclaration)` | Go to declaration |
+| `<Plug>(YacSignatureHelp)` | Signature help |
+| `<Plug>(YacSemanticTokensToggle)` | Toggle semantic tokens |
+| `<Plug>(YacTsFunctionInner)` | Inside function (text object) |
+| `<Plug>(YacAlternate)` | Switch C/C++ header ↔ implementation |
+
+Override defaults by mapping before the plugin loads:
 
 ```vim
-" LSP
-:YacDefinition               " Jump to definition
-:YacDeclaration              " Jump to declaration
-:YacTypeDefinition           " Jump to type definition
-:YacImplementation           " Jump to implementation
-:YacHover                    " Show hover info
-:YacPeek                     " Peek definition (inline preview)
-:YacComplete                 " Trigger completion
-:YacReferences               " Find references
-:YacRename [newname]         " Rename symbol
-:YacCodeAction               " Code actions
-:YacDocumentSymbols          " Document symbols
-:YacSignatureHelp            " Signature help
-:YacFormat                   " Format file
-:YacRangeFormat              " Format selection (visual mode)
-:YacInlayHintsToggle         " Toggle inlay hints
-:YacCallHierarchyIncoming    " Incoming calls
-:YacCallHierarchyOutgoing    " Outgoing calls
-:YacTypeHierarchySupertypes  " Type hierarchy (supertypes)
-:YacTypeHierarchySubtypes    " Type hierarchy (subtypes)
-:YacFoldingRange             " LSP folding
-:YacExecuteCommand <cmd>     " Execute LSP command
-
-" Picker
-:YacPicker                   " File picker
-:YacGrep                     " Grep picker
-:YacThemePicker              " Theme picker
-:YacThemeDefault             " Reset to default theme
-:YacThemeLoad <file>         " Load theme from JSON file
-
-" Tree-sitter
-:YacTsHighlightsEnable       " Enable tree-sitter highlights
-:YacTsHighlightsDisable      " Disable tree-sitter highlights
-:YacTsHighlightsToggle       " Toggle tree-sitter highlights
-:YacTsSymbols                " Tree-sitter symbols
-
-" Copilot
-:CopilotSignIn               " Sign in to GitHub Copilot
-:CopilotSignOut              " Sign out
-:CopilotStatus               " Show Copilot status
-:CopilotEnable / :CopilotDisable  " Toggle Copilot
-
-" Daemon
-:YacStart                    " Connect to daemon
-:YacStop                     " Disconnect
-:YacDaemonStop               " Stop daemon process
-:YacOpenLog                  " Open daemon log
-:YacDebugToggle              " Toggle debug logging
-:YacDebugStatus              " Show debug status
-:YacConnections              " Show active connections
+nmap <leader>a <Plug>(YacAlternate)
 ```
+
+## Command Palette
+
+Press `<C-p>` then type `:` to enter command mode. All features are available here — search by name:
+
+- **Definition**, **Declaration**, **Type Definition**, **Implementation**, **References**, **Peek Definition**
+- **Rename**, **Code Action**, **Format**, **Range Format**
+- **Hover**, **Signature Help**, **Document Symbols**
+- **Call Hierarchy Incoming/Outgoing**, **Type Hierarchy Supertypes/Subtypes**
+- **Inlay Hints Toggle**, **Diagnostic Virtual Text Toggle**, **Semantic Tokens**, **Semantic Tokens Toggle**
+- **Folding Range**, **Tree-sitter Symbols**, **Tree-sitter Highlights Toggle**
+- **File Picker**, **Grep**, **Theme Picker**, **Theme Default**
+- **Alternate File** — switch C/C++ header ↔ implementation
+- **Copilot Sign In/Out**, **Copilot Enable/Disable**, **Copilot Status**
+- **LSP Install/Update/Status**, **Restart**, **Stop Daemon**
+- **Status**, **Open Log**, **Connections**, **Debug Toggle**, **Debug Status**
+
+## Vim Commands
+
+Only three Vim commands — everything else via `<Plug>` mappings and `<C-p>` command palette:
+
+| Command | Description |
+|---------|-------------|
+| `:YacStart` | Connect to daemon (auto-starts if needed) |
+| `:YacStop` | Shutdown daemon and close all connections |
+| `:YacRestart` | Stop + Start |
 
 ## Configuration
 
 ```vim
-" Auto-start daemon (default: 1)
+" Daemon auto-start on file open (default: 1)
 let g:yac_auto_start = 1
 
-" Tree-sitter highlights (default: 1)
+" Tree-sitter syntax highlighting (default: 1)
 let g:yac_ts_highlights = 1
 
-" Auto-completion
+" LSP semantic tokens overlay (default: 1)
+let g:yac_semantic_tokens = 1
+
+" Automatic completion
 let g:yac_auto_complete = 1
 let g:yac_auto_complete_delay = 0
 let g:yac_auto_complete_min_chars = 1
+let g:yac_auto_complete_triggers = ['.', ':', '::']
 
-" Document highlight on CursorMoved (default: 1)
+" LSP server auto-install (0=prompt, 1=auto-install)
+let g:yac_auto_install_lsp = 1
+
+" Document symbol highlight on cursor move (default: 1)
 let g:yac_doc_highlight = 1
 
-" Copilot (default: enabled, requires copilot-language-server in PATH)
+" Copilot language server (default: enabled, requires copilot-language-server in PATH)
 let g:yac_copilot_auto = 1
 
-" Diagnostic virtual text (default: 1)
+" Diagnostic virtual text in sign column (default: 1)
 let g:yac_diagnostic_virtual_text = 1
+
+" Git diff markers (git signs) in sign column (default: 1)
+let g:yac_git_signs = 1
+
+" Auto-closing brackets and quotes (default: 1)
+let g:yac_auto_pairs = 1
 
 " Auto-reload files modified externally (default: 1)
 " Useful when multiple Vim clients edit the same workspace
 let g:yac_autoread = 1
+
+" Language plugin registry (auto-populated from g:yac_lang_plugins)
+" Each language plugin self-registers, or override as: {lang: '/path/to/plugin'}
+let g:yac_lang_plugins = {}
 ```
 
 ## Architecture
@@ -165,7 +174,8 @@ Vim ─── Unix socket (JSON-RPC) ──→ Zig daemon ──→ LSP servers
 - The daemon starts automatically and serves all Vim instances via a shared Unix socket
 - Multiple Vim clients share one daemon; LSP notifications are routed by workspace subscription
 - Languages are loaded on demand — the daemon starts with no languages
-- 13 languages are bundled in `languages/`; external plugins can register via `g:yac_lang_plugins`
+- 17 languages are bundled in `languages/`: bash, c, cpp, css, go, html, javascript, json, lua, markdown, markdown_inline, python, rust, toml, typescript, vim, yaml, zig
+- External language plugins can register via `g:yac_lang_plugins`
 
 For detailed architecture documentation (C4 diagrams, threading model, data flows), see [docs/architecture.md](docs/architecture.md).
 

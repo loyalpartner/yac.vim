@@ -31,6 +31,8 @@ pub const HandlerContext = struct {
     ts: ?*treesitter_mod.TreeSitter = null,
     /// Outgoing message queue — push OutMessages here instead of writing directly.
     out_queue: *queue_mod.OutQueue,
+    /// Set to true to request daemon shutdown.
+    shutdown_flag: *bool = undefined,
 };
 
 /// Result of dispatching a handler.

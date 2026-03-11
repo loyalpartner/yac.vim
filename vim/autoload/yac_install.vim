@@ -30,8 +30,8 @@ function! yac_install#on_spawn_failed(language, command) abort
     return
   endif
 
-  " Non-blocking toast — user can run :YacLspInstall to install
-  call yac#toast(printf('LSP "%s" not found. Run :YacLspInstall to install', a:command), {'highlight': 'WarningMsg'})
+  " Non-blocking toast — user can use command palette (Ctrl-P :) → LSP Install
+  call yac#toast(printf('LSP "%s" not found. Use command palette → LSP Install', a:command), {'highlight': 'WarningMsg'})
 endfunction
 
 " Execute the installation.
@@ -350,7 +350,7 @@ function! s:cleanup_failed(ctx) abort
   endif
 endfunction
 
-" :YacLspInstall [language]
+" Install LSP server for [language] (command palette: LSP Install)
 function! yac_install#install(...) abort
   let l:language = a:0 > 0 ? a:1 : ''
 
@@ -382,7 +382,7 @@ function! yac_install#install(...) abort
   call yac_install#run(l:language, l:info)
 endfunction
 
-" :YacLspUpdate [language]
+" Update LSP server for [language] (command palette: LSP Update)
 function! yac_install#update(...) abort
   let l:language = a:0 > 0 ? a:1 : ''
 
@@ -418,7 +418,7 @@ function! yac_install#update(...) abort
   call yac_install#run(l:language, l:info)
 endfunction
 
-" :YacLspStatus
+" Show LSP server status (command palette: LSP Status)
 function! yac_install#status() abort
   echo 'YAC LSP Server Status'
   echo '====================='
