@@ -649,9 +649,11 @@ test "captureToGroup markup captures" {
 }
 
 test "extractHighlights markdown" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const treesitter_mod = @import("treesitter.zig");
-    var ts_state = treesitter_mod.TreeSitter.init(allocator);
+    var ts_state = treesitter_mod.TreeSitter.init(std.testing.allocator);
     defer ts_state.deinit();
 
     ts_state.loadFromDir("languages/markdown");
@@ -683,11 +685,74 @@ test "extractHighlights markdown" {
     try std.testing.expect(groups.get("YacTsMarkupListMarker") != null);
 }
 
+test "extractHighlights bash: arguments and inline comments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const treesitter_mod = @import("treesitter.zig");
+    var ts_state = treesitter_mod.TreeSitter.init(std.testing.allocator);
+    defer ts_state.deinit();
+
+    ts_state.loadFromDir("languages/bash");
+    const lang_state = ts_state.findLangStateByName("bash") orelse
+        return error.BashNotLoaded;
+    const hl_query = lang_state.highlights orelse return error.NoHighlightsQuery;
+
+    // Bash with inline comments (same as CLAUDE.md code block)
+    const source = "zig build test                   # run Zig unit tests\n";
+    const tree = lang_state.parser.parseString(source, null) orelse return error.ParseFailed;
+    defer tree.destroy();
+
+    const result = try extractHighlights(allocator, hl_query, tree, source, 0, 1);
+    const obj = switch (result) {
+        .object => |o| o,
+        else => return error.UnexpectedResult,
+    };
+    const groups_val = obj.get("highlights") orelse return error.NoHighlights;
+    const groups = switch (groups_val) {
+        .object => |o| o,
+        else => return error.UnexpectedResult,
+    };
+
+    // Dump all groups for diagnosis
+    std.debug.print("\n=== Bash highlights for: zig build test ... # run Zig unit tests ===\n", .{});
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        std.debug.print("  {s}:", .{entry.key_ptr.*});
+        const arr = switch (entry.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
+        for (arr.items) |item| {
+            const sub = switch (item) {
+                .array => |a| a,
+                else => continue,
+            };
+            if (sub.items.len >= 4) {
+                std.debug.print(" [{},{},{},{}]", .{
+                    sub.items[0].integer,
+                    sub.items[1].integer,
+                    sub.items[2].integer,
+                    sub.items[3].integer,
+                });
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // "zig" should be YacTsFunction
+    try std.testing.expect(groups.get("YacTsFunction") != null);
+    // "build"/"test" should be YacTsVariableParameter, NOT YacTsString
+    try std.testing.expect(groups.get("YacTsVariableParameter") != null);
+    // Comment should be YacTsComment
+    try std.testing.expect(groups.get("YacTsComment") != null);
+}
+
 test "captureToGroup fallback to parent" {
     // "keyword.directive" not in map, but "keyword" is → fallback
     try std.testing.expectEqualStrings("YacTsKeyword", captureToGroup("keyword.directive").?);
-    // "function.special" → "function"
-    try std.testing.expectEqualStrings("YacTsFunction", captureToGroup("function.special").?);
+    // "function.special" → exact match in map → YacTsFunctionMacro
+    try std.testing.expectEqualStrings("YacTsFunctionMacro", captureToGroup("function.special").?);
     // "totally.unknown" → "totally" not in map → null
     try std.testing.expect(captureToGroup("totally.unknown") == null);
     // Multi-level fallback: "keyword.control.flow.return" → "keyword.control" → YacTsKeywordConditional

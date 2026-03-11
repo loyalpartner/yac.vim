@@ -70,4 +70,5 @@ test {
     _ = @import("lsp/lsp.zig");
     _ = @import("picker.zig");
     _ = @import("treesitter/treesitter.zig");
+    _ = @import("treesitter/highlights.zig");
 }
