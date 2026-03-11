@@ -174,6 +174,17 @@ pub fn simplePatternMatch(pattern: []const u8, text: []const u8) bool {
         return isLeadingUnderscoreUpperCase(text);
     } else if (std.mem.eql(u8, pattern, "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$")) {
         return isGoBuiltin(text);
+    } else if (std.mem.eql(u8, pattern, "^-")) {
+        // Bash flags: -f, --verbose, -Doptimize=ReleaseFast
+        return std.mem.startsWith(u8, text, "-");
+    } else if (std.mem.eql(u8, pattern, "^#![ \\t]*/")) {
+        // Shebang: #!/bin/bash, #! /usr/bin/env bash
+        if (!std.mem.startsWith(u8, text, "#!")) return false;
+        for (text[2..]) |c| {
+            if (c == '/') return true;
+            if (c != ' ' and c != '\t') return false;
+        }
+        return false;
     }
     // Unknown pattern — conservative: reject to prevent silent priority override.
     // A permissive `return true` here caused @constant.builtin to override @function
@@ -299,6 +310,25 @@ test "simplePatternMatch — Go builtins" {
     try std.testing.expect(simplePatternMatch(pat, "recover"));
     try std.testing.expect(!simplePatternMatch(pat, "foo"));
     try std.testing.expect(!simplePatternMatch(pat, "appendx"));
+}
+
+test "simplePatternMatch — bash flags (^-)" {
+    const pat = "^-";
+    try std.testing.expect(simplePatternMatch(pat, "-f"));
+    try std.testing.expect(simplePatternMatch(pat, "--verbose"));
+    try std.testing.expect(simplePatternMatch(pat, "-Doptimize=ReleaseFast"));
+    try std.testing.expect(!simplePatternMatch(pat, "build"));
+    try std.testing.expect(!simplePatternMatch(pat, "test"));
+    try std.testing.expect(!simplePatternMatch(pat, ""));
+}
+
+test "simplePatternMatch — shebang (^#!)" {
+    const pat = "^#![ \\t]*/";
+    try std.testing.expect(simplePatternMatch(pat, "#!/bin/bash"));
+    try std.testing.expect(simplePatternMatch(pat, "#! /usr/bin/env bash"));
+    try std.testing.expect(!simplePatternMatch(pat, "# regular comment"));
+    try std.testing.expect(!simplePatternMatch(pat, "#!not-a-path"));
+    try std.testing.expect(!simplePatternMatch(pat, ""));
 }
 
 test "simplePatternMatch — unknown patterns return false (conservative)" {

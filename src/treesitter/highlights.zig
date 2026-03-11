@@ -698,8 +698,8 @@ test "extractHighlights bash: arguments and inline comments" {
         return error.BashNotLoaded;
     const hl_query = lang_state.highlights orelse return error.NoHighlightsQuery;
 
-    // Bash with inline comments (same as CLAUDE.md code block)
-    const source = "zig build test                   # run Zig unit tests\n";
+    // Bash with flags and inline comments
+    const source = "zig build -Doptimize=ReleaseFast # run Zig unit tests\n";
     const tree = lang_state.parser.parseString(source, null) orelse return error.ParseFailed;
     defer tree.destroy();
 
@@ -714,36 +714,12 @@ test "extractHighlights bash: arguments and inline comments" {
         else => return error.UnexpectedResult,
     };
 
-    // Dump all groups for diagnosis
-    std.debug.print("\n=== Bash highlights for: zig build test ... # run Zig unit tests ===\n", .{});
-    var it = groups.iterator();
-    while (it.next()) |entry| {
-        std.debug.print("  {s}:", .{entry.key_ptr.*});
-        const arr = switch (entry.value_ptr.*) {
-            .array => |a| a,
-            else => continue,
-        };
-        for (arr.items) |item| {
-            const sub = switch (item) {
-                .array => |a| a,
-                else => continue,
-            };
-            if (sub.items.len >= 4) {
-                std.debug.print(" [{},{},{},{}]", .{
-                    sub.items[0].integer,
-                    sub.items[1].integer,
-                    sub.items[2].integer,
-                    sub.items[3].integer,
-                });
-            }
-        }
-        std.debug.print("\n", .{});
-    }
-
     // "zig" should be YacTsFunction
     try std.testing.expect(groups.get("YacTsFunction") != null);
-    // "build"/"test" should be YacTsVariableParameter, NOT YacTsString
+    // "build" should be YacTsVariableParameter
     try std.testing.expect(groups.get("YacTsVariableParameter") != null);
+    // "-Doptimize=ReleaseFast" should be YacTsConstant (^- flag pattern)
+    try std.testing.expect(groups.get("YacTsConstant") != null);
     // Comment should be YacTsComment
     try std.testing.expect(groups.get("YacTsComment") != null);
 }
