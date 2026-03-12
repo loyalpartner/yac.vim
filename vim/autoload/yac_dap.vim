@@ -194,7 +194,7 @@ endfunction
 
 " Called when adapter sends 'initialized' event.
 " This is the signal to send breakpoints and configurationDone.
-function! yac#dap_on_initialized(...) abort
+function! yac_dap#on_initialized(...) abort
   let s:dap_state = 'configured'
 
   " Send all breakpoints to adapter
@@ -208,7 +208,7 @@ function! yac#dap_on_initialized(...) abort
 endfunction
 
 " Called when program stops (breakpoint, step, exception).
-function! yac#dap_on_stopped(...) abort
+function! yac_dap#on_stopped(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let s:dap_state = 'stopped'
 
@@ -223,27 +223,27 @@ function! yac#dap_on_stopped(...) abort
 endfunction
 
 " Called when program continues.
-function! yac#dap_on_continued(...) abort
+function! yac_dap#on_continued(...) abort
   let s:dap_state = 'running'
   call s:clear_current_line_sign()
   call s:update_status()
 endfunction
 
 " Called when debug session terminates.
-function! yac#dap_on_terminated(...) abort
+function! yac_dap#on_terminated(...) abort
   call s:cleanup_session()
   echo '[yac] Debug session ended'
 endfunction
 
 " Called when debuggee process exits.
-function! yac#dap_on_exited(...) abort
+function! yac_dap#on_exited(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let exit_code = get(body, 'exitCode', -1)
   echo printf('[yac] Process exited with code %d', exit_code)
 endfunction
 
 " Called with program output.
-function! yac#dap_on_output(...) abort
+function! yac_dap#on_output(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let category = get(body, 'category', 'console')
   let output = get(body, 'output', '')
@@ -253,7 +253,7 @@ function! yac#dap_on_output(...) abort
 endfunction
 
 " Called with stack trace response.
-function! yac#dap_on_stackTrace(...) abort
+function! yac_dap#on_stackTrace(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let s:stack_frames = get(body, 'stackFrames', [])
 
@@ -272,7 +272,7 @@ function! yac#dap_on_stackTrace(...) abort
 endfunction
 
 " Called with scopes response.
-function! yac#dap_on_scopes(...) abort
+function! yac_dap#on_scopes(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let scopes = get(body, 'scopes', [])
 
@@ -296,14 +296,14 @@ function! yac#dap_on_scopes(...) abort
 endfunction
 
 " Called with variables response.
-function! yac#dap_on_variables(...) abort
+function! yac_dap#on_variables(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let variables = get(body, 'variables', [])
   call s:show_variables_popup(variables)
 endfunction
 
 " Called with evaluate response.
-function! yac#dap_on_evaluate(...) abort
+function! yac_dap#on_evaluate(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let result = get(body, 'result', '')
   let var_type = get(body, 'type', '')
@@ -313,12 +313,12 @@ function! yac#dap_on_evaluate(...) abort
 endfunction
 
 " Called when breakpoint status changes.
-function! yac#dap_on_breakpoint(...) abort
+function! yac_dap#on_breakpoint(...) abort
   " Could update breakpoint verification status (verified vs pending)
 endfunction
 
 " Called on thread events.
-function! yac#dap_on_thread(...) abort
+function! yac_dap#on_thread(...) abort
   " Thread started/exited — could update thread list
 endfunction
 

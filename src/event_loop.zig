@@ -806,7 +806,7 @@ pub const EventLoop = struct {
                 std.mem.eql(u8, response.command, "evaluate"))
             {
                 // Send response body to Vim as an async call
-                const func = std.fmt.allocPrint(alloc, "yac#dap_on_{s}", .{response.command}) catch return;
+                const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;
                 self.sendDapCallbackToAllClients(alloc, func, response.body);
             }
         } else {
@@ -822,23 +822,23 @@ pub const EventLoop = struct {
 
         if (std.mem.eql(u8, event.event, "initialized")) {
             // Adapter is ready — Vim should send breakpoints + configurationDone
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_initialized", .null);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_stopped", event.body);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);
         } else if (std.mem.eql(u8, event.event, "continued")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_continued", .null);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_continued", .null);
         } else if (std.mem.eql(u8, event.event, "terminated")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_terminated", .null);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_terminated", .null);
             self.cleanupDapSession();
         } else if (std.mem.eql(u8, event.event, "exited")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_exited", event.body);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_exited", event.body);
         } else if (std.mem.eql(u8, event.event, "output")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_output", event.body);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_output", event.body);
         } else if (std.mem.eql(u8, event.event, "breakpoint")) {
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_breakpoint", event.body);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_breakpoint", event.body);
         } else if (std.mem.eql(u8, event.event, "thread")) {
             // Thread started/exited — update thread list if needed
-            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_thread", event.body);
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_thread", event.body);
         }
     }
 
