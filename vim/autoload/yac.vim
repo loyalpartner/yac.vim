@@ -954,6 +954,18 @@ function! yac#clear_diagnostic_virtual_text() abort
 endfunction
 
 " ============================================================================
+" ============================================================================
+" Public request/notify API — used by autoload modules (yac_dap, etc.)
+" ============================================================================
+
+function! yac#send_request(method, params, callback) abort
+  call s:request(a:method, a:params, a:callback)
+endfunction
+
+function! yac#send_notify(method, params) abort
+  call s:notify(a:method, a:params)
+endfunction
+
 " DAP — forwarding stubs (implementation in yac_dap.vim)
 " ============================================================================
 

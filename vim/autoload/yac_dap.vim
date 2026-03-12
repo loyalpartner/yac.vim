@@ -50,7 +50,7 @@ function! yac_dap#start(...) abort
     endfor
   endfor
 
-  call yac#request('dap_start', extend({
+  call yac#send_notify('dap_start', extend({
         \ 'file': file,
         \ 'program': get(config, 'program', file),
         \ 'breakpoints': bp_list,
@@ -99,38 +99,38 @@ endfunction
 " Continue execution.
 function! yac_dap#continue() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_continue', {})
+  call yac#send_notify('dap_continue', {})
 endfunction
 
 " Step over (next line).
 function! yac_dap#next() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_next', {})
+  call yac#send_notify('dap_next', {})
 endfunction
 
 " Step into function.
 function! yac_dap#step_in() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_step_in', {})
+  call yac#send_notify('dap_step_in', {})
 endfunction
 
 " Step out of function.
 function! yac_dap#step_out() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_step_out', {})
+  call yac#send_notify('dap_step_out', {})
 endfunction
 
 " Terminate debug session.
 function! yac_dap#terminate() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_terminate', {})
+  call yac#send_notify('dap_terminate', {})
   call s:cleanup_session()
 endfunction
 
 " Show stack trace.
 function! yac_dap#stack_trace() abort
   if !s:dap_active | call s:not_active() | return | endif
-  call yac#request('dap_stack_trace', {})
+  call yac#send_notify('dap_stack_trace', {})
 endfunction
 
 " Show variables for current frame.
@@ -141,14 +141,14 @@ function! yac_dap#variables() abort
     return
   endif
   let frame_id = s:stack_frames[0].id
-  call yac#request('dap_scopes', {'frame_id': frame_id})
+  call yac#send_notify('dap_scopes', {'frame_id': frame_id})
 endfunction
 
 " Evaluate expression (in REPL context).
 function! yac_dap#evaluate(expr) abort
   if !s:dap_active | call s:not_active() | return | endif
   let frame_id = !empty(s:stack_frames) ? s:stack_frames[0].id : v:null
-  call yac#request('dap_evaluate', {
+  call yac#send_notify('dap_evaluate', {
         \ 'expression': a:expr,
         \ 'frame_id': frame_id,
         \ 'context': 'repl',
@@ -216,7 +216,7 @@ function! yac_dap#on_stopped(...) abort
   let thread_id = get(body, 'threadId', 1)
 
   " Auto-request stack trace
-  call yac#request('dap_stack_trace', {'thread_id': thread_id})
+  call yac#send_notify('dap_stack_trace', {'thread_id': thread_id})
 
   call s:update_status()
   echo printf('[yac] Stopped: %s (thread %d)', reason, thread_id)
@@ -280,7 +280,7 @@ function! yac_dap#on_scopes(...) abort
   for scope in scopes
     if get(scope, 'presentationHint', '') ==# 'locals' ||
           \ get(scope, 'name', '') =~? 'local'
-      call yac#request('dap_variables', {
+      call yac#send_notify('dap_variables', {
             \ 'variables_ref': scope.variablesReference,
             \ })
       return
@@ -289,7 +289,7 @@ function! yac_dap#on_scopes(...) abort
 
   " Fallback: request first scope
   if !empty(scopes)
-    call yac#request('dap_variables', {
+    call yac#send_notify('dap_variables', {
           \ 'variables_ref': scopes[0].variablesReference,
           \ })
   endif
@@ -336,7 +336,7 @@ endfunction
 function! s:sync_breakpoints(file) abort
   let lines = get(s:breakpoints, a:file, [])
   let bp_list = map(copy(lines), {_, l -> {'line': l}})
-  call yac#request('dap_breakpoint', {
+  call yac#send_notify('dap_breakpoint', {
         \ 'file': a:file,
         \ 'breakpoints': bp_list,
         \ })
