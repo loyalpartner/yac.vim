@@ -125,8 +125,8 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, params: Value) !DispatchResul
     };
 
     const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-    const line: u32 = std.math.cast(u32, json.getInteger(obj, "line") orelse return .{ .empty = {} }) orelse return .{ .empty = {} };
-    const column: u32 = std.math.cast(u32, json.getInteger(obj, "column") orelse return .{ .empty = {} }) orelse return .{ .empty = {} };
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     // Ensure file is open in Copilot before requesting completions
     ensureCopilotDidOpen(ctx, client, file);

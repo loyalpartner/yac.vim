@@ -215,8 +215,8 @@ pub fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []co
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
@@ -239,8 +239,8 @@ pub fn sendCapabilityCheckedPositionRequest(ctx: *HandlerContext, params: Value,
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);

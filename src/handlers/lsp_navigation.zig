@@ -35,8 +35,8 @@ pub fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     // Build references params (includes context.includeDeclaration)
     var lsp_params_obj = switch (try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column)) {

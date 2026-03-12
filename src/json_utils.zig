@@ -32,6 +32,20 @@ pub fn getUnsigned(obj: ObjectMap, key: []const u8) ?u64 {
     };
 }
 
+/// Get a u32 value from a JSON object by key.
+/// Returns null if the key is missing, the value is not an integer,
+/// the value is negative, or the value exceeds u32 max.
+/// This is the safe alternative to @intCast(getInteger(...)) which can
+/// wraparound on negative values in ReleaseFast mode.
+pub fn getU32(obj: ObjectMap, key: []const u8) ?u32 {
+    const val = obj.get(key) orelse return null;
+    const i = switch (val) {
+        .integer => |n| n,
+        else => return null,
+    };
+    return std.math.cast(u32, i);
+}
+
 /// Get an object value from a JSON object by key.
 pub fn getObject(obj: ObjectMap, key: []const u8) ?ObjectMap {
     const val = obj.get(key) orelse return null;
@@ -167,4 +181,52 @@ test "buildObjectMap" {
     try map.put("extra", jsonInteger(99));
     try std.testing.expectEqualStrings("val", getString(map, "key").?);
     try std.testing.expectEqual(@as(i64, 99), getInteger(map, "extra").?);
+}
+
+test "getU32: returns value for valid non-negative integer" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = 42 });
+    try std.testing.expectEqual(@as(u32, 42), getU32(obj, "line").?);
+}
+
+test "getU32: returns null for negative integer (no wraparound)" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = -1 });
+    try std.testing.expect(getU32(obj, "line") == null);
+}
+
+test "getU32: returns null for large negative integer" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = std.math.minInt(i64) });
+    try std.testing.expect(getU32(obj, "line") == null);
+}
+
+test "getU32: returns null for value exceeding u32 max" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = @as(i64, std.math.maxInt(u32)) + 1 });
+    try std.testing.expect(getU32(obj, "line") == null);
+}
+
+test "getU32: returns value for u32 max boundary" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = std.math.maxInt(u32) });
+    try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), getU32(obj, "line").?);
+}
+
+test "getU32: returns null for missing key" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try std.testing.expect(getU32(obj, "missing") == null);
+}
+
+test "getU32: returns zero for zero value" {
+    var obj = ObjectMap.init(std.testing.allocator);
+    defer obj.deinit();
+    try obj.put("line", .{ .integer = 0 });
+    try std.testing.expectEqual(@as(u32, 0), getU32(obj, "line").?);
 }

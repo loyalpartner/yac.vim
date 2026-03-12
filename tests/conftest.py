@@ -162,6 +162,12 @@ class VimRunner:
                     f.unlink()
             if shared is None:
                 shutil.rmtree(workspace, ignore_errors=True)
+            return SuiteResult(
+                suite=test_name,
+                failed=1,
+                duration=time.time() - start_time,
+                output=f"Test timed out after {timeout}s",
+            )
         except Exception as e:
             if slave_fd >= 0:
                 os.close(slave_fd)

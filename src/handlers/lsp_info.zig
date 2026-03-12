@@ -23,8 +23,8 @@ pub fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
@@ -61,8 +61,8 @@ pub fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
         else => return .{ .empty = {} },
     };
 
-    const start_line: u32 = @intCast(json.getInteger(obj, "start_line") orelse 0);
-    const end_line: u32 = @intCast(json.getInteger(obj, "end_line") orelse 100);
+    const start_line: u32 = json.getU32(obj, "start_line") orelse 0;
+    const end_line: u32 = json.getU32(obj, "end_line") orelse 100;
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri) },

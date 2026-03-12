@@ -133,13 +133,16 @@ pub const TreeSitter = struct {
     /// All languages (WASM-loaded), keyed by language name.
     dynamic_langs: std.StringHashMap(DynamicLang),
     buffers: std.StringHashMap(BufferTree),
-    wasm_loader: WasmLoader,
+    /// Optional: null when WasmLoader.init failed. Daemon runs without
+    /// tree-sitter support rather than crashing (graceful degradation).
+    wasm_loader: ?WasmLoader,
     /// Known language directories for lazy loading.
     lang_dirs: std.ArrayListUnmanaged([]const u8),
 
     pub fn init(allocator: Allocator) TreeSitter {
-        const wasm_loader = WasmLoader.init(allocator) catch |e| {
-            std.debug.panic("TreeSitter: WASM loader init failed (fatal): {any}", .{e});
+        const wasm_loader: ?WasmLoader = WasmLoader.init(allocator) catch |e| blk: {
+            log.err("TreeSitter: WASM loader init failed, running without tree-sitter: {any}", .{e});
+            break :blk null;
         };
 
         var self = TreeSitter{
@@ -151,7 +154,10 @@ pub const TreeSitter = struct {
         };
 
         // Load languages from user config (~/.config/yac/languages.json)
-        self.loadUserLanguages();
+        // Only attempt if WASM is available.
+        if (self.wasm_loader != null) {
+            self.loadUserLanguages();
+        }
 
         return self;
     }
@@ -175,7 +181,7 @@ pub const TreeSitter = struct {
         for (self.lang_dirs.items) |dir| self.allocator.free(dir);
         self.lang_dirs.deinit(self.allocator);
 
-        self.wasm_loader.deinit();
+        if (self.wasm_loader) |*wl| wl.deinit();
     }
 
     /// Load languages from user configuration (~/.config/yac/languages.json).
@@ -244,18 +250,25 @@ pub const TreeSitter = struct {
     }
 
     /// Register a single language from its config.
+    /// No-op when wasm_loader is null (WASM unavailable).
     fn registerLangConfig(self: *TreeSitter, config: lang_config.LangConfig) void {
+        // Cannot load WASM grammars without the loader.
+        var wl = if (self.wasm_loader) |*w| w else {
+            log.debug("TreeSitter: skipping '{s}' (WASM loader unavailable)", .{config.name});
+            return;
+        };
+
         if (self.dynamic_langs.get(config.name) != null) {
             log.debug("TreeSitter: skipping '{s}' (already registered)", .{config.name});
             return;
         }
 
-        const language = self.wasm_loader.loadGrammar(self.allocator, config.name, config.grammar_path) catch |e| {
+        const language = wl.loadGrammar(self.allocator, config.name, config.grammar_path) catch |e| {
             log.warn("TreeSitter: failed to load WASM grammar '{s}': {any}", .{ config.name, e });
             return;
         };
 
-        var state = LangState.initForDynamic(language, config.name, self.allocator, config.query_dir, &self.wasm_loader) catch |e| {
+        var state = LangState.initForDynamic(language, config.name, self.allocator, config.query_dir, wl) catch |e| {
             log.warn("TreeSitter: failed to init lang '{s}': {any}", .{ config.name, e });
             return;
         };
@@ -404,4 +417,52 @@ pub const TreeSitter = struct {
         const buf = self.buffers.get(file_path) orelse return null;
         return buf.source;
     }
+
+    /// Returns true if the WASM loader is available (i.e. WasmLoader.init succeeded).
+    /// When false, all language loading operations silently skip — the daemon runs
+    /// without tree-sitter support rather than crashing.
+    pub fn isWasmAvailable(self: *const TreeSitter) bool {
+        return self.wasm_loader != null;
+    }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "TreeSitter.wasm_loader is optional (not panic on init failure)" {
+    // Verify at compile time that wasm_loader field is ?WasmLoader (optional).
+    // This ensures the panic branch has been replaced with graceful degradation.
+    const WasmLoaderOpt = ?WasmLoader;
+    // The field declaration must match ?WasmLoader — compile-time check.
+    comptime {
+        const fields = @typeInfo(TreeSitter).@"struct".fields;
+        var ok = false;
+        for (fields) |f| {
+            if (std.mem.eql(u8, f.name, "wasm_loader")) {
+                ok = (f.type == WasmLoaderOpt);
+                break;
+            }
+        }
+        if (!ok) @compileError("TreeSitter.wasm_loader must be ?WasmLoader");
+    }
+    // Runtime assertion: silence "unused variable" warning
+    try std.testing.expect(true);
+}
+
+test "TreeSitter.isWasmAvailable reflects wasm_loader state" {
+    var ts_state = TreeSitter{
+        .allocator = std.testing.allocator,
+        .dynamic_langs = std.StringHashMap(DynamicLang).init(std.testing.allocator),
+        .buffers = std.StringHashMap(BufferTree).init(std.testing.allocator),
+        .wasm_loader = null,
+        .lang_dirs = .{},
+    };
+    defer {
+        ts_state.dynamic_langs.deinit();
+        ts_state.buffers.deinit();
+        ts_state.lang_dirs.deinit(std.testing.allocator);
+        // wasm_loader is null, no deinit needed
+    }
+    try std.testing.expect(!ts_state.isWasmAvailable());
+}

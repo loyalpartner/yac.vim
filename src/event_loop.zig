@@ -22,6 +22,17 @@ const PendingVimExpr = requests_mod.PendingVimExpr;
 
 const IDLE_TIMEOUT_NS: i128 = 60 * std.time.ns_per_s;
 
+/// Maximum bytes buffered per client before the connection is dropped.
+/// Guards against a malicious or buggy client causing OOM by sending
+/// data without newlines (the message framing delimiter).
+pub const MAX_CLIENT_BUF: usize = 4 * 1024 * 1024; // 4 MB
+
+/// Returns true if adding `incoming` bytes to a buffer of `current_len`
+/// would exceed MAX_CLIENT_BUF.
+pub fn clientBufWouldOverflow(current_len: usize, incoming: usize) bool {
+    return current_len + incoming > MAX_CLIENT_BUF;
+}
+
 pub const EventLoop = struct {
     allocator: Allocator,
     lsp: lsp_mod.Lsp,
@@ -169,6 +180,13 @@ pub const EventLoop = struct {
                 };
                 if (n == 0) {
                     log.info("client {d} EOF, disconnecting", .{cid});
+                    self.removeClient(cid);
+                    continue;
+                }
+                // Guard against OOM: disconnect clients that send unbounded data
+                // without newline framing (e.g. malicious or buggy clients).
+                if (clientBufWouldOverflow(client.read_buf.items.len, n)) {
+                    log.err("client {d} read_buf overflow ({d} bytes), disconnecting", .{ cid, client.read_buf.items.len + n });
                     self.removeClient(cid);
                     continue;
                 }
@@ -975,3 +993,26 @@ pub const EventLoop = struct {
         }
     }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "MAX_CLIENT_BUF is 4MB" {
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), MAX_CLIENT_BUF);
+}
+
+test "clientBufWouldOverflow: returns true when adding data exceeds limit" {
+    // Simulate a buffer already at the limit
+    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF, 1));
+    // One byte under the limit is fine
+    try std.testing.expect(!clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 1));
+    // Exactly at limit is an overflow
+    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 2));
+    // Empty buffer with zero bytes is fine
+    try std.testing.expect(!clientBufWouldOverflow(0, 0));
+    // Empty buffer with max bytes is fine (at boundary)
+    try std.testing.expect(!clientBufWouldOverflow(0, MAX_CLIENT_BUF));
+    // Empty buffer with max+1 bytes overflows
+    try std.testing.expect(clientBufWouldOverflow(0, MAX_CLIENT_BUF + 1));
+}

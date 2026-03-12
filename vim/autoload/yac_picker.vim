@@ -32,6 +32,7 @@ let s:picker = {
   \ 'saved_theme_file': v:null,
   \ 'line_lengths': [],
   \ 'saved_eventignore': '',
+  \ 'saved_ctrl_p': v:null,
   \ }
 let s:picker_history = []
 let s:picker_history_idx = -1
@@ -460,7 +461,6 @@ function! s:picker_create_ui(opts) abort
     \ 'highlight': 'YacPickerInput',
     \ 'title': title,
     \ 'filter': function('s:picker_input_filter'),
-    \ 'mapping': 0,
     \ 'zindex': 100,
     \ })
 
@@ -500,6 +500,18 @@ function! s:picker_create_ui(opts) abort
   " (observed with multiple markdown buffers open).
   let s:picker.saved_eventignore = &eventignore
   set eventignore+=CursorMoved,CursorMovedI,WinScrolled
+
+  " Save and remap <C-p> while picker is open.  Without this, <C-p> expands
+  " via the user's nmap to <Plug>(YacPicker) before reaching the popup
+  " filter, so the filter never sees char-16 (select-prev).
+  " We cannot use 'mapping:0' on the popup because its suppression lingers
+  " after popup_close(), blocking <expr> mappings (e.g. <Tab> for Copilot
+  " ghost text) for one event-loop cycle.  Overriding the single
+  " problematic key with a no-remap binding of the same raw key ensures
+  " the filter receives the raw character without further expansion.
+  let l:saved = maparg('<C-p>', 'n', 0, 1)
+  let s:picker.saved_ctrl_p = empty(l:saved) ? v:null : l:saved
+  nnoremap <C-p> <C-p>
 
   let s:picker.cursor_col = 0
   call s:picker_set_text('')
@@ -1160,6 +1172,14 @@ endfunction
 function! s:picker_close_popups() abort
   " Restore eventignore before closing popups so subsequent BufEnter etc. fire
   let &eventignore = s:picker.saved_eventignore
+
+  " Restore <C-p> normal-mode mapping that was disabled while picker was open
+  if s:picker.saved_ctrl_p isnot v:null
+    call mapset('n', 0, s:picker.saved_ctrl_p)
+    let s:picker.saved_ctrl_p = v:null
+  else
+    silent! nunmap <C-p>
+  endif
   if s:picker.timer_id != -1
     call timer_stop(s:picker.timer_id)
     let s:picker.timer_id = -1

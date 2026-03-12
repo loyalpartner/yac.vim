@@ -19,8 +19,8 @@ pub fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
     const new_name = json.getString(obj, "new_name") orelse return .{ .empty = {} };
 
     var lsp_params_obj = switch (try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column)) {
@@ -46,8 +46,8 @@ pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
         else => return .{ .empty = {} },
     };
 
-    const line: u32 = @intCast(json.getInteger(obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri) },
@@ -114,10 +114,10 @@ pub fn handleRangeFormatting(ctx: *HandlerContext, params: Value) !DispatchResul
         else => return .{ .empty = {} },
     };
 
-    const start_line: u32 = @intCast(json.getInteger(obj, "start_line") orelse 0);
-    const start_col: u32 = @intCast(json.getInteger(obj, "start_column") orelse 0);
-    const end_line: u32 = @intCast(json.getInteger(obj, "end_line") orelse 0);
-    const end_col: u32 = @intCast(json.getInteger(obj, "end_column") orelse 0);
+    const start_line: u32 = json.getU32(obj, "start_line") orelse 0;
+    const start_col: u32 = json.getU32(obj, "start_column") orelse 0;
+    const end_line: u32 = json.getU32(obj, "end_line") orelse 0;
+    const end_col: u32 = json.getU32(obj, "end_column") orelse 0;
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri) },

@@ -94,7 +94,7 @@ pub fn handleTsNavigate(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     const target = json.getString(tc.obj, "target") orelse "function";
     const direction = json.getString(tc.obj, "direction") orelse "next";
-    const line: u32 = @intCast(json.getInteger(tc.obj, "line") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
 
     const result = try ts_mod.navigate.navigate(
         ctx.allocator,
@@ -113,8 +113,8 @@ pub fn handleTsTextObjects(ctx: *HandlerContext, params: Value) !DispatchResult 
     const to_query = tc.lang_state.textobjects orelse return .{ .empty = {} };
 
     const target = json.getString(tc.obj, "target") orelse return .{ .empty = {} };
-    const line: u32 = @intCast(json.getInteger(tc.obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(tc.obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(tc.obj, "column") orelse return .{ .empty = {} };
 
     const result = try ts_mod.textobjects.findTextObject(
         ctx.allocator,
@@ -147,8 +147,8 @@ pub fn handleTsHighlights(ctx: *HandlerContext, params: Value) !DispatchResult {
     const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
     const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
     const hl_query = tc.lang_state.highlights orelse return .{ .empty = {} };
-    const start_line: u32 = @intCast(json.getInteger(tc.obj, "start_line") orelse 0);
-    const end_line: u32 = @intCast(json.getInteger(tc.obj, "end_line") orelse 100);
+    const start_line: u32 = json.getU32(tc.obj, "start_line") orelse 0;
+    const end_line: u32 = json.getU32(tc.obj, "end_line") orelse 100;
 
     var result = try ts_mod.highlights.extractHighlights(
         ctx.allocator,
@@ -192,8 +192,8 @@ pub fn handleDocumentHighlight(ctx: *HandlerContext, params: Value) !DispatchRes
     const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
     const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
 
-    const line: u32 = @intCast(json.getInteger(tc.obj, "line") orelse return .{ .empty = {} });
-    const column: u32 = @intCast(json.getInteger(tc.obj, "column") orelse return .{ .empty = {} });
+    const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
+    const column: u32 = json.getU32(tc.obj, "column") orelse return .{ .empty = {} };
 
     const result = try ts_mod.document_highlight.extractDocumentHighlights(
         ctx.allocator,

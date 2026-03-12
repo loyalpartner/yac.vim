@@ -16,6 +16,20 @@ fn getSocketPath(buf: []u8) []const u8 {
     return "/tmp/yacd.sock";
 }
 
+/// Restrict a Unix socket file to owner-only access (0o600).
+/// This prevents other local users from connecting to the daemon socket.
+/// Call this immediately after listen() has created the socket file.
+pub fn restrictSocketPermissions(socket_path: []const u8) void {
+    const file = std.fs.openFileAbsolute(socket_path, .{}) catch |e| {
+        log.err("Failed to open socket for chmod {s}: {any}", .{ socket_path, e });
+        return;
+    };
+    defer file.close();
+    file.chmod(0o600) catch |e| {
+        log.err("Failed to set socket permissions on {s}: {any}", .{ socket_path, e });
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -41,6 +55,9 @@ pub fn main() !void {
 
     const address = try std.net.Address.initUnix(socket_path);
     const server = try address.listen(.{ .reuse_address = true });
+
+    // Restrict socket to owner-only (0o600) so other local users cannot connect.
+    restrictSocketPermissions(socket_path);
 
     var event_loop = EventLoop.init(allocator, server);
     defer event_loop.deinit();
@@ -71,4 +88,35 @@ test {
     _ = @import("picker.zig");
     _ = @import("treesitter/treesitter.zig");
     _ = @import("treesitter/highlights.zig");
+}
+
+test "restrictSocketPermissions: socket file is set to 0o600" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get absolute path of tmp dir
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const sock_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.sock", .{tmp_path});
+    defer std.testing.allocator.free(sock_path);
+
+    // Create a dummy regular file to simulate the socket file on disk
+    const f = try std.fs.createFileAbsolute(sock_path, .{});
+    f.close();
+
+    // Apply permission restriction
+    restrictSocketPermissions(sock_path);
+
+    // Verify permissions: open, stat, check mode
+    const check = try std.fs.openFileAbsolute(sock_path, .{});
+    defer check.close();
+    const stat = try check.stat();
+    // mask to rwxrwxrwx bits; expect owner-rw only
+    const perms = stat.mode & 0o777;
+    try std.testing.expectEqual(@as(std.fs.File.Mode, 0o600), perms);
+}
+
+test "restrictSocketPermissions: non-existent path is handled gracefully" {
+    // Must not panic — only log an error
+    restrictSocketPermissions("/tmp/nonexistent_yacd_socket_test_xyz_does_not_exist.sock");
 }
