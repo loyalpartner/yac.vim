@@ -218,11 +218,6 @@ function! yac_picker#open_references(locations) abort
   call s:picker_filter_references('')
 endfunction
 
-" Return MRU list (for daemon requests needing recent_files)
-function! yac_picker#mru_list() abort
-  return s:picker_mru
-endfunction
-
 " ============================================================================
 " Internal helpers
 " ============================================================================

@@ -182,11 +182,6 @@ function! yac_copilot#prepare_accept() abort
   return l:text
 endfunction
 
-" Debug helper: expose ghost items for testing
-function! yac_copilot#get_ghost_items() abort
-  return s:ghost_items
-endfunction
-
 " <expr> mapping: accept ghost text via deferred setline().
 " Can't call setline() inside <expr> (E565), so defer to timer.
 " Returns '' to suppress the keypress; timer inserts text immediately after.

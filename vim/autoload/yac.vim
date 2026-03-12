@@ -429,10 +429,6 @@ function! yac#type_hierarchy_subtypes() abort
   call yac_lsp#type_hierarchy_subtypes()
 endfunction
 
-function! yac#execute_command(...) abort
-  call call('yac_lsp#execute_command', a:000)
-endfunction
-
 function! yac#did_save(...) abort
   let text_content = a:0 > 0 ? a:1 : v:null
   call s:notify('did_save', {
@@ -473,10 +469,6 @@ endfunction
 
 function! yac#auto_complete_trigger() abort
   call yac_completion#auto_complete_trigger()
-endfunction
-
-function! yac#delayed_complete(timer_id) abort
-  call yac_completion#delayed_complete(a:timer_id)
 endfunction
 
 function! yac#will_save(...) abort
@@ -959,26 +951,6 @@ endfunction
 
 function! yac#clear_diagnostic_virtual_text() abort
   call yac_diagnostics#clear_virtual_text()
-endfunction
-
-" === 文件搜索功能 ===
-
-" 查找工作区根目录
-function! s:find_workspace_root() abort
-  let project_files = ['Cargo.toml', 'package.json', '.git', 'pyproject.toml', 'go.mod', 'pom.xml', 'build.gradle', 'Makefile', 'CMakeLists.txt']
-  let current_dir = expand('%:p:h')
-
-  while current_dir != '/' && current_dir != ''
-    for project_file in project_files
-      if filereadable(current_dir . '/' . project_file) || isdirectory(current_dir . '/' . project_file)
-        return current_dir
-      endif
-    endfor
-    let current_dir = fnamemodify(current_dir, ':h')
-  endwhile
-
-  " 如果没有找到项目根，使用当前目录
-  return expand('%:p:h')
 endfunction
 
 " ============================================================================

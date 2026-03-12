@@ -42,33 +42,14 @@ endfunction
 
 " Apply a theme by name (looks up in built-in and user themes)
 function! yac_config#apply_theme(name) abort
-  " Already applied?
   if get(g:, 'yac_project_theme', '') ==# a:name
     return
   endif
   let g:yac_project_theme = a:name
-  " Try to load via yac_theme if available
-  try
-    call yac_theme#apply_by_name(a:name)
-  catch
-  endtry
-endfunction
-
-" Auto-detect project root and load .yac.json for the current buffer.
-function! yac_config#auto_load() abort
-  let l:file = expand('%:p')
-  if empty(l:file)
-    return
-  endif
-
-  " Walk up to find .yac.json
-  let l:dir = fnamemodify(l:file, ':h')
-  while l:dir !=# '/' && l:dir !=# ''
-    if filereadable(l:dir . '/.yac.json')
-      let l:config = yac_config#load(l:dir)
-      call yac_config#apply(l:config)
+  for item in yac_theme#list()
+    if item.label ==# a:name
+      call yac_theme#apply_file(item.file)
       return
     endif
-    let l:dir = fnamemodify(l:dir, ':h')
-  endwhile
+  endfor
 endfunction

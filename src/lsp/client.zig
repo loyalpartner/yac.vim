@@ -22,9 +22,7 @@ pub const LspState = enum {
     shutdown,
 };
 
-pub const PendingRequest = struct {
-    method: []const u8,
-};
+pub const PendingRequest = struct {};
 
 pub const LspClient = struct {
     allocator: Allocator,
@@ -91,7 +89,7 @@ pub const LspClient = struct {
         const stdin = self.child.stdin orelse return error.StdinClosed;
         try stdin.writeAll(framed);
 
-        try self.pending_requests.put(id, .{ .method = method });
+        try self.pending_requests.put(id, .{});
 
         log.debug("LSP request [{d}]: {s}", .{ id, method });
         return id;

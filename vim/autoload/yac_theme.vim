@@ -208,6 +208,3 @@ function! yac_theme#saved_file() abort
   return get(readfile(cfg), 0, '')
 endfunction
 
-function! yac_theme#current() abort
-  return s:current_theme
-endfunction
