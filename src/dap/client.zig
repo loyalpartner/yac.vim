@@ -18,6 +18,22 @@ pub const DapState = enum {
 
 pub const PendingDapRequest = struct {};
 
+/// Saved launch params for deferred launch after initialized event.
+pub const LaunchParams = struct {
+    program: []const u8,
+    stop_on_entry: bool,
+    breakpoint_files: std.StringArrayHashMap(std.ArrayList(u32)),
+
+    pub fn deinit(self: *LaunchParams) void {
+        const allocator = self.breakpoint_files.allocator;
+        var it = self.breakpoint_files.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        self.breakpoint_files.deinit();
+    }
+};
+
 pub const DapClient = struct {
     allocator: Allocator,
     child: std.process.Child,
@@ -28,10 +44,11 @@ pub const DapClient = struct {
     capabilities: Value,
     active_thread_id: ?u32,
     read_buf: [4096]u8,
+    launch_params: ?LaunchParams,
 
-    pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8) !*DapClient {
-        // Resolve command from PATH or ~/.local/share/yac/bin/
-        const resolved = resolveCommand(command);
+    pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, workspace_dir: ?[]const u8) !*DapClient {
+        // Resolve command: check venv, ~/.local/share/yac/bin/, then PATH
+        const resolved = resolveCommand(allocator, command, workspace_dir) orelse command;
 
         var child_args: std.ArrayList([]const u8) = .{};
         defer child_args.deinit(allocator);
@@ -56,16 +73,84 @@ pub const DapClient = struct {
             .capabilities = .null,
             .active_thread_id = null,
             .read_buf = undefined,
+            .launch_params = null,
         };
         return client;
     }
 
-    fn resolveCommand(command: []const u8) []const u8 {
-        // TODO: check ~/.local/share/yac/bin/ like LSP does
-        return command;
+    /// Resolve a DAP adapter command.
+    /// Priority: project venv → managed packages → ~/.local/share/yac/bin/ → original (PATH).
+    fn resolveCommand(allocator: Allocator, command: []const u8, file_dir: ?[]const u8) ?[]const u8 {
+        const is_python = std.mem.eql(u8, command, "python3") or std.mem.eql(u8, command, "python");
+
+        if (is_python) {
+            // 1. Project venv
+            if (file_dir) |start_dir| {
+                if (findVenvPython(allocator, start_dir)) |path| return path;
+            }
+
+            // 2. Managed debugpy venv (~/.local/share/yac/packages/debugpy/venv/bin/python3)
+            const home = std.posix.getenv("HOME") orelse return null;
+            const managed = std.fmt.allocPrint(allocator, "{s}/.local/share/yac/packages/debugpy/venv/bin/python3", .{home}) catch return null;
+            std.fs.accessAbsolute(managed, .{}) catch {
+                allocator.free(managed);
+                // Fall through to bin/ check
+                return checkManagedBin(allocator, home, command);
+            };
+            log.info("DAP: resolved {s} → {s} (managed debugpy)", .{ command, managed });
+            return managed;
+        }
+
+        // 3. ~/.local/share/yac/bin/{command}
+        if (std.mem.indexOfScalar(u8, command, '/') == null) {
+            const home = std.posix.getenv("HOME") orelse return null;
+            return checkManagedBin(allocator, home, command);
+        }
+
+        return null;
+    }
+
+    fn checkManagedBin(allocator: Allocator, home: []const u8, command: []const u8) ?[]const u8 {
+        const path = std.fmt.allocPrint(allocator, "{s}/.local/share/yac/bin/{s}", .{ home, command }) catch return null;
+        std.fs.accessAbsolute(path, .{}) catch {
+            allocator.free(path);
+            return null;
+        };
+        log.info("DAP: resolved {s} → {s}", .{ command, path });
+        return path;
+    }
+
+    /// Walk up from start_dir looking for .venv/bin/python3 or venv/bin/python3.
+    fn findVenvPython(allocator: Allocator, start_dir: []const u8) ?[]const u8 {
+        var dir: []const u8 = start_dir;
+        const venv_dirs = [_][]const u8{ ".venv", "venv" };
+        const python_names = [_][]const u8{ "python3", "python" };
+
+        // Walk up at most 10 levels
+        var depth: u32 = 0;
+        while (depth < 10) : (depth += 1) {
+            for (&venv_dirs) |venv| {
+                for (&python_names) |pyname| {
+                    const path = std.fmt.allocPrint(allocator, "{s}/{s}/bin/{s}", .{ dir, venv, pyname }) catch continue;
+                    std.fs.accessAbsolute(path, .{}) catch {
+                        allocator.free(path);
+                        continue;
+                    };
+                    log.info("DAP: found venv python → {s}", .{path});
+                    return path;
+                }
+            }
+
+            // Go up one level
+            const parent = std.fs.path.dirname(dir) orelse break;
+            if (std.mem.eql(u8, parent, dir)) break; // reached root
+            dir = parent;
+        }
+        return null;
     }
 
     pub fn deinit(self: *DapClient) void {
+        if (self.launch_params) |*lp| lp.deinit();
         self.framer.deinit();
         self.pending_requests.deinit();
         _ = self.child.kill() catch {};
@@ -271,6 +356,58 @@ pub const DapClient = struct {
         return self.sendRequest("terminate", .null);
     }
 
+    /// Execute the launch sequence after receiving 'initialized' event:
+    /// configurationDone → launch. Breakpoints are deferred — they will be
+    /// sent by sendDeferredBreakpoints() after the launch response arrives
+    /// (some adapters like debugpy reject setBreakpoints before launch).
+    pub fn executeLaunchSequence(self: *DapClient) !void {
+        const lp = self.launch_params orelse {
+            log.err("DAP: executeLaunchSequence called without launch_params", .{});
+            return;
+        };
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        // 1. configurationDone
+        _ = self.sendConfigurationDone() catch |e| {
+            log.err("DAP: configurationDone failed: {any}", .{e});
+        };
+
+        // 2. launch (breakpoints sent after launch response)
+        _ = self.sendLaunch(alloc, lp.program, null, lp.stop_on_entry) catch |e| {
+            log.err("DAP: launch failed: {any}", .{e});
+        };
+
+        self.state = .running;
+        log.info("DAP: launch sequence sent for {s}", .{lp.program});
+    }
+
+    /// Send breakpoints that were saved from the initial dap_start request.
+    /// Called after the launch response arrives so the adapter has a debug target.
+    pub fn sendDeferredBreakpoints(self: *DapClient) void {
+        const lp = self.launch_params orelse return;
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var it = lp.breakpoint_files.iterator();
+        while (it.next()) |entry| {
+            _ = self.sendSetBreakpoints(alloc, entry.key_ptr.*, entry.value_ptr.items) catch |e| {
+                log.err("DAP: deferred setBreakpoints failed for {s}: {any}", .{ entry.key_ptr.*, e });
+            };
+        }
+
+        log.info("DAP: sent deferred breakpoints ({d} files)", .{lp.breakpoint_files.count()});
+
+        // Clean up saved params
+        var params = self.launch_params.?;
+        params.deinit();
+        self.launch_params = null;
+    }
+
     /// Read and parse DAP messages from adapter stdout.
     /// Returns parsed messages. Caller owns the returned list.
     pub fn readMessages(self: *DapClient) !std.ArrayList(protocol.DapMessage) {
@@ -281,14 +418,22 @@ pub const DapClient = struct {
         };
         if (n == 0) return error.AdapterClosed;
 
+        log.debug("DAP raw read: {d} bytes", .{n});
+
         var raw_messages = try self.framer.feedData(self.allocator, self.read_buf[0..n]);
         defer {
             for (raw_messages.items) |msg| self.allocator.free(msg);
             raw_messages.deinit(self.allocator);
         }
 
+        log.debug("DAP framer produced {d} message(s)", .{raw_messages.items.len});
+
         var messages: std.ArrayList(protocol.DapMessage) = .{};
         for (raw_messages.items) |raw| {
+            // Log first 200 chars of each raw message
+            const preview_len = @min(raw.len, 200);
+            log.debug("DAP raw msg: {s}", .{raw[0..preview_len]});
+
             const parsed = std.json.parseFromSlice(Value, self.allocator, raw, .{}) catch {
                 log.debug("DAP: failed to parse JSON message", .{});
                 continue;
@@ -298,7 +443,13 @@ pub const DapClient = struct {
                 else => continue,
             };
             if (protocol.parseDapMessage(obj)) |msg| {
+                switch (msg) {
+                    .response => |r| log.debug("DAP parsed: response cmd={s} success={}", .{ r.command, r.success }),
+                    .event => |e| log.debug("DAP parsed: event={s}", .{e.event}),
+                }
                 try messages.append(self.allocator, msg);
+            } else {
+                log.debug("DAP: parseDapMessage returned null", .{});
             }
         }
         return messages;

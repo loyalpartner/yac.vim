@@ -242,10 +242,33 @@ pub const EventLoop = struct {
 
     fn handleDapFd(self: *EventLoop, poll_fds: []std.posix.pollfd, dap_fd_index: ?usize) void {
         const dfi = dap_fd_index orelse return;
-        if (poll_fds[dfi].revents & std.posix.POLL.IN != 0) {
+        const revents = poll_fds[dfi].revents;
+
+        // Always process available data first, even when HUP is also set.
+        // The adapter may send initialize response + initialized event then close.
+        if (revents & std.posix.POLL.IN != 0) {
             self.processDapOutput();
         }
-        if (poll_fds[dfi].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+
+        if (revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+            // Drain any remaining data before cleanup
+            if (self.dap_client) |client| {
+                while (true) {
+                    var msgs = client.readMessages() catch break;
+                    defer msgs.deinit(self.allocator);
+                    if (msgs.items.len == 0) break;
+
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    const alloc = arena.allocator();
+                    for (msgs.items) |msg| {
+                        switch (msg) {
+                            .response => |r| self.handleDapResponse(alloc, client, r),
+                            .event => |e| self.handleDapEvent(alloc, client, e),
+                        }
+                    }
+                }
+            }
             log.info("DAP adapter disconnected (HUP/ERR)", .{});
             self.cleanupDapSession();
         }
@@ -798,6 +821,12 @@ pub const EventLoop = struct {
             return;
         }
 
+        // After launch succeeds, send deferred breakpoints
+        if (std.mem.eql(u8, response.command, "launch") and response.success) {
+            log.info("DAP: launch succeeded, sending deferred breakpoints", .{});
+            client.sendDeferredBreakpoints();
+        }
+
         // Route response data to all connected Vim clients
         if (response.success) {
             if (std.mem.eql(u8, response.command, "stackTrace") or
@@ -821,7 +850,11 @@ pub const EventLoop = struct {
         client.handleEvent(event);
 
         if (std.mem.eql(u8, event.event, "initialized")) {
-            // Adapter is ready — Vim should send breakpoints + configurationDone
+            // Adapter is ready — execute the deferred launch sequence
+            // (setBreakpoints → configurationDone → launch)
+            client.executeLaunchSequence() catch |e| {
+                log.err("DAP launch sequence failed: {any}", .{e});
+            };
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);

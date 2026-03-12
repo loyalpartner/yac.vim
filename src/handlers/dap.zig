@@ -37,6 +37,12 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
         return .{ .empty = {} };
     };
 
+    // User can override adapter command
+    const command = json.getString(obj, "adapter_command") orelse config.command;
+
+    // Derive workspace dir from file path (parent directory)
+    const workspace_dir = std.fs.path.dirname(file);
+
     // If there's an existing session, terminate it first
     if (ctx.dap_client.*) |old| {
         _ = old.sendDisconnect(true) catch 0;
@@ -45,28 +51,62 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     }
 
     // Spawn the debug adapter
-    const client = DapClient.spawn(ctx.gpa_allocator, config.command, config.args) catch |e| {
-        log.err("Failed to spawn DAP adapter '{s}': {any}", .{ config.command, e });
-        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{config.command}) catch return .{ .empty = {} };
+    const client = DapClient.spawn(ctx.gpa_allocator, command, config.args, workspace_dir) catch |e| {
+        log.err("Failed to spawn DAP adapter '{s}': {any}", .{ command, e });
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{command}) catch return .{ .empty = {} };
         try common.vimEx(ctx, msg);
         return .{ .empty = {} };
     };
 
     ctx.dap_client.* = client;
 
-    // Send initialize request
+    // Save launch params for deferred execution after 'initialized' event
+    const program = json.getString(obj, "program") orelse file;
+    const stop_on_entry = if (obj.get("stop_on_entry")) |v| switch (v) {
+        .bool => |b| b,
+        .integer => |i| i != 0,
+        else => false,
+    } else false;
+
+    // Parse breakpoints: [{file, line}, ...]
+    var bp_files = std.StringArrayHashMap(std.ArrayList(u32)).init(ctx.gpa_allocator);
+    if (obj.get("breakpoints")) |bp_val| {
+        if (bp_val == .array) {
+            for (bp_val.array.items) |item| {
+                const bp_obj = switch (item) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const bp_file = json.getString(bp_obj, "file") orelse continue;
+                const bp_line = json.getU32(bp_obj, "line") orelse continue;
+
+                // Dupe the file key into gpa since it outlives the arena
+                const gop = bp_files.getOrPut(bp_file) catch continue;
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .{};
+                }
+                gop.value_ptr.append(ctx.gpa_allocator, bp_line) catch continue;
+            }
+        }
+    }
+
+    client.launch_params = .{
+        .program = program,
+        .stop_on_entry = stop_on_entry,
+        .breakpoint_files = bp_files,
+    };
+
+    // Send initialize request — the rest happens when 'initialized' event arrives
     _ = client.initialize() catch |e| {
         log.err("DAP initialize failed: {any}", .{e});
         return .{ .empty = {} };
     };
 
-    // Store launch params for after initialization completes
-    // (handled in processDapOutput when we get the initialized event)
     log.info("DAP session starting for {s} ({s})", .{ file, config.language_id });
 
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "status", json.jsonString("initializing") },
-        .{ "adapter", json.jsonString(config.command) },
+        .{ "adapter", json.jsonString(command) },
     }) };
 }
 
