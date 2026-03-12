@@ -1,0 +1,269 @@
+const std = @import("std");
+const json = @import("../json_utils.zig");
+const common = @import("common.zig");
+const log = @import("../log.zig");
+const dap_client = @import("../dap/client.zig");
+const dap_config = @import("../dap/config.zig");
+const dap_protocol = @import("../dap/protocol.zig");
+const lsp_registry = @import("../lsp/registry.zig");
+
+const Value = json.Value;
+const HandlerContext = common.HandlerContext;
+const DispatchResult = common.DispatchResult;
+const DapClient = dap_client.DapClient;
+
+// ============================================================================
+// DAP Handlers
+//
+// Each handler corresponds to a Vim-side yac#dap_* function.
+// The active DAP client is stored in the EventLoop (single session).
+// ============================================================================
+
+/// Start a debug session: spawn adapter, initialize, set breakpoints, launch.
+///
+/// Params: {file, program?, args?, breakpoints?: [{file, line}], stop_on_entry?}
+pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    // Determine adapter from file extension
+    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const ext = std.fs.path.extension(file);
+    const config = dap_config.findByExtension(ext) orelse {
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] No debug adapter for {s} files')", .{ext}) catch return .{ .empty = {} };
+        try common.vimEx(ctx, msg);
+        return .{ .empty = {} };
+    };
+
+    // If there's an existing session, terminate it first
+    if (ctx.dap_client.*) |old| {
+        _ = old.sendDisconnect(true) catch 0;
+        old.deinit();
+        ctx.dap_client.* = null;
+    }
+
+    // Spawn the debug adapter
+    const client = DapClient.spawn(ctx.gpa_allocator, config.command, config.args) catch |e| {
+        log.err("Failed to spawn DAP adapter '{s}': {any}", .{ config.command, e });
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{config.command}) catch return .{ .empty = {} };
+        try common.vimEx(ctx, msg);
+        return .{ .empty = {} };
+    };
+
+    ctx.dap_client.* = client;
+
+    // Send initialize request
+    _ = client.initialize() catch |e| {
+        log.err("DAP initialize failed: {any}", .{e});
+        return .{ .empty = {} };
+    };
+
+    // Store launch params for after initialization completes
+    // (handled in processDapOutput when we get the initialized event)
+    log.info("DAP session starting for {s} ({s})", .{ file, config.language_id });
+
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "status", json.jsonString("initializing") },
+        .{ "adapter", json.jsonString(config.command) },
+    }) };
+}
+
+/// Set breakpoints for a file.
+/// Params: {file, breakpoints: [{line}]}
+pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const bp_array = switch (obj.get("breakpoints") orelse return .{ .empty = {} }) {
+        .array => |a| a,
+        else => return .{ .empty = {} },
+    };
+
+    // Extract line numbers
+    var lines: std.ArrayList(u32) = .{};
+    defer lines.deinit(ctx.allocator);
+    for (bp_array.items) |item| {
+        const bp_obj = switch (item) {
+            .object => |o| o,
+            else => continue,
+        };
+        if (json.getU32(bp_obj, "line")) |line| {
+            try lines.append(ctx.allocator, line);
+        }
+    }
+
+    _ = try client.sendSetBreakpoints(ctx.allocator, file, lines.items);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Continue execution.
+/// Params: {thread_id?}
+pub fn handleDapContinue(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
+    _ = try client.sendContinue(thread_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Step over (next line).
+pub fn handleDapNext(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
+    _ = try client.sendNext(thread_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Step into function.
+pub fn handleDapStepIn(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
+    _ = try client.sendStepIn(thread_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Step out of function.
+pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
+    _ = try client.sendStepOut(thread_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Get stack trace for the stopped thread.
+pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
+    _ = try client.sendStackTrace(thread_id);
+    // Response will come asynchronously via processDapOutput
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "pending", .{ .bool = true } },
+    }) };
+}
+
+/// Get scopes for a stack frame.
+pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const frame_id = json.getU32(obj, "frame_id") orelse return .{ .empty = {} };
+    _ = try client.sendScopes(frame_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "pending", .{ .bool = true } },
+    }) };
+}
+
+/// Get variables for a scope reference.
+pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const variables_ref = json.getU32(obj, "variables_ref") orelse return .{ .empty = {} };
+    _ = try client.sendVariables(variables_ref);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "pending", .{ .bool = true } },
+    }) };
+}
+
+/// Evaluate an expression in the debug context.
+pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
+    const frame_id = json.getU32(obj, "frame_id");
+    const eval_context = json.getString(obj, "context") orelse "repl";
+    _ = try client.sendEvaluate(ctx.allocator, expression, frame_id, eval_context);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "pending", .{ .bool = true } },
+    }) };
+}
+
+/// Terminate the debug session.
+pub fn handleDapTerminate(ctx: *HandlerContext, _: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    _ = client.sendTerminate() catch {};
+    _ = client.sendDisconnect(true) catch {};
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Get current DAP session status.
+pub fn handleDapStatus(ctx: *HandlerContext, _: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse {
+        return .{ .data = try json.buildObject(ctx.allocator, .{
+            .{ "active", .{ .bool = false } },
+        }) };
+    };
+
+    const state_str: []const u8 = switch (client.state) {
+        .uninitialized => "uninitialized",
+        .initializing => "initializing",
+        .configured => "configured",
+        .running => "running",
+        .stopped => "stopped",
+        .terminated => "terminated",
+    };
+
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "active", .{ .bool = true } },
+        .{ "state", json.jsonString(state_str) },
+        .{ "thread_id", if (client.active_thread_id) |tid| json.jsonInteger(@intCast(tid)) else .null },
+    }) };
+}
+
+fn notRunning(ctx: *HandlerContext) !DispatchResult {
+    const msg = "call yac#toast('[yac] No active debug session')";
+    try common.vimEx(ctx, msg);
+    return .{ .empty = {} };
+}

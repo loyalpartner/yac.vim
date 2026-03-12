@@ -52,6 +52,18 @@ command! YacStart   call yac#start()
 command! YacStop    call yac#stop()
 command! YacRestart call yac#restart()
 
+" DAP commands
+command! YacDapStart            call yac#dap_start()
+command! YacDapToggleBreakpoint call yac#dap_toggle_breakpoint()
+command! YacDapClearBreakpoints call yac#dap_clear_breakpoints()
+command! YacDapContinue         call yac#dap_continue()
+command! YacDapNext             call yac#dap_next()
+command! YacDapStepIn           call yac#dap_step_in()
+command! YacDapStepOut          call yac#dap_step_out()
+command! YacDapTerminate        call yac#dap_terminate()
+command! YacDapRepl             call yac#dap_repl()
+command! -nargs=1 YacDapEvaluate call yac#dap_evaluate(<q-args>)
+
 " Everything else via <Plug> mappings and <C-p> command palette
 
 " <Plug> mappings — LSP navigation
@@ -94,6 +106,19 @@ nnoremap <silent> <Plug>(YacGrep)   :call yac#picker_open({'initial': '/'})<CR>
 " <Plug> mappings — alternate file (C/C++ header ↔ implementation)
 nnoremap <silent> <Plug>(YacAlternate) :call yac_alternate#switch()<CR>
 
+" <Plug> mappings — DAP debugging
+nnoremap <silent> <Plug>(YacDapStart)            :call yac#dap_start()<CR>
+nnoremap <silent> <Plug>(YacDapToggleBreakpoint) :call yac#dap_toggle_breakpoint()<CR>
+nnoremap <silent> <Plug>(YacDapClearBreakpoints) :call yac#dap_clear_breakpoints()<CR>
+nnoremap <silent> <Plug>(YacDapContinue)         :call yac#dap_continue()<CR>
+nnoremap <silent> <Plug>(YacDapNext)             :call yac#dap_next()<CR>
+nnoremap <silent> <Plug>(YacDapStepIn)           :call yac#dap_step_in()<CR>
+nnoremap <silent> <Plug>(YacDapStepOut)          :call yac#dap_step_out()<CR>
+nnoremap <silent> <Plug>(YacDapTerminate)        :call yac#dap_terminate()<CR>
+nnoremap <silent> <Plug>(YacDapStackTrace)       :call yac#dap_stack_trace()<CR>
+nnoremap <silent> <Plug>(YacDapVariables)        :call yac#dap_variables()<CR>
+nnoremap <silent> <Plug>(YacDapRepl)             :call yac#dap_repl()<CR>
+
 " <Plug> mappings — tree-sitter navigation
 nnoremap <silent> <Plug>(YacTsNextFunction) :call yac#ts_next_function()<CR>
 nnoremap <silent> <Plug>(YacTsPrevFunction) :call yac#ts_prev_function()<CR>
@@ -129,6 +154,17 @@ nmap <silent> <leader>ih <Plug>(YacInlayHintsToggle)
 nmap <silent> <leader>dt <Plug>(YacDiagnosticVTToggle)
 nmap <silent> <C-p>      <Plug>(YacPicker)
 nmap <silent> g/         <Plug>(YacGrep)
+
+" DAP debugging defaults
+nmap <silent> <leader>db <Plug>(YacDapToggleBreakpoint)
+nmap <silent> <leader>dc <Plug>(YacDapContinue)
+nmap <silent> <leader>dn <Plug>(YacDapNext)
+nmap <silent> <leader>di <Plug>(YacDapStepIn)
+nmap <silent> <leader>do <Plug>(YacDapStepOut)
+nmap <silent> <leader>ds <Plug>(YacDapStart)
+nmap <silent> <leader>dx <Plug>(YacDapTerminate)
+nmap <silent> <leader>dv <Plug>(YacDapVariables)
+nmap <silent> <leader>dr <Plug>(YacDapRepl)
 
 " Tree-sitter navigation defaults
 nmap <silent> ]f <Plug>(YacTsNextFunction)

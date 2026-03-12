@@ -12,6 +12,8 @@ const lsp_mod = @import("lsp/lsp.zig");
 const progress_mod = @import("progress.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const queue_mod = @import("queue.zig");
+const dap_client_mod = @import("dap/client.zig");
+const dap_protocol = @import("dap/protocol.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -48,6 +50,8 @@ pub const EventLoop = struct {
     picker: picker_mod.Picker,
     /// Tree-sitter state
     ts: treesitter_mod.TreeSitter,
+    /// Active DAP debug session (single session at a time).
+    dap_client: ?*dap_client_mod.DapClient = null,
     /// Set by "exit" handler to trigger clean shutdown.
     shutdown_requested: bool = false,
     /// Protects all shared mutable state when accessed from worker threads.
@@ -77,6 +81,7 @@ pub const EventLoop = struct {
     }
 
     pub fn deinit(self: *EventLoop) void {
+        if (self.dap_client) |dc| dc.deinit();
         self.lsp.deinit();
         self.requests.deinit();
         self.clients.deinit();
@@ -89,6 +94,7 @@ pub const EventLoop = struct {
     const PollSetup = struct {
         client_count: usize,
         picker_fd_index: ?usize,
+        dap_fd_index: ?usize,
     };
 
     fn buildPollFds(
@@ -120,7 +126,18 @@ pub const EventLoop = struct {
         // fd[N+1..N+M] = LSP server stdouts
         try self.lsp.registry.collectFds(poll_fds, poll_client_keys);
 
-        // fd[N+M+1] = picker fd/find stdout (if active)
+        // fd[N+M+1] = DAP adapter stdout (if active)
+        const dap_fd_index: ?usize = if (self.dap_client) |dc| idx: {
+            const idx = poll_fds.items.len;
+            try poll_fds.append(self.allocator, .{
+                .fd = dc.stdoutFd(),
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            });
+            break :idx idx;
+        } else null;
+
+        // fd[N+M+2] = picker fd/find stdout (if active)
         const picker_fd_index: ?usize = if (self.picker.getStdoutFd()) |fd| idx: {
             const idx = poll_fds.items.len;
             try poll_fds.append(self.allocator, .{
@@ -131,7 +148,7 @@ pub const EventLoop = struct {
             break :idx idx;
         } else null;
 
-        return .{ .client_count = client_count, .picker_fd_index = picker_fd_index };
+        return .{ .client_count = client_count, .picker_fd_index = picker_fd_index, .dap_fd_index = dap_fd_index };
     }
 
     fn pollTimeout(self: *EventLoop) i32 {
@@ -220,6 +237,17 @@ pub const EventLoop = struct {
                 const dead_key = poll_client_keys[i];
                 self.handleLspDeath(dead_key);
             }
+        }
+    }
+
+    fn handleDapFd(self: *EventLoop, poll_fds: []std.posix.pollfd, dap_fd_index: ?usize) void {
+        const dfi = dap_fd_index orelse return;
+        if (poll_fds[dfi].revents & std.posix.POLL.IN != 0) {
+            self.processDapOutput();
+        }
+        if (poll_fds[dfi].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+            log.info("DAP adapter disconnected (HUP/ERR)", .{});
+            self.cleanupDapSession();
         }
     }
 
@@ -323,6 +351,7 @@ pub const EventLoop = struct {
             self.handleListener(poll_fds.items);
             self.handleClientFds(poll_fds.items, poll_setup.client_count, client_id_order.items, buf[0..]);
             self.handleLspFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
+            self.handleDapFd(poll_fds.items, poll_setup.dap_fd_index);
             self.handlePickerFd(poll_fds.items, poll_setup.picker_fd_index);
             const should_exit = self.shutdown_requested;
             self.state_lock.unlock();
@@ -499,6 +528,7 @@ pub const EventLoop = struct {
             .client_stream = client_stream,
             .client_id = cid,
             .ts = &self.ts,
+            .dap_client = &self.dap_client,
             .out_queue = &self.out_queue,
             .shutdown_flag = &self.shutdown_requested,
         };
@@ -735,6 +765,123 @@ pub const EventLoop = struct {
     }
 
     /// Handle an LSP server that has died (HUP/ERR on its stdout fd).
+    // ====================================================================
+    // DAP output processing
+    // ====================================================================
+
+    fn processDapOutput(self: *EventLoop) void {
+        const client = self.dap_client orelse return;
+        var messages = client.readMessages() catch |e| {
+            log.debug("DAP readMessages error: {any}", .{e});
+            if (e == error.AdapterClosed) self.cleanupDapSession();
+            return;
+        };
+        defer messages.deinit(self.allocator);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        for (messages.items) |msg| {
+            switch (msg) {
+                .response => |r| self.handleDapResponse(alloc, client, r),
+                .event => |e| self.handleDapEvent(alloc, client, e),
+            }
+        }
+    }
+
+    fn handleDapResponse(self: *EventLoop, alloc: std.mem.Allocator, client: *dap_client_mod.DapClient, response: dap_protocol.DapResponse) void {
+        _ = client.pending_requests.fetchRemove(response.request_seq);
+
+        if (std.mem.eql(u8, response.command, "initialize")) {
+            client.handleInitializeResponse(response);
+            return;
+        }
+
+        // Route response data to all connected Vim clients
+        if (response.success) {
+            if (std.mem.eql(u8, response.command, "stackTrace") or
+                std.mem.eql(u8, response.command, "scopes") or
+                std.mem.eql(u8, response.command, "variables") or
+                std.mem.eql(u8, response.command, "evaluate"))
+            {
+                // Send response body to Vim as an async call
+                const func = std.fmt.allocPrint(alloc, "yac#dap_on_{s}", .{response.command}) catch return;
+                self.sendDapCallbackToAllClients(alloc, func, response.body);
+            }
+        } else {
+            const err_msg = response.message orelse "unknown error";
+            log.err("DAP {s} failed: {s}", .{ response.command, err_msg });
+            if (lsp_transform.formatToastCmd(alloc, std.fmt.allocPrint(alloc, "[yac] DAP error: {s}", .{err_msg}) catch return, "ErrorMsg")) |cmd|
+                self.sendVimExToAll(alloc, cmd);
+        }
+    }
+
+    fn handleDapEvent(self: *EventLoop, alloc: std.mem.Allocator, client: *dap_client_mod.DapClient, event: dap_protocol.DapEvent) void {
+        client.handleEvent(event);
+
+        if (std.mem.eql(u8, event.event, "initialized")) {
+            // Adapter is ready — Vim should send breakpoints + configurationDone
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_initialized", .null);
+        } else if (std.mem.eql(u8, event.event, "stopped")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_stopped", event.body);
+        } else if (std.mem.eql(u8, event.event, "continued")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_continued", .null);
+        } else if (std.mem.eql(u8, event.event, "terminated")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_terminated", .null);
+            self.cleanupDapSession();
+        } else if (std.mem.eql(u8, event.event, "exited")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_exited", event.body);
+        } else if (std.mem.eql(u8, event.event, "output")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_output", event.body);
+        } else if (std.mem.eql(u8, event.event, "breakpoint")) {
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_breakpoint", event.body);
+        } else if (std.mem.eql(u8, event.event, "thread")) {
+            // Thread started/exited — update thread list if needed
+            self.sendDapCallbackToAllClients(alloc, "yac#dap_on_thread", event.body);
+        }
+    }
+
+    fn sendDapCallbackToAllClients(self: *EventLoop, alloc: std.mem.Allocator, func: []const u8, args: Value) void {
+        var cit = self.clients.iterator();
+        while (cit.next()) |entry| {
+            const cid = entry.key_ptr.*;
+            const stream = entry.value_ptr.*.stream;
+
+            var arg_array = std.json.Array.init(alloc);
+            arg_array.append(args) catch continue;
+
+            const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{
+                .func = func,
+                .args = .{ .array = arg_array },
+            } }) catch continue;
+
+            const msg = self.allocator.alloc(u8, encoded.len + 1) catch continue;
+            @memcpy(msg[0..encoded.len], encoded);
+            msg[encoded.len] = '\n';
+            if (!self.out_queue.push(.{ .stream = stream, .bytes = msg })) {
+                self.allocator.free(msg);
+                log.warn("DAP callback: out queue full for client {d}", .{cid});
+            }
+        }
+    }
+
+    fn sendVimExToAll(self: *EventLoop, alloc: std.mem.Allocator, command: []const u8) void {
+        var cit = self.clients.iterator();
+        while (cit.next()) |entry| {
+            const cid = entry.key_ptr.*;
+            self.sendVimExTo(cid, alloc, command);
+        }
+    }
+
+    fn cleanupDapSession(self: *EventLoop) void {
+        if (self.dap_client) |dc| {
+            dc.deinit();
+            self.dap_client = null;
+            log.info("DAP session cleaned up", .{});
+        }
+    }
+
     fn handleLspDeath(self: *EventLoop, client_key: []const u8) void {
         log.err("LSP server died: {s}", .{client_key});
 

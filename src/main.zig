@@ -90,6 +90,9 @@ test {
     _ = @import("treesitter/highlights.zig");
     _ = @import("treesitter/document_highlight.zig");
     _ = @import("lsp/transform.zig");
+    _ = @import("dap/protocol.zig");
+    _ = @import("dap/config.zig");
+    _ = @import("dap/client.zig");
 }
 
 test "restrictSocketPermissions: socket file is set to 0o600" {

@@ -954,6 +954,62 @@ function! yac#clear_diagnostic_virtual_text() abort
 endfunction
 
 " ============================================================================
+" DAP — forwarding stubs (implementation in yac_dap.vim)
+" ============================================================================
+
+function! yac#dap_start(...) abort
+  call call('yac_dap#start', a:000)
+endfunction
+
+function! yac#dap_toggle_breakpoint() abort
+  call yac_dap#toggle_breakpoint()
+endfunction
+
+function! yac#dap_clear_breakpoints() abort
+  call yac_dap#clear_breakpoints()
+endfunction
+
+function! yac#dap_continue() abort
+  call yac_dap#continue()
+endfunction
+
+function! yac#dap_next() abort
+  call yac_dap#next()
+endfunction
+
+function! yac#dap_step_in() abort
+  call yac_dap#step_in()
+endfunction
+
+function! yac#dap_step_out() abort
+  call yac_dap#step_out()
+endfunction
+
+function! yac#dap_terminate() abort
+  call yac_dap#terminate()
+endfunction
+
+function! yac#dap_stack_trace() abort
+  call yac_dap#stack_trace()
+endfunction
+
+function! yac#dap_variables() abort
+  call yac_dap#variables()
+endfunction
+
+function! yac#dap_evaluate(expr) abort
+  call yac_dap#evaluate(a:expr)
+endfunction
+
+function! yac#dap_repl() abort
+  call yac_dap#repl()
+endfunction
+
+function! yac#dap_statusline() abort
+  return yac_dap#statusline()
+endfunction
+
+" ============================================================================
 " Picker — forwarding stubs (implementation in yac_picker.vim)
 " ============================================================================
 
