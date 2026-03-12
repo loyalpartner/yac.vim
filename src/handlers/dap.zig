@@ -60,8 +60,10 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     ctx.dap_client.* = client;
 
-    // Save launch params for deferred execution after 'initialized' event
-    const program = json.getString(obj, "program") orelse file;
+    // Save launch params for deferred execution after 'initialized' event.
+    // Must dupe strings into gpa — the request arena is freed after this handler returns.
+    const program_raw = json.getString(obj, "program") orelse file;
+    const program = ctx.gpa_allocator.dupe(u8, program_raw) catch return .{ .empty = {} };
     const stop_on_entry = if (obj.get("stop_on_entry")) |v| switch (v) {
         .bool => |b| b,
         .integer => |i| i != 0,
@@ -77,13 +79,20 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
                     .object => |o| o,
                     else => continue,
                 };
-                const bp_file = json.getString(bp_obj, "file") orelse continue;
+                const bp_file_raw = json.getString(bp_obj, "file") orelse continue;
                 const bp_line = json.getU32(bp_obj, "line") orelse continue;
 
                 // Dupe the file key into gpa since it outlives the arena
-                const gop = bp_files.getOrPut(bp_file) catch continue;
+                const bp_file = ctx.gpa_allocator.dupe(u8, bp_file_raw) catch continue;
+                const gop = bp_files.getOrPut(bp_file) catch {
+                    ctx.gpa_allocator.free(bp_file);
+                    continue;
+                };
                 if (!gop.found_existing) {
                     gop.value_ptr.* = .{};
+                } else {
+                    // Key already existed; free the dupe
+                    ctx.gpa_allocator.free(bp_file);
                 }
                 gop.value_ptr.append(ctx.gpa_allocator, bp_line) catch continue;
             }

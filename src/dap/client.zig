@@ -26,8 +26,12 @@ pub const LaunchParams = struct {
 
     pub fn deinit(self: *LaunchParams) void {
         const allocator = self.breakpoint_files.allocator;
+        // Free GPA-duped program string
+        allocator.free(self.program);
+        // Free GPA-duped breakpoint file keys + line arrays
         var it = self.breakpoint_files.iterator();
         while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(allocator);
         }
         self.breakpoint_files.deinit();
@@ -211,11 +215,20 @@ pub const DapClient = struct {
 
     /// Send a launch request.
     pub fn sendLaunch(self: *DapClient, allocator: Allocator, program: []const u8, args_list: ?Value, stop_on_entry: bool) !u32 {
-        const arguments = try json.buildObject(allocator, .{
-            .{ "program", json.jsonString(program) },
-            .{ "stopOnEntry", .{ .bool = stop_on_entry } },
-            .{ "args", args_list orelse .null },
-        });
+        // Only include "args" when provided — debugpy rejects null args
+        const arguments = if (args_list) |al|
+            try json.buildObject(allocator, .{
+                .{ "program", json.jsonString(program) },
+                .{ "stopOnEntry", .{ .bool = stop_on_entry } },
+                .{ "console", json.jsonString("internalConsole") },
+                .{ "args", al },
+            })
+        else
+            try json.buildObject(allocator, .{
+                .{ "program", json.jsonString(program) },
+                .{ "stopOnEntry", .{ .bool = stop_on_entry } },
+                .{ "console", json.jsonString("internalConsole") },
+            });
         return self.sendRequest("launch", arguments);
     }
 
@@ -356,13 +369,13 @@ pub const DapClient = struct {
         return self.sendRequest("terminate", .null);
     }
 
-    /// Execute the launch sequence after receiving 'initialized' event:
-    /// configurationDone → launch. Breakpoints are deferred — they will be
-    /// sent by sendDeferredBreakpoints() after the launch response arrives
-    /// (some adapters like debugpy reject setBreakpoints before launch).
-    pub fn executeLaunchSequence(self: *DapClient) !void {
+    /// Send launch request immediately after initialize response.
+    /// debugpy (and some other adapters) require launch BEFORE they send
+    /// the 'initialized' event. Breakpoints + configurationDone are deferred
+    /// to sendDeferredConfiguration(), called when 'initialized' arrives.
+    pub fn sendLaunchAfterInit(self: *DapClient) void {
         const lp = self.launch_params orelse {
-            log.err("DAP: executeLaunchSequence called without launch_params", .{});
+            log.err("DAP: sendLaunchAfterInit called without launch_params", .{});
             return;
         };
 
@@ -370,37 +383,38 @@ pub const DapClient = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        // 1. configurationDone
-        _ = self.sendConfigurationDone() catch |e| {
-            log.err("DAP: configurationDone failed: {any}", .{e});
-        };
-
-        // 2. launch (breakpoints sent after launch response)
         _ = self.sendLaunch(alloc, lp.program, null, lp.stop_on_entry) catch |e| {
-            log.err("DAP: launch failed: {any}", .{e});
+            log.err("DAP: launch request failed: {any}", .{e});
+            return;
         };
 
-        self.state = .running;
-        log.info("DAP: launch sequence sent for {s}", .{lp.program});
+        log.info("DAP: launch request sent for {s}", .{lp.program});
     }
 
-    /// Send breakpoints that were saved from the initial dap_start request.
-    /// Called after the launch response arrives so the adapter has a debug target.
-    pub fn sendDeferredBreakpoints(self: *DapClient) void {
+    /// Send deferred configuration after 'initialized' event:
+    /// setBreakpoints for each file, then configurationDone.
+    /// The launch request was already sent in sendLaunchAfterInit().
+    pub fn sendDeferredConfiguration(self: *DapClient) void {
         const lp = self.launch_params orelse return;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
+        // 1. setBreakpoints for each file
         var it = lp.breakpoint_files.iterator();
         while (it.next()) |entry| {
             _ = self.sendSetBreakpoints(alloc, entry.key_ptr.*, entry.value_ptr.items) catch |e| {
-                log.err("DAP: deferred setBreakpoints failed for {s}: {any}", .{ entry.key_ptr.*, e });
+                log.err("DAP: setBreakpoints failed for {s}: {any}", .{ entry.key_ptr.*, e });
             };
         }
 
-        log.info("DAP: sent deferred breakpoints ({d} files)", .{lp.breakpoint_files.count()});
+        // 2. configurationDone
+        _ = self.sendConfigurationDone() catch |e| {
+            log.err("DAP: configurationDone failed: {any}", .{e});
+        };
+
+        log.info("DAP: configuration sent ({d} bp files)", .{lp.breakpoint_files.count()});
 
         // Clean up saved params
         var params = self.launch_params.?;

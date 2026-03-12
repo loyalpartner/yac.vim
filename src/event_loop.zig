@@ -818,13 +818,15 @@ pub const EventLoop = struct {
 
         if (std.mem.eql(u8, response.command, "initialize")) {
             client.handleInitializeResponse(response);
+            // debugpy requires launch BEFORE it sends 'initialized' event.
+            // Send launch immediately after initialize response.
+            client.sendLaunchAfterInit();
             return;
         }
 
-        // After launch succeeds, send deferred breakpoints
         if (std.mem.eql(u8, response.command, "launch") and response.success) {
-            log.info("DAP: launch succeeded, sending deferred breakpoints", .{});
-            client.sendDeferredBreakpoints();
+            client.state = .running;
+            log.info("DAP: launch succeeded", .{});
         }
 
         // Route response data to all connected Vim clients
@@ -850,11 +852,9 @@ pub const EventLoop = struct {
         client.handleEvent(event);
 
         if (std.mem.eql(u8, event.event, "initialized")) {
-            // Adapter is ready — execute the deferred launch sequence
-            // (setBreakpoints → configurationDone → launch)
-            client.executeLaunchSequence() catch |e| {
-                log.err("DAP launch sequence failed: {any}", .{e});
-            };
+            // Adapter is ready for configuration — send breakpoints + configurationDone.
+            // launch was already sent in handleDapResponse (after initialize).
+            client.sendDeferredConfiguration();
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);
