@@ -88,6 +88,8 @@ test {
     _ = @import("picker.zig");
     _ = @import("treesitter/treesitter.zig");
     _ = @import("treesitter/highlights.zig");
+    _ = @import("treesitter/document_highlight.zig");
+    _ = @import("lsp/transform.zig");
 }
 
 test "restrictSocketPermissions: socket file is set to 0o600" {
