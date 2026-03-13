@@ -27,6 +27,10 @@ let s:watch_expressions = []     " List of watch expressions
 let s:stack_popup_id = -1        " Current stack trace popup window ID
 let s:dap_mode = 0               " 1 when DAP mode (single-key shortcuts) is active
 let s:saved_maps = {}            " Saved normal mode mappings during DAP mode
+let s:panel_bufnr = -1           " Debug panel scratch buffer
+let s:panel_winid = -1           " Debug panel window ID
+let s:panel_data = {}            " Last panel data from daemon
+let s:panel_sections = {'variables': 1, 'frames': 1, 'watches': 1}  " Section collapsed state
 
 let s:data_dir = $HOME . '/.local/share/yac'
 
@@ -46,6 +50,9 @@ hi def link YacDapReplOutput        Normal
 hi def link YacDapReplError         ErrorMsg
 hi def link YacDapStatusRunning     DiagnosticOk
 hi def link YacDapStatusStopped     DiagnosticWarn
+hi def link YacDapPanelSection      Title
+hi def link YacDapPanelSelected     CursorLine
+hi def link YacDapPanelExpanded     Special
 
 " Sign definitions
 if !exists('s:signs_defined')
@@ -691,6 +698,28 @@ function! yac_dap#on_evaluate(...) abort
 endfunction
 
 function! yac_dap#on_breakpoint(...) abort
+endfunction
+
+" Panel update — called by daemon when chain (stackTrace→scopes→variables) completes.
+" Data: {status: {state, file, line, reason}, frames: [...],
+"        selected_frame, variables: [...], watches: [...]}
+function! yac_dap#on_panel_update(...) abort
+  let data = a:0 > 0 ? a:1 : {}
+  let s:panel_data = data
+
+  " Update current position from panel status
+  let status = get(data, 'status', {})
+  let s:current_file = get(status, 'file', '')
+  let s:current_line = get(status, 'line', 0)
+
+  " Update stack frames from panel data
+  let s:stack_frames = get(data, 'frames', [])
+  let s:selected_frame_idx = get(data, 'selected_frame', 0)
+
+  " Render panel if open
+  if exists('s:panel_bufnr') && s:panel_bufnr > 0 && bufexists(s:panel_bufnr)
+    call s:render_panel()
+  endif
 endfunction
 
 function! yac_dap#on_thread(...) abort
@@ -1400,4 +1429,310 @@ endfunction
 
 function! s:not_active() abort
   echohl WarningMsg | echo '[yac] No active debug session' | echohl None
+endfunction
+
+" ============================================================================
+" Debug Panel — persistent left-side split with collapsible sections
+" ============================================================================
+
+function! yac_dap#panel_open() abort
+  if s:panel_winid > 0 && win_gotoid(s:panel_winid)
+    return
+  endif
+
+  " Create left vertical split
+  topleft vnew
+  let s:panel_winid = win_getid()
+  vertical resize 40
+
+  " Configure scratch buffer
+  setlocal buftype=nofile bufhidden=hide noswapfile nobuflisted
+  setlocal filetype=yac_dap_panel
+  setlocal nonumber norelativenumber signcolumn=no
+  setlocal winfixwidth
+  setlocal cursorline
+  let s:panel_bufnr = bufnr('%')
+  silent file [Debug]
+
+  " Panel key mappings
+  nnoremap <buffer> <silent> q :call yac_dap#panel_close()<CR>
+  nnoremap <buffer> <silent> <CR> :call <SID>panel_action()<CR>
+  nnoremap <buffer> <silent> o :call <SID>panel_action()<CR>
+  nnoremap <buffer> <silent> x :call <SID>panel_collapse_toggle()<CR>
+  nnoremap <buffer> <silent> w :call <SID>panel_add_watch()<CR>
+  nnoremap <buffer> <silent> d :call <SID>panel_remove_watch()<CR>
+
+  " Render current data
+  call s:render_panel()
+
+  " Return to previous window
+  wincmd p
+endfunction
+
+function! yac_dap#panel_close() abort
+  if s:panel_winid > 0 && win_gotoid(s:panel_winid)
+    close
+  endif
+  let s:panel_winid = -1
+  let s:panel_bufnr = -1
+endfunction
+
+function! yac_dap#panel_toggle() abort
+  if s:panel_winid > 0 && win_gotoid(s:panel_winid)
+    call yac_dap#panel_close()
+  else
+    call yac_dap#panel_open()
+  endif
+endfunction
+
+" Render panel content from s:panel_data
+function! s:render_panel() abort
+  if s:panel_bufnr < 1 || !bufexists(s:panel_bufnr)
+    return
+  endif
+
+  let lines = []
+  let data = s:panel_data
+
+  " --- Status line ---
+  let status = get(data, 'status', {})
+  let state = get(status, 'state', 'inactive')
+  let reason = get(status, 'reason', '')
+  let file = get(status, 'file', '')
+  let line = get(status, 'line', 0)
+  if !empty(file)
+    call add(lines, printf(' %s  %s:%d  %s', s:state_icon(state), file, line, reason))
+  else
+    call add(lines, printf(' %s  %s', s:state_icon(state), state))
+  endif
+  call add(lines, '')
+
+  " --- Variables section ---
+  let v_icon = get(s:panel_sections, 'variables', 1) ? '▼' : '▶'
+  call add(lines, v_icon . ' VARIABLES')
+  if get(s:panel_sections, 'variables', 1)
+    let vars = get(data, 'variables', [])
+    if empty(vars)
+      call add(lines, '  (no variables)')
+    else
+      for v in vars
+        call s:render_variable(lines, v, 1)
+      endfor
+    endif
+  endif
+  call add(lines, '')
+
+  " --- Call Stack section ---
+  let f_icon = get(s:panel_sections, 'frames', 1) ? '▼' : '▶'
+  call add(lines, f_icon . ' CALL STACK')
+  if get(s:panel_sections, 'frames', 1)
+    let frames = get(data, 'frames', [])
+    let sel = get(data, 'selected_frame', 0)
+    if empty(frames)
+      call add(lines, '  (no frames)')
+    else
+      let idx = 0
+      for f in frames
+        let marker = idx == sel ? '→ ' : '  '
+        call add(lines, marker . get(f, 'name', '?') . '  ' . get(f, 'source_name', '') . ':' . get(f, 'line', ''))
+        let idx += 1
+      endfor
+    endif
+  endif
+  call add(lines, '')
+
+  " --- Watch section ---
+  let w_icon = get(s:panel_sections, 'watches', 1) ? '▼' : '▶'
+  call add(lines, w_icon . ' WATCH')
+  if get(s:panel_sections, 'watches', 1)
+    let watches = get(data, 'watches', [])
+    if empty(watches)
+      call add(lines, '  (no watches)')
+    else
+      for w in watches
+        let prefix = get(w, 'error', 0) ? '✗ ' : '  '
+        call add(lines, prefix . get(w, 'expression', '') . ' = ' . get(w, 'result', ''))
+      endfor
+    endif
+  endif
+
+  " Write to buffer
+  let save_win = win_getid()
+  if win_gotoid(s:panel_winid)
+    setlocal modifiable
+    silent %delete _
+    call setline(1, lines)
+    setlocal nomodifiable
+    call win_gotoid(save_win)
+  endif
+endfunction
+
+function! s:render_variable(lines, var, depth) abort
+  let indent = repeat('  ', a:depth)
+  let name = get(a:var, 'name', '?')
+  let value = get(a:var, 'value', '')
+  let vtype = get(a:var, 'type', '')
+  let expandable = get(a:var, 'expandable', 0)
+  let expanded = get(a:var, 'expanded', 0)
+
+  if expandable
+    let icon = expanded ? '▼ ' : '▶ '
+  else
+    let icon = '  '
+  endif
+
+  let display = indent . icon . name . ' = ' . value
+  if !empty(vtype)
+    let display .= '  (' . vtype . ')'
+  endif
+  call add(a:lines, display)
+
+  " Render children if expanded
+  if expanded
+    for child in get(a:var, 'children', [])
+      call s:render_variable(a:lines, child, a:depth + 1)
+    endfor
+  endif
+endfunction
+
+function! s:state_icon(state) abort
+  if a:state ==# 'running'
+    return '●'
+  elseif a:state ==# 'stopped'
+    return '■'
+  elseif a:state ==# 'terminated'
+    return '○'
+  else
+    return '◌'
+  endif
+endfunction
+
+" Panel interactions
+function! s:panel_action() abort
+  let lnum = line('.')
+  let text = getline(lnum)
+
+  " Section header toggle
+  if text =~# '^\(▼\|▶\) \(VARIABLES\|CALL STACK\|WATCH\)'
+    call s:panel_collapse_toggle()
+    return
+  endif
+
+  " Frame selection
+  if s:in_section(lnum, 'CALL STACK')
+    let frame_idx = s:line_to_frame_idx(lnum)
+    if frame_idx >= 0
+      call yac#send_notify('dap_switch_frame', {'frame_index': frame_idx})
+    endif
+    return
+  endif
+
+  " Variable expand/collapse
+  if s:in_section(lnum, 'VARIABLES')
+    let path = s:line_to_var_path(lnum)
+    if !empty(path)
+      " Toggle: if expanded, collapse; otherwise expand
+      let var_info = s:resolve_var_at_line(lnum)
+      if get(var_info, 'expanded', 0)
+        call yac#send_notify('dap_collapse_variable', {'path': path})
+      else
+        call yac#send_notify('dap_expand_variable', {'path': path})
+      endif
+      " Request panel refresh
+      call yac#send('dap_get_panel', {}, function('s:on_panel_refresh'))
+    endif
+  endif
+endfunction
+
+function! s:panel_collapse_toggle() abort
+  let text = getline('.')
+  for section in ['variables', 'frames', 'watches']
+    if text =~? toupper(section) || text =~? section
+      let s:panel_sections[section] = !get(s:panel_sections, section, 1)
+      call s:render_panel()
+      return
+    endif
+  endfor
+endfunction
+
+function! s:panel_add_watch() abort
+  let expr = input('Watch expression: ')
+  if empty(expr)
+    return
+  endif
+  call yac#send_notify('dap_add_watch', {'expression': expr})
+endfunction
+
+function! s:panel_remove_watch() abort
+  let lnum = line('.')
+  if !s:in_section(lnum, 'WATCH')
+    return
+  endif
+  let idx = s:line_to_watch_idx(lnum)
+  if idx >= 0
+    call yac#send_notify('dap_remove_watch', {'index': idx})
+  endif
+endfunction
+
+function! s:on_panel_refresh(result) abort
+  if type(a:result) == v:t_dict
+    let s:panel_data = a:result
+    call s:render_panel()
+  endif
+endfunction
+
+" Section detection helpers
+function! s:in_section(lnum, section_name) abort
+  let l = a:lnum - 1
+  while l > 0
+    let text = getline(l)
+    if text =~# '^\(▼\|▶\) '
+      return text =~# a:section_name
+    endif
+    let l -= 1
+  endwhile
+  return 0
+endfunction
+
+function! s:line_to_frame_idx(lnum) abort
+  " Count lines from the CALL STACK header to find frame index
+  let l = a:lnum - 1
+  let idx = -1
+  while l > 0
+    let text = getline(l)
+    if text =~# '^\(▼\|▶\) CALL STACK'
+      return idx
+    endif
+    if text !~# '^\s*$'
+      let idx += 1
+    endif
+    let l -= 1
+  endwhile
+  return -1
+endfunction
+
+function! s:line_to_watch_idx(lnum) abort
+  let l = a:lnum - 1
+  let idx = -1
+  while l > 0
+    let text = getline(l)
+    if text =~# '^\(▼\|▶\) WATCH'
+      return idx
+    endif
+    if text !~# '^\s*$'
+      let idx += 1
+    endif
+    let l -= 1
+  endwhile
+  return -1
+endfunction
+
+function! s:line_to_var_path(lnum) abort
+  " TODO: implement depth-aware path calculation from indentation
+  return []
+endfunction
+
+function! s:resolve_var_at_line(lnum) abort
+  " TODO: resolve variable info at line from panel data
+  return {}
 endfunction

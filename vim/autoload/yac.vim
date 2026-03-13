@@ -1021,6 +1021,18 @@ function! yac#dap_statusline() abort
   return yac_dap#statusline()
 endfunction
 
+function! yac#dap_panel_toggle() abort
+  call yac_dap#panel_toggle()
+endfunction
+
+function! yac#dap_panel_open() abort
+  call yac_dap#panel_open()
+endfunction
+
+function! yac#dap_panel_close() abort
+  call yac_dap#panel_close()
+endfunction
+
 " ============================================================================
 " Picker — forwarding stubs (implementation in yac_picker.vim)
 " ============================================================================
