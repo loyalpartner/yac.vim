@@ -372,7 +372,7 @@ endfunction
 "   q   leave DAP mode
 " ============================================================================
 
-let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'x']
+let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'x', '?']
 
 " Enter DAP mode (auto-called on stopped, or manual).
 function! yac_dap#enter_mode() abort
@@ -408,9 +408,10 @@ function! yac_dap#enter_mode() abort
   nnoremap <silent> p :call yac_dap#stack_trace()<CR>
   nnoremap <silent> x :call yac_dap#terminate()<CR>
   nnoremap <silent> q :call yac_dap#leave_mode()<CR>
+  nnoremap <silent> ? :call yac_dap#show_help()<CR>
 
   echohl YacDapTitle
-  echo '[yac] DAP mode  b:bp n:next s:in o:out c:cont k:eval K:vars f:frame r:repl x:quit q:exit-mode'
+  echo '[yac] DAP mode active (?:help q:exit)'
   echohl None
   call s:update_status()
 endfunction
@@ -440,6 +441,41 @@ function! yac_dap#leave_mode() abort
 
   echohl Comment | echo '[yac] DAP mode off' | echohl None
   call s:update_status()
+endfunction
+
+" Show DAP mode keybinding help in a popup.
+function! yac_dap#show_help() abort
+  let lines = [
+        \ ' DAP Mode Keybindings',
+        \ ' ────────────────────────────',
+        \ ' b   toggle breakpoint',
+        \ ' B   conditional breakpoint',
+        \ ' n   next (step over)',
+        \ ' s   step in',
+        \ ' o   step out',
+        \ ' c   continue',
+        \ ' k   eval word under cursor',
+        \ ' K/v variables',
+        \ ' f   select stack frame',
+        \ ' p   stack trace',
+        \ ' t   threads',
+        \ ' r   open REPL',
+        \ ' w   watch cursor word',
+        \ ' E   toggle exception bp',
+        \ ' x   terminate session',
+        \ ' q   exit DAP mode',
+        \ ' ?   this help',
+        \ ]
+  call popup_atcursor(lines, {
+        \ 'padding': [0, 1, 0, 1],
+        \ 'border': [],
+        \ 'borderchars': ['─', '│', '─', '│', '┌', '┐', '┘', '└'],
+        \ 'highlight': 'Normal',
+        \ 'borderhighlight': ['Comment'],
+        \ 'close': 'click',
+        \ 'moved': 'any',
+        \ 'filter': {id, key -> key ==# '?' || key ==# "\<Esc>" ? (popup_close(id), 1) : 0},
+        \ })
 endfunction
 
 " Toggle DAP mode on/off.
