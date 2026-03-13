@@ -271,7 +271,7 @@ pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
     const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
     const frame_id = json.getU32(obj, "frame_id");
     const eval_context = json.getString(obj, "context") orelse "repl";
-    _ = try client.sendEvaluate(ctx.allocator, expression, frame_id, eval_context);
+    _ = try client.sendEvaluate(expression, frame_id, eval_context);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };

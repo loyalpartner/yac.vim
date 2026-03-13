@@ -96,6 +96,7 @@ function! yac_dap#toggle_breakpoint() abort
   if idx >= 0
     call remove(s:breakpoints[file], idx)
     execute 'sign unplace' s:bp_sign_id(file, line) 'file=' . fnameescape(file)
+    call remove(s:bp_sign_map, file . ':' . line)
     echohl Comment | echo printf('[yac] Breakpoint removed  line %d', line) | echohl None
   else
     call add(s:breakpoints[file], line)
@@ -227,9 +228,6 @@ endfunction
 
 function! yac_dap#on_initialized(...) abort
   let s:dap_state = 'configured'
-  for [file, _lines] in items(s:breakpoints)
-    call s:sync_breakpoints(file)
-  endfor
   call s:update_status()
 endfunction
 
@@ -517,8 +515,16 @@ endfunction
 " Internal: signs and navigation
 " ============================================================================
 
+let s:bp_sign_counter = 9000
+let s:bp_sign_map = {}  " {'filepath:line' -> sign_id}
+
 function! s:bp_sign_id(file, line) abort
-  return 9000 + (a:line * 100 + char2nr(a:file[len(a:file)-1])) % 9000
+  let key = a:file . ':' . a:line
+  if !has_key(s:bp_sign_map, key)
+    let s:bp_sign_counter += 1
+    let s:bp_sign_map[key] = s:bp_sign_counter
+  endif
+  return s:bp_sign_map[key]
 endfunction
 
 function! s:sync_breakpoints(file) abort

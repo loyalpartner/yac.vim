@@ -47,7 +47,7 @@ pub const DapClient = struct {
     pending_requests: std.AutoHashMap(u32, PendingDapRequest),
     capabilities: Value,
     active_thread_id: ?u32,
-    read_buf: [4096]u8,
+    read_buf: [65536]u8,
     launch_params: ?LaunchParams,
 
     pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, workspace_dir: ?[]const u8) !*DapClient {
@@ -328,29 +328,19 @@ pub const DapClient = struct {
     }
 
     /// Send evaluate request (for REPL / hover).
-    pub fn sendEvaluate(self: *DapClient, allocator: Allocator, expression: []const u8, frame_id: ?u32, context: []const u8) !u32 {
-        var obj_fields: [3]struct { []const u8, Value } = undefined;
-        var count: usize = 0;
-
-        obj_fields[count] = .{ "expression", json.jsonString(expression) };
-        count += 1;
-        obj_fields[count] = .{ "context", json.jsonString(context) };
-        count += 1;
-        if (frame_id) |fid| {
-            obj_fields[count] = .{ "frameId", json.jsonInteger(@intCast(fid)) };
-            count += 1;
-        }
-
-        _ = allocator;
+    pub fn sendEvaluate(self: *DapClient, expression: []const u8, frame_id: ?u32, context: []const u8) !u32 {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        const arguments = try json.buildObject(alloc, .{
+        var map = try json.buildObjectMap(alloc, .{
             .{ "expression", json.jsonString(expression) },
             .{ "context", json.jsonString(context) },
         });
-        return self.sendRequest("evaluate", arguments);
+        if (frame_id) |fid| {
+            try map.put("frameId", json.jsonInteger(@intCast(fid)));
+        }
+        return self.sendRequest("evaluate", .{ .object = map });
     }
 
     /// Send disconnect request.
@@ -424,7 +414,10 @@ pub const DapClient = struct {
 
     /// Read and parse DAP messages from adapter stdout.
     /// Returns parsed messages. Caller owns the returned list.
-    pub fn readMessages(self: *DapClient) !std.ArrayList(protocol.DapMessage) {
+    /// `parse_alloc` is used for JSON parsing — parsed Value data (strings,
+    /// object maps) lives in that allocator. The caller must keep `parse_alloc`
+    /// alive as long as the returned messages are in use.
+    pub fn readMessages(self: *DapClient, parse_alloc: Allocator) !std.ArrayList(protocol.DapMessage) {
         const stdout = self.child.stdout orelse return error.StdoutClosed;
         const n = stdout.read(&self.read_buf) catch |e| {
             log.debug("DAP stdout read error: {any}", .{e});
@@ -448,10 +441,13 @@ pub const DapClient = struct {
             const preview_len = @min(raw.len, 200);
             log.debug("DAP raw msg: {s}", .{raw[0..preview_len]});
 
-            const parsed = std.json.parseFromSlice(Value, self.allocator, raw, .{}) catch {
+            const parsed = std.json.parseFromSlice(Value, parse_alloc, raw, .{}) catch {
                 log.debug("DAP: failed to parse JSON message", .{});
                 continue;
             };
+            // parsed.value's strings/objects live in parse_alloc (caller's arena).
+            // We intentionally do NOT call parsed.deinit() here — the arena owns
+            // the memory and will free it when the caller deinits their arena.
             const obj = switch (parsed.value) {
                 .object => |o| o,
                 else => continue,

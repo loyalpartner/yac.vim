@@ -254,23 +254,28 @@ pub const EventLoop = struct {
             // Drain any remaining data before cleanup
             if (self.dap_client) |client| {
                 while (true) {
-                    var msgs = client.readMessages() catch break;
-                    defer msgs.deinit(self.allocator);
-                    if (msgs.items.len == 0) break;
-
                     var arena = std.heap.ArenaAllocator.init(self.allocator);
                     defer arena.deinit();
                     const alloc = arena.allocator();
+
+                    var msgs = client.readMessages(alloc) catch break;
+                    defer msgs.deinit(self.allocator);
+                    if (msgs.items.len == 0) break;
+
                     for (msgs.items) |msg| {
                         switch (msg) {
                             .response => |r| self.handleDapResponse(alloc, client, r),
                             .event => |e| self.handleDapEvent(alloc, client, e),
                         }
+                        if (self.dap_client == null) break; // client was freed by cleanupDapSession
                     }
+                    if (self.dap_client == null) break; // client was freed inside the loop
                 }
             }
-            log.info("DAP adapter disconnected (HUP/ERR)", .{});
-            self.cleanupDapSession();
+            if (self.dap_client != null) {
+                log.info("DAP adapter disconnected (HUP/ERR)", .{});
+                self.cleanupDapSession();
+            }
         }
     }
 
@@ -794,22 +799,24 @@ pub const EventLoop = struct {
 
     fn processDapOutput(self: *EventLoop) void {
         const client = self.dap_client orelse return;
-        var messages = client.readMessages() catch |e| {
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var messages = client.readMessages(alloc) catch |e| {
             log.debug("DAP readMessages error: {any}", .{e});
             if (e == error.AdapterClosed) self.cleanupDapSession();
             return;
         };
         defer messages.deinit(self.allocator);
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
         for (messages.items) |msg| {
             switch (msg) {
                 .response => |r| self.handleDapResponse(alloc, client, r),
                 .event => |e| self.handleDapEvent(alloc, client, e),
             }
+            if (self.dap_client == null) break; // client was freed by cleanupDapSession
         }
     }
 
