@@ -553,8 +553,7 @@ function! yac_dap#on_stopped(...) abort
     return
   endif
 
-  " Evaluate watches only on breakpoint/exception/pause (not every step)
-  call s:evaluate_watches()
+  " Watch evaluation is now handled by daemon chain (DapSession)
 
   " Show stop reason
   let reason_icons = {
@@ -709,15 +708,35 @@ function! yac_dap#on_panel_update(...) abort
 
   " Update current position from panel status
   let status = get(data, 'status', {})
-  let s:current_file = get(status, 'file', '')
-  let s:current_line = get(status, 'line', 0)
+  let file = get(status, 'file', '')
+  let line = get(status, 'line', 0)
 
   " Update stack frames from panel data
   let s:stack_frames = get(data, 'frames', [])
   let s:selected_frame_idx = get(data, 'selected_frame', 0)
 
+  " Jump to stopped location and update sign (only if position changed)
+  if !empty(file) && line > 0
+    let source_path = ''
+    " Resolve full path from frames if status.file is basename only
+    if !empty(s:stack_frames) && s:selected_frame_idx < len(s:stack_frames)
+      let source_path = get(s:stack_frames[s:selected_frame_idx], 'source_path', '')
+    endif
+    let target = !empty(source_path) ? source_path : file
+    if target !=# s:current_file || line != s:current_line
+      let s:current_file = target
+      let s:current_line = line
+      " Ensure we're not in the panel window before navigating
+      if win_getid() == s:panel_winid
+        wincmd p
+      endif
+      call s:goto_location(target, line)
+      call s:show_current_line(target, line)
+    endif
+  endif
+
   " Render panel if open
-  if exists('s:panel_bufnr') && s:panel_bufnr > 0 && bufexists(s:panel_bufnr)
+  if s:panel_bufnr > 0 && bufexists(s:panel_bufnr)
     call s:render_panel()
   endif
 endfunction
@@ -923,7 +942,11 @@ function! s:do_start(file, config) abort
 
   let s:dap_active = 1
   let s:dap_state = 'initializing'
+  let s:panel_data = {}
   call s:update_status()
+
+  " Auto-open debug panel
+  call yac_dap#panel_open()
 
   " Startup feedback
   echohl YacDapTitle
@@ -1018,6 +1041,10 @@ function! s:cleanup_session() abort
   endif
   call s:clear_current_line_sign()
   call s:update_status()
+
+  " Close debug panel and clear panel data
+  call yac_dap#panel_close()
+  let s:panel_data = {}
 endfunction
 
 function! s:show_current_line(file, line) abort
@@ -1625,15 +1652,15 @@ function! s:panel_action() abort
   if s:in_section(lnum, 'VARIABLES')
     let path = s:line_to_var_path(lnum)
     if !empty(path)
-      " Toggle: if expanded, collapse; otherwise expand
       let var_info = s:resolve_var_at_line(lnum)
       if get(var_info, 'expanded', 0)
+        " Collapse is synchronous — request panel refresh immediately
         call yac#send_notify('dap_collapse_variable', {'path': path})
-      else
+        call yac#send('dap_get_panel', {}, function('s:on_panel_refresh'))
+      elseif get(var_info, 'expandable', 0)
+        " Expand triggers async chain — panel refreshes via on_panel_update
         call yac#send_notify('dap_expand_variable', {'path': path})
       endif
-      " Request panel refresh
-      call yac#send('dap_get_panel', {}, function('s:on_panel_refresh'))
     endif
   endif
 endfunction

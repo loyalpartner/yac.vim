@@ -160,7 +160,9 @@ pub const DapSession = struct {
             .awaiting_variables => {
                 if (!std.mem.eql(u8, response.command, "variables")) return false;
                 try self.parseVariables(response.body);
-                if (self.watch_expressions.items.len > 0 and
+                // Only evaluate watches as part of the stopped chain, not variable expand
+                if (self.chain_trigger == .stopped and
+                    self.watch_expressions.items.len > 0 and
                     !std.mem.eql(u8, self.stopped_reason, "step"))
                 {
                     try self.startWatchEval();

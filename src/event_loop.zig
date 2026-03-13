@@ -869,13 +869,18 @@ pub const EventLoop = struct {
             break :blk false;
         };
 
-        if (chain_handled and session.isChainComplete()) {
-            // Chain finished — send full panel data to Vim
-            const panel_data = session.buildPanelData(alloc) catch return;
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_panel_update", panel_data);
+        if (chain_handled) {
+            if (session.isChainComplete()) {
+                // Chain finished — send full panel data to Vim
+                const panel_data = session.buildPanelData(alloc) catch return;
+                self.sendDapCallbackToAllClients(alloc, "yac_dap#on_panel_update", panel_data);
+            }
+            // Chain-managed responses are NOT forwarded individually —
+            // the panel update callback replaces per-response callbacks.
+            return;
         }
 
-        // Also forward individual responses for backward compatibility
+        // Non-chain responses: forward individually for backward compatibility
         if (std.mem.eql(u8, response.command, "stackTrace") or
             std.mem.eql(u8, response.command, "scopes") or
             std.mem.eql(u8, response.command, "variables") or
