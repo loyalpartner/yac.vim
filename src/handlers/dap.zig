@@ -120,7 +120,7 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
 }
 
 /// Set breakpoints for a file.
-/// Params: {file, breakpoints: [{line}]}
+/// Params: {file, breakpoints: [{line, condition?, hit_condition?, log_message?}]}
 pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult {
     const client = ctx.dap_client.* orelse return notRunning(ctx);
     const obj = switch (params) {
@@ -134,22 +134,65 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
         else => return .{ .empty = {} },
     };
 
-    // Extract line numbers
-    var lines: std.ArrayList(u32) = .{};
-    defer lines.deinit(ctx.allocator);
+    // Extract breakpoint info
+    var breakpoints: std.ArrayList(dap_client.BreakpointInfo) = .{};
+    defer breakpoints.deinit(ctx.allocator);
     for (bp_array.items) |item| {
         const bp_obj = switch (item) {
             .object => |o| o,
             else => continue,
         };
         if (json.getU32(bp_obj, "line")) |line| {
-            try lines.append(ctx.allocator, line);
+            try breakpoints.append(ctx.allocator, .{
+                .line = line,
+                .condition = json.getString(bp_obj, "condition"),
+                .hit_condition = json.getString(bp_obj, "hit_condition"),
+                .log_message = json.getString(bp_obj, "log_message"),
+            });
         }
     }
 
-    _ = try client.sendSetBreakpoints(ctx.allocator, file, lines.items);
+    _ = try client.sendSetBreakpoints(ctx.allocator, file, breakpoints.items);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Set exception breakpoints.
+/// Params: {filters: ["raised", "uncaught", ...]}
+pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const filters_val = switch (obj.get("filters") orelse return .{ .empty = {} }) {
+        .array => |a| a,
+        else => return .{ .empty = {} },
+    };
+
+    var filters: std.ArrayList([]const u8) = .{};
+    defer filters.deinit(ctx.allocator);
+    for (filters_val.items) |item| {
+        switch (item) {
+            .string => |s| try filters.append(ctx.allocator, s),
+            else => {},
+        }
+    }
+
+    _ = try client.sendSetExceptionBreakpoints(ctx.allocator, filters.items);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Get all threads.
+pub fn handleDapThreads(ctx: *HandlerContext, _: Value) !DispatchResult {
+    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    _ = try client.sendThreads();
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "pending", .{ .bool = true } },
     }) };
 }
 

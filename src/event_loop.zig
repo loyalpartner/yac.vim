@@ -841,7 +841,8 @@ pub const EventLoop = struct {
             if (std.mem.eql(u8, response.command, "stackTrace") or
                 std.mem.eql(u8, response.command, "scopes") or
                 std.mem.eql(u8, response.command, "variables") or
-                std.mem.eql(u8, response.command, "evaluate"))
+                std.mem.eql(u8, response.command, "evaluate") or
+                std.mem.eql(u8, response.command, "threads"))
             {
                 // Send response body to Vim as an async call
                 const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;

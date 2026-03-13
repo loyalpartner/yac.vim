@@ -20,6 +20,9 @@ let s:current_file = ''         " file where debuggee is stopped
 let s:current_line = 0          " line where debuggee is stopped
 let s:repl_bufnr = -1           " REPL buffer number
 let s:stack_frames = []          " Current stack trace
+let s:selected_frame_idx = 0     " Currently selected stack frame index
+let s:watch_expressions = []     " List of watch expressions
+let s:stack_popup_id = -1        " Current stack trace popup window ID
 
 let s:data_dir = $HOME . '/.local/share/yac'
 
@@ -166,14 +169,57 @@ function! yac_dap#variables() abort
     echohl WarningMsg | echo '[yac] No stack frames available' | echohl None
     return
   endif
-  let frame_id = s:stack_frames[0].id
+  let frame_id = s:stack_frames[s:selected_frame_idx].id
   call yac#send_notify('dap_scopes', {'frame_id': frame_id})
+endfunction
+
+" Show interactive stack trace popup for frame selection.
+function! yac_dap#select_frame() abort
+  if !s:dap_active | call s:not_active() | return | endif
+  if empty(s:stack_frames)
+    echohl WarningMsg | echo '[yac] No stack frames available' | echohl None
+    return
+  endif
+  call s:show_stack_popup()
+endfunction
+
+" Add a watch expression.
+function! yac_dap#add_watch(expr) abort
+  if index(s:watch_expressions, a:expr) < 0
+    call add(s:watch_expressions, a:expr)
+    echohl Comment | echo printf('[yac] Watch added: %s', a:expr) | echohl None
+    " Evaluate immediately if stopped
+    if s:dap_state ==# 'stopped'
+      call s:evaluate_watches()
+    endif
+  endif
+endfunction
+
+" Remove a watch expression.
+function! yac_dap#remove_watch(expr) abort
+  let idx = index(s:watch_expressions, a:expr)
+  if idx >= 0
+    call remove(s:watch_expressions, idx)
+    echohl Comment | echo printf('[yac] Watch removed: %s', a:expr) | echohl None
+  endif
+endfunction
+
+" List all watch expressions.
+function! yac_dap#list_watches() abort
+  if empty(s:watch_expressions)
+    echohl Comment | echo '[yac] No watch expressions' | echohl None
+    return
+  endif
+  echo '[yac] Watch expressions:'
+  for i in range(len(s:watch_expressions))
+    echo printf('  %d: %s', i + 1, s:watch_expressions[i])
+  endfor
 endfunction
 
 " Evaluate expression (in REPL context).
 function! yac_dap#evaluate(expr) abort
   if !s:dap_active | call s:not_active() | return | endif
-  let frame_id = !empty(s:stack_frames) ? s:stack_frames[0].id : v:null
+  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
   call yac#send_notify('dap_evaluate', {
         \ 'expression': a:expr,
         \ 'frame_id': frame_id,
@@ -239,6 +285,9 @@ function! yac_dap#on_stopped(...) abort
   call yac#send_notify('dap_stack_trace', {'thread_id': thread_id})
   call s:update_status()
 
+  " Auto-evaluate watch expressions
+  call s:evaluate_watches()
+
   " Show stop reason with appropriate highlight
   let reason_icons = {
         \ 'breakpoint': '● ',
@@ -293,6 +342,7 @@ endfunction
 function! yac_dap#on_stackTrace(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let s:stack_frames = get(body, 'stackFrames', [])
+  let s:selected_frame_idx = 0
   if !empty(s:stack_frames)
     let frame = s:stack_frames[0]
     let file = get(get(frame, 'source', {}), 'path', '')
@@ -326,7 +376,49 @@ endfunction
 function! yac_dap#on_variables(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let variables = get(body, 'variables', [])
-  call s:show_variables_popup(variables)
+
+  if exists('s:pending_var_expand')
+    " This is a response to an expand request
+    let ctx = s:pending_var_expand
+    unlet s:pending_var_expand
+    let parent_idx = ctx.parent_idx
+    let depth = ctx.depth
+
+    " Insert children after parent
+    let children = []
+    for var in variables
+      call add(children, {
+            \ 'name': get(var, 'name', '?'),
+            \ 'value': get(var, 'value', ''),
+            \ 'type': get(var, 'type', ''),
+            \ 'ref': get(var, 'variablesReference', 0),
+            \ 'depth': depth,
+            \ 'expanded': 0,
+            \ })
+    endfor
+
+    " Remove any existing children at this position first
+    let remove_start = parent_idx + 1
+    let remove_count = 0
+    while remove_start + remove_count < len(s:var_tree)
+          \ && s:var_tree[remove_start + remove_count].depth >= depth
+      let remove_count += 1
+    endwhile
+    if remove_count > 0
+      call remove(s:var_tree, remove_start, remove_start + remove_count - 1)
+    endif
+
+    " Insert new children
+    let insert_pos = parent_idx + 1
+    for child in reverse(copy(children))
+      call insert(s:var_tree, child, insert_pos)
+    endfor
+
+    call s:render_var_popup()
+  else
+    " Top-level variables response
+    call s:show_variables_popup(variables)
+  endif
 endfunction
 
 function! yac_dap#on_evaluate(...) abort
@@ -341,6 +433,10 @@ function! yac_dap#on_breakpoint(...) abort
 endfunction
 
 function! yac_dap#on_thread(...) abort
+endfunction
+
+function! yac_dap#on_threads(...) abort
+  " Threads response — for future multi-thread UI
 endfunction
 
 " ============================================================================
@@ -542,6 +638,17 @@ function! s:cleanup_session() abort
   let s:current_file = ''
   let s:current_line = 0
   let s:stack_frames = []
+  let s:selected_frame_idx = 0
+  let s:watch_results = {}
+  let s:var_tree = []
+  if s:var_popup_id > 0
+    silent! call popup_close(s:var_popup_id)
+    let s:var_popup_id = -1
+  endif
+  if s:stack_popup_id > 0
+    silent! call popup_close(s:stack_popup_id)
+    let s:stack_popup_id = -1
+  endif
   call s:clear_current_line_sign()
   call s:update_status()
 endfunction
@@ -572,13 +679,45 @@ function! s:update_status() abort
 endfunction
 
 " ============================================================================
-" Internal: variables popup
+" Internal: variables popup (tree with expansion)
 " ============================================================================
 
+let s:var_tree = []  " Flat tree: [{name, value, type, ref, depth, expanded}]
+let s:var_popup_id = -1
+
 function! s:show_variables_popup(variables) abort
-  if empty(a:variables)
+  call s:show_variables_popup_ex(a:variables, 0)
+endfunction
+
+" Show variables popup. depth=0 for top-level, merges expanded children.
+function! s:show_variables_popup_ex(variables, depth) abort
+  if a:depth == 0
+    " Build fresh tree from top-level variables
+    let s:var_tree = []
+    for var in a:variables
+      call add(s:var_tree, {
+            \ 'name': get(var, 'name', '?'),
+            \ 'value': get(var, 'value', ''),
+            \ 'type': get(var, 'type', ''),
+            \ 'ref': get(var, 'variablesReference', 0),
+            \ 'depth': 0,
+            \ 'expanded': 0,
+            \ })
+    endfor
+  endif
+
+  call s:render_var_popup()
+endfunction
+
+function! s:render_var_popup() abort
+  if empty(s:var_tree)
     echohl Comment | echo '[yac] No variables in scope' | echohl None
     return
+  endif
+
+  " Close existing popup
+  if s:var_popup_id > 0
+    silent! call popup_close(s:var_popup_id)
   endif
 
   " Ensure prop types exist
@@ -594,57 +733,129 @@ function! s:show_variables_popup(variables) abort
 
   let lines = []
   let props = []
+
+  " Calculate max name width per depth level
   let max_name = 0
-  for var in a:variables
-    let nl = len(get(var, 'name', ''))
-    if nl > max_name | let max_name = nl | endif
+  for item in s:var_tree
+    let display_len = item.depth * 2 + len(item.name)
+    if display_len > max_name | let max_name = display_len | endif
   endfor
 
-  for var in a:variables
-    let name = get(var, 'name', '?')
-    let value = get(var, 'value', '')
-    let vtype = get(var, 'type', '')
-    let pad = repeat(' ', max_name - len(name))
+  for item in s:var_tree
+    let indent = repeat('  ', item.depth)
+    let prefix = item.ref > 0 ? (item.expanded ? '▾ ' : '▸ ') : '  '
+    let name = item.name
+    let value = item.value
+    let vtype = item.type
     let lnum = len(lines) + 1
 
+    let name_part = indent . prefix . name
+    let pad = repeat(' ', max_name - len(name_part) + 2)
+
     if !empty(vtype)
-      let line = printf('  %s%s = %s  (%s)', name, pad, value, vtype)
-      " name prop
-      call add(props, {'lnum': lnum, 'col': 3, 'length': len(name), 'type': 'YacDapVarName'})
-      " value prop
-      let val_col = 3 + len(name) + len(pad) + 3  " ' = '
-      call add(props, {'lnum': lnum, 'col': val_col, 'length': len(value), 'type': 'YacDapVarValue'})
-      " type prop
+      let line = printf('%s%s= %s  (%s)', name_part, pad, value, vtype)
+    else
+      let line = printf('%s%s= %s', name_part, pad, value)
+    endif
+
+    " name prop
+    let name_col = len(indent) + len(prefix) + 1
+    call add(props, {'lnum': lnum, 'col': name_col, 'length': len(name), 'type': 'YacDapVarName'})
+    " value prop
+    let val_col = len(name_part) + len(pad) + 3  " '= '
+    call add(props, {'lnum': lnum, 'col': val_col, 'length': len(value), 'type': 'YacDapVarValue'})
+    " type prop
+    if !empty(vtype)
       let type_col = val_col + len(value) + 3  " '  ('
       call add(props, {'lnum': lnum, 'col': type_col, 'length': len(vtype), 'type': 'YacDapVarType'})
-    else
-      let line = printf('  %s%s = %s', name, pad, value)
-      call add(props, {'lnum': lnum, 'col': 3, 'length': len(name), 'type': 'YacDapVarName'})
-      let val_col = 3 + len(name) + len(pad) + 3
-      call add(props, {'lnum': lnum, 'col': val_col, 'length': len(value), 'type': 'YacDapVarValue'})
     endif
+
     call add(lines, line)
   endfor
 
-  let winid = popup_atcursor(lines, {
+  let s:var_popup_id = popup_atcursor(lines, {
         \ 'border': [1,1,1,1],
         \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
         \ 'borderhighlight': ['YacDapBorder'],
         \ 'highlight': 'YacDapNormal',
         \ 'title': ' Variables ',
         \ 'padding': [0,1,0,1],
-        \ 'moved': 'any',
-        \ 'maxwidth': 100,
-        \ 'maxheight': 25,
+        \ 'cursorline': 1,
+        \ 'maxwidth': 120,
+        \ 'maxheight': 30,
         \ 'zindex': 150,
+        \ 'filter': function('s:var_popup_filter'),
+        \ 'callback': function('s:var_popup_closed'),
         \ })
 
   " Apply text property highlights
-  let bufnr = winbufnr(winid)
+  let bufnr = winbufnr(s:var_popup_id)
   for p in props
     call prop_add(p.lnum, p.col, {
           \ 'length': p.length, 'type': p.type, 'bufnr': bufnr})
   endfor
+endfunction
+
+function! s:var_popup_filter(winid, key) abort
+  if a:key ==# 'j' || a:key ==# "\<Down>"
+    call win_execute(a:winid, 'normal! j')
+    return 1
+  elseif a:key ==# 'k' || a:key ==# "\<Up>"
+    call win_execute(a:winid, 'normal! k')
+    return 1
+  elseif a:key ==# "\<CR>" || a:key ==# 'o' || a:key ==# 'l'
+    " Toggle expand/collapse
+    let lnum = line('.', a:winid)
+    call s:var_toggle_expand(lnum - 1)
+    return 1
+  elseif a:key ==# 'h'
+    " Collapse
+    let lnum = line('.', a:winid)
+    let idx = lnum - 1
+    if idx >= 0 && idx < len(s:var_tree) && s:var_tree[idx].expanded
+      call s:var_toggle_expand(idx)
+    endif
+    return 1
+  elseif a:key ==# 'q' || a:key ==# "\<Esc>"
+    call popup_close(a:winid, -1)
+    return 1
+  endif
+  return 0
+endfunction
+
+function! s:var_popup_closed(winid, result) abort
+  let s:var_popup_id = -1
+endfunction
+
+function! s:var_toggle_expand(idx) abort
+  if a:idx < 0 || a:idx >= len(s:var_tree)
+    return
+  endif
+  let item = s:var_tree[a:idx]
+  if item.ref <= 0
+    return  " Not expandable
+  endif
+
+  if item.expanded
+    " Collapse: remove all children at deeper depth
+    let item.expanded = 0
+    let remove_start = a:idx + 1
+    let remove_count = 0
+    while remove_start + remove_count < len(s:var_tree)
+          \ && s:var_tree[remove_start + remove_count].depth > item.depth
+      let remove_count += 1
+    endwhile
+    if remove_count > 0
+      call remove(s:var_tree, remove_start, remove_start + remove_count - 1)
+    endif
+    call s:render_var_popup()
+  else
+    " Expand: request variables from daemon
+    let item.expanded = 1
+    " Store context for async callback
+    let s:pending_var_expand = {'parent_idx': a:idx, 'depth': item.depth + 1}
+    call yac#send_notify('dap_variables', {'variables_ref': item.ref})
+  endif
 endfunction
 
 " ============================================================================
@@ -658,6 +869,10 @@ function! s:create_repl_buffer() abort
   setlocal filetype=yac_dap_repl
   setlocal statusline=%#YacDapTitle#\ DAP\ REPL\ %#StatusLine#
   setlocal winfixheight
+
+  " Allow editing the last line for input
+  setlocal modifiable
+
   file [DAP REPL]
 
   " REPL prop types for colored output
@@ -670,6 +885,13 @@ function! s:create_repl_buffer() abort
       call prop_type_add(name, {'highlight': hl, 'combine': 1, 'bufnr': s:repl_bufnr})
     endif
   endfor
+
+  " Add prompt line
+  call setbufline(s:repl_bufnr, '$', '> ')
+
+  " REPL input mappings
+  nnoremap <buffer> <CR> :call <SID>repl_submit()<CR>
+  inoremap <buffer> <CR> <Esc>:call <SID>repl_submit()<CR>
 
   " Go back to previous window
   wincmd p
@@ -702,6 +924,141 @@ function! s:repl_append(text, category) abort
     call win_execute(winid, 'normal! G')
   endfor
 endfunction
+
+" ============================================================================
+" Internal: REPL input
+" ============================================================================
+
+function! s:repl_submit() abort
+  if s:repl_bufnr <= 0 || !bufexists(s:repl_bufnr)
+    return
+  endif
+  let last_line = getbufline(s:repl_bufnr, '$')[0]
+  " Strip prompt prefix
+  let expr = substitute(last_line, '^>\s*', '', '')
+  if empty(expr)
+    return
+  endif
+
+  " Show input in REPL with prompt highlight
+  let lnum = getbufinfo(s:repl_bufnr)[0].linecount
+  call prop_add(lnum, 1, {
+        \ 'length': len(last_line), 'type': 'YacDapReplPrompt', 'bufnr': s:repl_bufnr})
+
+  " Add new prompt line
+  call appendbufline(s:repl_bufnr, '$', '> ')
+
+  " Auto-scroll
+  for winid in win_findbuf(s:repl_bufnr)
+    call win_execute(winid, 'normal! G')
+  endfor
+
+  " Send to daemon for evaluation
+  if s:dap_active
+    call yac_dap#evaluate(expr)
+  else
+    call s:repl_append('Error: No active debug session', 'error')
+  endif
+endfunction
+
+" ============================================================================
+" Internal: stack trace popup
+" ============================================================================
+
+function! s:show_stack_popup() abort
+  let lines = []
+  for i in range(len(s:stack_frames))
+    let frame = s:stack_frames[i]
+    let name = get(frame, 'name', '?')
+    let source = get(get(frame, 'source', {}), 'name', '?')
+    let line = get(frame, 'line', 0)
+    let marker = i == s:selected_frame_idx ? '▶ ' : '  '
+    call add(lines, printf('%s#%d  %s  %s:%d', marker, i, name, source, line))
+  endfor
+
+  let s:stack_popup_id = popup_atcursor(lines, {
+        \ 'border': [1,1,1,1],
+        \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+        \ 'borderhighlight': ['YacDapBorder'],
+        \ 'highlight': 'YacDapNormal',
+        \ 'title': ' Stack Trace ',
+        \ 'padding': [0,1,0,1],
+        \ 'cursorline': 1,
+        \ 'maxwidth': 100,
+        \ 'maxheight': 20,
+        \ 'zindex': 150,
+        \ 'filter': function('s:stack_popup_filter'),
+        \ 'callback': function('s:stack_popup_callback'),
+        \ })
+  " Move cursor to currently selected frame
+  if s:stack_popup_id > 0
+    call win_execute(s:stack_popup_id, 'call cursor(' . (s:selected_frame_idx + 1) . ', 1)')
+  endif
+endfunction
+
+function! s:stack_popup_filter(winid, key) abort
+  if a:key ==# 'j' || a:key ==# "\<Down>"
+    call win_execute(a:winid, 'normal! j')
+    return 1
+  elseif a:key ==# 'k' || a:key ==# "\<Up>"
+    call win_execute(a:winid, 'normal! k')
+    return 1
+  elseif a:key ==# "\<CR>"
+    " Get selected line number (1-based)
+    let lnum = line('.', a:winid)
+    call popup_close(a:winid, lnum)
+    return 1
+  elseif a:key ==# 'q' || a:key ==# "\<Esc>"
+    call popup_close(a:winid, -1)
+    return 1
+  endif
+  return 0
+endfunction
+
+function! s:stack_popup_callback(winid, result) abort
+  let s:stack_popup_id = -1
+  if a:result <= 0 || a:result > len(s:stack_frames)
+    return
+  endif
+  let idx = a:result - 1
+  let s:selected_frame_idx = idx
+  let frame = s:stack_frames[idx]
+  let file = get(get(frame, 'source', {}), 'path', '')
+  let line = get(frame, 'line', 0)
+  if !empty(file) && line > 0
+    call s:goto_location(file, line)
+    call s:show_current_line(file, line)
+  endif
+  " Request scopes for the selected frame
+  let frame_id = get(frame, 'id', v:null)
+  if frame_id isnot v:null
+    call yac#send_notify('dap_scopes', {'frame_id': frame_id})
+  endif
+endfunction
+
+" ============================================================================
+" Internal: watch expressions
+" ============================================================================
+
+let s:watch_results = {}  " {expr -> result_string}
+let s:pending_watch_count = 0
+
+function! s:evaluate_watches() abort
+  if empty(s:watch_expressions) || !s:dap_active
+    return
+  endif
+  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
+  let s:pending_watch_count = len(s:watch_expressions)
+  for expr in s:watch_expressions
+    call yac#send_notify('dap_evaluate', {
+          \ 'expression': expr,
+          \ 'frame_id': frame_id,
+          \ 'context': 'watch',
+          \ })
+  endfor
+endfunction
+
+" ============================================================================
 
 function! s:not_active() abort
   echohl WarningMsg | echo '[yac] No active debug session' | echohl None

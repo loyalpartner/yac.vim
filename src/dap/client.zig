@@ -38,6 +38,14 @@ pub const LaunchParams = struct {
     }
 };
 
+/// Breakpoint info passed from handler.
+pub const BreakpointInfo = struct {
+    line: u32,
+    condition: ?[]const u8 = null,
+    hit_condition: ?[]const u8 = null,
+    log_message: ?[]const u8 = null,
+};
+
 pub const DapClient = struct {
     allocator: Allocator,
     child: std.process.Child,
@@ -233,12 +241,22 @@ pub const DapClient = struct {
     }
 
     /// Send setBreakpoints for a single source file.
-    pub fn sendSetBreakpoints(self: *DapClient, allocator: Allocator, file_path: []const u8, lines: []const u32) !u32 {
+    pub fn sendSetBreakpoints(self: *DapClient, allocator: Allocator, file_path: []const u8, breakpoints: []const BreakpointInfo) !u32 {
         var bp_array = std.json.Array.init(allocator);
-        for (lines) |line| {
-            try bp_array.append(try json.buildObject(allocator, .{
-                .{ "line", json.jsonInteger(@intCast(line)) },
-            }));
+        for (breakpoints) |bp| {
+            var map = try json.buildObjectMap(allocator, .{
+                .{ "line", json.jsonInteger(@intCast(bp.line)) },
+            });
+            if (bp.condition) |cond| {
+                try map.put("condition", json.jsonString(cond));
+            }
+            if (bp.hit_condition) |hc| {
+                try map.put("hitCondition", json.jsonString(hc));
+            }
+            if (bp.log_message) |lm| {
+                try map.put("logMessage", json.jsonString(lm));
+            }
+            try bp_array.append(.{ .object = map });
         }
 
         const arguments = try json.buildObject(allocator, .{
@@ -248,6 +266,25 @@ pub const DapClient = struct {
             .{ "breakpoints", .{ .array = bp_array } },
         });
         return self.sendRequest("setBreakpoints", arguments);
+    }
+
+    /// Send setExceptionBreakpoints request.
+    /// filters: e.g. ["raised", "uncaught"] for Python debugpy.
+    pub fn sendSetExceptionBreakpoints(self: *DapClient, allocator: Allocator, filters: []const []const u8) !u32 {
+        var filter_array = std.json.Array.init(allocator);
+        for (filters) |f| {
+            try filter_array.append(json.jsonString(f));
+        }
+
+        const arguments = try json.buildObject(allocator, .{
+            .{ "filters", .{ .array = filter_array } },
+        });
+        return self.sendRequest("setExceptionBreakpoints", arguments);
+    }
+
+    /// Send threads request to get all threads.
+    pub fn sendThreads(self: *DapClient) !u32 {
+        return self.sendRequest("threads", .null);
     }
 
     /// Send continue request.
@@ -394,7 +431,12 @@ pub const DapClient = struct {
         // 1. setBreakpoints for each file
         var it = lp.breakpoint_files.iterator();
         while (it.next()) |entry| {
-            _ = self.sendSetBreakpoints(alloc, entry.key_ptr.*, entry.value_ptr.items) catch |e| {
+            // Build BreakpointInfo array from line numbers
+            var bp_infos: std.ArrayList(BreakpointInfo) = .{};
+            for (entry.value_ptr.items) |line| {
+                bp_infos.append(alloc, .{ .line = line }) catch continue;
+            }
+            _ = self.sendSetBreakpoints(alloc, entry.key_ptr.*, bp_infos.items) catch |e| {
                 log.err("DAP: setBreakpoints failed for {s}: {any}", .{ entry.key_ptr.*, e });
             };
         }

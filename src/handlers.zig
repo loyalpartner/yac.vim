@@ -76,6 +76,8 @@ pub const handlers = [_]Handler{
     .{ .name = "copilot_partial_accept", .handleFn = copilot.handleCopilotPartialAccept },
     .{ .name = "dap_start", .handleFn = dap_handlers.handleDapStart },
     .{ .name = "dap_breakpoint", .handleFn = dap_handlers.handleDapBreakpoint },
+    .{ .name = "dap_exception_breakpoints", .handleFn = dap_handlers.handleDapExceptionBreakpoints },
+    .{ .name = "dap_threads", .handleFn = dap_handlers.handleDapThreads },
     .{ .name = "dap_continue", .handleFn = dap_handlers.handleDapContinue },
     .{ .name = "dap_next", .handleFn = dap_handlers.handleDapNext },
     .{ .name = "dap_step_in", .handleFn = dap_handlers.handleDapStepIn },
