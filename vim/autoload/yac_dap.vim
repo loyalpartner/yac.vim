@@ -537,8 +537,7 @@ function! yac_dap#on_stopped(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let s:dap_state = 'stopped'
   let reason = get(body, 'reason', 'unknown')
-  let thread_id = get(body, 'threadId', 1)
-  call yac#send_notify('dap_stack_trace', {'thread_id': thread_id})
+  " stackTrace is auto-requested by daemon on stopped event — no round trip needed
   call s:update_status()
 
   " Auto-evaluate watch expressions

@@ -866,6 +866,11 @@ pub const EventLoop = struct {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);
+            // Auto-request stackTrace to avoid an extra Vim→daemon round trip.
+            // The response is forwarded to Vim via handleDapResponse → on_stackTrace.
+            if (client.active_thread_id) |tid| {
+                _ = client.sendStackTrace(tid) catch {};
+            }
         } else if (std.mem.eql(u8, event.event, "continued")) {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_continued", .null);
         } else if (std.mem.eql(u8, event.event, "terminated")) {
