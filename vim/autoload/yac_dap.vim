@@ -424,11 +424,18 @@ function! yac_dap#leave_mode() abort
   let s:dap_mode = 0
 
   for key in s:dap_mode_keys
+    if key ==# 'q'
+      continue
+    endif
     silent! execute 'nunmap' key
   endfor
 
-  " Restore saved mappings
+  " Restore saved mappings (except q — kept for toggle)
+  let q_saved = has_key(s:saved_maps, 'q') ? s:saved_maps['q'] : {}
   for [key, info] in items(s:saved_maps)
+    if key ==# 'q'
+      continue
+    endif
     if exists('*mapset')
       call mapset('n', 0, info)
     else
@@ -437,9 +444,12 @@ function! yac_dap#leave_mode() abort
       execute cmd key info.rhs
     endif
   endfor
-  let s:saved_maps = {}
+  let s:saved_maps = !empty(q_saved) ? {'q': q_saved} : {}
 
-  echohl Comment | echo '[yac] DAP mode off' | echohl None
+  " Keep q as toggle to re-enter DAP mode while session is active
+  nnoremap <silent> q :call yac_dap#toggle_mode()<CR>
+
+  echohl Comment | echo '[yac] DAP mode off (q:re-enter)' | echohl None
   call s:update_status()
 endfunction
 
@@ -925,6 +935,20 @@ endfunction
 function! s:cleanup_session() abort
   " Leave DAP mode first (restores key mappings)
   call yac_dap#leave_mode()
+  " Remove the q toggle mapping left by leave_mode
+  if !empty(maparg('q', 'n'))
+    nunmap q
+  endif
+  " Restore original q mapping if we saved one
+  if has_key(s:saved_maps, 'q')
+    if exists('*mapset')
+      call mapset('n', 0, s:saved_maps['q'])
+    else
+      let info = s:saved_maps['q']
+      execute (info.noremap ? 'nnoremap' : 'nmap') '<silent>' 'q' info.rhs
+    endif
+  endif
+  let s:saved_maps = {}
   let s:dap_active = 0
   let s:dap_state = 'inactive'
   let s:current_file = ''
