@@ -53,12 +53,16 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
         }) };
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
         const ts_state = ctx.ts orelse return .{ .empty = {} };
-        const ts_obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const file = json.getString(ts_obj, "file") orelse return .{ .empty = {} };
+        const file = json.getString(obj, "file") orelse return .{ .empty = {} };
         const lang_state = ts_state.fromExtension(file) orelse return .{ .empty = {} };
+
+        // Auto-parse if buffer not yet tracked (e.g. picker opened before highlights ran)
+        if (ts_state.getTree(file) == null) {
+            if (json.getString(obj, "text")) |text| {
+                ts_state.parseBuffer(file, text) catch {};
+            }
+        }
+
         const tree = ts_state.getTree(file) orelse return .{ .empty = {} };
         const source = ts_state.getSource(file) orelse return .{ .empty = {} };
         const sym_query = lang_state.symbols orelse return .{ .empty = {} };

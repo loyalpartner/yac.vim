@@ -21,13 +21,16 @@ pub const PendingDapRequest = struct {};
 /// Saved launch params for deferred launch after initialized event.
 pub const LaunchParams = struct {
     program: []const u8,
+    module: ?[]const u8,
     stop_on_entry: bool,
     breakpoint_files: std.StringArrayHashMap(std.ArrayList(u32)),
+    args: std.ArrayList([]const u8),
 
     pub fn deinit(self: *LaunchParams) void {
         const allocator = self.breakpoint_files.allocator;
         // Free GPA-duped program string
         allocator.free(self.program);
+        if (self.module) |m| allocator.free(m);
         // Free GPA-duped breakpoint file keys + line arrays
         var it = self.breakpoint_files.iterator();
         while (it.next()) |entry| {
@@ -35,6 +38,9 @@ pub const LaunchParams = struct {
             entry.value_ptr.deinit(allocator);
         }
         self.breakpoint_files.deinit();
+        // Free GPA-duped args
+        for (self.args.items) |arg| allocator.free(arg);
+        self.args.deinit(allocator);
     }
 };
 
@@ -222,22 +228,21 @@ pub const DapClient = struct {
     }
 
     /// Send a launch request.
-    pub fn sendLaunch(self: *DapClient, allocator: Allocator, program: []const u8, args_list: ?Value, stop_on_entry: bool) !u32 {
-        // Only include "args" when provided — debugpy rejects null args
-        const arguments = if (args_list) |al|
-            try json.buildObject(allocator, .{
-                .{ "program", json.jsonString(program) },
-                .{ "stopOnEntry", .{ .bool = stop_on_entry } },
-                .{ "console", json.jsonString("internalConsole") },
-                .{ "args", al },
-            })
-        else
-            try json.buildObject(allocator, .{
-                .{ "program", json.jsonString(program) },
-                .{ "stopOnEntry", .{ .bool = stop_on_entry } },
-                .{ "console", json.jsonString("internalConsole") },
-            });
-        return self.sendRequest("launch", arguments);
+    pub fn sendLaunch(self: *DapClient, allocator: Allocator, program: []const u8, module: ?[]const u8, args_list: ?Value, stop_on_entry: bool) !u32 {
+        var map = try json.buildObjectMap(allocator, .{
+            .{ "stopOnEntry", .{ .bool = stop_on_entry } },
+            .{ "console", json.jsonString("internalConsole") },
+        });
+        // Use "module" (e.g. pytest) or "program" (file path)
+        if (module) |m| {
+            try map.put("module", json.jsonString(m));
+        } else {
+            try map.put("program", json.jsonString(program));
+        }
+        if (args_list) |al| {
+            try map.put("args", al);
+        }
+        return self.sendRequest("launch", .{ .object = map });
     }
 
     /// Send setBreakpoints for a single source file.
@@ -410,7 +415,16 @@ pub const DapClient = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        _ = self.sendLaunch(alloc, lp.program, null, lp.stop_on_entry) catch |e| {
+        // Build args JSON array if args were provided
+        const args_val: ?Value = if (lp.args.items.len > 0) blk: {
+            var arr = std.json.Array.init(alloc);
+            for (lp.args.items) |arg| {
+                arr.append(json.jsonString(arg)) catch continue;
+            }
+            break :blk .{ .array = arr };
+        } else null;
+
+        _ = self.sendLaunch(alloc, lp.program, lp.module, args_val, lp.stop_on_entry) catch |e| {
             log.err("DAP: launch request failed: {any}", .{e});
             return;
         };

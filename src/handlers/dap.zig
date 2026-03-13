@@ -99,10 +99,36 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
         }
     }
 
+    // Parse args: ["arg1", "arg2", ...]
+    var launch_args: std.ArrayList([]const u8) = .{};
+    if (obj.get("args")) |args_val| {
+        if (args_val == .array) {
+            for (args_val.array.items) |item| {
+                const s = switch (item) {
+                    .string => |str| str,
+                    else => continue,
+                };
+                const duped = ctx.gpa_allocator.dupe(u8, s) catch continue;
+                launch_args.append(ctx.gpa_allocator, duped) catch {
+                    ctx.gpa_allocator.free(duped);
+                    continue;
+                };
+            }
+        }
+    }
+
+    // Parse module (e.g. "pytest" — uses debugpy's "module" instead of "program")
+    const module: ?[]const u8 = if (json.getString(obj, "module")) |m|
+        ctx.gpa_allocator.dupe(u8, m) catch null
+    else
+        null;
+
     client.launch_params = .{
         .program = program,
+        .module = module,
         .stop_on_entry = stop_on_entry,
         .breakpoint_files = bp_files,
+        .args = launch_args,
     };
 
     // Send initialize request — the rest happens when 'initialized' event arrives

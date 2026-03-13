@@ -726,6 +726,19 @@ endfunction
 " Adapter management
 " ============================================================================
 
+function! s:is_python_test(file) abort
+  if fnamemodify(a:file, ':e') !=# 'py'
+    return 0
+  endif
+  let fname = fnamemodify(a:file, ':t')
+  if fname !~# '^test_' && fname !~# '_test\.py$'
+    return 0
+  endif
+  " Confirm by checking buffer content for pytest usage
+  let content = join(getline(1, min([50, line('$')])), "\n")
+  return content =~# '\<import pytest\>\|from pytest '
+endfunction
+
 function! s:ext_to_lang(ext) abort
   let map = {
         \ 'py': 'python',
@@ -864,12 +877,18 @@ function! s:do_start(file, config) abort
   let bp_count = len(bp_list)
   let fname = fnamemodify(a:file, ':t')
 
-  call yac#send_notify('dap_start', extend({
+  " Auto-detect pytest: test_*.py or *_test.py files
+  let params = {
         \ 'file': a:file,
         \ 'program': get(a:config, 'program', a:file),
         \ 'breakpoints': bp_list,
         \ 'stop_on_entry': get(a:config, 'stop_on_entry', bp_count == 0 ? 1 : 0),
-        \ }, a:config))
+        \ }
+  if !has_key(a:config, 'module') && s:is_python_test(a:file)
+    let params.module = 'pytest'
+    let params.args = [a:file, '-s']
+  endif
+  call yac#send_notify('dap_start', extend(params, a:config))
 
   let s:dap_active = 1
   let s:dap_state = 'initializing'

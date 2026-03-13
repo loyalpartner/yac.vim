@@ -792,11 +792,15 @@ function! s:picker_send_query(timer_id) abort
 
   let s:picker.loading = 1
   call s:picker_update_title()
-  call yac#_picker_request('picker_query', {
+  let req = {
     \ 'query': query,
     \ 'mode': mode,
     \ 'file': expand('%:p'),
-    \ }, 'yac_picker#_handle_query_response')
+    \ }
+  if mode ==# 'document_symbol'
+    let req.text = join(getline(1, '$'), "\n")
+  endif
+  call yac#_picker_request('picker_query', req, 'yac_picker#_handle_query_response')
 endfunction
 
 function! yac_picker#_handle_query_response(channel, response) abort
