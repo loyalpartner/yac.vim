@@ -14,6 +14,8 @@
 " ============================================================================
 
 let s:breakpoints = {}          " {filepath: [line, ...]}
+let s:bp_conditions = {}        " {'filepath:line' -> {condition?, hit_condition?, log_message?}}
+let s:exception_filters = []    " Active exception filters: ["raised", "uncaught", ...]
 let s:dap_active = 0            " 1 when debug session is running
 let s:dap_state = 'inactive'    " inactive, initializing, running, stopped, terminated
 let s:current_file = ''         " file where debuggee is stopped
@@ -100,6 +102,11 @@ function! yac_dap#toggle_breakpoint() abort
     call remove(s:breakpoints[file], idx)
     execute 'sign unplace' s:bp_sign_id(file, line) 'file=' . fnameescape(file)
     call remove(s:bp_sign_map, file . ':' . line)
+    " Clean up conditions if any
+    let cond_key = file . ':' . line
+    if has_key(s:bp_conditions, cond_key)
+      call remove(s:bp_conditions, cond_key)
+    endif
     echohl Comment | echo printf('[yac] Breakpoint removed  line %d', line) | echohl None
   else
     call add(s:breakpoints[file], line)
@@ -122,7 +129,85 @@ function! yac_dap#clear_breakpoints() abort
     endfor
   endfor
   let s:breakpoints = {}
+  let s:bp_conditions = {}
   echohl Comment | echo printf('[yac] Cleared %d breakpoint%s', count, count == 1 ? '' : 's') | echohl None
+endfunction
+
+" Set a conditional breakpoint at cursor (prompts for condition).
+function! yac_dap#set_conditional_breakpoint() abort
+  let file = expand('%:p')
+  let line = line('.')
+  let condition = input('Breakpoint condition: ')
+  if empty(condition)
+    return
+  endif
+
+  if !has_key(s:breakpoints, file)
+    let s:breakpoints[file] = []
+  endif
+
+  " Add breakpoint if not already set
+  if index(s:breakpoints[file], line) < 0
+    call add(s:breakpoints[file], line)
+    execute 'sign place' s:bp_sign_id(file, line) 'line=' . line 'name=YacDapBreakpoint file=' . fnameescape(file)
+  endif
+
+  " Store condition
+  let key = file . ':' . line
+  let s:bp_conditions[key] = {'condition': condition}
+  echohl YacDapBreakpoint | echo printf('[yac] Conditional breakpoint: %s (line %d)', condition, line) | echohl None
+
+  if s:dap_active
+    call s:sync_breakpoints(file)
+  endif
+endfunction
+
+" Set a log point at cursor (prompts for message template).
+function! yac_dap#set_log_point() abort
+  let file = expand('%:p')
+  let line = line('.')
+  let msg = input('Log message (use {expr} for interpolation): ')
+  if empty(msg)
+    return
+  endif
+
+  if !has_key(s:breakpoints, file)
+    let s:breakpoints[file] = []
+  endif
+
+  if index(s:breakpoints[file], line) < 0
+    call add(s:breakpoints[file], line)
+    execute 'sign place' s:bp_sign_id(file, line) 'line=' . line 'name=YacDapBreakpoint file=' . fnameescape(file)
+  endif
+
+  let key = file . ':' . line
+  let s:bp_conditions[key] = {'log_message': msg}
+  echohl YacDapBreakpoint | echo printf('[yac] Log point: %s (line %d)', msg, line) | echohl None
+
+  if s:dap_active
+    call s:sync_breakpoints(file)
+  endif
+endfunction
+
+" Show threads (when multi-threaded).
+function! yac_dap#threads() abort
+  if !s:dap_active | call s:not_active() | return | endif
+  call yac#send_notify('dap_threads', {})
+endfunction
+
+" Toggle exception breakpoints (Python: raised/uncaught).
+function! yac_dap#toggle_exception_breakpoints(...) abort
+  if !s:dap_active | call s:not_active() | return | endif
+  " Default filters for Python (debugpy)
+  let filters = a:0 > 0 ? a:1 : ['raised', 'uncaught']
+  if !empty(s:exception_filters)
+    let s:exception_filters = []
+    echohl Comment | echo '[yac] Exception breakpoints disabled' | echohl None
+  else
+    let s:exception_filters = filters
+    echohl YacDapBreakpoint | echo printf('[yac] Exception breakpoints: %s', join(filters, ', ')) | echohl None
+  endif
+  call yac#send_notify('dap_exception_breakpoints', {'filters': s:exception_filters})
 endfunction
 
 " Continue execution.
@@ -436,7 +521,31 @@ function! yac_dap#on_thread(...) abort
 endfunction
 
 function! yac_dap#on_threads(...) abort
-  " Threads response — for future multi-thread UI
+  let body = a:0 > 0 ? a:1 : {}
+  let threads = get(body, 'threads', [])
+  if empty(threads)
+    return
+  endif
+  " Show threads in a popup if more than one thread
+  if len(threads) <= 1
+    return
+  endif
+  let lines = []
+  for t in threads
+    call add(lines, printf('  #%d  %s', get(t, 'id', 0), get(t, 'name', '?')))
+  endfor
+  call popup_atcursor(lines, {
+        \ 'border': [1,1,1,1],
+        \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+        \ 'borderhighlight': ['YacDapBorder'],
+        \ 'highlight': 'YacDapNormal',
+        \ 'title': ' Threads ',
+        \ 'padding': [0,1,0,1],
+        \ 'moved': 'any',
+        \ 'maxwidth': 80,
+        \ 'maxheight': 20,
+        \ 'zindex': 150,
+        \ })
 endfunction
 
 " ============================================================================
@@ -625,7 +734,24 @@ endfunction
 
 function! s:sync_breakpoints(file) abort
   let lines = get(s:breakpoints, a:file, [])
-  let bp_list = map(copy(lines), {_, l -> {'line': l}})
+  let bp_list = []
+  for l in lines
+    let bp = {'line': l}
+    let key = a:file . ':' . l
+    if has_key(s:bp_conditions, key)
+      let cond = s:bp_conditions[key]
+      if has_key(cond, 'condition')
+        let bp.condition = cond.condition
+      endif
+      if has_key(cond, 'hit_condition')
+        let bp.hit_condition = cond.hit_condition
+      endif
+      if has_key(cond, 'log_message')
+        let bp.log_message = cond.log_message
+      endif
+    endif
+    call add(bp_list, bp)
+  endfor
   call yac#send_notify('dap_breakpoint', {
         \ 'file': a:file,
         \ 'breakpoints': bp_list,
@@ -641,6 +767,7 @@ function! s:cleanup_session() abort
   let s:selected_frame_idx = 0
   let s:watch_results = {}
   let s:var_tree = []
+  let s:exception_filters = []
   if s:var_popup_id > 0
     silent! call popup_close(s:var_popup_id)
     let s:var_popup_id = -1
