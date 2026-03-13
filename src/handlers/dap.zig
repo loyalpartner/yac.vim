@@ -25,13 +25,20 @@ const DapSession = dap_session_mod.DapSession;
 ///
 /// Params: {file, program?, args?, breakpoints?: [{file, line}], stop_on_entry?}
 pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
+    log.debug("handleDapStart: entered", .{});
     const obj = switch (params) {
         .object => |o| o,
-        else => return .{ .empty = {} },
+        else => {
+            log.err("handleDapStart: params is not object", .{});
+            return .{ .empty = {} };
+        },
     };
 
     // Determine adapter from file extension
-    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const file = json.getString(obj, "file") orelse {
+        log.err("handleDapStart: no 'file' in params", .{});
+        return .{ .empty = {} };
+    };
     const ext = std.fs.path.extension(file);
     const config = dap_config.findByExtension(ext) orelse {
         const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] No debug adapter for {s} files')", .{ext}) catch return .{ .empty = {} };

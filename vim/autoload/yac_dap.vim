@@ -34,6 +34,15 @@ let s:panel_sections = {'variables': 1, 'frames': 1, 'watches': 1}  " Section co
 
 let s:data_dir = $HOME . '/.local/share/yac'
 
+" Channel ["call", func, [args]] prepends channel handle as first arg.
+" Extract the actual data dict, handling both channel-call and direct-call.
+function! s:cb_data(args) abort
+  if len(a:args) >= 1 && type(a:args[0]) == v:t_channel
+    return len(a:args) >= 2 ? a:args[1] : {}
+  endif
+  return len(a:args) >= 1 ? a:args[0] : {}
+endfunction
+
 " Highlight groups (themed via yac_theme.vim)
 hi def link YacDapBreakpoint        ErrorMsg
 hi def link YacDapBreakpointVerified DiagnosticOk
@@ -543,7 +552,7 @@ function! yac_dap#on_initialized(...) abort
 endfunction
 
 function! yac_dap#on_stopped(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let s:dap_state = 'stopped'
   let reason = get(body, 'reason', 'unknown')
 
@@ -581,7 +590,7 @@ function! yac_dap#on_terminated(...) abort
 endfunction
 
 function! yac_dap#on_exited(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let exit_code = get(body, 'exitCode', -1)
   if exit_code == 0
     echohl YacDapStatusRunning
@@ -593,7 +602,7 @@ function! yac_dap#on_exited(...) abort
 endfunction
 
 function! yac_dap#on_output(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let category = get(body, 'category', 'console')
   let output = get(body, 'output', '')
   let text = substitute(output, '\n$', '', '')
@@ -608,7 +617,7 @@ function! yac_dap#on_output(...) abort
 endfunction
 
 function! yac_dap#on_stackTrace(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let s:stack_frames = get(body, 'stackFrames', [])
   let s:selected_frame_idx = 0
   if !empty(s:stack_frames)
@@ -624,7 +633,7 @@ function! yac_dap#on_stackTrace(...) abort
 endfunction
 
 function! yac_dap#on_scopes(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let scopes = get(body, 'scopes', [])
   for scope in scopes
     if get(scope, 'presentationHint', '') ==# 'locals' ||
@@ -643,7 +652,7 @@ function! yac_dap#on_scopes(...) abort
 endfunction
 
 function! yac_dap#on_variables(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let variables = get(body, 'variables', [])
 
   if exists('s:pending_var_expand')
@@ -691,7 +700,7 @@ function! yac_dap#on_variables(...) abort
 endfunction
 
 function! yac_dap#on_evaluate(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let result = get(body, 'result', '')
   let var_type = get(body, 'type', '')
   let display = empty(var_type) ? result : printf('%s: %s', var_type, result)
@@ -705,7 +714,7 @@ endfunction
 " Data: {status: {state, file, line, reason}, frames: [...],
 "        selected_frame, variables: [...], watches: [...]}
 function! yac_dap#on_panel_update(...) abort
-  let data = a:0 > 0 ? a:1 : {}
+  let data = s:cb_data(a:000)
   let s:panel_data = data
 
   " Update current position from panel status
@@ -747,7 +756,7 @@ function! yac_dap#on_thread(...) abort
 endfunction
 
 function! yac_dap#on_threads(...) abort
-  let body = a:0 > 0 ? a:1 : {}
+  let body = s:cb_data(a:000)
   let threads = get(body, 'threads', [])
   if empty(threads)
     return

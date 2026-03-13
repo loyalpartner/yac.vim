@@ -872,6 +872,7 @@ pub const EventLoop = struct {
         if (chain_handled) {
             if (session.isChainComplete()) {
                 // Chain finished — send full panel data to Vim
+                log.debug("DAP chain complete, sending panel update", .{});
                 const panel_data = session.buildPanelData(alloc) catch return;
                 self.sendDapCallbackToAllClients(alloc, "yac_dap#on_panel_update", panel_data);
             }

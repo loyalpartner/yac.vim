@@ -127,6 +127,7 @@ pub const DapSession = struct {
         self.chain_trigger = .stopped;
         self.chain_stage = .awaiting_stack_trace;
         self.chain_seq = try self.client.sendStackTrace(tid);
+        log.debug("DAP chain: started (reason={s}, tid={d})", .{ reason, tid });
     }
 
     /// Called when a DAP response arrives. Returns true if chain advanced.
@@ -137,6 +138,7 @@ pub const DapSession = struct {
             .awaiting_stack_trace => {
                 if (!std.mem.eql(u8, response.command, "stackTrace")) return false;
                 try self.parseStackTrace(response.body);
+                log.debug("DAP chain: stackTrace → {d} frames", .{self.cached_frames.items.len});
                 if (self.active_frame_id) |fid| {
                     self.chain_stage = .awaiting_scopes;
                     self.chain_seq = try self.client.sendScopes(fid);
@@ -148,6 +150,7 @@ pub const DapSession = struct {
             .awaiting_scopes => {
                 if (!std.mem.eql(u8, response.command, "scopes")) return false;
                 const ref = self.parseScopesForLocals(response.body);
+                log.debug("DAP chain: scopes → locals_ref={?}", .{ref});
                 if (ref) |r| {
                     self.locals_ref = r;
                     self.chain_stage = .awaiting_variables;
@@ -160,6 +163,7 @@ pub const DapSession = struct {
             .awaiting_variables => {
                 if (!std.mem.eql(u8, response.command, "variables")) return false;
                 try self.parseVariables(response.body);
+                log.debug("DAP chain: variables done → idle", .{});
                 // Only evaluate watches as part of the stopped chain, not variable expand
                 if (self.chain_trigger == .stopped and
                     self.watch_expressions.items.len > 0 and
@@ -290,7 +294,13 @@ pub const DapSession = struct {
         var status_line: i64 = 0;
         if (self.cached_frames.items.len > 0) {
             const top = self.cached_frames.items[self.selected_frame_idx];
-            status_file = top.source_name;
+            // Prefer source_name; fall back to basename of source_path
+            status_file = if (top.source_name.len > 0)
+                top.source_name
+            else if (top.source_path.len > 0)
+                std.fs.path.basename(top.source_path)
+            else
+                "";
             status_line = @intCast(top.line);
         }
 
@@ -312,7 +322,17 @@ pub const DapSession = struct {
     // Cache management
     // ========================================================================
 
+    /// Free owned strings in cached frames.
+    fn freeFrameStrings(self: *DapSession) void {
+        for (self.cached_frames.items) |frame| {
+            if (frame.name.len > 0) self.allocator.free(@constCast(frame.name));
+            if (frame.source_path.len > 0) self.allocator.free(@constCast(frame.source_path));
+            if (frame.source_name.len > 0) self.allocator.free(@constCast(frame.source_name));
+        }
+    }
+
     pub fn clearCache(self: *DapSession) void {
+        self.freeFrameStrings();
         self.cached_frames.clearRetainingCapacity();
         self.clearVarCache();
         self.selected_frame_idx = 0;
@@ -344,6 +364,8 @@ pub const DapSession = struct {
             else => return,
         };
 
+        // Free old frame strings before clearing
+        self.freeFrameStrings();
         self.cached_frames.clearRetainingCapacity();
         for (frames_arr.items) |item| {
             const fobj = switch (item) {
@@ -351,11 +373,15 @@ pub const DapSession = struct {
                 else => continue,
             };
             const source_obj = json.getObject(fobj, "source");
+            // Dupe strings — JSON buffer may be freed after this function returns
+            const name_raw = json.getString(fobj, "name") orelse "";
+            const path_raw = if (source_obj) |s| json.getString(s, "path") orelse "" else "";
+            const sname_raw = if (source_obj) |s| json.getString(s, "name") orelse "" else "";
             try self.cached_frames.append(self.allocator, .{
                 .id = json.getU32(fobj, "id") orelse continue,
-                .name = json.getString(fobj, "name") orelse "",
-                .source_path = if (source_obj) |s| json.getString(s, "path") orelse "" else "",
-                .source_name = if (source_obj) |s| json.getString(s, "name") orelse "" else "",
+                .name = if (name_raw.len > 0) try self.allocator.dupe(u8, name_raw) else "",
+                .source_path = if (path_raw.len > 0) try self.allocator.dupe(u8, path_raw) else "",
+                .source_name = if (sname_raw.len > 0) try self.allocator.dupe(u8, sname_raw) else "",
                 .line = json.getU32(fobj, "line") orelse 0,
                 .column = json.getU32(fobj, "column") orelse 0,
             });
@@ -675,8 +701,12 @@ test "DapSession: clearCache resets all state" {
     defer session.deinit();
 
     try session.cached_frames.append(std.testing.allocator, .{
-        .id = 1, .name = "test", .source_path = "", .source_name = "",
-        .line = 1, .column = 1,
+        .id = 1,
+        .name = try std.testing.allocator.dupe(u8, "test"),
+        .source_path = "",
+        .source_name = "",
+        .line = 1,
+        .column = 1,
     });
     session.active_frame_id = 1;
     session.locals_ref = 42;
@@ -735,8 +765,12 @@ test "DapSession: buildPanelData produces valid JSON structure" {
     defer session.deinit();
 
     try session.cached_frames.append(std.testing.allocator, .{
-        .id = 1, .name = "main", .source_path = "/tmp/app.py", .source_name = "app.py",
-        .line = 10, .column = 1,
+        .id = 1,
+        .name = try std.testing.allocator.dupe(u8, "main"),
+        .source_path = try std.testing.allocator.dupe(u8, "/tmp/app.py"),
+        .source_name = try std.testing.allocator.dupe(u8, "app.py"),
+        .line = 10,
+        .column = 1,
     });
     session.active_frame_id = 1;
     session.locals_ref = 42;

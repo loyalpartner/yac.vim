@@ -1,7 +1,7 @@
 " ============================================================================
 " E2E Test: DAP Debugging
 " ============================================================================
-" Tests: F5 → start session → breakpoint hit → on_stopped callback
+" Tests: breakpoint → start → stopped → chain (panel update with variables)
 
 call yac_test#begin('dap_basic')
 call yac_test#setup()
@@ -36,23 +36,6 @@ call yac_test#assert_true(has_bp_sign, 'Breakpoint sign should appear on line 3'
 " ============================================================================
 call yac_test#log('INFO', 'Test 2: DAP start')
 
-" Use a global to detect if on_stopped fires
-let g:yac_test_dap_stopped = 0
-let g:yac_test_dap_stopped_reason = ''
-
-" Monkey-patch on_stopped to also set our test flag
-" (The real function still runs; we hook at the beginning)
-function! s:orig_on_stopped_wrapper(...) abort
-  let g:yac_test_dap_stopped = 1
-  let body = a:0 > 0 ? a:1 : {}
-  let g:yac_test_dap_stopped_reason = get(body, 'reason', 'unknown')
-  call yac_test#log('INFO', 'on_stopped fired! reason=' . g:yac_test_dap_stopped_reason)
-endfunction
-
-" Save original and override
-let s:Orig_on_stopped = function('yac_dap#on_stopped')
-" We can't easily replace an autoload function; instead observe via messages
-
 " Start DAP session
 call yac_dap#start()
 call yac_test#log('INFO', 'DAP start called')
@@ -69,8 +52,6 @@ call yac_test#log('INFO', 'DAP statusline: ' . yac_dap#statusline())
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: Wait for stopped event')
 
-" Wait for the stopped state — on_stopped sets s:dap_state = 'stopped'
-" which is reflected in yac_dap#statusline()
 let dap_stopped = yac_test#wait_for(
       \ {-> yac_dap#statusline() =~# 'stopped'},
       \ 15000)
@@ -79,15 +60,92 @@ call yac_test#assert_true(dap_stopped,
 call yac_test#log('INFO', 'Final DAP statusline: ' . yac_dap#statusline())
 
 " ============================================================================
-" Test 4: Check messages for callback evidence
+" Test 4: Chain completion — panel_data has frames and variables
 " ============================================================================
-call yac_test#log('INFO', 'Test 4: Check messages')
+call yac_test#log('INFO', 'Test 4: Wait for chain (panel update)')
+
+" s:panel_data is script-local; access via statusline which includes file:line
+" after on_panel_update sets s:current_file and s:current_line
+let has_location = yac_test#wait_for(
+      \ {-> yac_dap#statusline() =~# 'test_dap_target'},
+      \ 10000)
+call yac_test#assert_true(has_location,
+      \ 'Statusline should show file name after chain completes')
+call yac_test#log('INFO', 'Statusline after chain: ' . yac_dap#statusline())
+
+" Verify cursor jumped to breakpoint line
+let has_line3 = yac_dap#statusline() =~# ':3\>'
+call yac_test#assert_true(has_line3,
+      \ 'Statusline should show line 3 (breakpoint location)')
+
+" ============================================================================
+" Test 5: Panel data accessible via dap_get_panel
+" ============================================================================
+call yac_test#log('INFO', 'Test 5: Panel data via dap_get_panel')
+
+" Request panel data directly from daemon
+let g:yac_test_panel = {}
+function! s:on_panel_result(ch, msg) abort
+  let g:yac_test_panel = a:msg
+endfunction
+call yac#send_request('dap_get_panel', {}, function('s:on_panel_result'))
+
+let has_panel = yac_test#wait_for(
+      \ {-> !empty(g:yac_test_panel)},
+      \ 5000)
+call yac_test#assert_true(has_panel, 'dap_get_panel should return data')
+
+if has_panel
+  let panel = g:yac_test_panel
+  call yac_test#log('INFO', 'Panel keys: ' . string(keys(panel)))
+
+  " Check status
+  let status = get(panel, 'status', {})
+  call yac_test#assert_true(get(status, 'state', '') ==# 'stopped',
+        \ 'Panel status.state should be stopped')
+
+  " Check frames
+  let frames = get(panel, 'frames', [])
+  call yac_test#assert_true(len(frames) > 0,
+        \ 'Panel should have at least 1 stack frame')
+  if len(frames) > 0
+    call yac_test#log('INFO', 'Top frame: ' . string(frames[0]))
+  endif
+
+  " Check variables
+  let vars = get(panel, 'variables', [])
+  call yac_test#assert_true(len(vars) > 0,
+        \ 'Panel should have variables (locals at breakpoint)')
+  call yac_test#log('INFO', 'Variable count: ' . string(len(vars)))
+  let show_count = len(vars) > 4 ? 4 : len(vars)
+  for i in range(show_count)
+    try
+      let v = vars[i]
+      call yac_test#log('INFO', '  var: ' . string(get(v, 'name', '?')) . ' = ' . string(get(v, 'value', '?')))
+    catch
+      call yac_test#log('INFO', '  var[' . i . '] error: ' . v:exception)
+    endtry
+  endfor
+endif
+
+" ============================================================================
+" Test 6: Current line sign placed at breakpoint
+" ============================================================================
+call yac_test#log('INFO', 'Test 6: Current line sign')
+let cur_signs = sign_getplaced('%', {'name': 'YacDapCurrentLine'})
+let has_cur = !empty(cur_signs) && !empty(get(cur_signs[0], 'signs', []))
+call yac_test#assert_true(has_cur, 'Current line sign should be placed at stopped position')
+
+" ============================================================================
+" Test 7: Messages contain DAP callback evidence
+" ============================================================================
+call yac_test#check_errors()
+call yac_test#log('INFO', 'Test 7: Check messages')
 redir => msgs
 silent messages
 redir END
-call yac_test#log('INFO', 'Messages dump:')
 for line in split(msgs, "\n")
-  if line =~# '\cyac\|dap\|debug\|stop\|break'
+  if line =~# '\cyac\|dap\|debug\|stop\|break\|panel'
     call yac_test#log('INFO', '  MSG: ' . line)
   endif
 endfor
