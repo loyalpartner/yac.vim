@@ -263,6 +263,7 @@ pub const DapSession = struct {
         var frames_arr = std.json.Array.init(alloc);
         for (self.cached_frames.items) |frame| {
             try frames_arr.append(try json.buildObject(alloc, .{
+                .{ "id", json.jsonInteger(@intCast(frame.id)) },
                 .{ "name", json.jsonString(frame.name) },
                 .{ "source_path", json.jsonString(frame.source_path) },
                 .{ "source_name", json.jsonString(frame.source_name) },

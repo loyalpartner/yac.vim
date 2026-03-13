@@ -263,7 +263,7 @@ function! yac_dap#variables() abort
     echohl WarningMsg | echo '[yac] No stack frames available' | echohl None
     return
   endif
-  let frame_id = s:stack_frames[s:selected_frame_idx].id
+  let frame_id = get(s:stack_frames[s:selected_frame_idx], 'id', v:null)
   call yac#send_notify('dap_scopes', {'frame_id': frame_id})
 endfunction
 
@@ -313,7 +313,7 @@ endfunction
 " Evaluate expression (in REPL context).
 function! yac_dap#evaluate(expr) abort
   if !s:dap_active | call s:not_active() | return | endif
-  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
+  let frame_id = !empty(s:stack_frames) ? get(s:stack_frames[s:selected_frame_idx], 'id', v:null) : v:null
   call yac#send_notify('dap_evaluate', {
         \ 'expression': a:expr,
         \ 'frame_id': frame_id,
@@ -346,7 +346,7 @@ function! yac_dap#eval_cursor() abort
   if empty(word)
     return
   endif
-  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
+  let frame_id = !empty(s:stack_frames) ? get(s:stack_frames[s:selected_frame_idx], 'id', v:null) : v:null
   call yac#send_notify('dap_evaluate', {
         \ 'expression': word,
         \ 'frame_id': frame_id,
@@ -372,7 +372,7 @@ endfunction
 "   b   toggle breakpoint        B   conditional breakpoint
 "   n   next (step over)         s   step in
 "   o   step out                 c   continue
-"   k   eval word under cursor   K   show variables
+"   K   eval word under cursor
 "   f   select stack frame       p   stack trace
 "   P   toggle debug panel      r   open REPL
 "   w   watch cursor word
@@ -380,7 +380,7 @@ endfunction
 "   q   leave DAP mode
 " ============================================================================
 
-let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'P', 'x', '?']
+let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'P', 'x', '?']
 
 " Enter DAP mode (auto-called on stopped, or manual).
 function! yac_dap#enter_mode() abort
@@ -405,8 +405,7 @@ function! yac_dap#enter_mode() abort
   nnoremap <silent> s :call yac_dap#step_in()<CR>
   nnoremap <silent> o :call yac_dap#step_out()<CR>
   nnoremap <silent> c :call yac_dap#continue()<CR>
-  nnoremap <silent> k :call yac_dap#eval_cursor()<CR>
-  nnoremap <silent> K :call yac_dap#variables()<CR>
+  nnoremap <silent> K :call yac_dap#eval_cursor()<CR>
   nnoremap <silent> v :call yac_dap#variables()<CR>
   nnoremap <silent> f :call yac_dap#select_frame()<CR>
   nnoremap <silent> t :call yac_dap#threads()<CR>
@@ -473,8 +472,8 @@ function! yac_dap#show_help() abort
         \ ' s   step in',
         \ ' o   step out',
         \ ' c   continue',
-        \ ' k   eval word under cursor',
-        \ ' K/v variables',
+        \ ' K   eval word under cursor',
+        \ ' v   variables popup',
         \ ' f   select stack frame',
         \ ' p   stack trace',
         \ ' P   toggle debug panel',
@@ -1444,7 +1443,7 @@ function! s:evaluate_watches() abort
   if empty(s:watch_expressions) || !s:dap_active
     return
   endif
-  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
+  let frame_id = !empty(s:stack_frames) ? get(s:stack_frames[s:selected_frame_idx], 'id', v:null) : v:null
   let s:pending_watch_count = len(s:watch_expressions)
   for expr in s:watch_expressions
     call yac#send_notify('dap_evaluate', {
