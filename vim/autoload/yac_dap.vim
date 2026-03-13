@@ -25,6 +25,8 @@ let s:stack_frames = []          " Current stack trace
 let s:selected_frame_idx = 0     " Currently selected stack frame index
 let s:watch_expressions = []     " List of watch expressions
 let s:stack_popup_id = -1        " Current stack trace popup window ID
+let s:dap_mode = 0               " 1 when DAP mode (single-key shortcuts) is active
+let s:saved_maps = {}            " Saved normal mode mappings during DAP mode
 
 let s:data_dir = $HOME . '/.local/share/yac'
 
@@ -327,6 +329,128 @@ function! yac_dap#repl() abort
   endif
 endfunction
 
+" Evaluate word under cursor (for hover in DAP mode).
+function! yac_dap#eval_cursor() abort
+  if !s:dap_active | call s:not_active() | return | endif
+  let word = expand('<cexpr>')
+  if empty(word)
+    let word = expand('<cword>')
+  endif
+  if empty(word)
+    return
+  endif
+  let frame_id = !empty(s:stack_frames) ? s:stack_frames[s:selected_frame_idx].id : v:null
+  call yac#send_notify('dap_evaluate', {
+        \ 'expression': word,
+        \ 'frame_id': frame_id,
+        \ 'context': 'hover',
+        \ })
+endfunction
+
+" Add watch expression for word under cursor.
+function! yac_dap#add_watch_cursor() abort
+  let word = expand('<cexpr>')
+  if empty(word)
+    let word = expand('<cword>')
+  endif
+  if !empty(word)
+    call yac_dap#add_watch(word)
+  endif
+endfunction
+
+" ============================================================================
+" DAP Mode — single-key shortcuts for efficient debugging
+"
+" Keys:
+"   b   toggle breakpoint        B   conditional breakpoint
+"   n   next (step over)         s   step in
+"   o   step out                 c   continue
+"   k   eval word under cursor   K   show variables
+"   f   select stack frame       p   stack trace
+"   r   open REPL               w   watch cursor word
+"   E   toggle exception bp     x   terminate session
+"   q   leave DAP mode
+" ============================================================================
+
+let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'x']
+
+" Enter DAP mode (auto-called on stopped, or manual).
+function! yac_dap#enter_mode() abort
+  if s:dap_mode
+    return
+  endif
+  let s:dap_mode = 1
+
+  " Save any existing global normal-mode mappings for these keys
+  let s:saved_maps = {}
+  for key in s:dap_mode_keys
+    let info = maparg(key, 'n', 0, 1)
+    if !empty(info) && !get(info, 'buffer', 0)
+      let s:saved_maps[key] = info
+    endif
+  endfor
+
+  " Set DAP mode mappings
+  nnoremap <silent> b :call yac_dap#toggle_breakpoint()<CR>
+  nnoremap <silent> B :call yac_dap#set_conditional_breakpoint()<CR>
+  nnoremap <silent> n :call yac_dap#next()<CR>
+  nnoremap <silent> s :call yac_dap#step_in()<CR>
+  nnoremap <silent> o :call yac_dap#step_out()<CR>
+  nnoremap <silent> c :call yac_dap#continue()<CR>
+  nnoremap <silent> k :call yac_dap#eval_cursor()<CR>
+  nnoremap <silent> K :call yac_dap#variables()<CR>
+  nnoremap <silent> v :call yac_dap#variables()<CR>
+  nnoremap <silent> f :call yac_dap#select_frame()<CR>
+  nnoremap <silent> t :call yac_dap#threads()<CR>
+  nnoremap <silent> r :call yac_dap#repl()<CR>
+  nnoremap <silent> w :call yac_dap#add_watch_cursor()<CR>
+  nnoremap <silent> E :call yac_dap#toggle_exception_breakpoints()<CR>
+  nnoremap <silent> p :call yac_dap#stack_trace()<CR>
+  nnoremap <silent> x :call yac_dap#terminate()<CR>
+  nnoremap <silent> q :call yac_dap#leave_mode()<CR>
+
+  echohl YacDapTitle
+  echo '[yac] DAP mode  b:bp n:next s:in o:out c:cont k:eval K:vars f:frame r:repl x:quit q:exit-mode'
+  echohl None
+  call s:update_status()
+endfunction
+
+" Leave DAP mode — restore original mappings.
+function! yac_dap#leave_mode() abort
+  if !s:dap_mode
+    return
+  endif
+  let s:dap_mode = 0
+
+  for key in s:dap_mode_keys
+    silent! execute 'nunmap' key
+  endfor
+
+  " Restore saved mappings
+  for [key, info] in items(s:saved_maps)
+    if exists('*mapset')
+      call mapset('n', 0, info)
+    else
+      let cmd = info.noremap ? 'nnoremap' : 'nmap'
+      let cmd .= ' <silent>'
+      execute cmd key info.rhs
+    endif
+  endfor
+  let s:saved_maps = {}
+
+  echohl Comment | echo '[yac] DAP mode off' | echohl None
+  call s:update_status()
+endfunction
+
+" Toggle DAP mode on/off.
+function! yac_dap#toggle_mode() abort
+  if s:dap_mode
+    call yac_dap#leave_mode()
+  else
+    call yac_dap#enter_mode()
+  endif
+endfunction
+
 " Get DAP status for statusline.
 function! yac_dap#statusline() abort
   if !s:dap_active
@@ -343,7 +467,8 @@ function! yac_dap#statusline() abort
   for lines in values(s:breakpoints)
     let bp_count += len(lines)
   endfor
-  let parts = [icon . s:dap_state]
+  let mode_indicator = s:dap_mode ? '[DAP] ' : ''
+  let parts = [mode_indicator . icon . s:dap_state]
   if bp_count > 0
     call add(parts, printf('%d bp', bp_count))
   endif
@@ -381,8 +506,11 @@ function! yac_dap#on_stopped(...) abort
         \ 'pause':      '⏸ ',
         \ }
   let icon = get(reason_icons, reason, '⏸ ')
+  " Auto-enter DAP mode on first stop
+  call yac_dap#enter_mode()
+
   echohl YacDapStatusStopped
-  echo printf('[yac] %sStopped: %s', icon, reason)
+  echo printf('[yac] %sStopped: %s  (DAP mode: b/n/s/o/c/k/q)', icon, reason)
   echohl None
 endfunction
 
@@ -759,6 +887,8 @@ function! s:sync_breakpoints(file) abort
 endfunction
 
 function! s:cleanup_session() abort
+  " Leave DAP mode first (restores key mappings)
+  call yac_dap#leave_mode()
   let s:dap_active = 0
   let s:dap_state = 'inactive'
   let s:current_file = ''
