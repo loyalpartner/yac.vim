@@ -874,7 +874,7 @@ pub const EventLoop = struct {
                 // Chain finished — send full panel data to Vim
                 log.debug("DAP chain complete, sending panel update", .{});
                 const panel_data = session.buildPanelData(alloc) catch return;
-                self.sendDapCallbackToAllClients(alloc, "yac_dap#on_panel_update", panel_data);
+                self.sendDapCallbackToOwner(alloc, "yac_dap#on_panel_update", panel_data);
             }
             // Chain-managed responses are NOT forwarded individually —
             // the panel update callback replaces per-response callbacks.
@@ -889,7 +889,7 @@ pub const EventLoop = struct {
             std.mem.eql(u8, response.command, "threads"))
         {
             const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;
-            self.sendDapCallbackToAllClients(alloc, func, response.body);
+            self.sendDapCallbackToOwner(alloc, func, response.body);
         }
     }
 
@@ -899,7 +899,7 @@ pub const EventLoop = struct {
         if (std.mem.eql(u8, event.event, "initialized")) {
             session.session_state = .configured;
             session.client.sendDeferredConfiguration();
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
             session.session_state = .stopped;
             // Extract reason from event body
@@ -911,47 +911,49 @@ pub const EventLoop = struct {
             session.startStoppedChain(reason) catch |e| {
                 log.err("DAP chain start failed: {any}", .{e});
             };
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_stopped", event.body);
         } else if (std.mem.eql(u8, event.event, "continued")) {
             session.session_state = .running;
             session.clearCache();
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_continued", .null);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_continued", .null);
         } else if (std.mem.eql(u8, event.event, "terminated")) {
             session.session_state = .terminated;
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_terminated", .null);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_terminated", .null);
             self.cleanupDapSession();
         } else if (std.mem.eql(u8, event.event, "exited")) {
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_exited", event.body);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_exited", event.body);
         } else if (std.mem.eql(u8, event.event, "output")) {
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_output", event.body);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_output", event.body);
         } else if (std.mem.eql(u8, event.event, "breakpoint")) {
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_breakpoint", event.body);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_breakpoint", event.body);
         } else if (std.mem.eql(u8, event.event, "thread")) {
-            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_thread", event.body);
+            self.sendDapCallbackToOwner(alloc, "yac_dap#on_thread", event.body);
         }
     }
 
-    fn sendDapCallbackToAllClients(self: *EventLoop, alloc: std.mem.Allocator, func: []const u8, args: Value) void {
-        var cit = self.clients.iterator();
-        while (cit.next()) |entry| {
-            const cid = entry.key_ptr.*;
-            const stream = entry.value_ptr.*.stream;
+    /// Send DAP callback only to the client that owns the session.
+    fn sendDapCallbackToOwner(self: *EventLoop, alloc: std.mem.Allocator, func: []const u8, args: Value) void {
+        const session = self.dap_session orelse return;
+        const owner_id = session.owner_client_id;
+        const client_entry = self.clients.get(owner_id) orelse {
+            log.warn("DAP callback: owner client {d} disconnected", .{owner_id});
+            return;
+        };
 
-            var arg_array = std.json.Array.init(alloc);
-            arg_array.append(args) catch continue;
+        var arg_array = std.json.Array.init(alloc);
+        arg_array.append(args) catch return;
 
-            const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{
-                .func = func,
-                .args = .{ .array = arg_array },
-            } }) catch continue;
+        const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{
+            .func = func,
+            .args = .{ .array = arg_array },
+        } }) catch return;
 
-            const msg = self.allocator.alloc(u8, encoded.len + 1) catch continue;
-            @memcpy(msg[0..encoded.len], encoded);
-            msg[encoded.len] = '\n';
-            if (!self.out_queue.push(.{ .stream = stream, .bytes = msg })) {
-                self.allocator.free(msg);
-                log.warn("DAP callback: out queue full for client {d}", .{cid});
-            }
+        const msg = self.allocator.alloc(u8, encoded.len + 1) catch return;
+        @memcpy(msg[0..encoded.len], encoded);
+        msg[encoded.len] = '\n';
+        if (!self.out_queue.push(.{ .stream = client_entry.stream, .bytes = msg })) {
+            self.allocator.free(msg);
+            log.warn("DAP callback: out queue full for client {d}", .{owner_id});
         }
     }
 

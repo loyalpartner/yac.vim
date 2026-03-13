@@ -98,6 +98,9 @@ pub const DapSession = struct {
     // -- Stopped event reason --
     stopped_reason: []const u8 = "",
 
+    // -- Owner: client that started this session --
+    owner_client_id: u32 = 0,
+
     pub fn init(allocator: Allocator, client: *DapClient) DapSession {
         return .{
             .allocator = allocator,

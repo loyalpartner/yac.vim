@@ -76,6 +76,7 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     };
     session.* = DapSession.init(ctx.gpa_allocator, client);
     session.session_state = .initializing;
+    session.owner_client_id = ctx.client_id;
     ctx.dap_session.* = session;
 
     // Save launch params for deferred execution after 'initialized' event.
