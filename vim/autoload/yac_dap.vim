@@ -374,12 +374,13 @@ endfunction
 "   o   step out                 c   continue
 "   k   eval word under cursor   K   show variables
 "   f   select stack frame       p   stack trace
-"   r   open REPL               w   watch cursor word
+"   P   toggle debug panel      r   open REPL
+"   w   watch cursor word
 "   E   toggle exception bp     x   terminate session
 "   q   leave DAP mode
 " ============================================================================
 
-let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'x', '?']
+let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'k', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'P', 'x', '?']
 
 " Enter DAP mode (auto-called on stopped, or manual).
 function! yac_dap#enter_mode() abort
@@ -413,6 +414,7 @@ function! yac_dap#enter_mode() abort
   nnoremap <silent> w :call yac_dap#add_watch_cursor()<CR>
   nnoremap <silent> E :call yac_dap#toggle_exception_breakpoints()<CR>
   nnoremap <silent> p :call yac_dap#stack_trace()<CR>
+  nnoremap <silent> P :call yac_dap#panel_toggle()<CR>
   nnoremap <silent> x :call yac_dap#terminate()<CR>
   nnoremap <silent> q :call yac_dap#leave_mode()<CR>
   nnoremap <silent> ? :call yac_dap#show_help()<CR>
@@ -475,6 +477,7 @@ function! yac_dap#show_help() abort
         \ ' K/v variables',
         \ ' f   select stack frame',
         \ ' p   stack trace',
+        \ ' P   toggle debug panel',
         \ ' t   threads',
         \ ' r   open REPL',
         \ ' w   watch cursor word',
