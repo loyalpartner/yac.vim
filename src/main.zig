@@ -93,6 +93,7 @@ test {
     _ = @import("dap/protocol.zig");
     _ = @import("dap/config.zig");
     _ = @import("dap/client.zig");
+    _ = @import("dap/session.zig");
 }
 
 test "restrictSocketPermissions: socket file is set to 0o600" {
