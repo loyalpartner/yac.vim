@@ -88,6 +88,12 @@ pub const handlers = [_]Handler{
     .{ .name = "dap_evaluate", .handleFn = dap_handlers.handleDapEvaluate },
     .{ .name = "dap_terminate", .handleFn = dap_handlers.handleDapTerminate },
     .{ .name = "dap_status", .handleFn = dap_handlers.handleDapStatus },
+    .{ .name = "dap_get_panel", .handleFn = dap_handlers.handleDapGetPanel },
+    .{ .name = "dap_switch_frame", .handleFn = dap_handlers.handleDapSwitchFrame },
+    .{ .name = "dap_expand_variable", .handleFn = dap_handlers.handleDapExpandVariable },
+    .{ .name = "dap_collapse_variable", .handleFn = dap_handlers.handleDapCollapseVariable },
+    .{ .name = "dap_add_watch", .handleFn = dap_handlers.handleDapAddWatch },
+    .{ .name = "dap_remove_watch", .handleFn = dap_handlers.handleDapRemoveWatch },
     .{ .name = "exit", .handleFn = handleExit },
 };
 

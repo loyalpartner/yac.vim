@@ -2,7 +2,8 @@ const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 const log = @import("../log.zig");
-const dap_client = @import("../dap/client.zig");
+const dap_client_mod = @import("../dap/client.zig");
+const dap_session_mod = @import("../dap/session.zig");
 const dap_config = @import("../dap/config.zig");
 const dap_protocol = @import("../dap/protocol.zig");
 const lsp_registry = @import("../lsp/registry.zig");
@@ -10,13 +11,14 @@ const lsp_registry = @import("../lsp/registry.zig");
 const Value = json.Value;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
-const DapClient = dap_client.DapClient;
+const DapClient = dap_client_mod.DapClient;
+const DapSession = dap_session_mod.DapSession;
 
 // ============================================================================
 // DAP Handlers
 //
 // Each handler corresponds to a Vim-side yac#dap_* function.
-// The active DAP client is stored in the EventLoop (single session).
+// The active DAP session is stored in the EventLoop (single session).
 // ============================================================================
 
 /// Start a debug session: spawn adapter, initialize, set breakpoints, launch.
@@ -44,10 +46,12 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     const workspace_dir = std.fs.path.dirname(file);
 
     // If there's an existing session, terminate it first
-    if (ctx.dap_client.*) |old| {
-        _ = old.sendDisconnect(true) catch 0;
+    if (ctx.dap_session.*) |old| {
+        _ = old.client.sendDisconnect(true) catch 0;
+        old.client.deinit();
         old.deinit();
-        ctx.dap_client.* = null;
+        ctx.gpa_allocator.destroy(old);
+        ctx.dap_session.* = null;
     }
 
     // Spawn the debug adapter
@@ -58,7 +62,14 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
         return .{ .empty = {} };
     };
 
-    ctx.dap_client.* = client;
+    // Create session wrapping the client
+    const session = ctx.gpa_allocator.create(DapSession) catch {
+        client.deinit();
+        return .{ .empty = {} };
+    };
+    session.* = DapSession.init(ctx.gpa_allocator, client);
+    session.session_state = .initializing;
+    ctx.dap_session.* = session;
 
     // Save launch params for deferred execution after 'initialized' event.
     // Must dupe strings into gpa — the request arena is freed after this handler returns.
@@ -148,7 +159,7 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Set breakpoints for a file.
 /// Params: {file, breakpoints: [{line, condition?, hit_condition?, log_message?}]}
 pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
@@ -161,7 +172,7 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
     };
 
     // Extract breakpoint info
-    var breakpoints: std.ArrayList(dap_client.BreakpointInfo) = .{};
+    var breakpoints: std.ArrayList(dap_client_mod.BreakpointInfo) = .{};
     defer breakpoints.deinit(ctx.allocator);
     for (bp_array.items) |item| {
         const bp_obj = switch (item) {
@@ -178,7 +189,7 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
         }
     }
 
-    _ = try client.sendSetBreakpoints(ctx.allocator, file, breakpoints.items);
+    _ = try session.client.sendSetBreakpoints(ctx.allocator, file, breakpoints.items);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -187,7 +198,7 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
 /// Set exception breakpoints.
 /// Params: {filters: ["raised", "uncaught", ...]}
 pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
@@ -207,7 +218,7 @@ pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !Dispa
         }
     }
 
-    _ = try client.sendSetExceptionBreakpoints(ctx.allocator, filters.items);
+    _ = try session.client.sendSetExceptionBreakpoints(ctx.allocator, filters.items);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -215,8 +226,8 @@ pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !Dispa
 
 /// Get all threads.
 pub fn handleDapThreads(ctx: *HandlerContext, _: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
-    _ = try client.sendThreads();
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    _ = try session.client.sendThreads();
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -225,14 +236,14 @@ pub fn handleDapThreads(ctx: *HandlerContext, _: Value) !DispatchResult {
 /// Continue execution.
 /// Params: {thread_id?}
 pub fn handleDapContinue(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
-    _ = try client.sendContinue(thread_id);
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try session.client.sendContinue(thread_id);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -240,14 +251,14 @@ pub fn handleDapContinue(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Step over (next line).
 pub fn handleDapNext(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
-    _ = try client.sendNext(thread_id);
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try session.client.sendNext(thread_id);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -255,14 +266,14 @@ pub fn handleDapNext(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Step into function.
 pub fn handleDapStepIn(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
-    _ = try client.sendStepIn(thread_id);
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try session.client.sendStepIn(thread_id);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -270,14 +281,14 @@ pub fn handleDapStepIn(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Step out of function.
 pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
-    _ = try client.sendStepOut(thread_id);
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try session.client.sendStepOut(thread_id);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -285,14 +296,14 @@ pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Get stack trace for the stopped thread.
 pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse client.active_thread_id orelse 1;
-    _ = try client.sendStackTrace(thread_id);
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try session.client.sendStackTrace(thread_id);
     // Response will come asynchronously via processDapOutput
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
@@ -301,14 +312,14 @@ pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult 
 
 /// Get scopes for a stack frame.
 pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
     const frame_id = json.getU32(obj, "frame_id") orelse return .{ .empty = {} };
-    _ = try client.sendScopes(frame_id);
+    _ = try session.client.sendScopes(frame_id);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -316,14 +327,14 @@ pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Get variables for a scope reference.
 pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
     };
 
     const variables_ref = json.getU32(obj, "variables_ref") orelse return .{ .empty = {} };
-    _ = try client.sendVariables(variables_ref);
+    _ = try session.client.sendVariables(variables_ref);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -331,7 +342,7 @@ pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Evaluate an expression in the debug context.
 pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
     const obj = switch (params) {
         .object => |o| o,
         else => return .{ .empty = {} },
@@ -340,7 +351,7 @@ pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
     const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
     const frame_id = json.getU32(obj, "frame_id");
     const eval_context = json.getString(obj, "context") orelse "repl";
-    _ = try client.sendEvaluate(expression, frame_id, eval_context);
+    _ = try session.client.sendEvaluate(expression, frame_id, eval_context);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -348,36 +359,145 @@ pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Terminate the debug session.
 pub fn handleDapTerminate(ctx: *HandlerContext, _: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse return notRunning(ctx);
-    _ = client.sendTerminate() catch {};
-    _ = client.sendDisconnect(true) catch {};
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    _ = session.client.sendTerminate() catch {};
+    _ = session.client.sendDisconnect(true) catch {};
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
 }
 
-/// Get current DAP session status.
+/// Get current DAP session status (returns full panel data).
 pub fn handleDapStatus(ctx: *HandlerContext, _: Value) !DispatchResult {
-    const client = ctx.dap_client.* orelse {
+    const session = ctx.dap_session.* orelse {
         return .{ .data = try json.buildObject(ctx.allocator, .{
             .{ "active", .{ .bool = false } },
         }) };
     };
 
-    const state_str: []const u8 = switch (client.state) {
-        .uninitialized => "uninitialized",
-        .initializing => "initializing",
-        .configured => "configured",
-        .running => "running",
-        .stopped => "stopped",
-        .terminated => "terminated",
+    return .{ .data = try session.buildPanelData(ctx.allocator) };
+}
+
+// ============================================================================
+// New session-aware handlers
+// ============================================================================
+
+/// Get panel data (variables, frames, watches).
+pub fn handleDapGetPanel(ctx: *HandlerContext, _: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    return .{ .data = try session.buildPanelData(ctx.allocator) };
+}
+
+/// Switch to a different stack frame.
+/// Params: {frame_index}
+pub fn handleDapSwitchFrame(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
     };
 
+    const frame_idx = json.getU32(obj, "frame_index") orelse return .{ .empty = {} };
+    session.switchFrame(frame_idx) catch |e| {
+        log.err("DAP switchFrame failed: {any}", .{e});
+        return .{ .empty = {} };
+    };
     return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "active", .{ .bool = true } },
-        .{ "state", json.jsonString(state_str) },
-        .{ "thread_id", if (client.active_thread_id) |tid| json.jsonInteger(@intCast(tid)) else .null },
+        .{ "ok", .{ .bool = true } },
     }) };
+}
+
+/// Expand a variable by path indices.
+/// Params: {path: [0, 2, 1]}
+pub fn handleDapExpandVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const path = try parsePath(ctx, obj) orelse return .{ .empty = {} };
+    defer ctx.allocator.free(path);
+
+    session.expandVariable(path) catch |e| {
+        log.err("DAP expandVariable failed: {any}", .{e});
+        return .{ .empty = {} };
+    };
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Collapse a variable by path indices.
+/// Params: {path: [0, 2]}
+pub fn handleDapCollapseVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const path = try parsePath(ctx, obj) orelse return .{ .empty = {} };
+    defer ctx.allocator.free(path);
+
+    session.collapseVariable(path);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Add a watch expression.
+/// Params: {expression}
+pub fn handleDapAddWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
+    try session.addWatch(expression);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+/// Remove a watch expression by index.
+/// Params: {index}
+pub fn handleDapRemoveWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const index = json.getU32(obj, "index") orelse return .{ .empty = {} };
+    session.removeWatch(index);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
+}
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+fn parsePath(ctx: *HandlerContext, obj: json.ObjectMap) !?[]const u32 {
+    const path_arr = switch (obj.get("path") orelse return null) {
+        .array => |a| a,
+        else => return null,
+    };
+    const path = try ctx.allocator.alloc(u32, path_arr.items.len);
+    for (path_arr.items, 0..) |item, i| {
+        path[i] = switch (item) {
+            .integer => |val| @intCast(val),
+            else => {
+                ctx.allocator.free(path);
+                return null;
+            },
+        };
+    }
+    return path;
 }
 
 fn notRunning(ctx: *HandlerContext) !DispatchResult {

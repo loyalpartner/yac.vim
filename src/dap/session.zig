@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const DapClient = dap_client_mod.DapClient;
+const DapState = dap_client_mod.DapState;
 
 // ============================================================================
 // DapSession — high-level DAP session management
@@ -79,7 +80,7 @@ pub const DapSession = struct {
     active_frame_id: ?u32 = null,
 
     // -- Variable cache: variablesReference → children --
-    var_cache: std.AutoHashMap(u32, VarList) = .empty,
+    var_cache: std.AutoHashMap(u32, VarList) = undefined,
     locals_ref: ?u32 = null,
 
     // -- Expand state --
@@ -90,6 +91,9 @@ pub const DapSession = struct {
     watch_expressions: WatchExprList = .{},
     watch_results: WatchResultList = .{},
     watches_pending: u32 = 0,
+
+    // -- Session state (mirrors client.state, updated by event handlers) --
+    session_state: DapState = .uninitialized,
 
     // -- Stopped event reason --
     stopped_reason: []const u8 = "",
@@ -245,7 +249,7 @@ pub const DapSession = struct {
     // ========================================================================
 
     pub fn buildPanelData(self: *const DapSession, alloc: Allocator) !Value {
-        const state_str: []const u8 = switch (self.client.state) {
+        const state_str: []const u8 = switch (self.session_state) {
             .uninitialized => "uninitialized",
             .initializing => "initializing",
             .configured => "configured",

@@ -13,6 +13,7 @@ const progress_mod = @import("progress.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const queue_mod = @import("queue.zig");
 const dap_client_mod = @import("dap/client.zig");
+const dap_session_mod = @import("dap/session.zig");
 const dap_protocol = @import("dap/protocol.zig");
 
 const Allocator = std.mem.Allocator;
@@ -51,7 +52,7 @@ pub const EventLoop = struct {
     /// Tree-sitter state
     ts: treesitter_mod.TreeSitter,
     /// Active DAP debug session (single session at a time).
-    dap_client: ?*dap_client_mod.DapClient = null,
+    dap_session: ?*dap_session_mod.DapSession = null,
     /// Set by "exit" handler to trigger clean shutdown.
     shutdown_requested: bool = false,
     /// Protects all shared mutable state when accessed from worker threads.
@@ -81,7 +82,11 @@ pub const EventLoop = struct {
     }
 
     pub fn deinit(self: *EventLoop) void {
-        if (self.dap_client) |dc| dc.deinit();
+        if (self.dap_session) |s| {
+            s.client.deinit();
+            s.deinit();
+            self.allocator.destroy(s);
+        }
         self.lsp.deinit();
         self.requests.deinit();
         self.clients.deinit();
@@ -127,10 +132,10 @@ pub const EventLoop = struct {
         try self.lsp.registry.collectFds(poll_fds, poll_client_keys);
 
         // fd[N+M+1] = DAP adapter stdout (if active)
-        const dap_fd_index: ?usize = if (self.dap_client) |dc| idx: {
+        const dap_fd_index: ?usize = if (self.dap_session) |session| idx: {
             const idx = poll_fds.items.len;
             try poll_fds.append(self.allocator, .{
-                .fd = dc.stdoutFd(),
+                .fd = session.client.stdoutFd(),
                 .events = std.posix.POLL.IN,
                 .revents = 0,
             });
@@ -252,27 +257,27 @@ pub const EventLoop = struct {
 
         if (revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
             // Drain any remaining data before cleanup
-            if (self.dap_client) |client| {
+            if (self.dap_session) |session| {
                 while (true) {
                     var arena = std.heap.ArenaAllocator.init(self.allocator);
                     defer arena.deinit();
                     const alloc = arena.allocator();
 
-                    var msgs = client.readMessages(alloc) catch break;
+                    var msgs = session.client.readMessages(alloc) catch break;
                     defer msgs.deinit(self.allocator);
                     if (msgs.items.len == 0) break;
 
                     for (msgs.items) |msg| {
                         switch (msg) {
-                            .response => |r| self.handleDapResponse(alloc, client, r),
-                            .event => |e| self.handleDapEvent(alloc, client, e),
+                            .response => |r| self.handleDapResponse(alloc, session, r),
+                            .event => |e| self.handleDapEvent(alloc, session, e),
                         }
-                        if (self.dap_client == null) break; // client was freed by cleanupDapSession
+                        if (self.dap_session == null) break;
                     }
-                    if (self.dap_client == null) break; // client was freed inside the loop
+                    if (self.dap_session == null) break;
                 }
             }
-            if (self.dap_client != null) {
+            if (self.dap_session != null) {
                 log.info("DAP adapter disconnected (HUP/ERR)", .{});
                 self.cleanupDapSession();
             }
@@ -569,7 +574,7 @@ pub const EventLoop = struct {
             .client_stream = client_stream,
             .client_id = cid,
             .ts = &self.ts,
-            .dap_client = &self.dap_client,
+            .dap_session = &self.dap_session,
             .out_queue = &self.out_queue,
             .shutdown_flag = &self.shutdown_requested,
         };
@@ -811,13 +816,13 @@ pub const EventLoop = struct {
     // ====================================================================
 
     fn processDapOutput(self: *EventLoop) void {
-        const client = self.dap_client orelse return;
+        const session = self.dap_session orelse return;
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        var messages = client.readMessages(alloc) catch |e| {
+        var messages = session.client.readMessages(alloc) catch |e| {
             log.debug("DAP readMessages error: {any}", .{e});
             if (e == error.AdapterClosed) self.cleanupDapSession();
             return;
@@ -826,67 +831,87 @@ pub const EventLoop = struct {
 
         for (messages.items) |msg| {
             switch (msg) {
-                .response => |r| self.handleDapResponse(alloc, client, r),
-                .event => |e| self.handleDapEvent(alloc, client, e),
+                .response => |r| self.handleDapResponse(alloc, session, r),
+                .event => |e| self.handleDapEvent(alloc, session, e),
             }
-            if (self.dap_client == null) break; // client was freed by cleanupDapSession
+            if (self.dap_session == null) break;
         }
     }
 
-    fn handleDapResponse(self: *EventLoop, alloc: std.mem.Allocator, client: *dap_client_mod.DapClient, response: dap_protocol.DapResponse) void {
-        _ = client.pending_requests.fetchRemove(response.request_seq);
+    fn handleDapResponse(self: *EventLoop, alloc: std.mem.Allocator, session: *dap_session_mod.DapSession, response: dap_protocol.DapResponse) void {
+        _ = session.client.pending_requests.fetchRemove(response.request_seq);
 
         if (std.mem.eql(u8, response.command, "initialize")) {
-            client.handleInitializeResponse(response);
+            session.client.handleInitializeResponse(response);
             // debugpy requires launch BEFORE it sends 'initialized' event.
             // Send launch immediately after initialize response.
-            client.sendLaunchAfterInit();
+            session.client.sendLaunchAfterInit();
             return;
         }
 
         if (std.mem.eql(u8, response.command, "launch") and response.success) {
-            client.state = .running;
+            session.client.state = .running;
+            session.session_state = .running;
             log.info("DAP: launch succeeded", .{});
         }
 
-        // Route response data to all connected Vim clients
-        if (response.success) {
-            if (std.mem.eql(u8, response.command, "stackTrace") or
-                std.mem.eql(u8, response.command, "scopes") or
-                std.mem.eql(u8, response.command, "variables") or
-                std.mem.eql(u8, response.command, "evaluate") or
-                std.mem.eql(u8, response.command, "threads"))
-            {
-                // Send response body to Vim as an async call
-                const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;
-                self.sendDapCallbackToAllClients(alloc, func, response.body);
-            }
-        } else {
+        if (!response.success) {
             const err_msg = response.message orelse "unknown error";
             log.err("DAP {s} failed: {s}", .{ response.command, err_msg });
             if (lsp_transform.formatToastCmd(alloc, std.fmt.allocPrint(alloc, "[yac] DAP error: {s}", .{err_msg}) catch return, "ErrorMsg")) |cmd|
                 self.sendVimExToAll(alloc, cmd);
+            return;
+        }
+
+        // Try routing through session chain (auto stopped→stackTrace→scopes→variables)
+        const chain_handled = session.handleResponse(alloc, response) catch |e| blk: {
+            log.err("DAP chain error: {any}", .{e});
+            break :blk false;
+        };
+
+        if (chain_handled and session.isChainComplete()) {
+            // Chain finished — send full panel data to Vim
+            const panel_data = session.buildPanelData(alloc) catch return;
+            self.sendDapCallbackToAllClients(alloc, "yac_dap#on_panel_update", panel_data);
+        }
+
+        // Also forward individual responses for backward compatibility
+        if (std.mem.eql(u8, response.command, "stackTrace") or
+            std.mem.eql(u8, response.command, "scopes") or
+            std.mem.eql(u8, response.command, "variables") or
+            std.mem.eql(u8, response.command, "evaluate") or
+            std.mem.eql(u8, response.command, "threads"))
+        {
+            const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;
+            self.sendDapCallbackToAllClients(alloc, func, response.body);
         }
     }
 
-    fn handleDapEvent(self: *EventLoop, alloc: std.mem.Allocator, client: *dap_client_mod.DapClient, event: dap_protocol.DapEvent) void {
-        client.handleEvent(event);
+    fn handleDapEvent(self: *EventLoop, alloc: std.mem.Allocator, session: *dap_session_mod.DapSession, event: dap_protocol.DapEvent) void {
+        session.client.handleEvent(event);
 
         if (std.mem.eql(u8, event.event, "initialized")) {
-            // Adapter is ready for configuration — send breakpoints + configurationDone.
-            // launch was already sent in handleDapResponse (after initialize).
-            client.sendDeferredConfiguration();
+            session.session_state = .configured;
+            session.client.sendDeferredConfiguration();
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_initialized", .null);
         } else if (std.mem.eql(u8, event.event, "stopped")) {
+            session.session_state = .stopped;
+            // Extract reason from event body
+            const reason = if (event.body == .object)
+                json_utils.getString(event.body.object, "reason") orelse "unknown"
+            else
+                "unknown";
+            // Start chain: stackTrace → scopes → variables (automatic)
+            session.startStoppedChain(reason) catch |e| {
+                log.err("DAP chain start failed: {any}", .{e});
+            };
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_stopped", event.body);
-            // Auto-request stackTrace to avoid an extra Vim→daemon round trip.
-            // The response is forwarded to Vim via handleDapResponse → on_stackTrace.
-            if (client.active_thread_id) |tid| {
-                _ = client.sendStackTrace(tid) catch {};
-            }
         } else if (std.mem.eql(u8, event.event, "continued")) {
+            session.session_state = .running;
+            session.clearCache();
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_continued", .null);
         } else if (std.mem.eql(u8, event.event, "terminated")) {
+            session.session_state = .terminated;
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_terminated", .null);
             self.cleanupDapSession();
         } else if (std.mem.eql(u8, event.event, "exited")) {
@@ -896,7 +921,6 @@ pub const EventLoop = struct {
         } else if (std.mem.eql(u8, event.event, "breakpoint")) {
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_breakpoint", event.body);
         } else if (std.mem.eql(u8, event.event, "thread")) {
-            // Thread started/exited — update thread list if needed
             self.sendDapCallbackToAllClients(alloc, "yac_dap#on_thread", event.body);
         }
     }
@@ -934,9 +958,11 @@ pub const EventLoop = struct {
     }
 
     fn cleanupDapSession(self: *EventLoop) void {
-        if (self.dap_client) |dc| {
-            dc.deinit();
-            self.dap_client = null;
+        if (self.dap_session) |session| {
+            session.client.deinit();
+            session.deinit();
+            self.allocator.destroy(session);
+            self.dap_session = null;
             log.info("DAP session cleaned up", .{});
         }
     }
