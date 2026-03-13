@@ -537,25 +537,27 @@ function! yac_dap#on_stopped(...) abort
   let body = a:0 > 0 ? a:1 : {}
   let s:dap_state = 'stopped'
   let reason = get(body, 'reason', 'unknown')
-  " stackTrace is auto-requested by daemon on stopped event — no round trip needed
-  call s:update_status()
 
-  " Auto-evaluate watch expressions
+  " Auto-enter DAP mode on first stop (no-op if already in mode)
+  call yac_dap#enter_mode()
+
+  " For step operations, skip verbose feedback — cursor jump is enough
+  if reason ==# 'step'
+    return
+  endif
+
+  " Evaluate watches only on breakpoint/exception/pause (not every step)
   call s:evaluate_watches()
 
-  " Show stop reason with appropriate highlight
+  " Show stop reason
   let reason_icons = {
         \ 'breakpoint': '● ',
-        \ 'step':       '→ ',
         \ 'exception':  '✕ ',
         \ 'pause':      '⏸ ',
         \ }
   let icon = get(reason_icons, reason, '⏸ ')
-  " Auto-enter DAP mode on first stop
-  call yac_dap#enter_mode()
-
   echohl YacDapStatusStopped
-  echo printf('[yac] %sStopped: %s  (DAP mode: b/n/s/o/c/k/q)', icon, reason)
+  echo printf('[yac] %sStopped: %s', icon, reason)
   echohl None
 endfunction
 
@@ -608,6 +610,7 @@ function! yac_dap#on_stackTrace(...) abort
     if !empty(file) && line > 0
       call s:goto_location(file, line)
       call s:show_current_line(file, line)
+      redraw
     endif
   endif
 endfunction

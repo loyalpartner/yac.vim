@@ -447,19 +447,32 @@ pub const EventLoop = struct {
                     continue;
                 };
 
-                const item = queue_mod.WorkItem{
-                    .client_id = cid,
-                    .client_stream = client.stream,
-                    .raw_line = raw_line,
-                };
-                const routed = if (queue_mod.isTsMethod(line))
-                    self.in_ts.push(item)
-                else
-                    self.in_general.push(item);
+                // DAP step/continue: dispatch inline (skip work queue round trip)
+                if (queue_mod.isDapActionMethod(line)) {
+                    defer self.allocator.free(raw_line);
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    const alloc = arena.allocator();
+                    self.handleWorkItem(.{
+                        .client_id = cid,
+                        .client_stream = client.stream,
+                        .raw_line = raw_line,
+                    }, alloc);
+                } else {
+                    const item = queue_mod.WorkItem{
+                        .client_id = cid,
+                        .client_stream = client.stream,
+                        .raw_line = raw_line,
+                    };
+                    const routed = if (queue_mod.isTsMethod(line))
+                        self.in_ts.push(item)
+                    else
+                        self.in_general.push(item);
 
-                if (!routed) {
-                    item.deinit(self.allocator);
-                    log.warn("Work queue full, dropping line from client {d}", .{cid});
+                    if (!routed) {
+                        item.deinit(self.allocator);
+                        log.warn("Work queue full, dropping line from client {d}", .{cid});
+                    }
                 }
             }
 

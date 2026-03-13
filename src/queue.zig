@@ -121,6 +121,23 @@ pub fn isTsMethod(raw_line: []const u8) bool {
     return false;
 }
 
+// DAP action methods — lightweight commands forwarded to adapter.
+// Processed inline in the main loop to avoid work-queue round trip.
+const DAP_ACTION_METHODS = [_][]const u8{
+    "\"dap_next\"",
+    "\"dap_step_in\"",
+    "\"dap_step_out\"",
+    "\"dap_continue\"",
+};
+
+/// Returns true if raw_line contains a DAP action method (step/continue).
+pub fn isDapActionMethod(raw_line: []const u8) bool {
+    for (DAP_ACTION_METHODS) |kw| {
+        if (std.mem.indexOf(u8, raw_line, kw) != null) return true;
+    }
+    return false;
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
