@@ -1516,7 +1516,7 @@ function! s:render_panel() abort
       call add(lines, '  (no variables)')
     else
       for v in vars
-        call s:render_variable(lines, v, 1)
+        call s:render_variable(lines, v)
       endfor
     endif
   endif
@@ -1567,8 +1567,9 @@ function! s:render_panel() abort
   endif
 endfunction
 
-function! s:render_variable(lines, var, depth) abort
-  let indent = repeat('  ', a:depth)
+function! s:render_variable(lines, var) abort
+  let depth = get(a:var, 'depth', 0) + 1
+  let indent = repeat('  ', depth)
   let name = get(a:var, 'name', '?')
   let value = get(a:var, 'value', '')
   let vtype = get(a:var, 'type', '')
@@ -1586,13 +1587,6 @@ function! s:render_variable(lines, var, depth) abort
     let display .= '  (' . vtype . ')'
   endif
   call add(a:lines, display)
-
-  " Render children if expanded
-  if expanded
-    for child in get(a:var, 'children', [])
-      call s:render_variable(a:lines, child, a:depth + 1)
-    endfor
-  endif
 endfunction
 
 function! s:state_icon(state) abort
@@ -1728,11 +1722,124 @@ function! s:line_to_watch_idx(lnum) abort
 endfunction
 
 function! s:line_to_var_path(lnum) abort
-  " TODO: implement depth-aware path calculation from indentation
-  return []
+  " Map panel line number to flat variable index, then compute path from depth
+  let vars = get(s:panel_data, 'variables', [])
+  if empty(vars)
+    return []
+  endif
+
+  " Find the VARIABLES header line
+  let header_lnum = 0
+  let l = a:lnum
+  while l > 0
+    if getline(l) =~# '^\(▼\|▶\) VARIABLES'
+      let header_lnum = l
+      break
+    endif
+    let l -= 1
+  endwhile
+  if header_lnum == 0
+    return []
+  endif
+
+  " Count non-empty content lines between header and cursor → flat var index
+  let var_idx = -1
+  let l = header_lnum + 1
+  while l <= a:lnum
+    let text = getline(l)
+    if text =~# '^\s*$' || text =~# '^\(▼\|▶\) '
+      break
+    endif
+    let var_idx += 1
+    let l += 1
+  endwhile
+
+  if var_idx < 0 || var_idx >= len(vars)
+    return []
+  endif
+
+  " Build path by walking the flat list backward, collecting parent indices
+  " at each decreasing depth level
+  let target_depth = get(vars[var_idx], 'depth', 0)
+  let path = []
+  let depth_count = {}  " depth → how many vars at that depth we've seen
+
+  " Count sibling index at each depth level
+  let sibling_idx = 0
+  let i = var_idx
+  " Find first sibling at same depth (scanning backward to parent boundary)
+  while i >= 0
+    let d = get(vars[i], 'depth', 0)
+    if d == target_depth
+      let sibling_idx += 1
+    elseif d < target_depth
+      break
+    endif
+    let i -= 1
+  endwhile
+  " sibling_idx is 1-based count; convert to 0-based
+  call insert(path, sibling_idx - 1, 0)
+
+  " Walk up depth levels
+  let cur_depth = target_depth - 1
+  let scan = var_idx - 1
+  while cur_depth >= 0 && scan >= 0
+    let d = get(vars[scan], 'depth', 0)
+    if d == cur_depth
+      " Count this var's sibling position
+      let sib = 0
+      let j = scan
+      while j >= 0
+        let jd = get(vars[j], 'depth', 0)
+        if jd == cur_depth
+          let sib += 1
+        elseif jd < cur_depth
+          break
+        endif
+        let j -= 1
+      endwhile
+      call insert(path, sib - 1, 0)
+      let cur_depth -= 1
+    endif
+    let scan -= 1
+  endwhile
+
+  return path
 endfunction
 
 function! s:resolve_var_at_line(lnum) abort
-  " TODO: resolve variable info at line from panel data
+  let vars = get(s:panel_data, 'variables', [])
+  if empty(vars)
+    return {}
+  endif
+
+  " Find header
+  let header_lnum = 0
+  let l = a:lnum
+  while l > 0
+    if getline(l) =~# '^\(▼\|▶\) VARIABLES'
+      let header_lnum = l
+      break
+    endif
+    let l -= 1
+  endwhile
+  if header_lnum == 0
+    return {}
+  endif
+
+  let var_idx = -1
+  let l = header_lnum + 1
+  while l <= a:lnum
+    let text = getline(l)
+    if text =~# '^\s*$' || text =~# '^\(▼\|▶\) '
+      break
+    endif
+    let var_idx += 1
+    let l += 1
+  endwhile
+
+  if var_idx >= 0 && var_idx < len(vars)
+    return vars[var_idx]
+  endif
   return {}
 endfunction
