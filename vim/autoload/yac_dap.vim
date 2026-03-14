@@ -73,9 +73,37 @@ endif
 
 " Adapter install configs — parallel to yac_install.vim pip method
 let s:adapter_configs = {
-      \ 'python':     {'command': 'python3', 'args': ['-m', 'debugpy.adapter'],
-      \                'check': 'python3 -c "import debugpy"',
-      \                'install': {'method': 'pip', 'package': 'debugpy', 'bin_name': 'debugpy'}},
+      \ 'python': {
+      \   'command': 'python3', 'args': ['-m', 'debugpy.adapter'],
+      \   'install': {'method': 'pip', 'package': 'debugpy', 'bin_name': 'debugpy'},
+      \ },
+      \ 'c': {
+      \   'command': 'codelldb', 'args': [],
+      \   'install': {'method': 'github_release', 'bin_name': 'codelldb',
+      \     'repo': 'vadimcn/codelldb',
+      \     'asset': 'codelldb-{ARCH}-linux.vsix',
+      \     'platform_map': {'Linux': 'linux', 'Darwin': 'darwin'},
+      \     'binary_path': 'extension/adapter/codelldb'},
+      \ },
+      \ 'cpp':        'c',
+      \ 'zig':        'c',
+      \ 'rust':       'c',
+      \ 'go': {
+      \   'command': 'dlv', 'args': ['dap'],
+      \   'install': {'method': 'github_release', 'bin_name': 'dlv',
+      \     'repo': 'go-delve/delve',
+      \     'asset': 'dlv_{PLATFORM}_{GOARCH}',
+      \     'platform_map': {'Linux': 'linux', 'Darwin': 'darwin'}},
+      \ },
+      \ 'javascript': {
+      \   'command': 'node', 'args': [],
+      \   'install': {'method': 'github_release', 'bin_name': 'js-debug',
+      \     'repo': 'microsoft/vscode-js-debug',
+      \     'asset': 'js-debug-dap-v{VERSION}.tar.gz',
+      \     'platform_map': {'Linux': 'linux', 'Darwin': 'darwin'},
+      \     'binary_path': 'js-debug/src/dapDebugServer.js'},
+      \ },
+      \ 'typescript': 'javascript',
       \ }
 
 " ============================================================================
@@ -93,13 +121,18 @@ function! yac_dap#start(...) abort
 
   let ext = fnamemodify(file, ':e')
   let lang = s:ext_to_lang(ext)
+  let adapter = s:resolve_adapter(lang)
 
-  " Check if adapter is available; install if needed
-  if has_key(s:adapter_configs, lang)
-    let adapter = s:adapter_configs[lang]
+  if !empty(adapter)
     if !s:adapter_available(lang, adapter)
       call s:install_adapter(lang, adapter, file, config)
       return
+    endif
+    " Pass resolved command/args to daemon
+    let resolved = s:adapter_resolve_command(lang, adapter)
+    if !empty(resolved)
+      let config.adapter_command = resolved.command
+      let config.adapter_args = resolved.args
     endif
   endif
 
@@ -259,6 +292,30 @@ function! yac_dap#terminate() abort
   call s:cleanup_session()
 endfunction
 
+" Restart debug session (terminate + start with same file, keeping breakpoints).
+function! yac_dap#restart() abort
+  if !s:dap_active | call s:not_active() | return | endif
+  let file = s:current_file
+  if empty(file)
+    let file = expand('%:p')
+  endif
+  " Save breakpoints before cleanup wipes them
+  let saved_bp = deepcopy(s:breakpoints)
+  let saved_cond = deepcopy(s:bp_conditions)
+  call yac#send_notify('dap_terminate', {})
+  call s:cleanup_session()
+  " Restore breakpoints + re-place signs
+  let s:breakpoints = saved_bp
+  let s:bp_conditions = saved_cond
+  for [bp_file, lines] in items(s:breakpoints)
+    for line in lines
+      execute 'sign place' s:bp_sign_id(bp_file, line) 'line=' . line 'name=YacDapBreakpoint file=' . fnameescape(bp_file)
+    endfor
+  endfor
+  " Brief delay to let adapter exit
+  call timer_start(300, {-> s:do_start(file, {})})
+endfunction
+
 " Show stack trace.
 function! yac_dap#stack_trace() abort
   if !s:dap_active | call s:not_active() | return | endif
@@ -385,11 +442,11 @@ endfunction
 "   f   select stack frame       p   stack trace
 "   P   toggle debug panel      r   open REPL
 "   w   watch cursor word
-"   E   toggle exception bp     x   terminate session
-"   q   leave DAP mode
+"   R   restart session          x   terminate session
+"   E   toggle exception bp     q   leave DAP mode
 " ============================================================================
 
-let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'K', 'v', 'f', 't', 'r', 'w', 'E', 'p', 'P', 'x', '?']
+let s:dap_mode_keys = ['b', 'B', 'n', 's', 'o', 'c', 'q', 'K', 'v', 'f', 't', 'r', 'R', 'w', 'E', 'p', 'P', 'x', '?']
 
 " Enter DAP mode (auto-called on stopped, or manual).
 function! yac_dap#enter_mode() abort
@@ -419,6 +476,7 @@ function! yac_dap#enter_mode() abort
   nnoremap <silent> f :call yac_dap#select_frame()<CR>
   nnoremap <silent> t :call yac_dap#threads()<CR>
   nnoremap <silent> r :call yac_dap#repl()<CR>
+  nnoremap <silent> R :call yac_dap#restart()<CR>
   nnoremap <silent> w :call yac_dap#add_watch_cursor()<CR>
   nnoremap <silent> E :call yac_dap#toggle_exception_breakpoints()<CR>
   nnoremap <silent> p :call yac_dap#stack_trace()<CR>
@@ -488,6 +546,7 @@ function! yac_dap#show_help() abort
         \ ' P   toggle debug panel',
         \ ' t   threads',
         \ ' r   open REPL',
+        \ ' R   restart session',
         \ ' w   watch cursor word',
         \ ' E   toggle exception bp',
         \ ' x   terminate session',
@@ -592,6 +651,7 @@ endfunction
 function! yac_dap#on_exited(...) abort
   let body = s:cb_data(a:000)
   let exit_code = get(body, 'exitCode', -1)
+  call s:cleanup_session()
   if exit_code == 0
     echohl YacDapStatusRunning
   else
@@ -804,38 +864,82 @@ function! s:ext_to_lang(ext) abort
   let map = {
         \ 'py': 'python',
         \ 'c': 'c', 'h': 'c', 'cpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp',
+        \ 'hpp': 'cpp', 'hxx': 'cpp',
         \ 'zig': 'zig', 'rs': 'rust', 'go': 'go',
-        \ 'js': 'javascript', 'mjs': 'javascript', 'ts': 'typescript',
+        \ 'js': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
+        \ 'ts': 'typescript', 'mts': 'typescript', 'cts': 'typescript',
         \ }
   return get(map, a:ext, a:ext)
 endfunction
 
+" Resolve adapter config (follow string aliases like 'cpp' -> 'c')
+function! s:resolve_adapter(lang) abort
+  if !has_key(s:adapter_configs, a:lang)
+    return {}
+  endif
+  let cfg = s:adapter_configs[a:lang]
+  " Follow alias
+  if type(cfg) == v:t_string
+    return has_key(s:adapter_configs, cfg) ? s:adapter_configs[cfg] : {}
+  endif
+  return cfg
+endfunction
+
+" Get the resolved command path for an adapter (managed or system).
+" Returns {'command': ..., 'args': [...]} or {} if not available.
+function! s:adapter_resolve_command(lang, adapter) abort
+  let info = get(a:adapter, 'install', {})
+  let bin_name = get(info, 'bin_name', '')
+
+  " --- Python (debugpy): check venv → managed → system ---
+  if a:lang ==# 'python'
+    let venv_py = s:find_venv_python()
+    if !empty(venv_py)
+      if system(venv_py . ' -c "import debugpy"') ==# '' && v:shell_error == 0
+        return {'command': venv_py, 'args': ['-m', 'debugpy.adapter']}
+      endif
+    endif
+    let managed_py = s:data_dir . '/packages/debugpy/venv/bin/python3'
+    if filereadable(managed_py)
+      if system(managed_py . ' -c "import debugpy"') ==# '' && v:shell_error == 0
+        return {'command': managed_py, 'args': ['-m', 'debugpy.adapter']}
+      endif
+    endif
+    if system('python3 -c "import debugpy"') ==# '' && v:shell_error == 0
+      return {'command': 'python3', 'args': ['-m', 'debugpy.adapter']}
+    endif
+    return {}
+  endif
+
+  " --- js-debug: node + dapDebugServer.js ---
+  if bin_name ==# 'js-debug'
+    let binary_path = get(info, 'binary_path', '')
+    let js_bin = s:data_dir . '/packages/js-debug/' . binary_path
+    if filereadable(js_bin) && executable('node')
+      return {'command': 'node', 'args': [js_bin]}
+    endif
+    return {}
+  endif
+
+  " --- Binary adapters (codelldb, dlv): managed → system ---
+  if !empty(bin_name)
+    let binary_path = get(info, 'binary_path', 'bin/' . bin_name)
+    let managed_bin = s:data_dir . '/packages/' . bin_name . '/' . binary_path
+    if filereadable(managed_bin)
+      return {'command': managed_bin, 'args': get(a:adapter, 'args', [])}
+    endif
+  endif
+
+  " System PATH
+  let cmd = get(a:adapter, 'command', '')
+  if !empty(cmd) && executable(cmd)
+    return {'command': cmd, 'args': get(a:adapter, 'args', [])}
+  endif
+  return {}
+endfunction
+
 function! s:adapter_available(lang, adapter) abort
-  " Check project venv first
-  let venv_python = s:find_venv_python()
-  if !empty(venv_python)
-    let check = venv_python . ' -c "import debugpy"'
-    if system(check) == '' && v:shell_error == 0
-      return 1
-    endif
-  endif
-
-  " Check managed install
-  let managed = s:data_dir . '/packages/debugpy/venv/bin/python3'
-  if filereadable(managed)
-    let check = managed . ' -c "import debugpy"'
-    if system(check) == '' && v:shell_error == 0
-      return 1
-    endif
-  endif
-
-  " Check system
-  if has_key(a:adapter, 'check')
-    silent! call system(a:adapter.check)
-    return v:shell_error == 0
-  endif
-
-  return executable(a:adapter.command)
+  return !empty(s:adapter_resolve_command(a:lang, a:adapter))
 endfunction
 
 function! s:find_venv_python() abort
@@ -854,73 +958,18 @@ function! s:find_venv_python() abort
   return ''
 endfunction
 
+" ============================================================================
+" Internal: adapter installation (delegates to yac_install infrastructure)
+" ============================================================================
+
 function! s:install_adapter(lang, adapter, file, config) abort
   let info = a:adapter.install
-  echohl YacDapTitle
-  echo printf('[yac] Installing %s adapter...', a:lang)
-  echohl None
 
-  let staging = s:data_dir . '/staging/' . info.bin_name
-  let dest = s:data_dir . '/packages/' . info.bin_name
+  " Save context so we can start debug session after install
+  let g:_yac_dap_install_pending = {'file': a:file, 'config': a:config}
 
-  call mkdir(staging, 'p')
-
-  " Create venv + pip install (async)
-  let ctx = {
-        \ 'lang': a:lang,
-        \ 'info': info,
-        \ 'staging': staging,
-        \ 'dest': dest,
-        \ 'file': a:file,
-        \ 'config': a:config,
-        \ }
-
-  let venv_dir = staging . '/venv'
-  call job_start(['python3', '-m', 'venv', venv_dir], {
-        \ 'exit_cb': function('s:on_adapter_venv_done', [ctx]),
-        \ 'out_io': 'null', 'err_io': 'null',
-        \ })
-endfunction
-
-function! s:on_adapter_venv_done(ctx, job, exit_code) abort
-  if a:exit_code != 0
-    echohl ErrorMsg | echo '[yac] Failed to create venv for adapter' | echohl None
-    call s:adapter_install_cleanup(a:ctx)
-    return
-  endif
-  let pip = a:ctx.staging . '/venv/bin/pip'
-  call job_start([pip, 'install', '-q', a:ctx.info.package], {
-        \ 'exit_cb': function('s:on_adapter_pip_done', [a:ctx]),
-        \ 'out_io': 'null', 'err_io': 'null',
-        \ })
-endfunction
-
-function! s:on_adapter_pip_done(ctx, job, exit_code) abort
-  if a:exit_code != 0
-    echohl ErrorMsg | echo printf('[yac] Failed to install %s', a:ctx.info.package) | echohl None
-    call s:adapter_install_cleanup(a:ctx)
-    return
-  endif
-
-  " Promote staging → packages
-  if isdirectory(a:ctx.dest)
-    call delete(a:ctx.dest, 'rf')
-  endif
-  call mkdir(fnamemodify(a:ctx.dest, ':h'), 'p')
-  call rename(a:ctx.staging, a:ctx.dest)
-
-  echohl YacDapStatusRunning
-  echo printf('[yac] Installed %s adapter — starting debug session', a:ctx.lang)
-  echohl None
-
-  " Now start the debug session
-  call s:do_start(a:ctx.file, a:ctx.config)
-endfunction
-
-function! s:adapter_install_cleanup(ctx) abort
-  if isdirectory(a:ctx.staging)
-    call delete(a:ctx.staging, 'rf')
-  endif
+  " Delegate to yac_install#run — reuses npm/pip/go/github_release pipeline
+  call yac_install#run(a:lang, info)
 endfunction
 
 " ============================================================================
@@ -1033,6 +1082,9 @@ function! s:cleanup_session() abort
     endif
   endif
   let s:saved_maps = {}
+  " Clear signs BEFORE resetting s:current_file (guard checks non-empty)
+  call s:clear_current_line_sign()
+  call s:clear_all_bp_signs()
   let s:dap_active = 0
   let s:dap_state = 'inactive'
   let s:current_file = ''
@@ -1050,12 +1102,20 @@ function! s:cleanup_session() abort
     silent! call popup_close(s:stack_popup_id)
     let s:stack_popup_id = -1
   endif
-  call s:clear_current_line_sign()
   call s:update_status()
 
   " Close debug panel and clear panel data
   call yac_dap#panel_close()
   let s:panel_data = {}
+
+  " Close REPL buffer and its window(s)
+  if s:repl_bufnr > 0 && bufexists(s:repl_bufnr)
+    for winid in win_findbuf(s:repl_bufnr)
+      silent! call win_execute(winid, 'close')
+    endfor
+    silent! execute 'bwipeout!' s:repl_bufnr
+  endif
+  let s:repl_bufnr = -1
 endfunction
 
 function! s:show_current_line(file, line) abort
@@ -1069,6 +1129,17 @@ function! s:clear_current_line_sign() abort
   if !empty(s:current_file)
     silent! execute 'sign unplace 8999 file=' . fnameescape(s:current_file)
   endif
+endfunction
+
+function! s:clear_all_bp_signs() abort
+  " Unplace every sign we placed, across all buffers
+  for [key, sign_id] in items(s:bp_sign_map)
+    silent! execute 'sign unplace' sign_id
+  endfor
+  let s:bp_sign_map = {}
+  let s:bp_sign_counter = 9000
+  let s:breakpoints = {}
+  let s:bp_conditions = {}
 endfunction
 
 function! s:goto_location(file, line) abort

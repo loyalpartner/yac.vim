@@ -157,6 +157,12 @@ function! s:install_go(ctx) abort
 endfunction
 
 " github_release install — download pre-built binary from GitHub Releases
+"
+" Asset pattern placeholders:
+"   {ARCH}     — uname -m (x86_64, aarch64)
+"   {PLATFORM} — mapped from uname -s via platform_map
+"   {GOARCH}   — Go-style arch (amd64, arm64)
+"   {VERSION}  — latest release version (requires API query)
 function! s:install_github_release(ctx) abort
   let l:info = a:ctx.install_info
 
@@ -186,17 +192,67 @@ function! s:install_github_release(ctx) abort
   let l:asset = substitute(l:asset_pattern, '{ARCH}', l:uname_m, 'g')
   let l:asset = substitute(l:asset, '{PLATFORM}', l:platform, 'g')
 
-  " Construct download URL
-  let l:repo = get(l:info, 'repo', '')
-  let l:url = printf('https://github.com/%s/releases/latest/download/%s', l:repo, l:asset)
+  " Go-style arch mapping
+  let l:goarch = l:uname_m ==# 'x86_64' ? 'amd64' :
+        \ (l:uname_m ==# 'aarch64' ? 'arm64' : l:uname_m)
+  let l:asset = substitute(l:asset, '{GOARCH}', l:goarch, 'g')
 
-  call yac#_install_debug_log(printf('Downloading %s from %s', l:asset, l:url))
+  " If asset contains {VERSION}, query GitHub API first
+  if l:asset =~# '{VERSION}'
+    let a:ctx._asset_template = l:asset
+    call s:gh_query_latest_version(a:ctx)
+    return
+  endif
 
-  " Download to staging
-  let l:download_path = a:ctx.staging . '/' . l:asset
-  let l:cmd = ['curl', '-fSL', '-o', l:download_path, l:url]
-  call job_start(l:cmd, {
-    \ 'exit_cb': function('s:on_github_download_done', [a:ctx, l:download_path, l:asset]),
+  call s:gh_start_download(a:ctx, l:asset)
+endfunction
+
+" Query GitHub API for latest release version, then continue download.
+function! s:gh_query_latest_version(ctx) abort
+  let l:repo = get(a:ctx.install_info, 'repo', '')
+  let l:api_url = printf('https://api.github.com/repos/%s/releases/latest', l:repo)
+  let a:ctx._gh_lines = []
+  call job_start(['curl', '-fsSL', '-H', 'Accept: application/json', l:api_url], {
+        \ 'out_cb': function('s:on_gh_version_line', [a:ctx]),
+        \ 'exit_cb': function('s:on_gh_version_done', [a:ctx]),
+        \ 'err_io': 'null',
+        \ })
+endfunction
+
+function! s:on_gh_version_line(ctx, ch, line) abort
+  call add(a:ctx._gh_lines, a:line)
+endfunction
+
+function! s:on_gh_version_done(ctx, job, exit_code) abort
+  if a:exit_code != 0
+    let l:repo = get(a:ctx.install_info, 'repo', '')
+    call yac#toast(printf('Failed to query GitHub releases for %s', l:repo), {'highlight': 'ErrorMsg'})
+    call s:cleanup_failed(a:ctx)
+    return
+  endif
+  try
+    let l:meta = json_decode(join(a:ctx._gh_lines, ''))
+    let l:tag = get(l:meta, 'tag_name', '')
+    let l:version = l:tag =~# '^v' ? l:tag[1:] : l:tag
+  catch
+    call yac#toast('Failed to parse GitHub release JSON', {'highlight': 'ErrorMsg'})
+    call s:cleanup_failed(a:ctx)
+    return
+  endtry
+
+  let l:asset = substitute(a:ctx._asset_template, '{VERSION}', l:version, 'g')
+  call s:gh_start_download(a:ctx, l:asset)
+endfunction
+
+function! s:gh_start_download(ctx, asset) abort
+  let l:repo = get(a:ctx.install_info, 'repo', '')
+  let l:url = printf('https://github.com/%s/releases/latest/download/%s', l:repo, a:asset)
+
+  call yac#_install_debug_log(printf('Downloading %s from %s', a:asset, l:url))
+
+  let l:download_path = a:ctx.staging . '/' . a:asset
+  call job_start(['curl', '-fSL', '-o', l:download_path, l:url], {
+    \ 'exit_cb': function('s:on_github_download_done', [a:ctx, l:download_path, a:asset]),
     \ 'out_io': 'null',
     \ 'err_io': 'null',
     \ })
@@ -308,8 +364,14 @@ endfunction
 function! s:find_binary(ctx) abort
   let l:method = a:ctx.install_info.method
 
+  " Explicit binary_path in install config (e.g. 'extension/adapter/codelldb')
+  let l:custom = get(a:ctx.install_info, 'binary_path', '')
+  if !empty(l:custom)
+    let l:path = a:ctx.dest . '/' . l:custom
+    if filereadable(l:path) | return l:path | endif
+  endif
+
   if l:method ==# 'npm'
-    " node_modules/.bin/<bin_name>
     let l:path = a:ctx.dest . '/node_modules/.bin/' . a:ctx.bin_name
     if filereadable(l:path) | return l:path | endif
   elseif l:method ==# 'pip'
@@ -327,6 +389,14 @@ endfunction
 function! s:finish_install(ctx) abort
   if has_key(s:installing, a:ctx.language)
     unlet s:installing[a:ctx.language]
+  endif
+
+  " Check if a DAP session is waiting for this install
+  if !empty(get(g:, '_yac_dap_install_pending', {}))
+    let l:pending = g:_yac_dap_install_pending
+    let g:_yac_dap_install_pending = {}
+    call yac_dap#start(l:pending.config)
+    return
   endif
 
   " Notify daemon to reset spawn failure flag

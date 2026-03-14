@@ -46,8 +46,22 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
         return .{ .empty = {} };
     };
 
-    // User can override adapter command
+    // User can override adapter command and args
     const command = json.getString(obj, "adapter_command") orelse config.command;
+
+    // Build args: prefer user-supplied adapter_args, fall back to config
+    var user_args: std.ArrayList([]const u8) = .{};
+    defer user_args.deinit(ctx.allocator);
+    if (obj.get("adapter_args")) |aa| {
+        if (aa == .array) {
+            for (aa.array.items) |item| {
+                if (item == .string) {
+                    user_args.append(ctx.allocator, item.string) catch continue;
+                }
+            }
+        }
+    }
+    const args: []const []const u8 = if (user_args.items.len > 0) user_args.items else config.args;
 
     // Derive workspace dir from file path (parent directory)
     const workspace_dir = std.fs.path.dirname(file);
@@ -62,7 +76,7 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     }
 
     // Spawn the debug adapter
-    const client = DapClient.spawn(ctx.gpa_allocator, command, config.args, workspace_dir) catch |e| {
+    const client = DapClient.spawn(ctx.gpa_allocator, command, args, workspace_dir) catch |e| {
         log.err("Failed to spawn DAP adapter '{s}': {any}", .{ command, e });
         const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{command}) catch return .{ .empty = {} };
         try common.vimEx(ctx, msg);
