@@ -156,12 +156,47 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     else
         null;
 
+    // Parse cwd (working directory for the debuggee)
+    const cwd: ?[]const u8 = if (json.getString(obj, "cwd")) |c|
+        ctx.gpa_allocator.dupe(u8, c) catch null
+    else
+        null;
+
+    // Parse env (JSON object) — serialize to string for deferred use
+    const env_json: ?[]const u8 = env_blk: {
+        const env_val = obj.get("env") orelse break :env_blk null;
+        if (env_val != .object) break :env_blk null;
+        break :env_blk json.stringifyAlloc(ctx.gpa_allocator, env_val) catch null;
+    };
+
+    // Parse extra (JSON object) — adapter-specific fields merged to top level
+    const extra_json: ?[]const u8 = extra_blk: {
+        const extra_val = obj.get("extra") orelse break :extra_blk null;
+        if (extra_val != .object) break :extra_blk null;
+        break :extra_blk json.stringifyAlloc(ctx.gpa_allocator, extra_val) catch null;
+    };
+
+    // Parse request type (launch or attach)
+    const request_type: dap_client_mod.RequestType = req_blk: {
+        const req_str = json.getString(obj, "request") orelse break :req_blk .launch;
+        if (std.mem.eql(u8, req_str, "attach")) break :req_blk .attach;
+        break :req_blk .launch;
+    };
+
+    // Parse pid (for attach mode)
+    const pid: ?u32 = json.getU32(obj, "pid");
+
     client.launch_params = .{
         .program = program,
         .module = module,
         .stop_on_entry = stop_on_entry,
         .breakpoint_files = bp_files,
         .args = launch_args,
+        .cwd = cwd,
+        .env_json = env_json,
+        .extra_json = extra_json,
+        .request_type = request_type,
+        .pid = pid,
     };
 
     // Send initialize request — the rest happens when 'initialized' event arrives
@@ -498,6 +533,51 @@ pub fn handleDapRemoveWatch(ctx: *HandlerContext, params: Value) !DispatchResult
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
+}
+
+/// Load debug config from project (.yacd/debug.json or .zed/debug.json).
+/// Strips // comments, substitutes variables, and calls back to Vim with the result.
+///
+/// Params: {project_root, file, dirname}
+pub fn handleDapLoadConfig(ctx: *HandlerContext, params: Value) !DispatchResult {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => {
+            log.err("handleDapLoadConfig: params is not object", .{});
+            return .{ .empty = {} };
+        },
+    };
+
+    const project_root = json.getString(obj, "project_root") orelse {
+        log.err("handleDapLoadConfig: no 'project_root' in params", .{});
+        return .{ .empty = {} };
+    };
+    const file = json.getString(obj, "file") orelse "";
+    const dirname = json.getString(obj, "dirname") orelse "";
+
+    const result = dap_config.loadDebugConfig(ctx.allocator, project_root, file, dirname) catch |e| {
+        log.err("handleDapLoadConfig: loadDebugConfig failed: {any}", .{e});
+        // Return empty configs — Vim will fall back to auto-detect
+        try sendEmptyConfigs(ctx);
+        return .{ .empty = {} };
+    };
+
+    if (result) |configs| {
+        // Wrap in array for vimCallAsync: ["call", "yac_dap#on_debug_configs", [configs]]
+        var args_array = std.json.Array.init(ctx.allocator);
+        try args_array.append(configs);
+        try common.vimCallAsync(ctx, "yac_dap#on_debug_configs", .{ .array = args_array });
+    } else {
+        try sendEmptyConfigs(ctx);
+    }
+
+    return .{ .empty = {} };
+}
+
+fn sendEmptyConfigs(ctx: *HandlerContext) !void {
+    var args_array = std.json.Array.init(ctx.allocator);
+    try args_array.append(.{ .array = std.json.Array.init(ctx.allocator) });
+    try common.vimCallAsync(ctx, "yac_dap#on_debug_configs", .{ .array = args_array });
 }
 
 // ============================================================================

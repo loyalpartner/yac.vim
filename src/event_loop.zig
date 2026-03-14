@@ -858,12 +858,11 @@ pub const EventLoop = struct {
         if (!response.success) {
             const err_msg = response.message orelse "unknown error";
             log.err("DAP {s} failed: {s}", .{ response.command, err_msg });
-            if (lsp_transform.formatToastCmd(alloc, std.fmt.allocPrint(alloc, "[yac] DAP error: {s}", .{err_msg}) catch return, "ErrorMsg")) |cmd|
-                self.sendVimExToAll(alloc, cmd);
-            return;
         }
 
-        // Try routing through session chain (auto stopped→stackTrace→scopes→variables)
+        // Try routing through session chain (auto stopped→stackTrace→scopes→variables).
+        // Failed responses are also routed so the chain can abort gracefully
+        // instead of getting stuck in an awaiting_* stage forever.
         const chain_handled = session.handleResponse(alloc, response) catch |e| blk: {
             log.err("DAP chain error: {any}", .{e});
             break :blk false;
@@ -872,7 +871,7 @@ pub const EventLoop = struct {
         if (chain_handled) {
             if (session.isChainComplete()) {
                 // Chain finished — send full panel data to Vim
-                log.debug("DAP chain complete, sending panel update", .{});
+                log.info("DAP chain complete, sending panel update", .{});
                 const panel_data = session.buildPanelData(alloc) catch return;
                 self.sendDapCallbackToOwner(alloc, "yac_dap#on_panel_update", panel_data);
             }

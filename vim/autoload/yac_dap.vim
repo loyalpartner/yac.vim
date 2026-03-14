@@ -81,8 +81,9 @@ let s:adapter_configs = {
       \   'command': 'codelldb', 'args': [],
       \   'install': {'method': 'github_release', 'bin_name': 'codelldb',
       \     'repo': 'vadimcn/codelldb',
-      \     'asset': 'codelldb-{ARCH}-linux.vsix',
+      \     'asset': 'codelldb-{PLATFORM}-{VSARCH}.vsix',
       \     'platform_map': {'Linux': 'linux', 'Darwin': 'darwin'},
+      \     'arch_map': {'x86_64': 'x64', 'aarch64': 'arm64'},
       \     'binary_path': 'extension/adapter/codelldb'},
       \ },
       \ 'cpp':        'c',
@@ -111,6 +112,7 @@ let s:adapter_configs = {
 " ============================================================================
 
 " Start a debug session. Auto-installs adapter if needed.
+" Sends dap_load_config to daemon for JSON parsing (supports // comments).
 function! yac_dap#start(...) abort
   let config = a:0 > 0 ? a:1 : {}
   let file = expand('%:p')
@@ -119,13 +121,67 @@ function! yac_dap#start(...) abort
     return
   endif
 
-  let ext = fnamemodify(file, ':e')
+  " Save pending context for the async callback
+  let s:_pending_start = {'file': file, 'config': config}
+
+  " Ask daemon to load & parse debug config (handles // comments, variable substitution)
+  let root = s:find_project_root()
+  call yac#send_notify('dap_load_config', {
+        \ 'project_root': root,
+        \ 'file': file,
+        \ 'dirname': expand('%:p:h'),
+        \ })
+endfunction
+
+" Callback from daemon with parsed debug configs (after comment stripping & var substitution).
+" Called via channel call_async: receives (channel, configs) or (configs).
+function! yac_dap#on_debug_configs(...) abort
+  let configs = s:cb_data(a:000)
+
+  " Recover pending context
+  if !exists('s:_pending_start')
+    return
+  endif
+  let file = s:_pending_start.file
+  let config = s:_pending_start.config
+  unlet s:_pending_start
+
+  if type(configs) == v:t_list && !empty(configs)
+    if len(configs) == 1
+      try
+        let config = s:debug_config_to_params(configs[0], file)
+      catch /build_failed/
+        return
+      endtry
+    else
+      " Multiple configs — use picker to select
+      call s:pick_debug_config(configs, file)
+      return
+    endif
+  endif
+
+  call s:start_with_config(file, config)
+endfunction
+
+" Continue start flow after config resolution (auto-detect, adapter install, etc.).
+function! s:start_with_config(file, config) abort
+  let config = a:config
+  let ext = fnamemodify(a:file, ':e')
   let lang = s:ext_to_lang(ext)
+
+  " Auto-detect program for compiled languages
+  if !has_key(config, 'program') || config.program ==# a:file
+    let detected = s:detect_program(a:file, lang)
+    if !empty(detected)
+      let config.program = detected
+    endif
+  endif
+
   let adapter = s:resolve_adapter(lang)
 
   if !empty(adapter)
     if !s:adapter_available(lang, adapter)
-      call s:install_adapter(lang, adapter, file, config)
+      call s:install_adapter(lang, adapter, a:file, config)
       return
     endif
     " Pass resolved command/args to daemon
@@ -136,7 +192,65 @@ function! yac_dap#start(...) abort
     endif
   endif
 
-  call s:do_start(file, config)
+  call s:do_start(a:file, config)
+endfunction
+
+" Attach to a running process.
+" Usage: yac_dap#attach()      — pick from process list
+"        yac_dap#attach(pid)   — attach to specific PID
+function! yac_dap#attach(...) abort
+  let file = expand('%:p')
+  if empty(file)
+    echohl ErrorMsg | echo '[yac] No file to debug' | echohl None
+    return
+  endif
+
+  if a:0 > 0 && a:1 > 0
+    " Direct PID specified
+    call s:do_attach(file, a:1)
+    return
+  endif
+
+  " List processes and pick via popup
+  let procs = systemlist('ps -eo pid,comm,args --sort=-start_time 2>/dev/null')
+  if v:shell_error || empty(procs)
+    " macOS fallback
+    let procs = systemlist('ps -eo pid,comm,args 2>/dev/null')
+  endif
+  if empty(procs)
+    echohl ErrorMsg | echo '[yac] Failed to list processes' | echohl None
+    return
+  endif
+
+  " Filter header and empty lines
+  let lines = []
+  for p in procs[1:]
+    let trimmed = substitute(p, '^\s*', '', '')
+    if !empty(trimmed)
+      call add(lines, trimmed)
+    endif
+  endfor
+
+  if empty(lines)
+    echohl ErrorMsg | echo '[yac] No processes found' | echohl None
+    return
+  endif
+
+  " Use popup menu to select
+  let s:_attach_file = file
+  let s:_attach_lines = lines
+  call popup_menu(lines, {
+        \ 'title': ' Select process to attach ',
+        \ 'border': [1,1,1,1],
+        \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+        \ 'borderhighlight': ['YacDapBorder'],
+        \ 'highlight': 'YacDapNormal',
+        \ 'padding': [0,1,0,1],
+        \ 'maxwidth': 100,
+        \ 'maxheight': 20,
+        \ 'filter': function('s:attach_filter'),
+        \ 'callback': function('s:attach_callback'),
+        \ })
 endfunction
 
 " Toggle breakpoint at cursor position.
@@ -777,6 +891,12 @@ function! yac_dap#on_panel_update(...) abort
   let data = s:cb_data(a:000)
   let s:panel_data = data
 
+  " Diagnostic: show variable count
+  let vars = get(data, 'variables', [])
+  let frames = get(data, 'frames', [])
+  echom printf('[DAP panel_update] %d vars, %d frames, keys=%s',
+        \ len(vars), len(frames), string(keys(data)))
+
   " Update current position from panel status
   let status = get(data, 'status', {})
   let file = get(status, 'file', '')
@@ -973,6 +1093,318 @@ function! s:install_adapter(lang, adapter, file, config) abort
 endfunction
 
 " ============================================================================
+" Internal: project debug config (.yacd/debug.json / .zed/debug.json)
+" ============================================================================
+
+" Find project root by walking up from current file looking for markers.
+function! s:find_project_root() abort
+  let dir = expand('%:p:h')
+  let markers = ['.git', '.yacd', '.zed', 'Makefile', 'Cargo.toml', 'go.mod', 'build.zig']
+  let depth = 0
+  while depth < 20 && dir !=# '/' && dir !=# ''
+    for marker in markers
+      if isdirectory(dir . '/' . marker) || filereadable(dir . '/' . marker)
+        return dir
+      endif
+    endfor
+    let dir = fnamemodify(dir, ':h')
+    let depth += 1
+  endwhile
+  return expand('%:p:h')
+endfunction
+
+" Map Zed adapter names to internal language keys.
+function! s:adapter_name_to_lang(name) abort
+  let map = {
+        \ 'CodeLLDB': 'c', 'codelldb': 'c',
+        \ 'Debugpy': 'python', 'debugpy': 'python',
+        \ 'Delve': 'go', 'delve': 'go',
+        \ 'GDB': 'c', 'gdb': 'c',
+        \ 'lldb-dap': 'c',
+        \ 'js-debug': 'javascript',
+        \ }
+  return get(map, a:name, tolower(a:name))
+endfunction
+
+" Convert a debug.json config entry to params dict for s:do_start().
+function! s:debug_config_to_params(cfg, file) abort
+  let params = {}
+
+  " request type (launch/attach)
+  let params.request = get(a:cfg, 'request', 'launch')
+
+  " program — substitute variables
+  if has_key(a:cfg, 'program')
+    let params.program = a:cfg.program
+  endif
+
+  " module (debugpy)
+  if has_key(a:cfg, 'module')
+    let params.module = a:cfg.module
+  endif
+
+  " cwd
+  if has_key(a:cfg, 'cwd')
+    let params.cwd = a:cfg.cwd
+  else
+    let params.cwd = s:find_project_root()
+  endif
+
+  " args
+  if has_key(a:cfg, 'args')
+    let params.args = copy(a:cfg.args)
+  endif
+
+  " env
+  if has_key(a:cfg, 'env')
+    let params.env = a:cfg.env
+  endif
+
+  " stopOnEntry
+  if has_key(a:cfg, 'stopOnEntry')
+    let params.stop_on_entry = a:cfg.stopOnEntry
+  endif
+
+  " pid (for attach)
+  if has_key(a:cfg, 'pid')
+    let params.pid = a:cfg.pid
+  endif
+
+  " Resolve adapter command/args from adapter name
+  if has_key(a:cfg, 'adapter')
+    let lang = s:adapter_name_to_lang(a:cfg.adapter)
+    let adapter = s:resolve_adapter(lang)
+    if !empty(adapter)
+      let resolved = s:adapter_resolve_command(lang, adapter)
+      if !empty(resolved)
+        let params.adapter_command = resolved.command
+        let params.adapter_args = resolved.args
+      endif
+    endif
+  endif
+
+  " Collect adapter-specific extra fields (everything not in standard keys)
+  let standard_keys = ['label', 'adapter', 'request', 'program', 'module',
+        \ 'cwd', 'args', 'env', 'stopOnEntry', 'pid', 'build']
+  let extra = {}
+  for [k, v] in items(a:cfg)
+    if index(standard_keys, k) < 0
+      let extra[k] = v
+    endif
+  endfor
+  if !empty(extra)
+    let params.extra = extra
+  endif
+
+  " Execute build step if present
+  if has_key(a:cfg, 'build')
+    call s:run_build_step(a:cfg.build)
+  endif
+
+  return params
+endfunction
+
+" Run a pre-debug build step.
+function! s:run_build_step(build) abort
+  if type(a:build) == v:t_string
+    echohl Comment | echo printf('[yac] Building: %s', a:build) | echohl None
+    let output = system(a:build)
+    if v:shell_error
+      echohl ErrorMsg | echo printf('[yac] Build failed: %s', output) | echohl None
+      throw 'build_failed'
+    endif
+  elseif type(a:build) == v:t_dict
+    let cmd = get(a:build, 'command', '')
+    let args = get(a:build, 'args', [])
+    let full_cmd = cmd . ' ' . join(args, ' ')
+    echohl Comment | echo printf('[yac] Building: %s', full_cmd) | echohl None
+    let output = system(full_cmd)
+    if v:shell_error
+      echohl ErrorMsg | echo printf('[yac] Build failed: %s', output) | echohl None
+      throw 'build_failed'
+    endif
+  endif
+endfunction
+
+" Pick a debug config from multiple options using popup_menu.
+function! s:pick_debug_config(configs, file) abort
+  let labels = []
+  for cfg in a:configs
+    call add(labels, get(cfg, 'label', get(cfg, 'adapter', '?')))
+  endfor
+
+  let s:_pick_configs = a:configs
+  let s:_pick_file = a:file
+  call popup_menu(labels, {
+        \ 'title': ' Select debug configuration ',
+        \ 'border': [1,1,1,1],
+        \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+        \ 'borderhighlight': ['YacDapBorder'],
+        \ 'highlight': 'YacDapNormal',
+        \ 'padding': [0,1,0,1],
+        \ 'maxwidth': 60,
+        \ 'maxheight': 20,
+        \ 'callback': function('s:pick_config_callback'),
+        \ })
+endfunction
+
+function! s:pick_config_callback(id, result) abort
+  if a:result < 1
+    return
+  endif
+  let cfg = s:_pick_configs[a:result - 1]
+  let file = s:_pick_file
+  try
+    let config = s:debug_config_to_params(cfg, file)
+    call s:start_with_config(file, config)
+  catch /build_failed/
+    " Build step failed, abort
+  endtry
+endfunction
+
+" ============================================================================
+" Internal: compiled language binary detection (Phase 3)
+" ============================================================================
+
+" Auto-detect the program binary for compiled languages.
+" Returns the detected path, or '' if detection fails.
+function! s:detect_program(file, lang) abort
+  if a:lang ==# 'c' || a:lang ==# 'cpp'
+    return s:detect_c_binary(a:file)
+  elseif a:lang ==# 'zig'
+    return s:detect_zig_binary(a:file)
+  elseif a:lang ==# 'rust'
+    return s:detect_rust_binary(a:file)
+  elseif a:lang ==# 'go'
+    " Go with Delve uses source file directly in debug mode
+    return a:file
+  endif
+  return ''
+endfunction
+
+function! s:detect_c_binary(file) abort
+  " Check for same-name binary without extension in same directory
+  let base = fnamemodify(a:file, ':r')
+  if filereadable(base) && !isdirectory(base)
+    return base
+  endif
+
+  " Check common build directories
+  let root = s:find_project_root()
+  let name = fnamemodify(a:file, ':t:r')
+  for dir in ['build', 'bin', 'out']
+    let candidate = root . '/' . dir . '/' . name
+    if filereadable(candidate) && !isdirectory(candidate)
+      return candidate
+    endif
+  endfor
+
+  " Prompt user
+  let result = input('[yac] Program binary path: ', root . '/', 'file')
+  return result
+endfunction
+
+function! s:detect_zig_binary(file) abort
+  let root = s:find_project_root()
+  let zig_out = root . '/zig-out/bin'
+  if isdirectory(zig_out)
+    let bins = globpath(zig_out, '*', 0, 1)
+    let executables = filter(bins, {_, v -> !isdirectory(v) && executable(v)})
+    if len(executables) == 1
+      return executables[0]
+    elseif len(executables) > 1
+      " Pick from multiple binaries
+      let names = map(copy(executables), {_, v -> fnamemodify(v, ':t')})
+      let choice = inputlist(['Select binary:'] + map(copy(names), {i, v -> printf('%d. %s', i+1, v)}))
+      if choice > 0 && choice <= len(executables)
+        return executables[choice - 1]
+      endif
+    endif
+  endif
+
+  " Prompt user
+  let result = input('[yac] Program binary path: ', root . '/', 'file')
+  return result
+endfunction
+
+function! s:detect_rust_binary(file) abort
+  let root = s:find_project_root()
+
+  " Read crate name from Cargo.toml
+  let cargo_toml = root . '/Cargo.toml'
+  if filereadable(cargo_toml)
+    let lines = readfile(cargo_toml, '', 30)
+    for line in lines
+      let m = matchstr(line, '^\s*name\s*=\s*"\zs[^"]*\ze"')
+      if !empty(m)
+        " Check target/debug/ first
+        let debug_bin = root . '/target/debug/' . m
+        if filereadable(debug_bin)
+          return debug_bin
+        endif
+        let release_bin = root . '/target/release/' . m
+        if filereadable(release_bin)
+          return release_bin
+        endif
+        break
+      endif
+    endfor
+  endif
+
+  " Prompt user
+  let result = input('[yac] Program binary path: ', root . '/', 'file')
+  return result
+endfunction
+
+" ============================================================================
+" Internal: attach mode helpers (Phase 4)
+" ============================================================================
+
+function! s:do_attach(file, pid) abort
+  let ext = fnamemodify(a:file, ':e')
+  let lang = s:ext_to_lang(ext)
+  let adapter = s:resolve_adapter(lang)
+
+  let config = {
+        \ 'request': 'attach',
+        \ 'pid': a:pid,
+        \ }
+
+  if !empty(adapter)
+    if !s:adapter_available(lang, adapter)
+      call s:install_adapter(lang, adapter, a:file, config)
+      return
+    endif
+    let resolved = s:adapter_resolve_command(lang, adapter)
+    if !empty(resolved)
+      let config.adapter_command = resolved.command
+      let config.adapter_args = resolved.args
+    endif
+  endif
+
+  call s:do_start(a:file, config)
+endfunction
+
+function! s:attach_filter(id, key) abort
+  return popup_filter_menu(a:id, a:key)
+endfunction
+
+function! s:attach_callback(id, result) abort
+  if a:result < 1
+    return
+  endif
+  if a:result > len(s:_attach_lines)
+    return
+  endif
+  " Extract PID from the selected line (first field)
+  let line = s:_attach_lines[a:result - 1]
+  let pid = str2nr(matchstr(line, '^\s*\zs\d\+'))
+  if pid > 0
+    call s:do_attach(s:_attach_file, pid)
+  endif
+endfunction
+
+" ============================================================================
 " Internal: session start
 " ============================================================================
 
@@ -998,6 +1430,32 @@ function! s:do_start(file, config) abort
     let params.module = 'pytest'
     let params.args = [a:file, '-s']
   endif
+
+  " Pass cwd (default to project root for compiled languages)
+  if has_key(a:config, 'cwd')
+    let params.cwd = a:config.cwd
+  endif
+
+  " Pass env (environment variables dict)
+  if has_key(a:config, 'env')
+    let params.env = a:config.env
+  endif
+
+  " Pass extra (adapter-specific fields)
+  if has_key(a:config, 'extra')
+    let params.extra = a:config.extra
+  endif
+
+  " Pass request type (launch/attach)
+  if has_key(a:config, 'request')
+    let params.request = a:config.request
+  endif
+
+  " Pass pid (for attach mode)
+  if has_key(a:config, 'pid')
+    let params.pid = a:config.pid
+  endif
+
   call yac#send_notify('dap_start', extend(params, a:config))
 
   let s:dap_active = 1

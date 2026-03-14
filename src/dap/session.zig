@@ -130,18 +130,22 @@ pub const DapSession = struct {
         self.chain_trigger = .stopped;
         self.chain_stage = .awaiting_stack_trace;
         self.chain_seq = try self.client.sendStackTrace(tid);
-        log.debug("DAP chain: started (reason={s}, tid={d})", .{ reason, tid });
+        log.info("DAP chain: started (reason={s}, tid={d})", .{ reason, tid });
     }
 
     /// Called when a DAP response arrives. Returns true if chain advanced.
+    /// Failed responses abort the chain gracefully (→ idle) so it doesn't get stuck.
     pub fn handleResponse(self: *DapSession, alloc: Allocator, response: dap_protocol.DapResponse) !bool {
-        if (!response.success) return false;
-
         switch (self.chain_stage) {
             .awaiting_stack_trace => {
                 if (!std.mem.eql(u8, response.command, "stackTrace")) return false;
+                if (!response.success) {
+                    log.info("DAP chain: stackTrace failed, aborting", .{});
+                    self.chain_stage = .idle;
+                    return true;
+                }
                 try self.parseStackTrace(response.body);
-                log.debug("DAP chain: stackTrace → {d} frames", .{self.cached_frames.items.len});
+                log.info("DAP chain: stackTrace → {d} frames, active_fid={?}", .{ self.cached_frames.items.len, self.active_frame_id });
                 if (self.active_frame_id) |fid| {
                     self.chain_stage = .awaiting_scopes;
                     self.chain_seq = try self.client.sendScopes(fid);
@@ -152,8 +156,13 @@ pub const DapSession = struct {
             },
             .awaiting_scopes => {
                 if (!std.mem.eql(u8, response.command, "scopes")) return false;
+                if (!response.success) {
+                    log.info("DAP chain: scopes failed, aborting", .{});
+                    self.chain_stage = .idle;
+                    return true;
+                }
                 const ref = self.parseScopesForLocals(response.body);
-                log.debug("DAP chain: scopes → locals_ref={?}", .{ref});
+                log.info("DAP chain: scopes → locals_ref={?}", .{ref});
                 if (ref) |r| {
                     self.locals_ref = r;
                     self.chain_stage = .awaiting_variables;
@@ -165,8 +174,14 @@ pub const DapSession = struct {
             },
             .awaiting_variables => {
                 if (!std.mem.eql(u8, response.command, "variables")) return false;
+                if (!response.success) {
+                    log.info("DAP chain: variables failed, aborting with partial data", .{});
+                    self.chain_stage = .idle;
+                    return true;
+                }
                 try self.parseVariables(response.body);
-                log.debug("DAP chain: variables done → idle", .{});
+                const cached_count = if (self.locals_ref) |lr| if (self.var_cache.get(lr)) |v| v.items.len else 0 else 0;
+                log.info("DAP chain: variables done, {d} vars in locals → idle", .{cached_count});
                 // Only evaluate watches as part of the stopped chain, not variable expand
                 if (self.chain_trigger == .stopped and
                     self.watch_expressions.items.len > 0 and
@@ -180,6 +195,12 @@ pub const DapSession = struct {
             },
             .awaiting_watch_eval => {
                 if (!std.mem.eql(u8, response.command, "evaluate")) return false;
+                if (!response.success) {
+                    // Still handle partial watches — decrement pending
+                    if (self.watches_pending > 0) self.watches_pending -= 1;
+                    if (self.watches_pending == 0) self.chain_stage = .idle;
+                    return true;
+                }
                 try self.handleWatchEvalResponse(alloc, response.body);
                 return true;
             },
@@ -282,6 +303,7 @@ pub const DapSession = struct {
         if (self.locals_ref) |ref| {
             try self.buildVariableTree(alloc, &vars_arr, ref, 0);
         }
+        log.info("DAP buildPanelData: locals_ref={?}, vars_arr.len={d}, var_cache.count={d}", .{ self.locals_ref, vars_arr.items.len, self.var_cache.count() });
 
         var watches_arr = std.json.Array.init(alloc);
         for (self.watch_results.items) |w| {
@@ -440,17 +462,25 @@ pub const DapSession = struct {
             else => return,
         };
 
+        log.info("DAP chain: parsing {d} variables for ref={?}", .{ vars_arr.items.len, if (self.chain_trigger == .variable_expand) self.expand_ref else self.locals_ref });
         var list: VarList = .{};
-        for (vars_arr.items) |item| {
+        for (vars_arr.items, 0..) |item, i| {
             const vobj = switch (item) {
                 .object => |o| o,
                 else => continue,
             };
+            const vname = json.getString(vobj, "name") orelse "";
+            const vvalue = json.getString(vobj, "value") orelse "";
+            const vtype = json.getString(vobj, "type") orelse "";
+            const vref = json.getU32(vobj, "variablesReference") orelse 0;
+            if (i < 10) {
+                log.info("  var[{d}]: {s} = {s} ({s}, ref={d})", .{ i, vname, vvalue, vtype, vref });
+            }
             try list.append(self.allocator, .{
-                .name = json.getString(vobj, "name") orelse "",
-                .value = json.getString(vobj, "value") orelse "",
-                .var_type = json.getString(vobj, "type") orelse "",
-                .variables_reference = json.getU32(vobj, "variablesReference") orelse 0,
+                .name = vname,
+                .value = vvalue,
+                .var_type = vtype,
+                .variables_reference = vref,
             });
         }
 
@@ -483,7 +513,10 @@ pub const DapSession = struct {
     }
 
     fn buildVariableTree(self: *const DapSession, alloc: Allocator, arr: *std.json.Array, ref: u32, depth: u32) !void {
-        const vars = self.var_cache.get(ref) orelse return;
+        const vars = self.var_cache.get(ref) orelse {
+            log.info("DAP buildVariableTree: ref={d} not in cache (cache has {d} entries)", .{ ref, self.var_cache.count() });
+            return;
+        };
         for (vars.items) |v| {
             const expandable = v.variables_reference > 0;
             const has_children = self.var_cache.contains(v.variables_reference);

@@ -18,6 +18,11 @@ pub const DapState = enum {
 
 pub const PendingDapRequest = struct {};
 
+pub const RequestType = enum {
+    launch,
+    attach,
+};
+
 /// Saved launch params for deferred launch after initialized event.
 pub const LaunchParams = struct {
     program: []const u8,
@@ -25,12 +30,20 @@ pub const LaunchParams = struct {
     stop_on_entry: bool,
     breakpoint_files: std.StringArrayHashMap(std.ArrayList(u32)),
     args: std.ArrayList([]const u8),
+    cwd: ?[]const u8,
+    env_json: ?[]const u8, // Serialized JSON object for environment variables
+    extra_json: ?[]const u8, // Serialized JSON object for adapter-specific fields
+    request_type: RequestType,
+    pid: ?u32,
 
     pub fn deinit(self: *LaunchParams) void {
         const allocator = self.breakpoint_files.allocator;
-        // Free GPA-duped program string
+        // Free GPA-duped strings
         allocator.free(self.program);
         if (self.module) |m| allocator.free(m);
+        if (self.cwd) |c| allocator.free(c);
+        if (self.env_json) |e| allocator.free(e);
+        if (self.extra_json) |x| allocator.free(x);
         // Free GPA-duped breakpoint file keys + line arrays
         var it = self.breakpoint_files.iterator();
         while (it.next()) |entry| {
@@ -228,7 +241,7 @@ pub const DapClient = struct {
     }
 
     /// Send a launch request.
-    pub fn sendLaunch(self: *DapClient, allocator: Allocator, program: []const u8, module: ?[]const u8, args_list: ?Value, stop_on_entry: bool) !u32 {
+    pub fn sendLaunch(self: *DapClient, allocator: Allocator, program: []const u8, module: ?[]const u8, args_list: ?Value, stop_on_entry: bool, cwd: ?[]const u8, env_json: ?[]const u8, extra_json: ?[]const u8) !u32 {
         var map = try json.buildObjectMap(allocator, .{
             .{ "stopOnEntry", .{ .bool = stop_on_entry } },
             .{ "console", json.jsonString("internalConsole") },
@@ -242,7 +255,50 @@ pub const DapClient = struct {
         if (args_list) |al| {
             try map.put("args", al);
         }
+        if (cwd) |c| {
+            try map.put("cwd", json.jsonString(c));
+        }
+        // Parse and merge env (JSON object → "env" key)
+        env: {
+            const ej = env_json orelse break :env;
+            const parsed = json.parse(allocator, ej) catch break :env;
+            try map.put("env", parsed.value);
+        }
+        // Parse and merge extra fields (adapter-specific, merged to top level)
+        extra: {
+            const xj = extra_json orelse break :extra;
+            const parsed = json.parse(allocator, xj) catch break :extra;
+            if (parsed.value == .object) {
+                var it = parsed.value.object.iterator();
+                while (it.next()) |entry| {
+                    map.put(entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                }
+            }
+        }
         return self.sendRequest("launch", .{ .object = map });
+    }
+
+    /// Send an attach request.
+    pub fn sendAttach(self: *DapClient, allocator: Allocator, pid: ?u32, program: ?[]const u8, extra_json: ?[]const u8) !u32 {
+        var map = ObjectMap.init(allocator);
+        if (pid) |p| {
+            try map.put("pid", json.jsonInteger(@intCast(p)));
+        }
+        if (program) |prog| {
+            try map.put("program", json.jsonString(prog));
+        }
+        // Merge adapter-specific extra fields to top level
+        extra: {
+            const xj = extra_json orelse break :extra;
+            const parsed = json.parse(allocator, xj) catch break :extra;
+            if (parsed.value == .object) {
+                var it = parsed.value.object.iterator();
+                while (it.next()) |entry| {
+                    map.put(entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                }
+            }
+        }
+        return self.sendRequest("attach", .{ .object = map });
     }
 
     /// Send setBreakpoints for a single source file.
@@ -401,7 +457,7 @@ pub const DapClient = struct {
         return self.sendRequest("terminate", .null);
     }
 
-    /// Send launch request immediately after initialize response.
+    /// Send launch/attach request immediately after initialize response.
     /// debugpy (and some other adapters) require launch BEFORE they send
     /// the 'initialized' event. Breakpoints + configurationDone are deferred
     /// to sendDeferredConfiguration(), called when 'initialized' arrives.
@@ -415,21 +471,32 @@ pub const DapClient = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        // Build args JSON array if args were provided
-        const args_val: ?Value = if (lp.args.items.len > 0) blk: {
-            var arr = std.json.Array.init(alloc);
-            for (lp.args.items) |arg| {
-                arr.append(json.jsonString(arg)) catch continue;
-            }
-            break :blk .{ .array = arr };
-        } else null;
+        switch (lp.request_type) {
+            .launch => {
+                // Build args JSON array if args were provided
+                const args_val: ?Value = if (lp.args.items.len > 0) blk: {
+                    var arr = std.json.Array.init(alloc);
+                    for (lp.args.items) |arg| {
+                        arr.append(json.jsonString(arg)) catch continue;
+                    }
+                    break :blk .{ .array = arr };
+                } else null;
 
-        _ = self.sendLaunch(alloc, lp.program, lp.module, args_val, lp.stop_on_entry) catch |e| {
-            log.err("DAP: launch request failed: {any}", .{e});
-            return;
-        };
-
-        log.info("DAP: launch request sent for {s}", .{lp.program});
+                _ = self.sendLaunch(alloc, lp.program, lp.module, args_val, lp.stop_on_entry, lp.cwd, lp.env_json, lp.extra_json) catch |e| {
+                    log.err("DAP: launch request failed: {any}", .{e});
+                    return;
+                };
+                log.info("DAP: launch request sent for {s}", .{lp.program});
+            },
+            .attach => {
+                const prog: ?[]const u8 = if (lp.program.len > 0) lp.program else null;
+                _ = self.sendAttach(alloc, lp.pid, prog, lp.extra_json) catch |e| {
+                    log.err("DAP: attach request failed: {any}", .{e});
+                    return;
+                };
+                log.info("DAP: attach request sent (pid={?d})", .{lp.pid});
+            },
+        }
     }
 
     /// Send deferred configuration after 'initialized' event:

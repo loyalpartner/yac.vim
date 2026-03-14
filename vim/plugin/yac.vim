@@ -71,6 +71,7 @@ command! -nargs=1 YacDapUnwatch call yac_dap#remove_watch(<q-args>)
 command! YacDapCondBreakpoint   call yac_dap#set_conditional_breakpoint()
 command! YacDapLogPoint         call yac_dap#set_log_point()
 command! YacDapExceptionBp      call yac_dap#toggle_exception_breakpoints()
+command! -nargs=? YacDapAttach  call yac_dap#attach(<args>)
 
 " Everything else via <Plug> mappings and <C-p> command palette
 
@@ -126,6 +127,7 @@ nnoremap <silent> <Plug>(YacDapTerminate)        :call yac#dap_terminate()<CR>
 nnoremap <silent> <Plug>(YacDapStackTrace)       :call yac#dap_stack_trace()<CR>
 nnoremap <silent> <Plug>(YacDapVariables)        :call yac#dap_variables()<CR>
 nnoremap <silent> <Plug>(YacDapRepl)             :call yac#dap_repl()<CR>
+nnoremap <silent> <Plug>(YacDapAttach)           :call yac_dap#attach()<CR>
 
 " <Plug> mappings — tree-sitter navigation
 nnoremap <silent> <Plug>(YacTsNextFunction) :call yac#ts_next_function()<CR>
@@ -179,6 +181,7 @@ nmap <silent> <leader>ds  <Plug>(YacDapStart)
 nmap <silent> <leader>dx  <Plug>(YacDapTerminate)
 nmap <silent> <leader>dv  <Plug>(YacDapVariables)
 nmap <silent> <leader>dr  <Plug>(YacDapRepl)
+nmap <silent> <leader>da  <Plug>(YacDapAttach)
 
 " Tree-sitter navigation defaults
 nmap <silent> ]f <Plug>(YacTsNextFunction)

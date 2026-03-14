@@ -3,24 +3,16 @@
 // For more documentation on how to configure debug tasks,
 // see: https://zed.dev/docs/debugger
 [
-
   {
     "adapter": "CodeLLDB",
-    "label": "yac-vim (CodeLLDB)",
+    "label": "yacd (CodeLLDB)",
     "request": "launch",
-    "name": "yac-vim (CodeLLDB)",
-    "program": "target/debug/yac-vim",
+    "program": "$ZED_WORKTREE_ROOT/zig-out/bin/yacd",
     "stopOnEntry": false,
-    "env": {
-      "RUST_LOG": "debug"
-    },
-    "cwd": "/home/lee/study/rust/source/yac.vim",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "build": {
-      "command": "cargo build",
-      "args": [],
-      "options": {
-        "cwd": "/home/lee/study/rust/source/yac.vim"
-      }
+      "command": "zig",
+      "args": ["build"]
     }
   }
 ]

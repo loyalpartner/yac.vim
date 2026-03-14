@@ -197,6 +197,11 @@ function! s:install_github_release(ctx) abort
         \ (l:uname_m ==# 'aarch64' ? 'arm64' : l:uname_m)
   let l:asset = substitute(l:asset, '{GOARCH}', l:goarch, 'g')
 
+  " VS Code extension arch mapping (x86_64→x64, aarch64→arm64)
+  let l:arch_map = get(l:info, 'arch_map', {})
+  let l:vsarch = get(l:arch_map, l:uname_m, l:uname_m)
+  let l:asset = substitute(l:asset, '{VSARCH}', l:vsarch, 'g')
+
   " If asset contains {VERSION}, query GitHub API first
   if l:asset =~# '{VERSION}'
     let a:ctx._asset_template = l:asset
@@ -287,6 +292,14 @@ function! s:on_github_download_done(ctx, download_path, asset, job, exit_code) a
       \ 'out_io': 'null',
       \ 'err_io': 'null',
       \ })
+  elseif a:asset =~# '\.vsix$'
+    " VSIX is a zip; extract to staging root so binary_path works relative to dest
+    let l:cmd = ['unzip', '-o', a:download_path, '-d', a:ctx.staging]
+    call job_start(l:cmd, {
+      \ 'exit_cb': function('s:on_github_extract_done', [a:ctx]),
+      \ 'out_io': 'null',
+      \ 'err_io': 'null',
+      \ })
   elseif a:asset =~# '\.zip$'
     let l:cmd = ['unzip', '-o', a:download_path, '-d', l:bin_dir]
     call job_start(l:cmd, {
@@ -342,6 +355,9 @@ function! s:on_install_done(ctx, job, exit_code) abort
     call s:finish_install(a:ctx)
     return
   endif
+
+  " Ensure binary is executable (vsix/zip archives may lose +x)
+  call system('chmod +x ' . shellescape(l:target))
 
   " Remove existing symlink
   if filereadable(l:symlink_path) || getftype(l:symlink_path) ==# 'link'
