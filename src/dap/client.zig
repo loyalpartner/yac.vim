@@ -529,9 +529,8 @@ pub const DapClient = struct {
 
         log.info("DAP: configuration sent ({d} bp files)", .{lp.breakpoint_files.count()});
 
-        // Clean up saved params
-        var params = self.launch_params.?;
-        params.deinit();
+        // Clean up saved params (lp confirmed non-null at function entry)
+        if (self.launch_params) |*p| p.deinit();
         self.launch_params = null;
     }
 

@@ -116,6 +116,7 @@ pub const DapSession = struct {
         self.expand_path.deinit(self.allocator);
         for (self.watch_expressions.items) |expr| self.allocator.free(@constCast(expr));
         self.watch_expressions.deinit(self.allocator);
+        self.freeWatchResults();
         self.watch_results.deinit(self.allocator);
     }
 
@@ -249,7 +250,7 @@ pub const DapSession = struct {
         if (ref == 0) return;
         if (self.var_cache.fetchRemove(ref)) |kv| {
             var list = kv.value;
-            list.deinit(self.allocator);
+            self.freeVarList(&list);
         }
     }
 
@@ -367,10 +368,19 @@ pub const DapSession = struct {
         self.stopped_reason = "";
     }
 
+    fn freeVarList(self: *DapSession, list: *VarList) void {
+        for (list.items) |v| {
+            if (v.name.len > 0) self.allocator.free(@constCast(v.name));
+            if (v.value.len > 0) self.allocator.free(@constCast(v.value));
+            if (v.var_type.len > 0) self.allocator.free(@constCast(v.var_type));
+        }
+        list.deinit(self.allocator);
+    }
+
     fn clearVarCache(self: *DapSession) void {
         var it = self.var_cache.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit(self.allocator);
+            self.freeVarList(entry.value_ptr);
         }
         self.var_cache.clearRetainingCapacity();
     }
@@ -469,10 +479,15 @@ pub const DapSession = struct {
                 .object => |o| o,
                 else => continue,
             };
+            // Dupe strings — source JSON lives in a temporary arena that is freed
+            // after processDapOutput returns.
+            const name_raw = json.getString(vobj, "name") orelse "";
+            const value_raw = json.getString(vobj, "value") orelse "";
+            const type_raw = json.getString(vobj, "type") orelse "";
             try list.append(self.allocator, .{
-                .name = json.getString(vobj, "name") orelse "",
-                .value = json.getString(vobj, "value") orelse "",
-                .var_type = json.getString(vobj, "type") orelse "",
+                .name = if (name_raw.len > 0) try self.allocator.dupe(u8, name_raw) else "",
+                .value = if (value_raw.len > 0) try self.allocator.dupe(u8, value_raw) else "",
+                .var_type = if (type_raw.len > 0) try self.allocator.dupe(u8, type_raw) else "",
                 .variables_reference = json.getU32(vobj, "variablesReference") orelse 0,
             });
         }
@@ -484,7 +499,7 @@ pub const DapSession = struct {
 
         if (self.var_cache.fetchRemove(ref)) |kv| {
             var old = kv.value;
-            old.deinit(self.allocator);
+            self.freeVarList(&old);
         }
         try self.var_cache.put(ref, list);
     }
@@ -506,6 +521,7 @@ pub const DapSession = struct {
     }
 
     fn buildVariableTree(self: *const DapSession, alloc: Allocator, arr: *std.json.Array, ref: u32, depth: u32) !void {
+        if (depth > 32) return; // guard against circular references
         const vars = self.var_cache.get(ref) orelse {
             log.debug("DAP buildVariableTree: ref={d} not in cache (cache has {d} entries)", .{ ref, self.var_cache.count() });
             return;
@@ -529,9 +545,18 @@ pub const DapSession = struct {
         }
     }
 
+    fn freeWatchResults(self: *DapSession) void {
+        for (self.watch_results.items) |w| {
+            // expression is borrowed from watch_expressions — don't free
+            if (w.result.len > 0) self.allocator.free(@constCast(w.result));
+            if (w.var_type.len > 0) self.allocator.free(@constCast(w.var_type));
+        }
+    }
+
     fn startWatchEval(self: *DapSession) !void {
         self.chain_stage = .awaiting_watch_eval;
         self.watches_pending = @intCast(self.watch_expressions.items.len);
+        self.freeWatchResults();
         self.watch_results.clearRetainingCapacity();
 
         for (self.watch_expressions.items) |expr| {
@@ -550,16 +575,17 @@ pub const DapSession = struct {
             },
         };
 
-        const result = json.getString(obj, "result") orelse "";
-        const var_type = json.getString(obj, "type") orelse "";
+        const result_raw = json.getString(obj, "result") orelse "";
+        const type_raw = json.getString(obj, "type") orelse "";
 
+        // Dupe strings — source JSON lives in a temporary arena.
         try self.watch_results.append(self.allocator, .{
             .expression = if (self.watch_results.items.len < self.watch_expressions.items.len)
                 self.watch_expressions.items[self.watch_results.items.len]
             else
                 "",
-            .result = result,
-            .var_type = var_type,
+            .result = if (result_raw.len > 0) try self.allocator.dupe(u8, result_raw) else "",
+            .var_type = if (type_raw.len > 0) try self.allocator.dupe(u8, type_raw) else "",
             .is_error = false,
         });
 
@@ -641,6 +667,15 @@ fn mockVariablesBody(alloc: Allocator) !Value {
     return json.buildObject(alloc, .{
         .{ "variables", .{ .array = vars } },
     });
+}
+
+fn testVar(name: []const u8, value: []const u8, var_type: []const u8, ref: u32) CachedVariable {
+    return .{
+        .name = std.testing.allocator.dupe(u8, name) catch "",
+        .value = std.testing.allocator.dupe(u8, value) catch "",
+        .var_type = std.testing.allocator.dupe(u8, var_type) catch "",
+        .variables_reference = ref,
+    };
 }
 
 fn initTestSession() DapSession {
@@ -756,8 +791,8 @@ test "DapSession: resolvePathToRef" {
     session.locals_ref = 42;
 
     var top_vars: VarList = .{};
-    try top_vars.append(std.testing.allocator, .{ .name = "x", .value = "42", .var_type = "int", .variables_reference = 0 });
-    try top_vars.append(std.testing.allocator, .{ .name = "items", .value = "[1,2,3]", .var_type = "list", .variables_reference = 5 });
+    try top_vars.append(std.testing.allocator, testVar("x", "42", "int", 0));
+    try top_vars.append(std.testing.allocator, testVar("items", "[1,2,3]", "list", 5));
     try session.var_cache.put(42, top_vars);
 
     try std.testing.expectEqual(@as(?u32, 0), session.resolvePathToRef(&[_]u32{0}));
@@ -806,7 +841,7 @@ test "DapSession: buildPanelData produces valid JSON structure" {
     session.stopped_reason = "breakpoint";
 
     var top_vars: VarList = .{};
-    try top_vars.append(std.testing.allocator, .{ .name = "x", .value = "42", .var_type = "int", .variables_reference = 0 });
+    try top_vars.append(std.testing.allocator, testVar("x", "42", "int", 0));
     try session.var_cache.put(42, top_vars);
 
     const panel_data = try session.buildPanelData(alloc);
@@ -864,11 +899,11 @@ test "DapSession: collapseVariable removes from cache" {
     session.locals_ref = 42;
 
     var top_vars: VarList = .{};
-    try top_vars.append(std.testing.allocator, .{ .name = "items", .value = "[1,2,3]", .var_type = "list", .variables_reference = 5 });
+    try top_vars.append(std.testing.allocator, testVar("items", "[1,2,3]", "list", 5));
     try session.var_cache.put(42, top_vars);
 
     var children: VarList = .{};
-    try children.append(std.testing.allocator, .{ .name = "0", .value = "1", .var_type = "int", .variables_reference = 0 });
+    try children.append(std.testing.allocator, testVar("0", "1", "int", 0));
     try session.var_cache.put(5, children);
 
     try std.testing.expect(session.var_cache.contains(5));
@@ -885,12 +920,12 @@ test "DapSession: nested resolvePathToRef" {
     session.locals_ref = 42;
 
     var top_vars: VarList = .{};
-    try top_vars.append(std.testing.allocator, .{ .name = "self", .value = "MyClass", .var_type = "MyClass", .variables_reference = 10 });
+    try top_vars.append(std.testing.allocator, testVar("self", "MyClass", "MyClass", 10));
     try session.var_cache.put(42, top_vars);
 
     var self_children: VarList = .{};
-    try self_children.append(std.testing.allocator, .{ .name = "x", .value = "1", .var_type = "int", .variables_reference = 0 });
-    try self_children.append(std.testing.allocator, .{ .name = "items", .value = "[]", .var_type = "list", .variables_reference = 20 });
+    try self_children.append(std.testing.allocator, testVar("x", "1", "int", 0));
+    try self_children.append(std.testing.allocator, testVar("items", "[]", "list", 20));
     try session.var_cache.put(10, self_children);
 
     // Path [0] → self (ref=10)
@@ -914,13 +949,13 @@ test "DapSession: buildPanelData with expanded variables" {
     session.locals_ref = 42;
 
     var top_vars: VarList = .{};
-    try top_vars.append(std.testing.allocator, .{ .name = "x", .value = "1", .var_type = "int", .variables_reference = 0 });
-    try top_vars.append(std.testing.allocator, .{ .name = "self", .value = "Obj", .var_type = "Obj", .variables_reference = 10 });
+    try top_vars.append(std.testing.allocator, testVar("x", "1", "int", 0));
+    try top_vars.append(std.testing.allocator, testVar("self", "Obj", "Obj", 10));
     try session.var_cache.put(42, top_vars);
 
     // self is expanded with children
     var children: VarList = .{};
-    try children.append(std.testing.allocator, .{ .name = "a", .value = "2", .var_type = "int", .variables_reference = 0 });
+    try children.append(std.testing.allocator, testVar("a", "2", "int", 0));
     try session.var_cache.put(10, children);
 
     const panel_data = try session.buildPanelData(alloc);
