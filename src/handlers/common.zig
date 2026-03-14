@@ -9,6 +9,8 @@ const queue_mod = @import("../queue.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
 const clients_mod = @import("../clients.zig");
 
+const dap_session_mod = @import("../dap/session.zig");
+
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
@@ -29,6 +31,8 @@ pub const HandlerContext = struct {
     client_stream: std.net.Stream,
     client_id: ClientId,
     ts: ?*treesitter_mod.TreeSitter = null,
+    /// Active DAP debug session (single session at a time).
+    dap_session: *?*dap_session_mod.DapSession = undefined,
     /// Outgoing message queue — push OutMessages here instead of writing directly.
     out_queue: *queue_mod.OutQueue,
     /// Set to true to request daemon shutdown.

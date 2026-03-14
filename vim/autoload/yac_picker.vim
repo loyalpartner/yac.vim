@@ -461,6 +461,7 @@ function! s:picker_create_ui(opts) abort
     \ 'highlight': 'YacPickerInput',
     \ 'title': title,
     \ 'filter': function('s:picker_input_filter'),
+    \ 'mapping': 0,
     \ 'zindex': 100,
     \ })
 
@@ -739,15 +740,16 @@ function! s:picker_on_input_changed() abort
   let debounce = get(spec, 'debounce', 50)
 
   if get(spec, 'local', 0) && spec.query_fn isnot v:null
-    let s:picker.timer_id = timer_start(debounce, function('s:picker_local_query_timer'))
+    " Local modes: run synchronously for instant results (no timer delay)
+    call s:picker_local_query_run()
+    return
   else
     let s:picker.timer_id = timer_start(debounce, function('s:picker_send_query'))
   endif
 endfunction
 
-" Timer callback for local-mode queries (e.g. theme, MRU, help, commands)
-function! s:picker_local_query_timer(timer_id) abort
-  let s:picker.timer_id = -1
+" Run local-mode query synchronously (commands, themes, MRU, help, etc.)
+function! s:picker_local_query_run() abort
   if s:picker.input_popup == -1 | return | endif
 
   let text = s:picker_get_text()
@@ -761,6 +763,7 @@ function! s:picker_local_query_timer(timer_id) abort
   if spec.query_fn isnot v:null
     let items = call(spec.query_fn, [query])
     call s:picker_update_results(items)
+    redraw
   endif
 endfunction
 
@@ -792,11 +795,15 @@ function! s:picker_send_query(timer_id) abort
 
   let s:picker.loading = 1
   call s:picker_update_title()
-  call yac#_picker_request('picker_query', {
+  let req = {
     \ 'query': query,
     \ 'mode': mode,
     \ 'file': expand('%:p'),
-    \ }, 'yac_picker#_handle_query_response')
+    \ }
+  if mode ==# 'document_symbol'
+    let req.text = join(getline(1, '$'), "\n")
+  endif
+  call yac#_picker_request('picker_query', req, 'yac_picker#_handle_query_response')
 endfunction
 
 function! yac_picker#_handle_query_response(channel, response) abort
@@ -804,14 +811,21 @@ function! yac_picker#_handle_query_response(channel, response) abort
   if s:picker.results_popup == -1
     return
   endif
+  " Ignore stale daemon responses when picker has switched to a local mode
+  " (e.g. commands, themes, MRU). Without this guard, a slow file query
+  " response overwrites the local results causing a visible flicker/delay.
+  let text = s:picker.input_popup != -1 ? s:picker_get_text() : ''
+  let prefix = s:picker_has_prefix(text) ? text[0] : ''
+  let spec = get(s:modes, prefix, {})
+  if get(spec, 'local', 0) && text !~# '^@'
+    call yac#_picker_debug_log('[PICKER] ignoring stale daemon response (local mode active)')
+    return
+  endif
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#_picker_debug_log('[yac] Picker error: ' . string(a:response.error))
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
-    let text = s:picker.input_popup != -1
-      \ ? s:picker_get_text()
-      \ : ''
     if text =~# '^@'
       let s:picker.all_locations = a:response.items
       let s:picker.mode = 'document_symbol'
@@ -1382,6 +1396,23 @@ let s:yac_commands = [
   \ {'label': 'Debug Toggle', 'cmd': 'call yac#debug_toggle()'},
   \ {'label': 'Debug Status', 'cmd': 'call yac#debug_status()'},
   \ {'label': 'Alternate File', 'cmd': 'call yac_alternate#switch()'},
+  \ {'label': 'DAP: Start', 'cmd': 'call yac_dap#start()'},
+  \ {'label': 'DAP: Toggle Breakpoint', 'cmd': 'call yac_dap#toggle_breakpoint()'},
+  \ {'label': 'DAP: Clear Breakpoints', 'cmd': 'call yac_dap#clear_breakpoints()'},
+  \ {'label': 'DAP: Continue', 'cmd': 'call yac_dap#continue()'},
+  \ {'label': 'DAP: Step Over', 'cmd': 'call yac_dap#next()'},
+  \ {'label': 'DAP: Step In', 'cmd': 'call yac_dap#step_in()'},
+  \ {'label': 'DAP: Step Out', 'cmd': 'call yac_dap#step_out()'},
+  \ {'label': 'DAP: Terminate', 'cmd': 'call yac_dap#terminate()'},
+  \ {'label': 'DAP: REPL', 'cmd': 'call yac_dap#repl()'},
+  \ {'label': 'DAP: Toggle Mode', 'cmd': 'call yac_dap#toggle_mode()'},
+  \ {'label': 'DAP: Select Frame', 'cmd': 'call yac_dap#select_frame()'},
+  \ {'label': 'DAP: Threads', 'cmd': 'call yac_dap#threads()'},
+  \ {'label': 'DAP: Conditional Breakpoint', 'cmd': 'call yac_dap#set_conditional_breakpoint()'},
+  \ {'label': 'DAP: Log Point', 'cmd': 'call yac_dap#set_log_point()'},
+  \ {'label': 'DAP: Exception Breakpoints', 'cmd': 'call yac_dap#toggle_exception_breakpoints()'},
+  \ {'label': 'DAP: Attach', 'cmd': 'call yac_dap#attach()'},
+  \ {'label': 'DAP: Panel Toggle', 'cmd': 'call yac_dap#panel_toggle()'},
   \ ]
 
 call yac_picker#register_mode({

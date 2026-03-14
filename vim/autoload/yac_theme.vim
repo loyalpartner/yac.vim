@@ -41,6 +41,12 @@ let s:TS_GROUPS = [
   \ 'YacPickerBorder', 'YacPickerInput', 'YacPickerNormal',
   \ 'YacPickerSelected', 'YacPickerHeader', 'YacPickerCursor',
   \ 'YacPickerPrefix', 'YacPickerMatch',
+  \ 'YacDapBreakpoint', 'YacDapBreakpointVerified',
+  \ 'YacDapCurrentLine', 'YacDapCurrentLineNr',
+  \ 'YacDapBorder', 'YacDapNormal', 'YacDapTitle',
+  \ 'YacDapVarName', 'YacDapVarValue', 'YacDapVarType',
+  \ 'YacDapReplPrompt', 'YacDapReplOutput', 'YacDapReplError',
+  \ 'YacDapStatusRunning', 'YacDapStatusStopped',
   \ ]
 
 " Default theme: mirrors yac.vim:69-108 hi def link definitions
@@ -108,6 +114,21 @@ let s:default_groups = {
   \ 'YacPickerCursor':           {'cterm': 'reverse', 'gui': 'reverse'},
   \ 'YacPickerPrefix':           {'link': 'Function'},
   \ 'YacPickerMatch':            {'link': 'Keyword'},
+  \ 'YacDapBreakpoint':          {'link': 'ErrorMsg'},
+  \ 'YacDapBreakpointVerified':  {'link': 'DiagnosticOk'},
+  \ 'YacDapCurrentLine':         {'link': 'DiffAdd'},
+  \ 'YacDapCurrentLineNr':       {'link': 'CursorLineNr'},
+  \ 'YacDapBorder':              {'link': 'Comment'},
+  \ 'YacDapNormal':              {'link': 'Normal'},
+  \ 'YacDapTitle':               {'link': 'Title'},
+  \ 'YacDapVarName':             {'link': 'Identifier'},
+  \ 'YacDapVarValue':            {'link': 'String'},
+  \ 'YacDapVarType':             {'link': 'Type'},
+  \ 'YacDapReplPrompt':          {'link': 'Function'},
+  \ 'YacDapReplOutput':          {'link': 'Normal'},
+  \ 'YacDapReplError':           {'link': 'ErrorMsg'},
+  \ 'YacDapStatusRunning':       {'link': 'DiagnosticOk'},
+  \ 'YacDapStatusStopped':       {'link': 'DiagnosticWarn'},
   \ }
 
 let s:current_theme = ''

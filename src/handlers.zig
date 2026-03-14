@@ -10,6 +10,7 @@ const lsp_notifications = @import("handlers/lsp_notifications.zig");
 const picker_handlers = @import("handlers/picker.zig");
 const ts_handlers = @import("handlers/treesitter.zig");
 const copilot = @import("handlers/copilot.zig");
+const dap_handlers = @import("handlers/dap.zig");
 
 pub const HandlerContext = common.HandlerContext;
 pub const DispatchResult = common.DispatchResult;
@@ -73,6 +74,27 @@ pub const handlers = [_]Handler{
     .{ .name = "copilot_did_focus", .handleFn = copilot.handleCopilotDidFocus },
     .{ .name = "copilot_accept", .handleFn = copilot.handleCopilotAccept },
     .{ .name = "copilot_partial_accept", .handleFn = copilot.handleCopilotPartialAccept },
+    .{ .name = "dap_load_config", .handleFn = dap_handlers.handleDapLoadConfig },
+    .{ .name = "dap_start", .handleFn = dap_handlers.handleDapStart },
+    .{ .name = "dap_breakpoint", .handleFn = dap_handlers.handleDapBreakpoint },
+    .{ .name = "dap_exception_breakpoints", .handleFn = dap_handlers.handleDapExceptionBreakpoints },
+    .{ .name = "dap_threads", .handleFn = dap_handlers.handleDapThreads },
+    .{ .name = "dap_continue", .handleFn = dap_handlers.handleDapContinue },
+    .{ .name = "dap_next", .handleFn = dap_handlers.handleDapNext },
+    .{ .name = "dap_step_in", .handleFn = dap_handlers.handleDapStepIn },
+    .{ .name = "dap_step_out", .handleFn = dap_handlers.handleDapStepOut },
+    .{ .name = "dap_stack_trace", .handleFn = dap_handlers.handleDapStackTrace },
+    .{ .name = "dap_scopes", .handleFn = dap_handlers.handleDapScopes },
+    .{ .name = "dap_variables", .handleFn = dap_handlers.handleDapVariables },
+    .{ .name = "dap_evaluate", .handleFn = dap_handlers.handleDapEvaluate },
+    .{ .name = "dap_terminate", .handleFn = dap_handlers.handleDapTerminate },
+    .{ .name = "dap_status", .handleFn = dap_handlers.handleDapStatus },
+    .{ .name = "dap_get_panel", .handleFn = dap_handlers.handleDapGetPanel },
+    .{ .name = "dap_switch_frame", .handleFn = dap_handlers.handleDapSwitchFrame },
+    .{ .name = "dap_expand_variable", .handleFn = dap_handlers.handleDapExpandVariable },
+    .{ .name = "dap_collapse_variable", .handleFn = dap_handlers.handleDapCollapseVariable },
+    .{ .name = "dap_add_watch", .handleFn = dap_handlers.handleDapAddWatch },
+    .{ .name = "dap_remove_watch", .handleFn = dap_handlers.handleDapRemoveWatch },
     .{ .name = "exit", .handleFn = handleExit },
 };
 
