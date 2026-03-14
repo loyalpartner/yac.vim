@@ -891,12 +891,6 @@ function! yac_dap#on_panel_update(...) abort
   let data = s:cb_data(a:000)
   let s:panel_data = data
 
-  " Diagnostic: show variable count
-  let vars = get(data, 'variables', [])
-  let frames = get(data, 'frames', [])
-  echom printf('[DAP panel_update] %d vars, %d frames, keys=%s',
-        \ len(vars), len(frames), string(keys(data)))
-
   " Update current position from panel status
   let status = get(data, 'status', {})
   let file = get(status, 'file', '')

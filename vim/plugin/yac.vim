@@ -52,28 +52,7 @@ command! YacStart   call yac#start()
 command! YacStop    call yac#stop()
 command! YacRestart call yac#restart()
 
-" DAP commands
-command! YacDapStart            call yac#dap_start()
-command! YacDapToggleBreakpoint call yac#dap_toggle_breakpoint()
-command! YacDapClearBreakpoints call yac#dap_clear_breakpoints()
-command! YacDapContinue         call yac#dap_continue()
-command! YacDapNext             call yac#dap_next()
-command! YacDapStepIn           call yac#dap_step_in()
-command! YacDapStepOut          call yac#dap_step_out()
-command! YacDapTerminate        call yac#dap_terminate()
-command! YacDapRepl             call yac#dap_repl()
-command! -nargs=1 YacDapEvaluate call yac#dap_evaluate(<q-args>)
-command! YacDapMode             call yac_dap#toggle_mode()
-command! YacDapSelectFrame      call yac_dap#select_frame()
-command! YacDapThreads          call yac_dap#threads()
-command! -nargs=1 YacDapWatch   call yac_dap#add_watch(<q-args>)
-command! -nargs=1 YacDapUnwatch call yac_dap#remove_watch(<q-args>)
-command! YacDapCondBreakpoint   call yac_dap#set_conditional_breakpoint()
-command! YacDapLogPoint         call yac_dap#set_log_point()
-command! YacDapExceptionBp      call yac_dap#toggle_exception_breakpoints()
-command! -nargs=? YacDapAttach  call yac_dap#attach(<args>)
-
-" Everything else via <Plug> mappings and <C-p> command palette
+" Everything else via <C-p> > command palette
 
 " <Plug> mappings — LSP navigation
 nnoremap <silent> <Plug>(YacDefinition)     :call yac#goto_definition()<CR>

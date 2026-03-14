@@ -303,7 +303,7 @@ pub const DapSession = struct {
         if (self.locals_ref) |ref| {
             try self.buildVariableTree(alloc, &vars_arr, ref, 0);
         }
-        log.info("DAP buildPanelData: locals_ref={?}, vars_arr.len={d}, var_cache.count={d}", .{ self.locals_ref, vars_arr.items.len, self.var_cache.count() });
+        log.debug("DAP buildPanelData: locals_ref={?}, vars_arr.len={d}, var_cache.count={d}", .{ self.locals_ref, vars_arr.items.len, self.var_cache.count() });
 
         var watches_arr = std.json.Array.init(alloc);
         for (self.watch_results.items) |w| {
@@ -462,25 +462,18 @@ pub const DapSession = struct {
             else => return,
         };
 
-        log.info("DAP chain: parsing {d} variables for ref={?}", .{ vars_arr.items.len, if (self.chain_trigger == .variable_expand) self.expand_ref else self.locals_ref });
+        log.debug("DAP chain: parsing {d} variables for ref={?}", .{ vars_arr.items.len, if (self.chain_trigger == .variable_expand) self.expand_ref else self.locals_ref });
         var list: VarList = .{};
-        for (vars_arr.items, 0..) |item, i| {
+        for (vars_arr.items) |item| {
             const vobj = switch (item) {
                 .object => |o| o,
                 else => continue,
             };
-            const vname = json.getString(vobj, "name") orelse "";
-            const vvalue = json.getString(vobj, "value") orelse "";
-            const vtype = json.getString(vobj, "type") orelse "";
-            const vref = json.getU32(vobj, "variablesReference") orelse 0;
-            if (i < 10) {
-                log.info("  var[{d}]: {s} = {s} ({s}, ref={d})", .{ i, vname, vvalue, vtype, vref });
-            }
             try list.append(self.allocator, .{
-                .name = vname,
-                .value = vvalue,
-                .var_type = vtype,
-                .variables_reference = vref,
+                .name = json.getString(vobj, "name") orelse "",
+                .value = json.getString(vobj, "value") orelse "",
+                .var_type = json.getString(vobj, "type") orelse "",
+                .variables_reference = json.getU32(vobj, "variablesReference") orelse 0,
             });
         }
 
@@ -514,7 +507,7 @@ pub const DapSession = struct {
 
     fn buildVariableTree(self: *const DapSession, alloc: Allocator, arr: *std.json.Array, ref: u32, depth: u32) !void {
         const vars = self.var_cache.get(ref) orelse {
-            log.info("DAP buildVariableTree: ref={d} not in cache (cache has {d} entries)", .{ ref, self.var_cache.count() });
+            log.debug("DAP buildVariableTree: ref={d} not in cache (cache has {d} entries)", .{ ref, self.var_cache.count() });
             return;
         };
         for (vars.items) |v| {
