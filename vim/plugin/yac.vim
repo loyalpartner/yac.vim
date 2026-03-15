@@ -233,7 +233,7 @@ endfunction
 if get(g:, 'yac_auto_start', 1)
   augroup yac_auto
     autocmd!
-    autocmd BufReadPost,BufNewFile * if s:not_preview_loading() | call s:yac_check_language() | call yac_remote#enhanced_lsp_start() | endif
+    autocmd BufReadPost,BufNewFile * if s:not_preview_loading() | call s:yac_check_language() | endif
     autocmd BufWritePre * if s:not_preview_loading() | call yac#will_save(1) | endif
     autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
     autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif

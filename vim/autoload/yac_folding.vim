@@ -1,8 +1,8 @@
 " yac_folding.vim — Folding module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_folding_request(method, params, callback)  — send daemon request
-"   yac#_folding_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_debug_log(msg)                      — debug logging
 "   yac#toast(msg, ...)                              — toast notification
 
 " === State ===
@@ -18,7 +18,7 @@ function! yac_folding#range() abort
   if !exists('b:yac_fold_levels')
     let l:params.text = join(getline(1, '$'), "\n")
   endif
-  call yac#_folding_request('ts_folding', l:params, 'yac_folding#_handle_response')
+  call yac#_request('ts_folding', l:params, 'yac_folding#_handle_response')
 endfunction
 
 function! yac_folding#foldexpr(lnum) abort
@@ -70,7 +70,7 @@ endfunction
 " === Response Handler (callback) ===
 
 function! yac_folding#_handle_response(channel, response) abort
-  call yac#_folding_debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: ts_folding response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'ranges')
     call s:apply_folding_ranges(a:response.ranges)
   endif

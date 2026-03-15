@@ -34,6 +34,12 @@ let s:panel_sections = {'variables': 1, 'frames': 1, 'watches': 1}  " Section co
 
 let s:data_dir = $HOME . '/.local/share/yac'
 
+" Named constants
+let s:CURRENT_LINE_SIGN_ID = 8999
+let s:BP_SIGN_COUNTER_START = 9000
+let s:PANEL_WIDTH = 40
+let s:RESTART_DELAY_MS = 300
+
 " Channel ["call", func, [args]] prepends channel handle as first arg.
 " Extract the actual data dict, handling both channel-call and direct-call.
 function! s:cb_data(args) abort
@@ -298,12 +304,14 @@ function! yac_dap#clear_breakpoints() abort
   echohl Comment | echo printf('[yac] Cleared %d breakpoint%s', count, count == 1 ? '' : 's') | echohl None
 endfunction
 
-" Set a conditional breakpoint at cursor (prompts for condition).
-function! yac_dap#set_conditional_breakpoint() abort
+" Set a breakpoint with a custom property at cursor.
+" prompt: input prompt string, cond_key: key in bp_conditions dict,
+" label: display label for echo feedback.
+function! s:set_breakpoint_with_property(prompt, cond_key, label) abort
   let file = expand('%:p')
   let line = line('.')
-  let condition = input('Breakpoint condition: ')
-  if empty(condition)
+  let value = input(a:prompt)
+  if empty(value)
     return
   endif
 
@@ -319,45 +327,33 @@ function! yac_dap#set_conditional_breakpoint() abort
 
   " Store condition
   let key = file . ':' . line
-  let s:bp_conditions[key] = {'condition': condition}
-  echohl YacDapBreakpoint | echo printf('[yac] Conditional breakpoint: %s (line %d)', condition, line) | echohl None
+  let s:bp_conditions[key] = {a:cond_key: value}
+  echohl YacDapBreakpoint | echo printf('[yac] %s: %s (line %d)', a:label, value, line) | echohl None
 
   if s:dap_active
     call s:sync_breakpoints(file)
   endif
+endfunction
+
+" Set a conditional breakpoint at cursor (prompts for condition).
+function! yac_dap#set_conditional_breakpoint() abort
+  call s:set_breakpoint_with_property('Breakpoint condition: ', 'condition', 'Conditional breakpoint')
 endfunction
 
 " Set a log point at cursor (prompts for message template).
 function! yac_dap#set_log_point() abort
-  let file = expand('%:p')
-  let line = line('.')
-  let msg = input('Log message (use {expr} for interpolation): ')
-  if empty(msg)
-    return
-  endif
+  call s:set_breakpoint_with_property('Log message (use {expr} for interpolation): ', 'log_message', 'Log point')
+endfunction
 
-  if !has_key(s:breakpoints, file)
-    let s:breakpoints[file] = []
-  endif
-
-  if index(s:breakpoints[file], line) < 0
-    call add(s:breakpoints[file], line)
-    execute 'sign place' s:bp_sign_id(file, line) 'line=' . line 'name=YacDapBreakpoint file=' . fnameescape(file)
-  endif
-
-  let key = file . ':' . line
-  let s:bp_conditions[key] = {'log_message': msg}
-  echohl YacDapBreakpoint | echo printf('[yac] Log point: %s (line %d)', msg, line) | echohl None
-
-  if s:dap_active
-    call s:sync_breakpoints(file)
-  endif
+" Send a DAP control command (guard + notify).
+function! s:send_dap_command(method) abort
+  if !s:dap_active | call s:not_active() | return | endif
+  call yac#send_notify('dap_' . a:method, {})
 endfunction
 
 " Show threads (when multi-threaded).
 function! yac_dap#threads() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_threads', {})
+  call s:send_dap_command('threads')
 endfunction
 
 " Toggle exception breakpoints (Python: raised/uncaught).
@@ -377,26 +373,22 @@ endfunction
 
 " Continue execution.
 function! yac_dap#continue() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_continue', {})
+  call s:send_dap_command('continue')
 endfunction
 
 " Step over (next line).
 function! yac_dap#next() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_next', {})
+  call s:send_dap_command('next')
 endfunction
 
 " Step into function.
 function! yac_dap#step_in() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_step_in', {})
+  call s:send_dap_command('step_in')
 endfunction
 
 " Step out of function.
 function! yac_dap#step_out() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_step_out', {})
+  call s:send_dap_command('step_out')
 endfunction
 
 " Terminate debug session.
@@ -427,13 +419,12 @@ function! yac_dap#restart() abort
     endfor
   endfor
   " Brief delay to let adapter exit
-  call timer_start(300, {-> s:do_start(file, {})})
+  call timer_start(s:RESTART_DELAY_MS, {-> s:do_start(file, {})})
 endfunction
 
 " Show stack trace.
 function! yac_dap#stack_trace() abort
-  if !s:dap_active | call s:not_active() | return | endif
-  call yac#send_notify('dap_stack_trace', {})
+  call s:send_dap_command('stack_trace')
 endfunction
 
 " Show variables for current frame.
@@ -1479,7 +1470,7 @@ endfunction
 " Internal: signs and navigation
 " ============================================================================
 
-let s:bp_sign_counter = 9000
+let s:bp_sign_counter = s:BP_SIGN_COUNTER_START
 let s:bp_sign_map = {}  " {'filepath:line' -> sign_id}
 
 function! s:bp_sign_id(file, line) abort
@@ -1574,12 +1565,12 @@ function! s:show_current_line(file, line) abort
   call s:clear_current_line_sign()
   let s:current_file = a:file
   let s:current_line = a:line
-  execute 'sign place 8999 line=' . a:line 'name=YacDapCurrentLine file=' . fnameescape(a:file)
+  execute 'sign place' s:CURRENT_LINE_SIGN_ID 'line=' . a:line 'name=YacDapCurrentLine file=' . fnameescape(a:file)
 endfunction
 
 function! s:clear_current_line_sign() abort
   if !empty(s:current_file)
-    silent! execute 'sign unplace 8999 file=' . fnameescape(s:current_file)
+    silent! execute 'sign unplace' s:CURRENT_LINE_SIGN_ID 'file=' . fnameescape(s:current_file)
   endif
 endfunction
 
@@ -1589,7 +1580,7 @@ function! s:clear_all_bp_signs() abort
     silent! execute 'sign unplace' sign_id
   endfor
   let s:bp_sign_map = {}
-  let s:bp_sign_counter = 9000
+  let s:bp_sign_counter = s:BP_SIGN_COUNTER_START
   let s:breakpoints = {}
   let s:bp_conditions = {}
 endfunction
@@ -2004,7 +1995,7 @@ function! yac_dap#panel_open() abort
   " Create left vertical split
   topleft vnew
   let s:panel_winid = win_getid()
-  vertical resize 40
+  execute 'vertical resize' s:PANEL_WIDTH
 
   " Configure scratch buffer
   setlocal buftype=nofile bufhidden=hide noswapfile nobuflisted
@@ -2190,7 +2181,7 @@ function! s:panel_action() abort
       if get(var_info, 'expanded', 0)
         " Collapse is synchronous — request panel refresh immediately
         call yac#send_notify('dap_collapse_variable', {'path': path})
-        call yac#send('dap_get_panel', {}, function('s:on_panel_refresh'))
+        call yac#send_request('dap_get_panel', {}, function('s:on_panel_refresh'))
       elseif get(var_info, 'expandable', 0)
         " Expand triggers async chain — panel refreshes via on_panel_update
         call yac#send_notify('dap_expand_variable', {'path': path})
@@ -2249,13 +2240,14 @@ function! s:in_section(lnum, section_name) abort
   return 0
 endfunction
 
-function! s:line_to_frame_idx(lnum) abort
-  " Count lines from the CALL STACK header to find frame index
+" Count content lines between a section header and the given line.
+" Returns the 0-based index within the section, or -1 if not found.
+function! s:line_to_section_idx(lnum, header_pattern) abort
   let l = a:lnum - 1
   let idx = -1
   while l > 0
     let text = getline(l)
-    if text =~# '^\(▼\|▶\) CALL STACK'
+    if text =~# '^\(▼\|▶\) ' . a:header_pattern
       return idx
     endif
     if text !~# '^\s*$'
@@ -2266,20 +2258,12 @@ function! s:line_to_frame_idx(lnum) abort
   return -1
 endfunction
 
+function! s:line_to_frame_idx(lnum) abort
+  return s:line_to_section_idx(a:lnum, 'CALL STACK')
+endfunction
+
 function! s:line_to_watch_idx(lnum) abort
-  let l = a:lnum - 1
-  let idx = -1
-  while l > 0
-    let text = getline(l)
-    if text =~# '^\(▼\|▶\) WATCH'
-      return idx
-    endif
-    if text !~# '^\s*$'
-      let idx += 1
-    endif
-    let l -= 1
-  endwhile
-  return -1
+  return s:line_to_section_idx(a:lnum, 'WATCH')
 endfunction
 
 function! s:line_to_var_path(lnum) abort

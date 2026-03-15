@@ -1,8 +1,8 @@
 " yac_doc_highlight.vim — Document highlight module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_doc_highlight_request(method, params, callback)  — send daemon request
-"   yac#_doc_highlight_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_debug_log(msg)                      — debug logging
 
 " === State ===
 
@@ -52,7 +52,7 @@ function! yac_doc_highlight#debounce() abort
 endfunction
 
 function! yac_doc_highlight#highlight() abort
-  call yac#_doc_highlight_request('document_highlight', {
+  call yac#_request('document_highlight', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,

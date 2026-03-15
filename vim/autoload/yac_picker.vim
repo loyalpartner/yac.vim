@@ -1,9 +1,9 @@
 " yac_picker.vim — Picker component (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_picker_request(method, params, callback)  — send daemon request
-"   yac#_picker_notify(method, params)              — send daemon notification
-"   yac#_picker_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_notify(method, params)              — send daemon notification
+"   yac#_debug_log(msg)                      — debug logging
 "   yac#toast(msg, ...)                             — toast notification
 "   yac_theme#*                                     — theme functions
 
@@ -170,7 +170,7 @@ function! yac_picker#open(...) abort
   let s:picker.orig_col = col('.')
   call s:picker_create_ui({})
 
-  call yac#_picker_request('picker_open', {
+  call yac#_request('picker_open', {
     \ 'cwd': getcwd(),
     \ 'file': expand('%:p'),
     \ 'recent_files': map(filter(copy(s:picker_mru), 'filereadable(v:val)'), 'fnamemodify(v:val, ":.")'),
@@ -183,7 +183,7 @@ function! yac_picker#open(...) abort
 endfunction
 
 function! yac_picker#_handle_open_response(channel, response) abort
-  call yac#_picker_debug_log(printf('[RECV]: picker_open response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: picker_open response: %s', string(a:response)))
   if s:picker.results_popup == -1
     return
   endif
@@ -594,7 +594,7 @@ function! s:picker_edit(text, col) abort
 endfunction
 
 function! s:picker_input_filter(winid, key) abort
-  call yac#_picker_debug_log(printf('[PICKER] key: %s (nr: %d, len: %d)', strtrans(a:key), char2nr(a:key), len(a:key)))
+  call yac#_debug_log(printf('[PICKER] key: %s (nr: %d, len: %d)', strtrans(a:key), char2nr(a:key), len(a:key)))
   if a:key == "\<Esc>"
     call s:picker_close()
     return 1
@@ -803,11 +803,11 @@ function! s:picker_send_query(timer_id) abort
   if mode ==# 'document_symbol'
     let req.text = join(getline(1, '$'), "\n")
   endif
-  call yac#_picker_request('picker_query', req, 'yac_picker#_handle_query_response')
+  call yac#_request('picker_query', req, 'yac_picker#_handle_query_response')
 endfunction
 
 function! yac_picker#_handle_query_response(channel, response) abort
-  call yac#_picker_debug_log(printf('[RECV]: picker_query response: %s', string(a:response)[:200]))
+  call yac#_debug_log(printf('[RECV]: picker_query response: %s', string(a:response)[:200]))
   if s:picker.results_popup == -1
     return
   endif
@@ -818,11 +818,11 @@ function! yac_picker#_handle_query_response(channel, response) abort
   let prefix = s:picker_has_prefix(text) ? text[0] : ''
   let spec = get(s:modes, prefix, {})
   if get(spec, 'local', 0) && text !~# '^@'
-    call yac#_picker_debug_log('[PICKER] ignoring stale daemon response (local mode active)')
+    call yac#_debug_log('[PICKER] ignoring stale daemon response (local mode active)')
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#_picker_debug_log('[yac] Picker error: ' . string(a:response.error))
+    call yac#_debug_log('[yac] Picker error: ' . string(a:response.error))
     return
   endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
@@ -866,7 +866,7 @@ function! s:picker_has_locations(mode) abort
 endfunction
 
 function! s:picker_update_results(items) abort
-  call yac#_picker_debug_log(printf('[PICKER] update_results: %d items (was %d), popup=%d',
+  call yac#_debug_log(printf('[PICKER] update_results: %d items (was %d), popup=%d',
     \ type(a:items) == v:t_list ? len(a:items) : 0, len(s:picker.items), s:picker.results_popup))
   let s:picker.loading = 0
   let s:picker.items = type(a:items) == v:t_list ? a:items : []
@@ -1032,7 +1032,7 @@ function! s:picker_highlight_selected() abort
   " Force redraw: when text properties exist on the underlying buffer,
   " Vim may not automatically refresh the popup's cursorline highlight.
   call win_execute(s:picker.results_popup, 'call cursor(' . lnum . ', 1)')
-  call yac#_picker_debug_log(printf('[PICKER] highlight: lnum=%d, actual=%d', lnum, line('.', s:picker.results_popup)))
+  call yac#_debug_log(printf('[PICKER] highlight: lnum=%d, actual=%d', lnum, line('.', s:picker.results_popup)))
   redraw
 endfunction
 
@@ -1042,7 +1042,7 @@ function! s:picker_select_next() abort
     call s:picker_move_grouped(1)
   else
     let s:picker.selected = (s:picker.selected + 1) % len(s:picker.items)
-    call yac#_picker_debug_log(printf('[PICKER] select_next: selected=%d/%d', s:picker.selected, len(s:picker.items)))
+    call yac#_debug_log(printf('[PICKER] select_next: selected=%d/%d', s:picker.selected, len(s:picker.items)))
     call s:picker_highlight_selected()
     call s:picker_on_selection_changed()
   endif
@@ -1054,7 +1054,7 @@ function! s:picker_select_prev() abort
     call s:picker_move_grouped(-1)
   else
     let s:picker.selected = (s:picker.selected - 1 + len(s:picker.items)) % len(s:picker.items)
-    call yac#_picker_debug_log(printf('[PICKER] select_prev: selected=%d/%d', s:picker.selected, len(s:picker.items)))
+    call yac#_debug_log(printf('[PICKER] select_prev: selected=%d/%d', s:picker.selected, len(s:picker.items)))
     call s:picker_highlight_selected()
     call s:picker_on_selection_changed()
   endif
@@ -1179,7 +1179,7 @@ function! s:picker_close() abort
     normal! zz
   else
     let s:picker_history_idx = -1
-    call yac#_picker_notify('picker_close', {})
+    call yac#_notify('picker_close', {})
   endif
 endfunction
 

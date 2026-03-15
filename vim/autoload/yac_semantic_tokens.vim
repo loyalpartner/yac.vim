@@ -5,8 +5,8 @@
 " parameters, readonly from mutable) that tree-sitter alone cannot.
 "
 " Dependencies on yac.vim:
-"   yac#_semantic_tokens_request(method, params, callback)
-"   yac#_semantic_tokens_debug_log(msg)
+"   yac#_request(method, params, callback)
+"   yac#_debug_log(msg)
 
 " === State ===
 
@@ -29,7 +29,7 @@ function! yac_semantic_tokens#request() abort
   let l:seq = get(b:, 'yac_st_seq', 0) + 1
   let b:yac_st_seq = l:seq
 
-  call yac#_semantic_tokens_request('semantic_tokens', {
+  call yac#_request('semantic_tokens', {
     \   'file': expand('%:p'),
     \ }, {ch, resp -> yac_semantic_tokens#_handle_response(
     \     ch, resp, l:seq, l:bufnr)})
@@ -73,7 +73,7 @@ endfunction
 " === Response Handler (callback) ===
 
 function! yac_semantic_tokens#_handle_response(channel, response, seq, bufnr) abort
-  call yac#_semantic_tokens_debug_log(printf(
+  call yac#_debug_log(printf(
         \ '[RECV]: semantic_tokens response (seq=%d, bufnr=%d)', a:seq, a:bufnr))
 
   " Discard stale responses

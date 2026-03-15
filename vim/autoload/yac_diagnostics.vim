@@ -1,9 +1,9 @@
 " yac_diagnostics.vim — Diagnostics module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_diag_request(method, params, callback)  — send daemon request
-"   yac#_diag_notify(method, params)             — send daemon notification
-"   yac#_diag_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_notify(method, params)             — send daemon notification
+"   yac#_debug_log(msg)                      — debug logging
 
 " === State ===
 
@@ -69,8 +69,8 @@ endfunction
 " === Internal ===
 
 function! s:show_diagnostics(diagnostics) abort
-  call yac#_diag_debug_log("s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics")
-  call yac#_diag_debug_log("virtual text enabled = " . s:diagnostic_virtual_text.enabled)
+  call yac#_debug_log("s:show_diagnostics called with " . len(a:diagnostics) . " diagnostics")
+  call yac#_debug_log("virtual text enabled = " . s:diagnostic_virtual_text.enabled)
 
   if empty(a:diagnostics)
     " Clear virtual text when no diagnostics
@@ -83,7 +83,7 @@ function! s:show_diagnostics(diagnostics) abort
     return
   endif
 
-  call yac#_diag_debug_log("First diagnostic: " . string(a:diagnostics[0]))
+  call yac#_debug_log("First diagnostic: " . string(a:diagnostics[0]))
 
   " Store diagnostics per-buffer for tests & external queries
   let current_file = expand('%:p')
@@ -151,7 +151,7 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
     " 清除当前缓冲区的虚拟文本（而不是所有缓冲区）
     let current_bufnr = bufnr('%')
     call s:clear_diagnostic_virtual_text(current_bufnr)
-    call yac#_diag_debug_log("Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics")
+    call yac#_debug_log("Cleared virtual text for current buffer " . current_bufnr . " due to empty diagnostics")
     return
   endif
 
@@ -186,7 +186,7 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
 
     " 只有当文件在缓冲区中时才处理
     if bufnr != -1
-      call yac#_diag_debug_log("update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics")
+      call yac#_debug_log("update_diagnostic_virtual_text for file " . file_path . " (buffer " . bufnr . ") with " . len(file_diagnostics) . " diagnostics")
 
       " 清除该buffer的虚拟文本（但不清除storage，因为我们要立即更新）
       if exists('*prop_remove')
@@ -206,7 +206,7 @@ function! s:update_diagnostic_virtual_text(diagnostics) abort
       " 渲染虚拟文本
       call s:render_diagnostic_virtual_text(bufnr)
     else
-      call yac#_diag_debug_log("file " . file_path . " not loaded in buffer, skipping virtual text")
+      call yac#_debug_log("file " . file_path . " not loaded in buffer, skipping virtual text")
     endif
   endfor
 endfunction
@@ -242,7 +242,7 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
         \ 'bufnr': a:bufnr
         \ })
     catch
-      call yac#_diag_debug_log('diag underline prop_add failed: ' . v:exception
+      call yac#_debug_log('diag underline prop_add failed: ' . v:exception
         \ . ' lnum=' . lnum . ' col=' . col_start . '-' . col_end
         \ . ' end_lnum=' . end_lnum . ' type=' . ul_type)
     endtry
@@ -259,7 +259,7 @@ function! s:render_diagnostic_virtual_text(bufnr) abort
         \ 'bufnr': a:bufnr
         \ })
     catch
-      call yac#_diag_debug_log('diag vtext prop_add failed: ' . v:exception
+      call yac#_debug_log('diag vtext prop_add failed: ' . v:exception
         \ . ' lnum=' . lnum . ' type=' . vt_type)
     endtry
   endfor

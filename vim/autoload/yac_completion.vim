@@ -1,8 +1,8 @@
 " yac_completion.vim — Completion module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_completion_request(method, params, callback)  — send daemon request
-"   yac#_completion_debug_log(msg)                     — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_debug_log(msg)                     — debug logging
 "   yac#_at_trigger_char()                             — check trigger char
 "   yac#_get_current_word_prefix()                     — word prefix at cursor
 "   yac#_in_string_or_comment()                        — syntax check
@@ -155,7 +155,7 @@ function! yac_completion#complete() abort
 
   let l:lsp_col = yac#_cursor_lsp_col()
 
-  call yac#_completion_request('completion', {
+  call yac#_request('completion', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': l:lsp_col
@@ -386,7 +386,7 @@ function! s:bg_completion_fire(timer_id) abort
   let s:completion.seq += 1
   let l:seq = s:completion.seq
   let l:lsp_col = yac#_cursor_lsp_col()
-  call yac#_completion_request('completion', {
+  call yac#_request('completion', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': l:lsp_col
@@ -396,11 +396,11 @@ endfunction
 " === Internal: Response Handling ===
 
 function! s:handle_completion_response(channel, response, ...) abort
-  call yac#_completion_debug_log(printf('[RECV]: completion response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: completion response: %s', string(a:response)))
 
   " 序列号不匹配 → 丢弃过时响应
   if a:0 > 0 && a:1 != s:completion.seq
-    call yac#_completion_debug_log(printf('[SKIP]: stale completion response (seq %d, current %d)', a:1, s:completion.seq))
+    call yac#_debug_log(printf('[SKIP]: stale completion response (seq %d, current %d)', a:1, s:completion.seq))
     return
   endif
 
@@ -412,7 +412,7 @@ function! s:handle_completion_response(channel, response, ...) abort
   endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#_completion_debug_log('[yac] Completion error: ' . string(a:response.error))
+    call yac#_debug_log('[yac] Completion error: ' . string(a:response.error))
     return
   endif
 
@@ -767,7 +767,7 @@ function! s:show_completion_documentation() abort
       call extend(md_parts, split(doc_raw, '\n'))
     endif
   endif
-  call yac#_completion_request('ts_hover_highlight', {
+  call yac#_request('ts_hover_highlight', {
     \ 'markdown': join(md_parts, "\n"),
     \ 'filetype': &filetype
     \ }, function('s:handle_completion_doc_hl_response'))

@@ -24,13 +24,26 @@ E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `
 VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 
 **Vim side:**
-- `vim/autoload/yac.vim` — Vim-side logic (completion, popup, LSP bridge, tree-sitter highlights)
+- `vim/autoload/yac.vim` — Core: daemon lifecycle, channel bridge (`yac#_request`, `yac#_notify`, `yac#_debug_log`), public API
+- `vim/autoload/yac_lsp.vim` — LSP operations (goto, hover, rename, code action, format, call hierarchy)
+- `vim/autoload/yac_completion.vim` — Completion popup and item resolution
+- `vim/autoload/yac_signature.vim` — Signature help popup
+- `vim/autoload/yac_diagnostics.vim` — Diagnostics (virtual text, signs, location list)
 - `vim/autoload/yac_copilot.vim` — Copilot ghost text + Tab acceptance
-- `vim/autoload/yac_picker.vim` — Fuzzy picker component
+- `vim/autoload/yac_picker.vim` — Fuzzy picker component + command palette
 - `vim/autoload/yac_peek.vim` — Reference peek window with tree navigation
 - `vim/autoload/yac_theme.vim` — Tree-sitter highlight theme management
+- `vim/autoload/yac_treesitter.vim` — Tree-sitter highlight request/response handling
+- `vim/autoload/yac_inlay.vim` — Inlay hints
+- `vim/autoload/yac_doc_highlight.vim` — Document highlight (cursor symbol references)
+- `vim/autoload/yac_semantic_tokens.vim` — LSP semantic token highlighting
+- `vim/autoload/yac_folding.vim` — Code folding via tree-sitter/LSP
+- `vim/autoload/yac_dap.vim` — Debug Adapter Protocol UI
+- `vim/autoload/yac_config.vim` — Project-level configuration (.yac.json)
+- `vim/autoload/yac_autopairs.vim` — Auto bracket/quote pairing
+- `vim/autoload/yac_gitsigns.vim` — Git diff signs in the sign column
 - `vim/autoload/yac_alternate.vim` — C/C++ header/implementation file switching
-- `vim/autoload/yac_install.vim` — LSP server auto-install/update
+- `vim/autoload/yac_install.vim` — LSP/DAP adapter auto-install/update
 - `vim/autoload/yac_test.vim` — E2E test helpers (term_start mode)
 
 **Zig daemon:**
@@ -39,6 +52,8 @@ VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
 - `src/handlers.zig` — request dispatch table
 - `src/handlers/` — per-feature request handlers
 - `src/handlers/copilot.zig` — Copilot LSP handler (global singleton)
+- `src/handlers/dap.zig` — DAP request handlers
+- `src/dap/` — DAP client, protocol, session, config
 - `src/lsp/` — LSP client, registry, protocol, config
 - `src/lsp/transform.zig` — LSP response → Vim format
 - `src/treesitter/` — Tree-sitter parsing (highlights, symbols, folds, textobjects, navigate)
@@ -70,7 +85,7 @@ See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 - If the first approach fails, step back and re-analyze the root cause rather than trying variations blindly.
 - Understand the user's actual goal before trying solutions.
 - **UI/rendering bugs: log first, fix second.** Add diagnostic logging (echom or debug_log) to confirm whether the issue is logical (wrong values) or visual (correct values, wrong rendering). Do not guess — one round of logging beats three rounds of speculative fixes.
-- **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_picker_debug_log`). Enable with `:YacDebugToggle`, check with `:YacOpenLog`. Only use `echom` as a last resort when debug_log infrastructure is unavailable.
+- **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_debug_log`). Enable with `:YacDebugToggle`, check with `:YacOpenLog`. Only use `echom` as a last resort when debug_log infrastructure is unavailable.
 
 ## Bug Fix Workflow
 
@@ -96,7 +111,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 
 - **`win_execute` + `cursorline` needs `redraw`**: When the buffer behind a popup has many text properties (tree-sitter highlights), `win_execute(popup, 'call cursor(...)')` moves the cursor correctly but Vim may not refresh the `cursorline` highlight. Always follow with `redraw`.
 - **Picker sets `eventignore`**: While the picker is open, `CursorMoved`, `CursorMovedI`, `WinScrolled` are suppressed via `eventignore` to prevent tree-sitter/doc-highlight operations from interfering with popup rendering. Restored on close in `s:picker_close_popups()`.
-- **Never use `mapping: 0`** on completion popup — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim).
+- **Never use `mapping: 0` on completion popup** — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim). Note: picker input popup intentionally uses `mapping: 0` to avoid `>` character timeoutlen delay — this is safe because the picker restores mappings on close and the input popup uses its own filter.
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
 - Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
 

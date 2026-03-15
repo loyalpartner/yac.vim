@@ -63,7 +63,7 @@ function! yac_install#run(language, install_info) abort
   call mkdir(l:staging, 'p')
 
   call yac#toast(printf('Installing %s...', l:bin_name))
-  call yac#_install_debug_log(printf('Installing %s via %s', l:bin_name, l:method))
+  call yac#_debug_log(printf('Installing %s via %s', l:bin_name, l:method))
 
   let l:ctx = {
     \ 'language': a:language,
@@ -253,7 +253,7 @@ function! s:gh_start_download(ctx, asset) abort
   let l:repo = get(a:ctx.install_info, 'repo', '')
   let l:url = printf('https://github.com/%s/releases/latest/download/%s', l:repo, a:asset)
 
-  call yac#_install_debug_log(printf('Downloading %s from %s', a:asset, l:url))
+  call yac#_debug_log(printf('Downloading %s from %s', a:asset, l:url))
 
   let l:download_path = a:ctx.staging . '/' . a:asset
   call job_start(['curl', '-fSL', '-o', l:download_path, l:url], {
@@ -371,7 +371,7 @@ function! s:on_install_done(ctx, job, exit_code) abort
   call writefile([json_encode(l:metadata)], a:ctx.dest . '/metadata.json')
 
   call yac#toast(printf('Installed %s successfully', a:ctx.bin_name))
-  call yac#_install_debug_log(printf('Installed %s: %s -> %s', a:ctx.bin_name, l:symlink_path, l:target))
+  call yac#_debug_log(printf('Installed %s: %s -> %s', a:ctx.bin_name, l:symlink_path, l:target))
 
   call s:finish_install(a:ctx)
 endfunction
@@ -416,7 +416,7 @@ function! s:finish_install(ctx) abort
   endif
 
   " Notify daemon to reset spawn failure flag
-  call yac#_install_request('lsp_reset_failed',
+  call yac#_request('lsp_reset_failed',
     \ {'language': a:ctx.language},
     \ function('s:on_reset_done'))
 endfunction
@@ -550,7 +550,7 @@ function! yac_install#status() abort
           \ empty(l:version_info) ? '' : printf(' [installed: %s]', l:version_info))
       endfor
     catch
-      call yac#_install_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
+      call yac#_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
     endtry
   endfor
 endfunction
@@ -573,7 +573,7 @@ function! s:detect_language(file) abort
         endfor
       endfor
     catch
-      call yac#_install_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
+      call yac#_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
     endtry
   endfor
   return ''
@@ -594,7 +594,7 @@ function! s:find_language_install(language) abort
       return get(l:lsp_server, 'install', {})
     endfor
   catch
-    call yac#_install_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
+    call yac#_debug_log(printf('Failed to parse %s: %s', l:json_path, v:exception))
   endtry
   return {}
 endfunction

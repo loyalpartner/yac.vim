@@ -1061,54 +1061,16 @@ function! yac#picker_open(...) abort
   return call('yac_picker#open', a:000)
 endfunction
 
-" Bridge functions for yac_picker.vim to access yac.vim internals
-function! yac#_picker_request(method, params, callback) abort
+" Bridge functions for yac_*.vim submodules to access yac.vim internals
+function! yac#_request(method, params, callback) abort
   call s:request(a:method, a:params, a:callback)
 endfunction
 
-function! yac#_picker_notify(method, params) abort
+function! yac#_notify(method, params) abort
   call s:notify(a:method, a:params)
 endfunction
 
-function! yac#_picker_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-" === Install Bridge ===
-
-function! yac#_install_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_install_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_install_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-" === Copilot Bridge ===
-
-function! yac#_copilot_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_copilot_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-" === Bridge functions for future module extraction ===
-
-function! yac#_ts_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_ts_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_ts_debug_log(msg) abort
+function! yac#_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
@@ -1122,44 +1084,6 @@ endfunction
 
 function! yac#_ts_show_document_symbols(symbols) abort
   call yac_lsp#show_document_symbols(a:symbols)
-endfunction
-
-function! yac#_diag_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_diag_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_diag_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-" === Completion & Signature Bridge Functions ===
-
-function! yac#_completion_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_completion_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_completion_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-function! yac#_signature_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_signature_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_signature_debug_log(msg) abort
-  call s:debug_log(a:msg)
 endfunction
 
 " Shared utility bridges for completion/signature modules
@@ -1191,54 +1115,6 @@ function! yac#_completion_popup_visible() abort
   return yac_completion#popup_visible()
 endfunction
 
-function! yac#_lsp_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_lsp_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_lsp_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-function! yac#_folding_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_folding_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_folding_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-function! yac#_inlay_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_inlay_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_inlay_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
-function! yac#_doc_highlight_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_doc_highlight_notify(method, params) abort
-  call s:notify(a:method, a:params)
-endfunction
-
-function! yac#_doc_highlight_debug_log(msg) abort
-  call s:debug_log(a:msg)
-endfunction
-
 " === Semantic Tokens (delegated to yac_semantic_tokens.vim) ===
 
 function! yac#semantic_tokens() abort
@@ -1251,14 +1127,6 @@ endfunction
 
 function! yac#semantic_tokens_debounce() abort
   call yac_semantic_tokens#request_debounce()
-endfunction
-
-function! yac#_semantic_tokens_request(method, params, callback) abort
-  call s:request(a:method, a:params, a:callback)
-endfunction
-
-function! yac#_semantic_tokens_debug_log(msg) abort
-  call s:debug_log(a:msg)
 endfunction
 
 " === Tree-sitter Integration (delegated to yac_treesitter.vim) ===

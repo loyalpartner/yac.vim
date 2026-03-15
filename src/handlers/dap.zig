@@ -293,62 +293,22 @@ pub fn handleDapThreads(ctx: *HandlerContext, _: Value) !DispatchResult {
 /// Continue execution.
 /// Params: {thread_id?}
 pub fn handleDapContinue(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try session.client.sendContinue(thread_id);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return handleThreadControl(ctx, params, DapClient.sendContinue);
 }
 
 /// Step over (next line).
 pub fn handleDapNext(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try session.client.sendNext(thread_id);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return handleThreadControl(ctx, params, DapClient.sendNext);
 }
 
 /// Step into function.
 pub fn handleDapStepIn(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try session.client.sendStepIn(thread_id);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return handleThreadControl(ctx, params, DapClient.sendStepIn);
 }
 
 /// Step out of function.
 pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try session.client.sendStepOut(thread_id);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return handleThreadControl(ctx, params, DapClient.sendStepOut);
 }
 
 /// Get stack trace for the stopped thread.
@@ -600,6 +560,22 @@ fn parsePath(ctx: *HandlerContext, obj: json.ObjectMap) !?[]const u32 {
         };
     }
     return path;
+}
+
+/// Shared implementation for thread-control handlers (continue, next, stepIn, stepOut).
+/// Extracts thread_id from params (falling back to active thread), calls the given send function.
+fn handleThreadControl(ctx: *HandlerContext, params: Value, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !DispatchResult {
+    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return .{ .empty = {} },
+    };
+
+    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+    _ = try sendFn(session.client, thread_id);
+    return .{ .data = try json.buildObject(ctx.allocator, .{
+        .{ "ok", .{ .bool = true } },
+    }) };
 }
 
 fn notRunning(ctx: *HandlerContext) !DispatchResult {

@@ -107,7 +107,7 @@ function! s:send_copilot_request() abort
   if mode() !=# 'i'
     return
   endif
-  call yac#_copilot_request('copilot_complete', {
+  call yac#_request('copilot_complete', {
     \ 'file': expand('%:p'),
     \ 'line': line('.') - 1,
     \ 'column': s:cursor_lsp_col(),
@@ -175,7 +175,7 @@ function! yac_copilot#prepare_accept() abort
   let l:text = get(l:item, 'insertText', '')
   call yac_copilot#clear_ghost_text()
   let s:ghost_items = []
-  call yac#_copilot_notify('copilot_accept', {
+  call yac#_notify('copilot_accept', {
     \ 'uuid': get(l:item, 'command', {})
     \          ->get('arguments', [{}])->get(0, '')
     \ })
@@ -302,7 +302,7 @@ function! yac_copilot#accept_word() abort
   endif
 
   " Send partial accept telemetry
-  call yac#_copilot_notify('copilot_partial_accept', {
+  call yac#_notify('copilot_partial_accept', {
     \ 'item_id': get(l:item, 'filterText', ''),
     \ 'accepted_text': l:match,
     \ })
@@ -329,7 +329,7 @@ endfunction
 " ============================================================================
 
 function! yac_copilot#sign_in() abort
-  call yac#_copilot_request('copilot_check_status', {}, 'yac_copilot#_handle_check_status_for_signin')
+  call yac#_request('copilot_check_status', {}, 'yac_copilot#_handle_check_status_for_signin')
 endfunction
 
 function! yac_copilot#_handle_check_status_for_signin(channel, response) abort
@@ -345,7 +345,7 @@ function! yac_copilot#_handle_check_status_for_signin(channel, response) abort
     return
   endif
   " Not signed in — initiate sign-in flow
-  call yac#_copilot_request('copilot_sign_in', {}, 'yac_copilot#_handle_sign_in_response')
+  call yac#_request('copilot_sign_in', {}, 'yac_copilot#_handle_sign_in_response')
 endfunction
 
 function! yac_copilot#_handle_sign_in_response(channel, response) abort
@@ -375,7 +375,7 @@ function! yac_copilot#_handle_sign_in_response(channel, response) abort
   endif
 
   " Wait for confirmation
-  call yac#_copilot_request('copilot_sign_in_confirm', {
+  call yac#_request('copilot_sign_in_confirm', {
     \ 'userCode': l:user_code,
     \ }, 'yac_copilot#_handle_sign_in_confirm')
 endfunction
@@ -396,7 +396,7 @@ function! yac_copilot#_handle_sign_in_confirm(channel, response) abort
 endfunction
 
 function! yac_copilot#sign_out() abort
-  call yac#_copilot_request('copilot_sign_out', {}, 'yac_copilot#_handle_sign_out')
+  call yac#_request('copilot_sign_out', {}, 'yac_copilot#_handle_sign_out')
 endfunction
 
 function! yac_copilot#_handle_sign_out(channel, response) abort
@@ -404,7 +404,7 @@ function! yac_copilot#_handle_sign_out(channel, response) abort
 endfunction
 
 function! yac_copilot#status() abort
-  call yac#_copilot_request('copilot_check_status', {}, 'yac_copilot#_handle_status')
+  call yac#_request('copilot_check_status', {}, 'yac_copilot#_handle_status')
 endfunction
 
 function! yac_copilot#_handle_status(channel, response) abort
@@ -459,7 +459,7 @@ function! s:notify_copilot_did_open() abort
   if empty(l:file)
     return
   endif
-  call yac#_copilot_notify('file_open', {
+  call yac#_notify('file_open', {
     \ 'file': l:file,
     \ 'text': join(getline(1, '$'), "\n"),
     \ })

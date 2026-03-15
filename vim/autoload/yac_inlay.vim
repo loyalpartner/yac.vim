@@ -1,8 +1,8 @@
 " yac_inlay.vim — Inlay hints module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_inlay_request(method, params, callback)  — send daemon request
-"   yac#_inlay_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_debug_log(msg)                      — debug logging
 
 " === State ===
 
@@ -12,7 +12,7 @@ let s:inlay_hints = {}
 
 function! yac_inlay#hints() abort
   let l:bufnr = bufnr('%')
-  call yac#_inlay_request('inlay_hints', {
+  call yac#_request('inlay_hints', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
@@ -59,7 +59,7 @@ endfunction
 " === Response Handler (callback) ===
 
 function! yac_inlay#_handle_response(channel, response, ...) abort
-  call yac#_inlay_debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: inlay_hints response: %s', string(a:response)))
 
   " Discard if response arrived for a different buffer than current
   if a:0 > 0 && a:1 != bufnr('%')

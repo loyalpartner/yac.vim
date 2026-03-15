@@ -1,9 +1,9 @@
 " yac_treesitter.vim — Tree-sitter integration (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_ts_request(method, params, callback)       — send daemon request
-"   yac#_ts_notify(method, params)                  — send daemon notification
-"   yac#_ts_debug_log(msg)                          — debug logging
+"   yac#_request(method, params, callback)       — send daemon request
+"   yac#_notify(method, params)                  — send daemon notification
+"   yac#_debug_log(msg)                          — debug logging
 "   yac#_ts_ensure_connection()                     — get channel handle
 "   yac#_ts_flush_did_change()                      — flush pending edits
 "   yac#_ts_show_document_symbols(symbols)          — show symbols in picker
@@ -25,13 +25,13 @@ let s:ts_prop_types_created = {}
 " ============================================================================
 
 function! yac_treesitter#symbols() abort
-  call yac#_ts_request('ts_symbols', {
+  call yac#_request('ts_symbols', {
     \   'file': expand('%:p')
     \ }, 'yac_treesitter#_handle_ts_symbols_response')
 endfunction
 
 function! yac_treesitter#_handle_ts_symbols_response(channel, response) abort
-  call yac#_ts_debug_log(printf('[RECV]: ts_symbols response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: ts_symbols response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'symbols')
     call yac#_ts_show_document_symbols(a:response.symbols)
   else
@@ -44,7 +44,7 @@ endfunction
 " ============================================================================
 
 function! s:ts_navigate(target, direction) abort
-  call yac#_ts_request('ts_navigate', {
+  call yac#_request('ts_navigate', {
     \   'file': expand('%:p'),
     \   'target': a:target,
     \   'direction': a:direction,
@@ -69,7 +69,7 @@ function! yac_treesitter#prev_struct() abort
 endfunction
 
 function! yac_treesitter#_handle_ts_navigate_response(channel, response) abort
-  call yac#_ts_debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'line')
     " Convert 0-based to 1-based
     let lnum = a:response.line + 1
@@ -100,7 +100,7 @@ function! yac_treesitter#select(target) abort
 
   " Synchronous request so operator-pending mode (daf, cif, etc.) works
   let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
-  call yac#_ts_debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
+  call yac#_debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
 
   if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
     let start_line = l:response.start_line + 1
@@ -176,7 +176,7 @@ function! yac_treesitter#highlights_request(...) abort
   let l:bufnr = bufnr('%')
   let l:seq = get(b:, 'yac_ts_hl_seq', 0) + 1
   let b:yac_ts_hl_seq = l:seq
-  call yac#_ts_request('ts_highlights', l:params,
+  call yac#_request('ts_highlights', l:params,
     \ {ch, resp -> s:handle_ts_highlights_response(
     \     ch, resp, l:seq, l:bufnr, l:is_scroll)})
 endfunction

@@ -1,8 +1,8 @@
 " yac_signature.vim — Signature help module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_signature_request(method, params, callback)  — send daemon request
-"   yac#_signature_debug_log(msg)                      — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_debug_log(msg)                      — debug logging
 "   yac#_at_trigger_char()                             — check trigger char
 "   yac#_in_string_or_comment()                        — syntax check
 "   yac#_flush_did_change()                            — flush pending didChange
@@ -24,7 +24,7 @@ function! yac_signature#help() abort
 
   let l:lsp_col = yac#_cursor_lsp_col()
 
-  call yac#_signature_request('signature_help', {
+  call yac#_request('signature_help', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': l:lsp_col
@@ -92,7 +92,7 @@ function! s:trigger_signature_help() abort
 endfunction
 
 function! s:handle_signature_help_response(channel, response) abort
-  call yac#_signature_debug_log(printf('[RECV]: signature_help response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: signature_help response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     return
@@ -125,7 +125,7 @@ function! s:handle_signature_help_response(channel, response) abort
   " Build display lines — split multi-line labels (e.g. pyright)
   let l:label_lines = split(l:label, '\n')
   let l:lines = copy(l:label_lines)
-  call yac#_signature_debug_log(printf('signature label len=%d lines=%d first=%s', len(l:label), len(l:label_lines), get(l:label_lines, 0, '')))
+  call yac#_debug_log(printf('signature label len=%d lines=%d first=%s', len(l:label), len(l:label_lines), get(l:label_lines, 0, '')))
 
   " Add documentation if available
   let l:doc = get(l:sig, 'documentation', '')
@@ -187,7 +187,7 @@ function! s:handle_signature_help_response(channel, response) abort
   endif
 
   " Request tree-sitter syntax highlighting asynchronously
-  call yac#_signature_request('ts_hover_highlight', {
+  call yac#_request('ts_hover_highlight', {
     \ 'markdown': join(l:md_parts, "\n"),
     \ 'filetype': &filetype
     \ }, function('s:handle_signature_hl_response'))

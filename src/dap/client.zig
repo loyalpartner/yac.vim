@@ -350,78 +350,47 @@ pub const DapClient = struct {
 
     /// Send continue request.
     pub fn sendContinue(self: *DapClient, thread_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("continue", try json.buildObject(alloc, .{
-            .{ "threadId", json.jsonInteger(@intCast(thread_id)) },
-        }));
+        return self.sendSingleFieldRequest("continue", "threadId", thread_id);
     }
 
     /// Send next (step over) request.
     pub fn sendNext(self: *DapClient, thread_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("next", try json.buildObject(alloc, .{
-            .{ "threadId", json.jsonInteger(@intCast(thread_id)) },
-        }));
+        return self.sendSingleFieldRequest("next", "threadId", thread_id);
     }
 
     /// Send stepIn request.
     pub fn sendStepIn(self: *DapClient, thread_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("stepIn", try json.buildObject(alloc, .{
-            .{ "threadId", json.jsonInteger(@intCast(thread_id)) },
-        }));
+        return self.sendSingleFieldRequest("stepIn", "threadId", thread_id);
     }
 
     /// Send stepOut request.
     pub fn sendStepOut(self: *DapClient, thread_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("stepOut", try json.buildObject(alloc, .{
-            .{ "threadId", json.jsonInteger(@intCast(thread_id)) },
-        }));
+        return self.sendSingleFieldRequest("stepOut", "threadId", thread_id);
     }
 
     /// Send stackTrace request.
     pub fn sendStackTrace(self: *DapClient, thread_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("stackTrace", try json.buildObject(alloc, .{
-            .{ "threadId", json.jsonInteger(@intCast(thread_id)) },
-        }));
+        return self.sendSingleFieldRequest("stackTrace", "threadId", thread_id);
     }
 
     /// Send scopes request for a stack frame.
     pub fn sendScopes(self: *DapClient, frame_id: u32) !u32 {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        return self.sendRequest("scopes", try json.buildObject(alloc, .{
-            .{ "frameId", json.jsonInteger(@intCast(frame_id)) },
-        }));
+        return self.sendSingleFieldRequest("scopes", "frameId", frame_id);
     }
 
     /// Send variables request for a scope/variable reference.
     pub fn sendVariables(self: *DapClient, variables_ref: u32) !u32 {
+        return self.sendSingleFieldRequest("variables", "variablesReference", variables_ref);
+    }
+
+    /// Internal helper: send a DAP request with a single integer field.
+    fn sendSingleFieldRequest(self: *DapClient, command: []const u8, comptime field_name: []const u8, value: u32) !u32 {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        return self.sendRequest("variables", try json.buildObject(alloc, .{
-            .{ "variablesReference", json.jsonInteger(@intCast(variables_ref)) },
+        return self.sendRequest(command, try json.buildObject(alloc, .{
+            .{ field_name, json.jsonInteger(@intCast(value)) },
         }));
     }
 

@@ -1,9 +1,9 @@
 " yac_lsp.vim — LSP operations module (extracted from yac.vim)
 "
 " Dependencies on yac.vim:
-"   yac#_lsp_request(method, params, callback)  — send daemon request
-"   yac#_lsp_notify(method, params)             — send daemon notification
-"   yac#_lsp_debug_log(msg)                     — debug logging
+"   yac#_request(method, params, callback)  — send daemon request
+"   yac#_notify(method, params)             — send daemon notification
+"   yac#_debug_log(msg)                     — debug logging
 
 " === State ===
 
@@ -14,40 +14,32 @@ let s:pending_code_actions = []
 
 " === Goto ===
 
-function! yac_lsp#goto_definition() abort
-  call yac#_lsp_request('goto_definition', {
+function! s:goto_request(method) abort
+  call yac#_request(a:method, {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
     \ }, 'yac_lsp#_handle_goto_response')
+endfunction
+
+function! yac_lsp#goto_definition() abort
+  call s:goto_request('goto_definition')
 endfunction
 
 function! yac_lsp#goto_declaration() abort
-  call yac#_lsp_request('goto_declaration', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 'yac_lsp#_handle_goto_response')
+  call s:goto_request('goto_declaration')
 endfunction
 
 function! yac_lsp#goto_type_definition() abort
-  call yac#_lsp_request('goto_type_definition', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 'yac_lsp#_handle_goto_response')
+  call s:goto_request('goto_type_definition')
 endfunction
 
 function! yac_lsp#goto_implementation() abort
-  call yac#_lsp_request('goto_implementation', {
-    \   'file': expand('%:p'),
-    \   'line': line('.') - 1,
-    \   'column': col('.') - 1
-    \ }, 'yac_lsp#_handle_goto_response')
+  call s:goto_request('goto_implementation')
 endfunction
 
 function! yac_lsp#_handle_goto_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: goto response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: goto response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#toast('[yac] Goto error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
@@ -100,7 +92,7 @@ endfunction
 " === Hover ===
 
 function! yac_lsp#hover() abort
-  call yac#_lsp_request('hover', {
+  call yac#_request('hover', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
@@ -144,7 +136,7 @@ function! s:wrap_plaintext_hover(text, filetype) abort
 endfunction
 
 function! yac_lsp#_handle_hover_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: hover response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: hover response: %s', string(a:response)))
 
   if type(a:response) != v:t_dict
     return
@@ -181,28 +173,28 @@ function! yac_lsp#_handle_hover_response(channel, response) abort
   endif
 
   " Send to TS thread for markdown parsing + code block highlighting
-  call yac#_lsp_request('ts_hover_highlight', {
+  call yac#_request('ts_hover_highlight', {
     \ 'markdown': l:md,
     \ 'filetype': &filetype
     \ }, function('yac_lsp#_handle_ts_hover_hl_response'))
 endfunction
 
 function! yac_lsp#_handle_ts_hover_hl_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: ts_hover_highlight response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: ts_hover_highlight response: %s', string(a:response)))
 
   if type(a:response) != v:t_dict || !has_key(a:response, 'lines')
-    call yac#_lsp_debug_log('[HOVER_HL]: invalid response, no lines key')
+    call yac#_debug_log('[HOVER_HL]: invalid response, no lines key')
     return
   endif
 
   let l:lines = a:response.lines
   if empty(l:lines)
-    call yac#_lsp_debug_log('[HOVER_HL]: empty lines')
+    call yac#_debug_log('[HOVER_HL]: empty lines')
     return
   endif
 
   let l:highlights = get(a:response, 'highlights', {})
-  call yac#_lsp_debug_log(printf('[HOVER_HL]: %d lines, %d highlight groups: %s',
+  call yac#_debug_log(printf('[HOVER_HL]: %d lines, %d highlight groups: %s',
     \ len(l:lines), len(l:highlights), join(keys(l:highlights), ', ')))
   call s:show_hover_popup_highlighted(l:lines, l:highlights)
 endfunction
@@ -263,7 +255,7 @@ function! yac_lsp#apply_ts_highlights_to_buffer(bufnr, highlights) abort
     try
       call prop_add_list({'type': l:prop_type, 'bufnr': a:bufnr}, positions)
     catch
-      call yac#_lsp_debug_log(printf('[HL]: ERROR applying %s: %s',
+      call yac#_debug_log(printf('[HL]: ERROR applying %s: %s',
         \ l:prop_type, v:exception))
     endtry
   endfor
@@ -293,7 +285,7 @@ endfunction
 " === References / Peek ===
 
 function! yac_lsp#references() abort
-  call yac#_lsp_request('references', {
+  call yac#_request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
@@ -302,7 +294,7 @@ endfunction
 
 function! yac_lsp#peek() abort
   let s:peek_initial_symbol = expand('<cword>')
-  call yac#_lsp_request('references', {
+  call yac#_request('references', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
@@ -312,7 +304,7 @@ endfunction
 " Bridge for peek drill-in: send references request for a specific position
 function! yac_lsp#peek_drill(file, line, col, symbol) abort
   let s:peek_drill_symbol = a:symbol
-  call yac#_lsp_request('references', {
+  call yac#_request('references', {
     \   'file': a:file,
     \   'line': a:line,
     \   'column': a:col
@@ -320,7 +312,7 @@ function! yac_lsp#peek_drill(file, line, col, symbol) abort
 endfunction
 
 function! yac_lsp#_handle_references_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: references response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: references response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#toast('[yac] References error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
@@ -336,7 +328,7 @@ function! yac_lsp#_handle_references_response(channel, response) abort
 endfunction
 
 function! yac_lsp#_handle_peek_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: peek response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: peek response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
@@ -352,7 +344,7 @@ function! yac_lsp#_handle_peek_response(channel, response) abort
 endfunction
 
 function! yac_lsp#_handle_peek_drill_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: peek drill response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: peek drill response: %s', string(a:response)))
 
   let symbol = s:peek_drill_symbol
 
@@ -372,7 +364,7 @@ endfunction
 " Bridge for peek syntax highlighting: send ts_highlights for preview
 function! yac_lsp#peek_highlights_request(file, text, start_line, end_line, seq) abort
   let l:seq = a:seq
-  call yac#_lsp_request('ts_highlights', {
+  call yac#_request('ts_highlights', {
     \   'file': a:file,
     \   'text': a:text,
     \   'start_line': a:start_line,
@@ -404,7 +396,7 @@ function! yac_lsp#rename(...) abort
     endif
   endif
 
-  call yac#_lsp_request('rename', {
+  call yac#_request('rename', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
@@ -413,7 +405,7 @@ function! yac_lsp#rename(...) abort
 endfunction
 
 function! yac_lsp#_handle_rename_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: rename response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: rename response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#toast('[yac] Rename error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
@@ -436,7 +428,7 @@ function! yac_lsp#call_hierarchy_outgoing() abort
 endfunction
 
 function! s:call_hierarchy_request(direction) abort
-  call yac#_lsp_request('call_hierarchy_' . a:direction, {
+  call yac#_request('call_hierarchy_' . a:direction, {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
@@ -445,7 +437,7 @@ function! s:call_hierarchy_request(direction) abort
 endfunction
 
 function! yac_lsp#_handle_call_hierarchy_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: call_hierarchy response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: call_hierarchy response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:show_call_hierarchy(a:response.items)
@@ -463,7 +455,7 @@ function! yac_lsp#type_hierarchy_subtypes() abort
 endfunction
 
 function! s:type_hierarchy_request(direction) abort
-  call yac#_lsp_request('type_hierarchy', {
+  call yac#_request('type_hierarchy', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1,
@@ -472,7 +464,7 @@ function! s:type_hierarchy_request(direction) abort
 endfunction
 
 function! yac_lsp#_handle_type_hierarchy_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: type_hierarchy response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: type_hierarchy response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:show_call_hierarchy(a:response.items)
@@ -486,7 +478,7 @@ endfunction
 " === Document Symbols ===
 
 function! yac_lsp#document_symbols() abort
-  call yac#_lsp_request('document_symbols', {
+  call yac#_request('document_symbols', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0
@@ -494,13 +486,13 @@ function! yac_lsp#document_symbols() abort
 endfunction
 
 function! yac_lsp#_handle_document_symbols_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: document_symbols response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: document_symbols response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'symbols') && !empty(a:response.symbols)
     call yac_lsp#show_document_symbols(a:response.symbols)
   else
     " Fallback to tree-sitter symbols
-    call yac#_lsp_debug_log('[FALLBACK]: LSP symbols empty, trying tree-sitter')
+    call yac#_debug_log('[FALLBACK]: LSP symbols empty, trying tree-sitter')
     call yac#ts_symbols()
   endif
 endfunction
@@ -544,7 +536,7 @@ endfunction
 " === Code Action ===
 
 function! yac_lsp#code_action() abort
-  call yac#_lsp_request('code_action', {
+  call yac#_request('code_action', {
     \   'file': expand('%:p'),
     \   'line': line('.') - 1,
     \   'column': col('.') - 1
@@ -552,7 +544,7 @@ function! yac_lsp#code_action() abort
 endfunction
 
 function! yac_lsp#_handle_code_action_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: code_action response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: code_action response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'actions')
     call s:show_code_actions(a:response.actions)
@@ -628,7 +620,7 @@ function! s:execute_code_action(action) abort
   if has_key(a:action, 'command') && !empty(a:action.command)
     " Execute the command
     let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
-    call yac#_lsp_request('execute_command', {
+    call yac#_request('execute_command', {
       \ 'command_name': a:action.command,
       \ 'arguments': arguments
       \ }, '')
@@ -649,14 +641,14 @@ function! yac_lsp#execute_command(...) abort
   let command_name = a:1
   let arguments = a:000[1:]  " Rest of the arguments
 
-  call yac#_lsp_request('execute_command', {
+  call yac#_request('execute_command', {
     \   'command_name': command_name,
     \   'arguments': arguments
     \ }, 'yac_lsp#_handle_execute_command_response')
 endfunction
 
 function! yac_lsp#_handle_execute_command_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: execute_command response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: execute_command response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call yac_lsp#apply_workspace_edit(a:response.edits)
@@ -668,7 +660,7 @@ endfunction
 function! yac_lsp#format() abort
   " Sync buffer before formatting
   call yac#did_change(join(getline(1, '$'), "\n"))
-  call yac#_lsp_request('formatting', {
+  call yac#_request('formatting', {
     \   'file': expand('%:p'),
     \   'tab_size': &tabstop,
     \   'insert_spaces': &expandtab ? v:true : v:false
@@ -679,7 +671,7 @@ function! yac_lsp#range_format() abort
   let [l:start_line, l:start_col] = [line("'<") - 1, col("'<") - 1]
   let [l:end_line, l:end_col] = [line("'>") - 1, col("'>")]
   call yac#did_change(join(getline(1, '$'), "\n"))
-  call yac#_lsp_request('range_formatting', {
+  call yac#_request('range_formatting', {
     \   'file': expand('%:p'),
     \   'tab_size': &tabstop,
     \   'insert_spaces': &expandtab ? v:true : v:false,
@@ -691,7 +683,7 @@ function! yac_lsp#range_format() abort
 endfunction
 
 function! yac_lsp#_handle_formatting_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: formatting response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: formatting response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'error')
     call yac#toast('[yac] Format error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
@@ -853,7 +845,7 @@ endfunction
 " === File Open (LSP response) ===
 
 function! yac_lsp#open_file() abort
-  call yac#_lsp_request('file_open', {
+  call yac#_request('file_open', {
     \   'file': expand('%:p'),
     \   'line': 0,
     \   'column': 0,
@@ -862,12 +854,12 @@ function! yac_lsp#open_file() abort
 endfunction
 
 function! yac_lsp#_handle_file_open_response(channel, response) abort
-  call yac#_lsp_debug_log(printf('[RECV]: file_open response: %s', string(a:response)))
+  call yac#_debug_log(printf('[RECV]: file_open response: %s', string(a:response)))
 
   if type(a:response) == v:t_dict && has_key(a:response, 'log_file')
     let g:yac_lsp_log_file = a:response.log_file
     " Silent init - log file path available via :YacDebugStatus
-    call yac#_lsp_debug_log('yacd initialized with log: ' . a:response.log_file)
+    call yac#_debug_log('yacd initialized with log: ' . a:response.log_file)
   endif
 
   " 文件已解析完成，自动触发折叠指示器（内容变化前只触发一次）
@@ -881,7 +873,7 @@ endfunction
 let g:yac_lsp_status = {}
 
 function! yac_lsp#lsp_status(file) abort
-  call yac#_lsp_request('lsp_status', {'file': a:file}, function('s:on_lsp_status'))
+  call yac#_request('lsp_status', {'file': a:file}, function('s:on_lsp_status'))
 endfunction
 
 function! s:on_lsp_status(ch, response) abort
