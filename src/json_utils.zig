@@ -46,6 +46,20 @@ pub fn getU32(obj: ObjectMap, key: []const u8) ?u32 {
     return std.math.cast(u32, i);
 }
 
+/// Extract the ObjectMap from a Value, returning null if not an object.
+pub fn asObject(value: Value) ?ObjectMap {
+    return switch (value) {
+        .object => |o| o,
+        else => null,
+    };
+}
+
+/// Get a string field directly from a Value (assumes Value is an object).
+pub fn getStringField(value: Value, key: []const u8) ?[]const u8 {
+    const obj = asObject(value) orelse return null;
+    return getString(obj, key);
+}
+
 /// Get an object value from a JSON object by key.
 pub fn getObject(obj: ObjectMap, key: []const u8) ?ObjectMap {
     const val = obj.get(key) orelse return null;

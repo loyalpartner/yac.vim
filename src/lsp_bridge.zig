@@ -179,17 +179,24 @@ pub const LspBridge = struct {
 
         if (std.mem.eql(u8, method, "$/progress")) {
             const language = lsp_mod.extractLanguageFromKey(client_key);
-            const params_obj = switch (params) {
-                .object => |o| o,
-                else => return,
-            };
-            const value_obj = json_utils.getObject(params_obj, "value") orelse return;
-            const kind = json_utils.getString(value_obj, "kind") orelse return;
 
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
             const alloc = arena.allocator();
 
+            const ProgressValue = struct {
+                kind: []const u8 = "",
+                message: ?[]const u8 = null,
+                title: ?[]const u8 = null,
+                percentage: ?i64 = null,
+            };
+
+            const params_obj = json_utils.asObject(params) orelse return;
+            const value_val = params_obj.get("value") orelse return;
+            const pv = json_utils.parseTyped(ProgressValue, alloc, value_val) orelse return;
+            if (pv.kind.len == 0) return;
+
+            // token can be string or integer — resolve to string for progress title tracking
             const token_key: ?[]const u8 = blk: {
                 const token_val = params_obj.get("token") orelse break :blk null;
                 switch (token_val) {
@@ -199,22 +206,18 @@ pub const LspBridge = struct {
                 }
             };
 
-            const message = json_utils.getString(value_obj, "message");
-            const percentage = json_utils.getInteger(value_obj, "percentage");
-
-            if (std.mem.eql(u8, kind, "begin")) {
+            if (std.mem.eql(u8, pv.kind, "begin")) {
                 self.lsp.incrementIndexingCount(language);
-                const title = json_utils.getString(value_obj, "title");
-                if (token_key) |tk| if (title) |t| self.progress.storeTitle(tk, t);
-                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
+                if (token_key) |tk| if (pv.title) |t| self.progress.storeTitle(tk, t);
+                if (lsp_transform.formatProgressToast(alloc, pv.title, pv.message, pv.percentage)) |echo_cmd| {
                     self.transport.sendExToWorkspace(workspace_uri, alloc, echo_cmd);
                 }
-            } else if (std.mem.eql(u8, kind, "report")) {
+            } else if (std.mem.eql(u8, pv.kind, "report")) {
                 const title = if (token_key) |tk| self.progress.getTitle(tk) else null;
-                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
+                if (lsp_transform.formatProgressToast(alloc, title, pv.message, pv.percentage)) |echo_cmd| {
                     self.transport.sendExToWorkspace(workspace_uri, alloc, echo_cmd);
                 }
-            } else if (std.mem.eql(u8, kind, "end")) {
+            } else if (std.mem.eql(u8, pv.kind, "end")) {
                 if (token_key) |tk| self.progress.removeTitle(tk);
                 self.lsp.decrementIndexingCount(language);
                 if (!self.lsp.isAnyLanguageIndexing()) {

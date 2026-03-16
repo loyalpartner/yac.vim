@@ -517,11 +517,7 @@ pub const EventLoop = struct {
         // Defer query methods while the relevant LSP server is indexing
         if (vim_id != null and lsp_mod.isQueryMethod(method)) {
             const lang = blk: {
-                const obj = switch (params) {
-                    .object => |o| o,
-                    else => break :blk null,
-                };
-                const file = json_utils.getString(obj, "file") orelse break :blk null;
+                const file = json_utils.getStringField(params, "file") orelse break :blk null;
                 break :blk lsp_registry_mod.LspRegistry.detectLanguage(lsp_registry_mod.extractRealPath(file));
             };
             if (lang) |language| {
@@ -593,11 +589,7 @@ pub const EventLoop = struct {
 
     /// Track a pending LSP request so the response can be routed back to the correct Vim client.
     fn trackPendingRequest(self: *EventLoop, lsp_request_id: u32, cid: ClientId, vim_id: ?u64, method: []const u8, params: Value, client_key: ?[]const u8, transform: lsp_transform.TransformFn) void {
-        const params_obj: ?ObjectMap = switch (params) {
-            .object => |o| o,
-            else => null,
-        };
-        const file = if (params_obj) |obj| json_utils.getString(obj, "file") else null;
+        const file = json_utils.getStringField(params, "file");
 
         // Cancel older in-flight requests of the same method+client (e.g. completion)
         if (client_key) |key| {
@@ -676,11 +668,7 @@ pub const EventLoop = struct {
     /// After did_save, tell other clients in the same workspace to checktime
     /// so they reload externally modified files immediately.
     fn broadcastChecktimeToOthers(self: *EventLoop, sender_cid: ClientId, alloc: Allocator, params: Value) void {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return,
-        };
-        const file = json_utils.getString(obj, "file") orelse return;
+        const file = json_utils.getStringField(params, "file") orelse return;
         const real_path = lsp_registry_mod.extractRealPath(file);
         const language = lsp_registry_mod.LspRegistry.detectLanguage(real_path) orelse return;
         const client_result = self.lsp.registry.findClient(language, real_path) orelse return;
