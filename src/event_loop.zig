@@ -65,6 +65,8 @@ pub const EventLoop = struct {
     in_ts: queue_mod.InQueue = .{},
     /// Outgoing message queue: worker/main threads → writer thread.
     out_queue: queue_mod.OutQueue = .{},
+    /// Reusable poll set (lives for the entire EventLoop lifetime).
+    poll: PollSet = .{},
 
     pub fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
         const ts_state = treesitter_mod.TreeSitter.init(allocator);
@@ -115,6 +117,7 @@ pub const EventLoop = struct {
             s.deinit();
             self.allocator.destroy(s);
         }
+        self.poll.deinit(self.allocator);
         self.lsp.deinit();
         self.requests.deinit();
         self.clients.deinit();
@@ -124,64 +127,79 @@ pub const EventLoop = struct {
         self.listener.deinit();
     }
 
-    const PollSetup = struct {
-        client_count: usize,
-        picker_fd_index: ?usize,
-        dap_fd_index: ?usize,
+    // ====================================================================
+    // Poll infrastructure — PollSet + FdKind (tagged union dispatch)
+    // ====================================================================
+
+    /// Identifies the source of each polled fd for dispatch.
+    pub const FdKind = union(enum) {
+        listener,
+        client: ClientId,
+        lsp_stdout: []const u8, // client_key
+        lsp_stderr: []const u8, // client_key
+        dap_stdout,
+        picker_stdout,
     };
 
-    fn buildPollFds(
-        self: *EventLoop,
-        poll_fds: *std.ArrayList(std.posix.pollfd),
-        poll_client_keys: *std.ArrayList([]const u8),
-        client_id_order: *std.ArrayList(ClientId),
-    ) !PollSetup {
-        // fd[0] = listener (accept new Vim connections)
-        try poll_fds.append(self.allocator, .{
-            .fd = self.listener.stream.handle,
-            .events = std.posix.POLL.IN,
-            .revents = 0,
-        });
+    /// Paired fd + tag arrays, reused across poll iterations (P2: zero steady-state alloc).
+    const PollSet = struct {
+        fds: std.ArrayListUnmanaged(std.posix.pollfd) = .{},
+        tags: std.ArrayListUnmanaged(FdKind) = .{},
 
-        // fd[1..N] = client stream fds
-        var cit = self.clients.iterator();
-        while (cit.next()) |entry| {
-            try poll_fds.append(self.allocator, .{
-                .fd = entry.value_ptr.*.stream.handle,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            });
-            try client_id_order.append(self.allocator, entry.key_ptr.*);
+        fn add(self: *PollSet, alloc: Allocator, fd: std.posix.fd_t, tag: FdKind) !void {
+            try self.fds.append(alloc, .{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 });
+            try self.tags.append(alloc, tag);
         }
 
-        const client_count = client_id_order.items.len;
+        fn clear(self: *PollSet) void {
+            self.fds.clearRetainingCapacity();
+            self.tags.clearRetainingCapacity();
+        }
 
-        // fd[N+1..N+M] = LSP server stdouts
-        try self.lsp.registry.collectFds(poll_fds, poll_client_keys);
+        fn deinit(self: *PollSet, alloc: Allocator) void {
+            self.fds.deinit(alloc);
+            self.tags.deinit(alloc);
+        }
+    };
 
-        // fd[N+M+1] = DAP adapter stdout (if active)
-        const dap_fd_index: ?usize = if (self.dap_session) |session| idx: {
-            const idx = poll_fds.items.len;
-            try poll_fds.append(self.allocator, .{
-                .fd = session.client.stdoutFd(),
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            });
-            break :idx idx;
-        } else null;
+    // ====================================================================
+    // Poll helpers
+    // ====================================================================
 
-        // fd[N+M+2] = picker fd/find stdout (if active)
-        const picker_fd_index: ?usize = if (self.picker.getStdoutFd()) |fd| idx: {
-            const idx = poll_fds.items.len;
-            try poll_fds.append(self.allocator, .{
-                .fd = fd,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            });
-            break :idx idx;
-        } else null;
+    /// Rebuild the poll fd set from current state. Must be called under state_lock.
+    fn collectFds(self: *EventLoop) !void {
+        self.poll.clear();
 
-        return .{ .client_count = client_count, .picker_fd_index = picker_fd_index, .dap_fd_index = dap_fd_index };
+        // Listener socket
+        try self.poll.add(self.allocator, self.listener.stream.handle, .listener);
+
+        // Vim client connections
+        var cit = self.clients.iterator();
+        while (cit.next()) |entry| {
+            try self.poll.add(self.allocator, entry.value_ptr.*.stream.handle, .{ .client = entry.key_ptr.* });
+        }
+
+        // LSP server stdout + stderr
+        var lsp_it = self.lsp.registry.clients.iterator();
+        while (lsp_it.next()) |entry| {
+            const lsp_client = entry.value_ptr.*;
+            try self.poll.add(self.allocator, lsp_client.stdoutFd(), .{ .lsp_stdout = entry.key_ptr.* });
+            if (lsp_client.stderrFd()) |fd|
+                try self.poll.add(self.allocator, fd, .{ .lsp_stderr = entry.key_ptr.* });
+        }
+        if (self.lsp.registry.copilot_client) |c| {
+            try self.poll.add(self.allocator, c.stdoutFd(), .{ .lsp_stdout = lsp_registry_mod.LspRegistry.copilot_key });
+            if (c.stderrFd()) |fd|
+                try self.poll.add(self.allocator, fd, .{ .lsp_stderr = lsp_registry_mod.LspRegistry.copilot_key });
+        }
+
+        // DAP adapter stdout (stderr is .Ignore)
+        if (self.dap_session) |s|
+            try self.poll.add(self.allocator, s.client.stdoutFd(), .dap_stdout);
+
+        // Picker child stdout
+        if (self.picker.getStdoutFd()) |fd|
+            try self.poll.add(self.allocator, fd, .picker_stdout);
     }
 
     fn pollTimeout(self: *EventLoop) i32 {
@@ -204,62 +222,114 @@ pub const EventLoop = struct {
         return false;
     }
 
-    fn handleListener(self: *EventLoop, poll_fds: []std.posix.pollfd) void {
-        if (poll_fds.len == 0) return;
-        if (poll_fds[0].revents & std.posix.POLL.IN != 0) {
-            self.acceptClient();
+    // ====================================================================
+    // Dispatch — iterate poll results by tag, no index arithmetic
+    // ====================================================================
+
+    fn dispatch(self: *EventLoop, buf: []u8) void {
+        const POLL = std.posix.POLL;
+        for (self.poll.fds.items, self.poll.tags.items) |pfd, tag| {
+            if (pfd.revents == 0) continue;
+            switch (tag) {
+                .listener => {
+                    if (pfd.revents & POLL.IN != 0) self.acceptClient();
+                    if (pfd.revents & POLL.ERR != 0) {
+                        log.err("Listener socket error, shutting down", .{});
+                        self.shutdown_requested = true;
+                    }
+                },
+                .client => |cid| {
+                    if (pfd.revents & POLL.IN != 0) self.readClient(cid, buf);
+                    if (pfd.revents & (POLL.HUP | POLL.ERR) != 0) {
+                        if (self.clients.get(cid) != null) {
+                            log.info("client {d} HUP/ERR, disconnecting", .{cid});
+                            self.removeClient(cid);
+                        }
+                    }
+                },
+                .lsp_stdout => |key| {
+                    const bridge = self.lspBridge();
+                    if (pfd.revents & POLL.IN != 0) {
+                        if (tryRead(pfd.fd, buf)) |n| {
+                            bridge.feedOutput(key, buf[0..n]);
+                        } else {
+                            bridge.handleDeath(key);
+                            continue;
+                        }
+                    }
+                    if (pfd.revents & (POLL.HUP | POLL.ERR) != 0)
+                        bridge.handleDeath(key);
+                },
+                .lsp_stderr => |key| {
+                    if (pfd.revents & POLL.IN != 0)
+                        self.drainStderr(key, buf);
+                },
+                .dap_stdout => {
+                    const bridge = self.dapBridge();
+                    if (pfd.revents & POLL.IN != 0) {
+                        if (tryRead(pfd.fd, buf)) |n| {
+                            bridge.feedOutput(buf[0..n]);
+                        } else {
+                            bridge.handleDisconnect();
+                            continue;
+                        }
+                    }
+                    if (pfd.revents & (POLL.HUP | POLL.ERR) != 0) {
+                        // Drain remaining data before disconnect
+                        while (tryRead(pfd.fd, buf)) |n|
+                            bridge.feedOutput(buf[0..n]);
+                        bridge.handleDisconnect();
+                    }
+                },
+                .picker_stdout => {
+                    if (pfd.revents & (POLL.IN | POLL.HUP) != 0)
+                        self.picker.pollScan();
+                },
+            }
         }
     }
 
-    fn handleClientFds(
-        self: *EventLoop,
-        poll_fds: []std.posix.pollfd,
-        client_count: usize,
-        client_id_order: []ClientId,
-        buf: []u8,
-    ) void {
-        for (poll_fds[1 .. 1 + client_count], 0..) |pfd, i| {
-            const cid = client_id_order[i];
+    // ====================================================================
+    // Per-fd read helpers
+    // ====================================================================
 
-            if (pfd.revents & std.posix.POLL.IN != 0) {
-                const client = self.clients.get(cid) orelse continue;
-                const n = std.posix.read(client.stream.handle, buf) catch |e| {
-                    log.err("client {d} read failed: {any}", .{ cid, e });
-                    self.removeClient(cid);
-                    continue;
-                };
-                if (n == 0) {
-                    log.info("client {d} EOF, disconnecting", .{cid});
-                    self.removeClient(cid);
-                    continue;
-                }
-                // Guard against OOM: disconnect clients that send unbounded data
-                // without newline framing (e.g. malicious or buggy clients).
-                if (clientBufWouldOverflow(client.read_buf.items.len, n)) {
-                    log.err("client {d} read_buf overflow ({d} bytes), disconnecting", .{ cid, client.read_buf.items.len + n });
-                    self.removeClient(cid);
-                    continue;
-                }
-                client.read_buf.appendSlice(self.allocator, buf[0..n]) catch |e| {
-                    log.err("client {d} buf append failed: {any}", .{ cid, e });
-                    continue;
-                };
-                self.processClientInput(cid);
-            }
-
-            if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                log.info("client {d} HUP/ERR, disconnecting", .{cid});
-                self.removeClient(cid);
-            }
-        }
+    fn tryRead(fd: std.posix.fd_t, buf: []u8) ?usize {
+        const n = std.posix.read(fd, buf) catch return null;
+        return if (n == 0) null else n;
     }
 
-    fn handlePickerFd(self: *EventLoop, poll_fds: []std.posix.pollfd, picker_fd_index: ?usize) void {
-        if (picker_fd_index) |pfi| {
-            if (poll_fds[pfi].revents & (std.posix.POLL.IN | std.posix.POLL.HUP) != 0) {
-                self.picker.pollScan();
-            }
+    /// Read from a Vim client socket and route complete lines to work queues.
+    fn readClient(self: *EventLoop, cid: ClientId, buf: []u8) void {
+        const client = self.clients.get(cid) orelse return;
+        const n = std.posix.read(client.stream.handle, buf) catch |e| {
+            log.err("client {d} read failed: {any}", .{ cid, e });
+            self.removeClient(cid);
+            return;
+        };
+        if (n == 0) {
+            log.info("client {d} EOF, disconnecting", .{cid});
+            self.removeClient(cid);
+            return;
         }
+        if (clientBufWouldOverflow(client.read_buf.items.len, n)) {
+            log.err("client {d} read_buf overflow ({d} bytes), disconnecting", .{ cid, client.read_buf.items.len + n });
+            self.removeClient(cid);
+            return;
+        }
+        client.read_buf.appendSlice(self.allocator, buf[0..n]) catch |e| {
+            log.err("client {d} buf append failed: {any}", .{ cid, e });
+            return;
+        };
+        self.processClientInput(cid);
+    }
+
+    /// Drain LSP stderr to prevent pipe buffer from filling.
+    /// Stores the last chunk for crash diagnostics.
+    fn drainStderr(self: *EventLoop, key: []const u8, buf: []u8) void {
+        const client = self.lsp.registry.getClient(key) orelse return;
+        const stderr_fd = client.stderrFd() orelse return;
+        const n = std.posix.read(stderr_fd, buf) catch return;
+        if (n > 0) client.appendStderr(buf[0..n]);
     }
 
     // ====================================================================
@@ -292,10 +362,9 @@ pub const EventLoop = struct {
     /// Main event loop using poll().
     /// Spawns worker, TS, and writer threads; runs the poll loop; then joins all threads.
     pub fn run(self: *EventLoop) !void {
-        var buf: [8192]u8 = undefined;
+        var buf: [65536]u8 = undefined; // shared read buffer (sized for DAP messages)
 
         log.info("Entering event loop (daemon mode)", .{});
-        // Set idle deadline since we start with no clients
         self.idle_deadline = std.time.nanoTimestamp() + IDLE_TIMEOUT_NS;
 
         // Spawn background threads.
@@ -308,7 +377,6 @@ pub const EventLoop = struct {
         const writer_thread = try std.Thread.spawn(.{}, writerLoop, .{self});
 
         defer {
-            // Drain work queues first, then drain the out_queue.
             self.in_general.close();
             self.in_ts.close();
             for (worker_threads) |t| t.join();
@@ -318,25 +386,17 @@ pub const EventLoop = struct {
         }
 
         while (true) {
-            // Build poll fd list under lock (accesses clients, lsp.registry, picker).
-            var poll_fds: std.ArrayList(std.posix.pollfd) = .{};
-            defer poll_fds.deinit(self.allocator);
-            var poll_client_keys: std.ArrayList([]const u8) = .{};
-            defer poll_client_keys.deinit(self.allocator);
-            var client_id_order: std.ArrayList(ClientId) = .{};
-            defer client_id_order.deinit(self.allocator);
-
             self.state_lock.lock();
-            const poll_setup = self.buildPollFds(&poll_fds, &poll_client_keys, &client_id_order) catch |e| {
+            self.collectFds() catch |e| {
                 self.state_lock.unlock();
-                log.err("buildPollFds failed: {any}", .{e});
+                log.err("collectFds failed: {any}", .{e});
                 continue;
             };
-            const poll_timeout = self.pollTimeout();
+            const timeout = self.pollTimeout();
             self.state_lock.unlock();
 
             // poll() without the lock so workers can run concurrently.
-            const ready = std.posix.poll(poll_fds.items, poll_timeout) catch |e| {
+            const ready = std.posix.poll(self.poll.fds.items, timeout) catch |e| {
                 log.err("poll failed: {any}", .{e});
                 continue;
             };
@@ -349,13 +409,8 @@ pub const EventLoop = struct {
                 continue;
             }
 
-            // Process ready fds under lock.
             self.state_lock.lock();
-            self.handleListener(poll_fds.items);
-            self.handleClientFds(poll_fds.items, poll_setup.client_count, client_id_order.items, buf[0..]);
-            self.lspBridge().handleFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
-            self.dapBridge().handleFd(poll_fds.items, poll_setup.dap_fd_index);
-            self.handlePickerFd(poll_fds.items, poll_setup.picker_fd_index);
+            self.dispatch(&buf);
             const should_exit = self.shutdown_requested;
             self.state_lock.unlock();
             if (should_exit) break;

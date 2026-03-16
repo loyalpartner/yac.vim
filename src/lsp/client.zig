@@ -35,8 +35,17 @@ pub const LspClient = struct {
     state: LspState,
     next_id: *std.atomic.Value(u32),
     pending_requests: std.AutoHashMap(u32, PendingRequest),
-    /// Buffer for reading from child stdout
-    read_buf: [4096]u8,
+    /// Last stderr output, retained for crash diagnostics.
+    last_stderr: [256]u8 = undefined,
+    last_stderr_len: usize = 0,
+
+    /// Append data to the rolling stderr buffer (keeps last 256 bytes).
+    pub fn appendStderr(self: *LspClient, data: []const u8) void {
+        if (data.len == 0) return;
+        const len = @min(data.len, self.last_stderr.len);
+        @memcpy(self.last_stderr[0..len], data[data.len - len ..]);
+        self.last_stderr_len = len;
+    }
 
     pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, next_id: *std.atomic.Value(u32)) !*LspClient {
         var argv: std.ArrayList([]const u8) = .{};
@@ -59,7 +68,6 @@ pub const LspClient = struct {
             .state = .uninitialized,
             .next_id = next_id,
             .pending_requests = std.AutoHashMap(u32, PendingRequest).init(allocator),
-            .read_buf = undefined,
         };
 
         return client;
@@ -74,8 +82,13 @@ pub const LspClient = struct {
     }
 
     /// Get the stdout fd for polling.
-    pub fn stdoutFd(self: *LspClient) std.posix.fd_t {
+    pub fn stdoutFd(self: *const LspClient) std.posix.fd_t {
         return self.child.stdout.?.handle;
+    }
+
+    /// Get the stderr fd for polling (null if not piped).
+    pub fn stderrFd(self: *const LspClient) ?std.posix.fd_t {
+        return if (self.child.stderr) |f| f.handle else null;
     }
 
     /// Send a pre-constructed Message (serialize + frame + write).
@@ -119,23 +132,6 @@ pub const LspClient = struct {
             .params = notification.params,
         } });
         log.debug("LSP notification: {s}", .{notification.method});
-    }
-
-    /// Read raw framed messages from stdout (I/O + framing only).
-    /// Returns raw message body strings. Caller must free each string
-    /// and deinit the list using the client's allocator.
-    pub fn readRaw(self: *LspClient) !std.ArrayList([]const u8) {
-        const stdout = self.child.stdout orelse return error.StdoutClosed;
-        const n = stdout.read(&self.read_buf) catch |err| {
-            if (err == error.WouldBlock) {
-                return .{};
-            }
-            return err;
-        };
-
-        if (n == 0) return error.ConnectionReset;
-
-        return try self.framer.feedData(self.allocator, self.read_buf[0..n]);
     }
 
     /// Initialize the LSP server with the given workspace root.

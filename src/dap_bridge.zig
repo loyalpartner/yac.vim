@@ -43,30 +43,16 @@ pub const DapBridge = struct {
     transport: vim_transport_mod.VimTransport,
 
     // ----------------------------------------------------------------
-    // Public entry point
+    // Public entry point — called by EventLoop after reading stdout
     // ----------------------------------------------------------------
 
-    /// Handle DAP fd poll events (data ready and/or HUP/ERR).
-    pub fn handleFd(self: DapBridge, poll_fds: []std.posix.pollfd, dap_fd_index: ?usize) void {
-        const dfi = dap_fd_index orelse return;
-        const revents = poll_fds[dfi].revents;
-
-        // Always process available data first, even when HUP is also set.
-        // The adapter may send initialize response + initialized event then close.
-        if (revents & std.posix.POLL.IN != 0) self.processOutput();
-        if (revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) self.handleDisconnect();
-    }
-
-    // ----------------------------------------------------------------
-    // Message reading & dispatch
-    // ----------------------------------------------------------------
-
-    fn processOutput(self: DapBridge) void {
+    /// Process raw bytes already read from the DAP adapter's stdout.
+    /// EventLoop owns the read; we do framing + dispatch only.
+    pub fn feedOutput(self: DapBridge, data: []const u8) void {
         const session = self.dap_session.* orelse return;
 
-        var raw = session.client.readRaw() catch |e| {
-            log.debug("DAP readRaw error: {any}", .{e});
-            if (e == error.AdapterClosed) self.cleanup();
+        var raw = session.client.framer.feedData(self.allocator, data) catch |e| {
+            log.debug("DAP framing error: {any}", .{e});
             return;
         };
         defer {
@@ -107,29 +93,11 @@ pub const DapBridge = struct {
         }
     }
 
-    /// Drain remaining data after HUP/ERR, then clean up.
-    fn handleDisconnect(self: DapBridge) void {
-        if (self.dap_session.*) |session| {
-            while (true) {
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
-                defer arena.deinit();
-
-                var raw = session.client.readRaw() catch break;
-                defer {
-                    for (raw.items) |msg| self.allocator.free(msg);
-                    raw.deinit(self.allocator);
-                }
-                if (raw.items.len == 0) break;
-
-                var msgs = self.parseRawMessages(arena.allocator(), raw.items);
-                defer msgs.deinit(self.allocator);
-
-                self.dispatchMessages(arena.allocator(), session, msgs.items);
-                if (self.dap_session.* == null) break;
-            }
-        }
+    /// Clean up after adapter disconnect. EventLoop drains remaining data
+    /// via feedOutput() before calling this.
+    pub fn handleDisconnect(self: DapBridge) void {
         if (self.dap_session.* != null) {
-            log.info("DAP adapter disconnected (HUP/ERR)", .{});
+            log.info("DAP adapter disconnected", .{});
             self.cleanup();
         }
     }

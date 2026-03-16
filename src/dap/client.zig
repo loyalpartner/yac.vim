@@ -23,7 +23,6 @@ pub const DapClient = struct {
     pending_requests: std.AutoHashMap(u32, PendingDapRequest),
     capabilities: Value,
     active_thread_id: ?u32,
-    read_buf: [65536]u8,
     launch_params: ?LaunchParams,
 
     pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, workspace_dir: ?[]const u8) !*DapClient {
@@ -38,7 +37,7 @@ pub const DapClient = struct {
         var child = std.process.Child.init(child_args.items, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
 
         try child.spawn();
 
@@ -52,7 +51,6 @@ pub const DapClient = struct {
             .pending_requests = std.AutoHashMap(u32, PendingDapRequest).init(allocator),
             .capabilities = .null,
             .active_thread_id = null,
-            .read_buf = undefined,
             .launch_params = null,
         };
         return client;
@@ -431,22 +429,6 @@ pub const DapClient = struct {
         // Clean up saved params (lp confirmed non-null at function entry)
         if (self.launch_params) |*p| p.deinit();
         self.launch_params = null;
-    }
-
-    /// Read raw framed messages from adapter stdout (I/O + framing only).
-    /// Returns raw message body strings. Caller must free each string
-    /// and deinit the list using the client's allocator.
-    pub fn readRaw(self: *DapClient) !std.ArrayList([]const u8) {
-        const stdout = self.child.stdout orelse return error.StdoutClosed;
-        const n = stdout.read(&self.read_buf) catch |e| {
-            log.debug("DAP stdout read error: {any}", .{e});
-            return error.ReadFailed;
-        };
-        if (n == 0) return error.AdapterClosed;
-
-        log.debug("DAP raw read: {d} bytes", .{n});
-
-        return try self.framer.feedData(self.allocator, self.read_buf[0..n]);
     }
 
     /// Handle an initialize response — store capabilities.

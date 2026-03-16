@@ -50,32 +50,16 @@ pub const LspBridge = struct {
     transport: vim_transport_mod.VimTransport,
 
     // ----------------------------------------------------------------
-    // Public entry point
+    // Public entry point — called by EventLoop after reading stdout
     // ----------------------------------------------------------------
 
-    /// Handle LSP fd poll events — iterate ready fds and dispatch.
-    pub fn handleFds(
-        self: LspBridge,
-        poll_fds: []std.posix.pollfd,
-        client_count: usize,
-        poll_client_keys: []const []const u8,
-    ) void {
-        const lsp_start = 1 + client_count;
-        for (poll_fds[lsp_start .. lsp_start + poll_client_keys.len], poll_client_keys) |pfd, key| {
-            if (pfd.revents & std.posix.POLL.IN != 0) self.processOutput(key);
-            if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) self.handleDeath(key);
-        }
-    }
-
-    // ----------------------------------------------------------------
-    // Message reading & dispatch
-    // ----------------------------------------------------------------
-
-    fn processOutput(self: LspBridge, client_key: []const u8) void {
+    /// Process raw bytes already read from an LSP server's stdout.
+    /// EventLoop owns the read; we do framing + dispatch only.
+    pub fn feedOutput(self: LspBridge, client_key: []const u8, data: []const u8) void {
         const client = self.lsp.registry.getClient(client_key) orelse return;
 
-        var raw_messages = client.readRaw() catch |e| {
-            log.err("LSP read error for {s}: {any}", .{ client_key, e });
+        var raw_messages = client.framer.feedData(self.allocator, data) catch |e| {
+            log.err("LSP framing error for {s}: {any}", .{ client_key, e });
             return;
         };
         defer {
@@ -283,7 +267,7 @@ pub const LspBridge = struct {
     // Server death
     // ----------------------------------------------------------------
 
-    fn handleDeath(self: LspBridge, client_key: []const u8) void {
+    pub fn handleDeath(self: LspBridge, client_key: []const u8) void {
         log.err("LSP server died: {s}", .{client_key});
 
         const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
@@ -305,12 +289,18 @@ pub const LspBridge = struct {
     }
 
     fn readStderr(client: ?*lsp_client_mod.LspClient) ?[]const u8 {
-        const stderr_file = (client orelse return null).child.stderr orelse return null;
-        var buf: [4096]u8 = undefined;
-        const n = stderr_file.read(&buf) catch return null;
-        if (n == 0) return null;
-        log.err("LSP stderr: {s}", .{buf[0..n]});
-        return buf[0..@min(n, 200)];
+        const c = client orelse return null;
+        // Try to capture any final stderr output into the client buffer.
+        if (c.child.stderr) |f| {
+            var buf: [4096]u8 = undefined;
+            const n = f.read(&buf) catch 0;
+            if (n > 0) c.appendStderr(buf[0..n]);
+        }
+        if (c.last_stderr_len > 0) {
+            log.err("LSP stderr: {s}", .{c.last_stderr[0..c.last_stderr_len]});
+            return c.last_stderr[0..c.last_stderr_len];
+        }
+        return null;
     }
 
     // ----------------------------------------------------------------
