@@ -32,7 +32,7 @@ pub const MessageDispatcher = struct {
     ts: *treesitter_mod.TreeSitter,
     dap: *dap_bridge_mod.DapBridge,
     clients: *clients_mod.Clients,
-    out_queue: *queue_mod.OutQueue,
+    out_queue: *queue_mod.SendChannel,
     shutdown_requested: *bool,
 
     /// Construct a VimTransport for sending messages to Vim clients.
@@ -50,7 +50,7 @@ pub const MessageDispatcher = struct {
     // ====================================================================
 
     /// Process a single work item: parse JSON, dispatch RPC, route response.
-    pub fn handleWorkItem(self: *MessageDispatcher, item: queue_mod.WorkItem, alloc: Allocator) void {
+    pub fn handleWorkItem(self: *MessageDispatcher, item: queue_mod.Envelope, alloc: Allocator) void {
         const trimmed = std.mem.trim(u8, item.raw_line, &std.ascii.whitespace);
         if (trimmed.len == 0) return;
 

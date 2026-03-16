@@ -53,11 +53,11 @@ pub const EventLoop = struct {
     /// Protects all shared mutable state when accessed from worker threads.
     state_lock: std.Thread.Mutex = .{},
     /// Work queue for general (non-TS) requests: reader thread → worker threads.
-    in_general: queue_mod.InQueue = .{},
+    in_general: queue_mod.RecvChannel = .{},
     /// Work queue for tree-sitter requests: reader thread → TS thread.
-    in_ts: queue_mod.InQueue = .{},
+    in_ts: queue_mod.RecvChannel = .{},
     /// Outgoing message queue: worker/main threads → writer thread.
-    out_queue: queue_mod.OutQueue = .{},
+    out_queue: queue_mod.SendChannel = .{},
     /// Reusable poll set (lives for the entire EventLoop lifetime).
     poll: PollSet = .{},
 
@@ -319,9 +319,9 @@ pub const EventLoop = struct {
     // Thread loops
     // ====================================================================
 
-    /// Generic queue consumer: pops WorkItems, acquires state_lock, dispatches each one.
+    /// Generic queue consumer: pops Envelopes, acquires state_lock, dispatches each one.
     /// Used by both general worker threads and the TS thread.
-    fn queueLoop(self: *EventLoop, queue: *queue_mod.InQueue) void {
+    fn queueLoop(self: *EventLoop, queue: *queue_mod.RecvChannel) void {
         while (queue.pop()) |item| {
             defer item.deinit(self.allocator);
             var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -433,7 +433,7 @@ pub const EventLoop = struct {
 
             const line = client.read_buf.items[0..newline_pos];
             if (line.len > 0) {
-                // GPA-allocate a copy of the line; ownership passes to WorkItem.
+                // GPA-allocate a copy of the line; ownership passes to Envelope.
                 const raw_line = self.allocator.dupe(u8, line) catch |e| {
                     log.err("OOM routing work item: {any}", .{e});
                     // Skip this line, continue processing remaining buffer.
@@ -455,7 +455,7 @@ pub const EventLoop = struct {
                         .raw_line = raw_line,
                     }, arena.allocator());
                 } else {
-                    const item = queue_mod.WorkItem{
+                    const item = queue_mod.Envelope{
                         .client_id = cid,
                         .client_stream = client.stream,
                         .raw_line = raw_line,

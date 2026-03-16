@@ -27,7 +27,7 @@ const ClientId = clients_mod.ClientId;
 pub const HandlerContext = struct {
     /// Arena allocator for request-scope temporary allocations.
     allocator: Allocator,
-    /// GPA allocator for allocations that must outlive the request (e.g. OutMessage bytes).
+    /// GPA allocator for allocations that must outlive the request (e.g. Frame bytes).
     gpa_allocator: Allocator,
     registry: *LspRegistry,
     lsp_state: *lsp_mod.Lsp,
@@ -38,8 +38,8 @@ pub const HandlerContext = struct {
     dap: *dap_bridge_mod.DapBridge = undefined,
     /// Picker state (file/grep/symbol picker).
     picker: *picker_mod.Picker = undefined,
-    /// Outgoing message queue — push OutMessages here instead of writing directly.
-    out_queue: *queue_mod.OutQueue,
+    /// Outgoing message queue — push Frames here instead of writing directly.
+    out_queue: *queue_mod.SendChannel,
     /// Set to true to request daemon shutdown.
     shutdown_flag: *bool = undefined,
 

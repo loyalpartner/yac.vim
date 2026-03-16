@@ -40,10 +40,10 @@ fn isInTable(comptime table: []const []const u8, name: []const u8) bool {
 pub const DapBridge = struct {
     allocator: Allocator,
     dap_session: ?*DapSession = null,
-    out_queue: *queue_mod.OutQueue,
+    out_queue: *queue_mod.SendChannel,
     clients: *clients_mod.Clients,
 
-    pub fn init(allocator: Allocator, out_queue: *queue_mod.OutQueue, clients: *clients_mod.Clients) DapBridge {
+    pub fn init(allocator: Allocator, out_queue: *queue_mod.SendChannel, clients: *clients_mod.Clients) DapBridge {
         return .{
             .allocator = allocator,
             .out_queue = out_queue,
@@ -236,11 +236,11 @@ pub const DapBridge = struct {
             .args = .{ .array = arg_array },
         } }) catch return;
 
-        self.pushToOutQueue(client_entry.stream, encoded);
+        self.pushToSendChannel(client_entry.stream, encoded);
     }
 
     /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
-    fn pushToOutQueue(self: *DapBridge, stream: std.net.Stream, encoded: []const u8) void {
+    fn pushToSendChannel(self: *DapBridge, stream: std.net.Stream, encoded: []const u8) void {
         const msg_bytes = self.allocator.alloc(u8, encoded.len + 1) catch {
             log.err("OOM: failed to allocate out message", .{});
             return;

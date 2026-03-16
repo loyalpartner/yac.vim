@@ -48,18 +48,18 @@ pub const LspBridge = struct {
     allocator: Allocator,
     lsp: *lsp_mod.Lsp,
     lsp_pending: LspPendingRequests,
-    in_general: *queue_mod.InQueue,
-    in_ts: *queue_mod.InQueue,
-    out_queue: *queue_mod.OutQueue,
+    in_general: *queue_mod.RecvChannel,
+    in_ts: *queue_mod.RecvChannel,
+    out_queue: *queue_mod.SendChannel,
     clients: *clients_mod.Clients,
     expr_tracker: *vim_expr_tracker_mod.VimExprTracker,
 
     pub fn init(
         allocator: Allocator,
         lsp: *lsp_mod.Lsp,
-        in_general: *queue_mod.InQueue,
-        in_ts: *queue_mod.InQueue,
-        out_queue: *queue_mod.OutQueue,
+        in_general: *queue_mod.RecvChannel,
+        in_ts: *queue_mod.RecvChannel,
+        out_queue: *queue_mod.SendChannel,
         clients: *clients_mod.Clients,
         expr_tracker: *vim_expr_tracker_mod.VimExprTracker,
     ) LspBridge {
@@ -409,7 +409,7 @@ pub const LspBridge = struct {
         for (requests.items) |req| {
             const client = self.clients.get(req.client_id) orelse continue;
             const raw_copy = self.allocator.dupe(u8, req.raw_line) catch continue;
-            const item = queue_mod.WorkItem{
+            const item = queue_mod.Envelope{
                 .client_id = req.client_id,
                 .client_stream = client.stream,
                 .raw_line = raw_copy,

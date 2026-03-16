@@ -60,11 +60,11 @@ pub fn BoundedQueue(comptime T: type, comptime capacity: usize) type {
 }
 
 // ============================================================================
-// WorkItem — a raw Vim JSON-RPC line routed from the main thread to workers.
+// Envelope — a raw Vim JSON-RPC line routed from the main thread to workers.
 // raw_line is GPA-allocated; the worker that processes it must free it.
 // ============================================================================
 
-pub const WorkItem = struct {
+pub const Envelope = struct {
     client_id: ClientId,
     /// The stream is captured at routing time so workers never need to
     /// look up the client in the shared clients map.
@@ -72,21 +72,21 @@ pub const WorkItem = struct {
     /// GPA-allocated copy of the trimmed JSON line (no newline).
     raw_line: []u8,
 
-    pub fn deinit(self: WorkItem, allocator: Allocator) void {
+    pub fn deinit(self: Envelope, allocator: Allocator) void {
         allocator.free(self.raw_line);
     }
 };
 
 // ============================================================================
-// OutMessage — a serialised message to be written to a Vim socket.
+// Frame — a serialised message to be written to a Vim socket.
 // bytes is GPA-allocated; the writer thread frees it after writing.
 // ============================================================================
 
-pub const OutMessage = struct {
+pub const Frame = struct {
     stream: std.net.Stream,
     bytes: []u8,
 
-    pub fn deinit(self: OutMessage, allocator: Allocator) void {
+    pub fn deinit(self: Frame, allocator: Allocator) void {
         allocator.free(self.bytes);
     }
 };
@@ -95,8 +95,8 @@ pub const OutMessage = struct {
 // Queue type aliases
 // ============================================================================
 
-pub const InQueue = BoundedQueue(WorkItem, 1024);
-pub const OutQueue = BoundedQueue(OutMessage, 4096);
+pub const RecvChannel = BoundedQueue(Envelope, 1024);
+pub const SendChannel = BoundedQueue(Frame, 4096);
 
 // ============================================================================
 // TS method routing — fast byte-scan, no JSON parsing required.
@@ -208,13 +208,13 @@ test "BoundedQueue — push returns false when closed" {
     try std.testing.expect(!q.push(1));
 }
 
-test "InQueue capacity is 1024" {
-    const q = InQueue{};
+test "RecvChannel capacity is 1024" {
+    const q = RecvChannel{};
     try std.testing.expectEqual(@as(usize, 1024), q.buf.len);
 }
 
-test "OutQueue capacity is 4096" {
-    const q = OutQueue{};
+test "SendChannel capacity is 4096" {
+    const q = SendChannel{};
     try std.testing.expectEqual(@as(usize, 4096), q.buf.len);
 }
 

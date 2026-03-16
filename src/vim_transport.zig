@@ -17,13 +17,13 @@ const PendingVimExpr = vim_expr_tracker_mod.PendingVimExpr;
 /// Constructed on the fly from EventLoop fields — zero-cost (stack pointers only).
 pub const VimTransport = struct {
     allocator: Allocator,
-    out_queue: *queue_mod.OutQueue,
+    out_queue: *queue_mod.SendChannel,
     clients: *clients_mod.Clients,
     expr_tracker: *vim_expr_tracker_mod.VimExprTracker,
 
     /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
     /// Drops the message silently if the queue is full (back-pressure).
-    pub fn pushToOutQueue(self: VimTransport, stream: std.net.Stream, encoded: []const u8) void {
+    pub fn pushToSendChannel(self: VimTransport, stream: std.net.Stream, encoded: []const u8) void {
         const msg_bytes = self.allocator.alloc(u8, encoded.len + 1) catch {
             log.err("OOM: failed to allocate out message", .{});
             return;
@@ -42,7 +42,7 @@ pub const VimTransport = struct {
         const client = self.clients.get(cid) orelse return;
         const encoded = (rpc.Message{ .response = .{ .id = @intCast(id), .result = result } }).serialize(alloc) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        self.pushToSendChannel(client.stream, encoded);
     }
 
     /// Send a Vim ex command to a specific client.
@@ -50,7 +50,7 @@ pub const VimTransport = struct {
         const client = self.clients.get(cid) orelse return;
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        self.pushToSendChannel(client.stream, encoded);
     }
 
     /// Send an expr request to a specific Vim client and register a pending entry.
@@ -63,7 +63,7 @@ pub const VimTransport = struct {
         };
         const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        self.pushToSendChannel(client.stream, encoded);
     }
 
     /// Send a raw encoded message to clients subscribed to a workspace.
@@ -76,7 +76,7 @@ pub const VimTransport = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.isSubscribedTo(workspace_uri.?)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
+                self.pushToSendChannel(client_ptr.*.stream, encoded);
             }
         }
     }
@@ -85,7 +85,7 @@ pub const VimTransport = struct {
     pub fn broadcastRaw(self: VimTransport, encoded: []const u8) void {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
-            self.pushToOutQueue(client_ptr.*.stream, encoded);
+            self.pushToSendChannel(client_ptr.*.stream, encoded);
         }
     }
 
@@ -103,7 +103,7 @@ pub const VimTransport = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
+                self.pushToSendChannel(client_ptr.*.stream, encoded);
             }
         }
     }
