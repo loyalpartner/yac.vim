@@ -5,7 +5,7 @@ Thank you for your interest in contributing to yac.vim.
 ## Development Setup
 
 1. Clone the repository.
-2. Install Zig 0.15+ (CI uses 0.15.2).
+2. Install Zig 0.15+.
 3. Install [uv](https://docs.astral.sh/uv/) for E2E test runner.
 4. Build and test:
    ```bash

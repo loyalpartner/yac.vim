@@ -23,7 +23,7 @@ yac.vim 支持两种方式添加语言支持：
 
 直接在 `languages/` 下创建目录即可。`plugin/yac.vim` 启动时自动扫描 `languages/` 并注册所有子目录。
 
-当前内置语言：c, cpp, go, javascript, lua, markdown, markdown_inline, python, rust, toml, typescript, vim, zig
+当前内置语言：bash, c, cpp, css, go, html, javascript, json, lua, markdown, markdown_inline, python, rust, toml, typescript, vim, yaml, zig
 
 ## 外部插件
 

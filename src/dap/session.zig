@@ -968,15 +968,24 @@ test "DapSession: buildPanelData with expanded variables" {
     // Should be: x (depth=0), self (depth=0, expanded), a (depth=1)
     try std.testing.expectEqual(@as(usize, 3), vars.len);
 
-    const v0 = switch (vars[0]) { .object => |o| o, else => return error.NotObject };
+    const v0 = switch (vars[0]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expectEqualStrings("x", json.getString(v0, "name").?);
     try std.testing.expectEqual(@as(i64, 0), json.getInteger(v0, "depth").?);
 
-    const v1 = switch (vars[1]) { .object => |o| o, else => return error.NotObject };
+    const v1 = switch (vars[1]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expectEqualStrings("self", json.getString(v1, "name").?);
     try std.testing.expectEqual(@as(i64, 0), json.getInteger(v1, "depth").?);
 
-    const v2 = switch (vars[2]) { .object => |o| o, else => return error.NotObject };
+    const v2 = switch (vars[2]) {
+        .object => |o| o,
+        else => return error.NotObject,
+    };
     try std.testing.expectEqualStrings("a", json.getString(v2, "name").?);
     try std.testing.expectEqual(@as(i64, 1), json.getInteger(v2, "depth").?);
 }

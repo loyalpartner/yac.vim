@@ -1,4 +1,4 @@
-<!-- Generated: 2026-03-09 | Files scanned: 20 | Token estimate: ~500 -->
+<!-- Generated: 2026-03-15 | Files scanned: 25 | Token estimate: ~600 -->
 
 # Dependencies Codemap
 
@@ -20,23 +20,35 @@
 | Go | optional | For gopls install |
 | copilot-language-server | optional | GitHub Copilot (must be in PATH) |
 
-## Language Plugins (13 languages)
+## Language Plugins (18 languages)
 
 | Language | Extensions | LSP Server | Install Method |
 |----------|-----------|------------|----------------|
-| Python | .py, .pyi | pyright-langserver | npm |
-| TypeScript | .ts, .tsx | typescript-language-server | npm |
-| JavaScript | .js, .jsx | typescript-language-server | npm |
-| Rust | .rs | rust-analyzer | github_release |
-| Go | .go | gopls | go_install |
-| Zig | .zig | zls | github_release |
+| Bash | .sh, .bash | (none) | - |
 | C | .c, .h | clangd | system |
 | C++ | .cpp, .cc, .cxx, .hpp | clangd | system |
+| CSS | .css | (none) | - |
+| Go | .go | gopls | go_install |
+| HTML | .html, .htm | (none) | - |
+| JavaScript | .js, .jsx | typescript-language-server | npm |
+| JSON | .json | (none) | - |
 | Lua | .lua | (none) | - |
-| Vim | .vim | (none) | - |
-| TOML | .toml | (none) | - |
 | Markdown | .md | (none) | - |
 | Markdown Inline | (injection) | (none) | - |
+| Python | .py, .pyi | pyright-langserver | npm |
+| Rust | .rs | rust-analyzer | github_release |
+| TOML | .toml | (none) | - |
+| TypeScript | .ts, .tsx | typescript-language-server | npm |
+| Vim | .vim | (none) | - |
+| YAML | .yaml, .yml | (none) | - |
+| Zig | .zig | zls | github_release |
+
+## DAP Adapters
+
+| Adapter | Languages | Install Method |
+|---------|-----------|----------------|
+| CodeLLDB | C, C++, Rust, Zig | github_release |
+| debugpy | Python | pip |
 
 ## LSP Auto-Install Methods
 
@@ -62,7 +74,7 @@ Active theme: `~/.config/yac/theme.txt`
 
 | Path | Content |
 |------|---------|
-| ~/.local/share/yac/bin/ | Installed LSP binaries |
+| ~/.local/share/yac/bin/ | Installed LSP/DAP binaries |
 | ~/.local/share/yac/packages/ | npm/pip LSP installs |
 | ~/.local/share/yac.vim/history | MRU file history (100 entries) |
 | ~/.config/yac/themes/ | User themes |

@@ -85,7 +85,7 @@ See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 - If the first approach fails, step back and re-analyze the root cause rather than trying variations blindly.
 - Understand the user's actual goal before trying solutions.
 - **UI/rendering bugs: log first, fix second.** Add diagnostic logging (echom or debug_log) to confirm whether the issue is logical (wrong values) or visual (correct values, wrong rendering). Do not guess — one round of logging beats three rounds of speculative fixes.
-- **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_debug_log`). Enable with `:YacDebugToggle`, check with `:YacOpenLog`. Only use `echom` as a last resort when debug_log infrastructure is unavailable.
+- **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_debug_log`). Enable with `<C-p>` → "Debug Toggle", check with `<C-p>` → "Open Log". Only use `echom` as a last resort when debug_log infrastructure is unavailable.
 
 ## Bug Fix Workflow
 

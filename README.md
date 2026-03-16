@@ -6,10 +6,10 @@ A lightweight LSP bridge and tree-sitter integration for Vim, powered by a Zig d
 
 - **LSP Bridge**: Go-to-definition, peek, hover, completion, references, rename, code actions, inlay hints, folding, call hierarchy, signature help, formatting, document highlight, semantic tokens
 - **Tree-sitter**: Syntax highlighting, symbols, text objects, navigation, folding, predicates
+- **DAP (Debug Adapter Protocol)**: Breakpoints, stepping, variable inspection, watch expressions, debug panel, adapter auto-install
 - **Copilot**: Inline ghost text completion via GitHub Copilot Language Server
 - **Fuzzy Picker**: File finder, grep, command palette, workspace/document symbols, theme picker, MRU history (built-in, no dependencies)
 - **Alternate File**: Quick toggle between C/C++ header and implementation files
-- **SSH Remote Editing**: Seamless remote LSP via SSH tunnels
 - **Daemon Architecture**: Single daemon serves all Vim instances, auto-starts on demand
 - **Language Plugins**: Each language is a separate directory with tree-sitter grammar and queries
 - **Git Integration**: Diff markers (git signs) in sign column
@@ -43,7 +43,7 @@ Plug 'yac-vim/vim'
 
 Each language plugin provides a tree-sitter WASM grammar and query files (highlights, symbols, folds, text objects). The daemon loads them on demand when you open a matching file.
 
-You also need the LSP servers installed for the languages you use (e.g. `rust-analyzer`, `zls`, `gopls`, `pyright`). Run `:YacLspInstall` to auto-install supported servers.
+You also need the LSP servers installed for the languages you use (e.g. `rust-analyzer`, `zls`, `gopls`, `pyright`). Use `<C-p>` command palette → "LSP Install" to auto-install supported servers.
 
 ## Key Mappings
 
@@ -105,6 +105,8 @@ Press `<C-p>` then type `:` to enter command mode. All features are available he
 - **File Picker**, **Grep**, **Theme Picker**, **Theme Default**
 - **Alternate File** — switch C/C++ header ↔ implementation
 - **Copilot Sign In/Out**, **Copilot Enable/Disable**, **Copilot Status**
+- **DAP Start**, **DAP Continue/Next/Step In/Step Out**, **DAP Terminate**
+- **DAP Toggle Breakpoint**, **DAP Conditional Breakpoint**, **DAP Log Breakpoint**
 - **LSP Install/Update/Status**, **Restart**, **Stop Daemon**
 - **Status**, **Open Log**, **Connections**, **Debug Toggle**, **Debug Status**
 
@@ -174,7 +176,7 @@ Vim ─── Unix socket (JSON-RPC) ──→ Zig daemon ──→ LSP servers
 - The daemon starts automatically and serves all Vim instances via a shared Unix socket
 - Multiple Vim clients share one daemon; LSP notifications are routed by workspace subscription
 - Languages are loaded on demand — the daemon starts with no languages
-- 17 languages are bundled in `languages/`: bash, c, cpp, css, go, html, javascript, json, lua, markdown, markdown_inline, python, rust, toml, typescript, vim, yaml, zig
+- 18 languages are bundled in `languages/`: bash, c, cpp, css, go, html, javascript, json, lua, markdown, markdown_inline, python, rust, toml, typescript, vim, yaml, zig
 - External language plugins can register via `g:yac_lang_plugins`
 
 For detailed architecture documentation (C4 diagrams, threading model, data flows), see [docs/architecture.md](docs/architecture.md).
@@ -203,7 +205,7 @@ zig build test                   # Zig tests
 uv run pytest                    # E2E tests
 
 # Daemon log (per-process, auto-created)
-:YacOpenLog                  # opens yacd-{pid}.log
+# <C-p> → "Open Log"        # opens yacd-{pid}.log
 ```
 
 ## License

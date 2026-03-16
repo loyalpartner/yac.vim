@@ -1,4 +1,4 @@
-<!-- Generated: 2026-03-09 | Files scanned: 17 | Token estimate: ~600 -->
+<!-- Generated: 2026-03-15 | Files scanned: 22 | Token estimate: ~700 -->
 
 # Frontend Codemap (VimScript Plugin)
 
@@ -7,22 +7,37 @@
 ```
 BufReadPost/FileType → yac#on_buf_enter()
   → s:start_daemon() if not running
-  → ch_open(socket) → s:request('file_open', ...)
+  → ch_open(socket) → yac#_request('file_open', ...)
   → tree-sitter highlight trigger
 ```
 
-## Command → Handler Flow
+## <Plug> Mapping → Handler Flow
 
 ```
-:YacDefinition   → yac_lsp#goto_definition()   → s:request('goto_definition')   → jump_to_location()
-:YacHover        → yac_lsp#hover()              → s:request('hover')             → popup_atcursor()
-:YacComplete     → yac_completion#trigger()      → s:request('completion')        → popup_menu()
-:YacRename       → yac_lsp#rename()             → s:request('rename')            → apply_edits()
-:YacCodeAction   → yac_lsp#code_action()        → s:request('code_action')       → popup_menu()
-:YacReferences   → yac_lsp#references()         → s:request('references')        → picker_open()
-:YacPicker       → yac_picker#open()            → s:request('picker_open')       → popup UI
-:YacThemePicker  → yac_picker#open('%')          → fuzzy theme select + live preview
+<Plug>(YacDefinition)  → yac#goto_definition()     → yac#_request('goto_definition')   → jump_to_location()
+<Plug>(YacHover)       → yac#hover()               → yac#_request('hover')             → popup_atcursor()
+(auto-trigger)         → yac_completion#trigger()   → yac#_request('completion')        → popup_menu()
+<Plug>(YacRename)      → yac#rename()              → yac#_request('rename')            → apply_edits()
+<Plug>(YacCodeAction)  → yac#code_action()         → yac#_request('code_action')       → popup_menu()
+<Plug>(YacReferences)  → yac#references()          → yac#_request('references')        → picker_open()
+<Plug>(YacPicker)      → yac#picker_open()         → yac#_request('picker_open')       → popup UI
+<C-p> then %           → yac_picker#open('%')       → fuzzy theme select + live preview
+<Plug>(YacDapStart)    → yac#dap_start()           → yac#_notify('dap_load_config')    → adapter launch
+<Plug>(YacDapContinue) → yac#dap_continue()        → yac#_request('dap_continue')      → resume execution
 ```
+
+Note: Only 3 actual Vim commands exist (`:YacStart`, `:YacStop`, `:YacRestart`).
+Everything else is accessed via `<Plug>` mappings or the `<C-p>` command palette (`:` prefix).
+
+## Bridge Functions (yac.vim)
+
+```
+yac#_request(method, params, callback)  → ch_sendexpr(channel, [method, params], {callback: cb})
+yac#_notify(method, params)             → ch_sendraw(channel, json_encode([0, [method, params]]))
+yac#_debug_log(msg)                     → append to log file (when debug mode enabled)
+```
+
+All 20 autoload modules use these 3 generic bridge functions for daemon communication.
 
 ## Keybinding Map
 
@@ -56,12 +71,34 @@ BufReadPost/FileType → yac#on_buf_enter()
 | `!` | MRU | ~/.local/share/yac.vim/history |
 | `/` | buffer_search | current buffer lines |
 | `?` | help | Vim help tags |
-| `:` | commands | Vim commands |
+| `:` | commands | command palette (all features) |
+
+## DAP UI (yac_dap.vim)
+
+```
+yac_dap#start() → dap_load_config → on_debug_configs callback
+  → adapter selection → s:do_start() → dap_start request
+  → stopped event → panel_update callback → s:update_panel()
+
+Panel layout (sidebar):
+  ┌─────────────────┐
+  │ ▸ Frames        │  ← clickable, switch stack frame
+  │   main()        │
+  │   handler()     │
+  ├─────────────────┤
+  │ ▸ Variables     │  ← expandable tree
+  │   x = 42        │
+  │   ▸ obj = {...} │
+  ├─────────────────┤
+  │ ▸ Watch         │  ← user expressions
+  │   len(items)    │
+  └─────────────────┘
+```
 
 ## Daemon Communication
 
 ```
-s:request(method, params)
+yac#_request(method, params, callback)
   → ch_sendexpr(channel, [method, params], {callback: cb})
   → callback receives response → module-specific handler
 ```

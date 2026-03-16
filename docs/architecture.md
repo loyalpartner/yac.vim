@@ -41,7 +41,7 @@ yac.vim 系统与外部参与者的关系。
 | **User (Vim)** | 用户通过 Vim 8.1+ 编辑代码 |
 | **yac.vim** | LSP 桥接 + Tree-sitter 集成，由 VimScript 前端和 Zig 守护进程组成 |
 | **LSP Servers** | 各语言的 LSP 服务器（zls, rust-analyzer, pyright, gopls 等） |
-| **Tree-sitter WASM Grammars** | 13 种内置语言的 WASM 语法库 |
+| **Tree-sitter WASM Grammars** | 18 种内置语言的 WASM 语法库 |
 | **GitHub Copilot** | AI 代码补全服务（可选） |
 
 ---
@@ -58,7 +58,7 @@ yac.vim 系统内部的容器（可独立部署/运行的单元）。
 │  │                      │     (JSON-RPC)        │             │  │
 │  │   VimScript Plugin   │◄────────────────────►│  Zig Daemon │  │
 │  │                      │     ch_sendexpr()     │   (yacd)    │  │
-│  │  16 autoload modules │     ch_sendraw()      │             │  │
+│  │  20 autoload modules │     ch_sendraw()      │             │  │
 │  │  + plugin/yac.vim    │                       │  单进程     │  │
 │  │                      │                       │  多线程     │  │
 │  └──────────────────────┘                       └──┬───┬───┬──┘  │
@@ -82,14 +82,22 @@ yac.vim 系统内部的容器（可独立部署/运行的单元）。
                                 │ Servers   │        │ Language     │
                                 │           │        │ Server       │
                                 └───────────┘        └──────────────┘
+
+                                                        │ stdio
+                                                        ▼
+                                                ┌──────────────┐
+                                                │ DAP Adapters │
+                                                │ (CodeLLDB,   │
+                                                │  debugpy)    │
+                                                └──────────────┘
 ```
 
 ### Container 详情
 
 | Container | 技术 | 职责 |
 |-----------|------|------|
-| **VimScript Plugin** | VimScript, Vim channel API | UI 渲染、用户交互、popup 管理、自动补全、诊断显示 |
-| **Zig Daemon (yacd)** | Zig, 多线程, epoll | LSP 客户端管理、Tree-sitter 解析、请求分派、文件搜索 |
+| **VimScript Plugin** | VimScript, Vim channel API | UI 渲染、用户交互、popup 管理、自动补全、诊断显示、DAP 调试 UI |
+| **Zig Daemon (yacd)** | Zig, 多线程, epoll | LSP 客户端管理、DAP 客户端管理、Tree-sitter 解析、请求分派、文件搜索 |
 | **Language Plugins** | Tree-sitter .scm + WASM | 语言特定的语法高亮、符号、折叠、文本对象 |
 | **LSP Servers** | 各语言实现 | 代码智能（补全、跳转、重构等） |
 | **Copilot Server** | Node.js | AI 内联补全 |
@@ -135,10 +143,14 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 │              ┌──────────────────┐   │ └────────┘ │   Copilot    │ │  │
 │              │   Async Queue    │   │            │  (singleton) │ │  │
 │              │                  │   │            └──────────────┘ │  │
-│              │ InQueue→Workers  │   └──────────────────────────────┘  │
-│              │ InQueue→TS线程   │                                     │
-│              │ OutQueue→Writer  │                                     │
-│              └──────────────────┘                                     │
+│              │ InQueue→Workers  │   │                             │  │
+│              │ InQueue→TS线程   │   │ ┌────────┐                  │  │
+│              │ OutQueue→Writer  │   │ │  DAP   │                  │  │
+│              └──────────────────┘   │ │Start/  │                  │  │
+│                                     │ │Step/BP │                  │  │
+│                                     │ │Panel   │                  │  │
+│                                     │ └────────┘                  │  │
+│                                     └──────────────────────────────┘  │
 │                                                                       │
 │  ┌──────────────────────┐    ┌──────────────────────────────────────┐ │
 │  │    LSP Module        │    │       Tree-sitter Module             │ │
@@ -151,12 +163,14 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 │  │ PathUtils ─ URI 处理 │    │                                      │ │
 │  └──────────────────────┘    └──────────────────────────────────────┘ │
 │                                                                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │ Vim Protocol │  │  Picker      │  │  Progress    │               │
-│  │ JSON 编解码  │  │  文件扫描    │  │  进度跟踪    │               │
-│  │ Channel 命令 │  │  模糊匹配    │  │  indexing    │               │
-│  └──────────────┘  │  grep 集成   │  │  计数        │               │
-│                    └──────────────┘  └──────────────┘               │
+│  ┌──────────────────────┐    ┌──────────────────────────────────────┐ │
+│  │    DAP Module        │    │       Other Core                     │ │
+│  │                      │    │                                      │ │
+│  │ Client   ─ DAP 连接  │    │ Vim Protocol ─ JSON 编解码           │ │
+│  │ Session  ─ 状态机    │    │ Picker       ─ 文件扫描/模糊匹配    │ │
+│  │ Protocol ─ DAP 编解码│    │ Progress     ─ 进度跟踪             │ │
+│  │ Config   ─ 配置解析  │    │                                      │ │
+│  └──────────────────────┘    └──────────────────────────────────────┘ │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -164,11 +178,12 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| **Event Loop** | `event_loop.zig` | 核心主循环：epoll 监听、请求分派、LSP 事件处理、workspace 订阅路由 |
+| **Event Loop** | `event_loop.zig` | 核心主循环：epoll 监听、请求分派、LSP/DAP 事件处理、workspace 订阅路由 |
 | **Clients** | `clients.zig` | Vim 客户端连接管理、workspace 订阅 (`subscribed_workspaces`) |
-| **Handlers** | `handlers.zig` + `handlers/*.zig` | 12 个处理器模块，编译时 inline 分派表 |
+| **Handlers** | `handlers.zig` + `handlers/*.zig` | 69 个 handler，编译时 inline 分派表 |
 | **Async Queue** | `queue.zig` | InQueue/OutQueue 异步管道，Worker 线程池 + 专用 TS 线程 |
 | **LSP Module** | `lsp/*.zig` | LSP 客户端生命周期、协议编解码、响应格式转换 |
+| **DAP Module** | `dap/*.zig` | DAP 客户端连接、会话状态机、配置解析、协议编解码 |
 | **Tree-sitter Module** | `treesitter/*.zig` | WASM 语法加载、查询执行、高亮/符号/折叠提取 |
 | **Picker** | `picker.zig` | 文件扫描、模糊匹配算法、grep 子进程管理 |
 | **Vim Protocol** | `vim_protocol.zig` | Vim channel JSON 协议编解码 |
@@ -207,10 +222,16 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 │  │     ├──► yac_peek.vim ──────────── 定义预览 (树形导航)      │  │
 │  │     │                                                       │  │
 │  │     ├──► yac_treesitter.vim ────── Tree-sitter 高亮管理     │  │
+│  │     ├──► yac_semantic_tokens.vim ─ LSP 语义 token 高亮      │  │
 │  │     ├──► yac_theme.vim ─────────── 主题加载/保存/切换       │  │
 │  │     │                                                       │  │
 │  │     ├──► yac_copilot.vim ───────── Copilot ghost text       │  │
-│  │     └──► yac_remote.vim ────────── SSH 远程编辑             │  │
+│  │     ├──► yac_dap.vim ─────────── DAP 调试 UI + 面板         │  │
+│  │     │                                                       │  │
+│  │     ├──► yac_gitsigns.vim ──────── Git diff 标记            │  │
+│  │     ├──► yac_autopairs.vim ─────── 自动括号/引号            │  │
+│  │     ├──► yac_config.vim ────────── 项目级配置               │  │
+│  │     └──► yac_alternate.vim ─────── C/C++ 头文件切换         │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -368,7 +389,13 @@ yac.vim/
 │   │   ├── lsp_notifications.zig #   did_change, did_save, did_close
 │   │   ├── picker.zig            #   picker_open, picker_query
 │   │   ├── treesitter.zig        #   ts_highlights, ts_symbols, ...
-│   │   └── copilot.zig           #   Copilot LSP
+│   │   ├── copilot.zig           #   Copilot LSP
+│   │   └── dap.zig               #   DAP 调试 (21 handlers)
+│   ├── dap/                      # DAP 调试适配器客户端
+│   │   ├── client.zig            #   DAP 连接管理、请求/响应
+│   │   ├── session.zig           #   会话状态机 (stopped→stackTrace→scopes→variables→idle)
+│   │   ├── protocol.zig          #   DAP JSON 编解码
+│   │   └── config.zig            #   debug.json 解析、注释剥离、变量替换
 │   ├── lsp/                      # LSP 客户端
 │   │   ├── lsp.zig               #   总管 + deferred requests
 │   │   ├── registry.zig          #   服务器注册表
@@ -411,9 +438,15 @@ yac.vim/
 │       ├── yac_picker.vim        #   模糊查找 UI
 │       ├── yac_peek.vim          #   定义预览
 │       ├── yac_treesitter.vim    #   Tree-sitter 高亮管理
+│       ├── yac_semantic_tokens.vim #  LSP 语义 token 高亮
 │       ├── yac_theme.vim         #   主题管理
 │       ├── yac_copilot.vim       #   Copilot ghost text
-│       ├── yac_remote.vim        #   SSH 远程
+│       ├── yac_dap.vim           #   DAP 调试 UI + 面板
+│       ├── yac_gitsigns.vim      #   Git diff 标记
+│       ├── yac_autopairs.vim     #   自动括号/引号
+│       ├── yac_config.vim        #   项目级配置
+│       ├── yac_alternate.vim     #   C/C++ 头文件切换
+│       ├── yac_install.vim       #   LSP/DAP 自动安装
 │       └── yac_test.vim          #   E2E 测试助手
 │
 ├── languages/                    # 内置语言插件
@@ -426,9 +459,9 @@ yac.vim/
 │   │       ├── folds.scm         #     折叠范围
 │   │       ├── textobjects.scm   #     文本对象
 │   │       └── injections.scm    #     语言注入 (可选)
-│   └── (c, cpp, go, javascript, lua, markdown,
-│        markdown_inline, python, rust, toml,
-│        typescript, vim, zig)
+│   └── (bash, c, cpp, css, go, html, javascript,
+│        json, lua, markdown, markdown_inline,
+│        python, rust, toml, typescript, vim, yaml, zig)
 │
 ├── themes/                       # 内置 Tree-sitter 主题
 │   ├── one-dark.json
