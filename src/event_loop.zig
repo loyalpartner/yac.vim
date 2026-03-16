@@ -201,11 +201,16 @@ pub const EventLoop = struct {
             defer d.allocator.free(raw_line);
             var arena = std.heap.ArenaAllocator.init(d.allocator);
             defer arena.deinit();
-            d.msg.handleWorkItem(.{
+            const envelope = queue_mod.Envelope{
                 .client_id = cid,
                 .client_stream = client.stream,
                 .raw_line = raw_line,
-            }, arena.allocator());
+            };
+            // Main thread already holds state_lock; preparse is trivial for DAP actions
+            const msg_mod = @import("message_dispatcher.zig");
+            if (msg_mod.MessageDispatcher.preparse(envelope, arena.allocator())) |pre| {
+                d.msg.dispatchPreparsed(pre, envelope, arena.allocator());
+            }
         } else {
             const item = queue_mod.Envelope{
                 .client_id = cid,
@@ -230,13 +235,19 @@ pub const EventLoop = struct {
 // ============================================================================
 
 fn workerLoop(daemon: *Daemon, queue: *queue_mod.RecvChannel) void {
+    const msg_mod = @import("message_dispatcher.zig");
     while (queue.pop()) |item| {
         defer item.deinit(daemon.allocator);
         var arena = std.heap.ArenaAllocator.init(daemon.allocator);
         defer arena.deinit();
+
+        // Phase 1: JSON parse without lock
+        const pre = msg_mod.MessageDispatcher.preparse(item, arena.allocator()) orelse continue;
+
+        // Phase 2: dispatch under lock
         daemon.state_lock.lock();
         defer daemon.state_lock.unlock();
-        daemon.msg.handleWorkItem(item, arena.allocator());
+        daemon.msg.dispatchPreparsed(pre, item, arena.allocator());
     }
 }
 

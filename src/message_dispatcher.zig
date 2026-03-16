@@ -46,28 +46,41 @@ pub const MessageDispatcher = struct {
     }
 
     // ====================================================================
-    // Entry point — called by EventLoop worker threads under state_lock
+    // Entry points — preparse (no lock) + dispatchPreparsed (under lock)
     // ====================================================================
 
-    /// Process a single work item: parse JSON, dispatch RPC, route response.
-    pub fn handleWorkItem(self: *MessageDispatcher, item: queue_mod.Envelope, alloc: Allocator) void {
-        const trimmed = std.mem.trim(u8, item.raw_line, &std.ascii.whitespace);
-        if (trimmed.len == 0) return;
+    /// Result of the lock-free preparse phase.
+    pub const PreparsedMsg = struct {
+        parsed: std.json.Parsed(Value),
+        arr: []Value,
+        trimmed: []const u8,
+    };
 
-        // Parse JSON
+    /// Phase 1 (no lock): trim, JSON parse, extract array.
+    /// Returns null if the line is empty or malformed.
+    pub fn preparse(item: queue_mod.Envelope, alloc: Allocator) ?PreparsedMsg {
+        const trimmed = std.mem.trim(u8, item.raw_line, &std.ascii.whitespace);
+        if (trimmed.len == 0) return null;
+
         const parsed = json_utils.parse(alloc, trimmed) catch |e| {
             log.err("JSON parse error: {any}", .{e});
-            return;
+            return null;
         };
 
-        // Must be an array (Vim channel protocol)
         const arr = switch (parsed.value) {
             .array => |a| a.items,
             else => {
                 log.err("Expected JSON array from Vim", .{});
-                return;
+                return null;
             },
         };
+
+        return .{ .parsed = parsed, .arr = arr, .trimmed = trimmed };
+    }
+
+    /// Phase 2 (under state_lock): expr check, RPC deserialize, handler dispatch.
+    pub fn dispatchPreparsed(self: *MessageDispatcher, pre: PreparsedMsg, item: queue_mod.Envelope, alloc: Allocator) void {
+        const arr = pre.arr;
 
         // Intercept responses to our pending expr requests.
         // Vim sends [positive_id, result] which parseJsonRpc would misinterpret.
@@ -87,11 +100,11 @@ pub const MessageDispatcher = struct {
         switch (msg) {
             .request => |r| {
                 log.debug("Vim[{d}] request [{d}]: {s}", .{ item.client_id, r.id, r.method });
-                self.handleVimRequest(item.client_id, alloc, r.id, r.method, r.params, trimmed, item.client_stream);
+                self.handleVimRequest(item.client_id, alloc, r.id, r.method, r.params, pre.trimmed, item.client_stream);
             },
             .notification => |n| {
                 log.debug("Vim[{d}] notification: {s}", .{ item.client_id, n.method });
-                self.handleVimRequest(item.client_id, alloc, null, n.method, n.params, trimmed, item.client_stream);
+                self.handleVimRequest(item.client_id, alloc, null, n.method, n.params, pre.trimmed, item.client_stream);
             },
             .response => {
                 // Responses to Vim "call" commands (expr responses intercepted above)
