@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("log.zig");
+const Daemon = @import("daemon.zig").Daemon;
 const EventLoop = @import("event_loop.zig").EventLoop;
 
 // ============================================================================
@@ -59,8 +60,10 @@ pub fn main() !void {
     // Restrict socket to owner-only (0o600) so other local users cannot connect.
     restrictSocketPermissions(socket_path);
 
-    var event_loop = EventLoop.init(allocator, server);
-    event_loop.initBridges();
+    var daemon = try Daemon.create(allocator);
+    defer daemon.destroy();
+
+    var event_loop = EventLoop.init(daemon, server);
     defer event_loop.deinit();
 
     event_loop.run() catch |e| {
@@ -80,6 +83,7 @@ test {
     _ = @import("queue.zig");
     _ = @import("poll_set.zig");
     _ = @import("requests.zig");
+    _ = @import("daemon.zig");
     _ = @import("event_loop.zig");
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
