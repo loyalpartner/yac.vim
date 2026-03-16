@@ -114,16 +114,17 @@ pub const LspBridge = struct {
         const lsp_client = self.lsp.registry.getClient(client_key) orelse return;
 
         if (std.mem.eql(u8, method, "workspace/applyEdit")) {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+
             const ApplyEditResult = struct { applied: bool };
-            const result_value: Value = json_utils.structToValue(self.allocator, ApplyEditResult{ .applied = true }) catch .null;
+            const result_value: Value = json_utils.structToValue(arena.allocator(), ApplyEditResult{ .applied = true }) catch .null;
             lsp_client.sendResponse(id, result_value) catch |e| {
                 log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
             };
 
             // Forward the edit to subscribed Vim clients
             const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena.deinit();
             const encoded = (rpc.Message{ .notification = .{ .method = "applyEdit", .params = params } }).serialize(arena.allocator()) catch return;
             self.transport.sendToWorkspace(workspace_uri, encoded);
             return;

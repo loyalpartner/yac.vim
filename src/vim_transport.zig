@@ -81,20 +81,6 @@ pub const VimTransport = struct {
         }
     }
 
-    /// Send a Vim ex command to clients subscribed to a workspace.
-    pub fn sendExToWorkspace(self: VimTransport, workspace_uri: ?[]const u8, alloc: Allocator, command: []const u8) void {
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        self.sendToWorkspace(workspace_uri, encoded);
-    }
-
-    /// Send a Vim ex command to ALL connected clients.
-    pub fn broadcastEx(self: VimTransport, alloc: Allocator, command: []const u8) void {
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        self.broadcastRaw(encoded);
-    }
-
     /// Broadcast a raw encoded message to all connected clients.
     pub fn broadcastRaw(self: VimTransport, encoded: []const u8) void {
         var cit = self.clients.valueIterator();
@@ -103,12 +89,11 @@ pub const VimTransport = struct {
         }
     }
 
-    /// Send a Vim ex command to ALL connected clients (iterating per client).
-    pub fn sendExToAll(self: VimTransport, alloc: Allocator, command: []const u8) void {
-        var cit = self.clients.iterator();
-        while (cit.next()) |entry| {
-            self.sendExTo(entry.key_ptr.*, alloc, command);
-        }
+    /// Send a Vim ex command to clients subscribed to a workspace.
+    pub fn sendExToWorkspace(self: VimTransport, workspace_uri: ?[]const u8, alloc: Allocator, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        self.sendToWorkspace(workspace_uri, encoded);
     }
 
     /// Send an error response to a specific Vim client.

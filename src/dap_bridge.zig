@@ -37,7 +37,7 @@ pub const DapBridge = struct {
                     const alloc = arena.allocator();
 
                     var msgs = session.client.readMessages(alloc) catch break;
-                    defer msgs.deinit(self.allocator);
+                    defer msgs.deinit(session.client.allocator);
                     if (msgs.items.len == 0) break;
 
                     for (msgs.items) |msg| {
@@ -69,7 +69,7 @@ pub const DapBridge = struct {
             if (e == error.AdapterClosed) self.cleanup();
             return;
         };
-        defer messages.deinit(self.allocator);
+        defer messages.deinit(session.client.allocator);
 
         for (messages.items) |msg| {
             switch (msg) {
