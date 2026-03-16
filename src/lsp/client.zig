@@ -380,22 +380,30 @@ pub const LspClient = struct {
 /// A parsed LSP message with its kind.
 pub const LspMessage = struct {
     parsed: std.json.Parsed(Value),
-    kind: union(enum) {
-        response: struct {
-            id: lsp.RequestId,
-            result: Value,
-            err: ?Value,
-        },
-        notification: struct {
-            method: []const u8,
-            params: Value,
-        },
-        server_request: struct {
-            id: lsp.RequestId,
-            method: []const u8,
-            params: Value,
-        },
-    },
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        response: Response,
+        notification: Notification,
+        server_request: ServerRequest,
+    };
+
+    pub const Response = struct {
+        id: lsp.RequestId,
+        result: Value,
+        err: ?Value,
+    };
+
+    pub const Notification = struct {
+        method: []const u8,
+        params: Value,
+    };
+
+    pub const ServerRequest = struct {
+        id: lsp.RequestId,
+        method: []const u8,
+        params: Value,
+    };
 
     pub fn deinit(self: *LspMessage) void {
         self.parsed.deinit();
