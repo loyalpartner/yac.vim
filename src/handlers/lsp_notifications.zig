@@ -10,6 +10,14 @@ const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 
+// Typed param structs for JSON-RPC notifications
+const DidChangeParams = struct {
+    file: ?[]const u8 = null,
+    version: ?i64 = null,
+    text: ?[]const u8 = null,
+    changes: ?Value = null,
+};
+
 pub fn handleDiagnostics(_: *HandlerContext, _: Value) !DispatchResult {
     // Diagnostics are pushed by the server via notifications, not pulled.
     return .{ .empty = {} };
@@ -23,16 +31,14 @@ pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Tree-sitter parse: independent of LSP — always parse if supported
     ts_handlers.parseIfSupported(ctx, params);
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(DidChangeParams, ctx.allocator, params) orelse
+        return .{ .empty = {} };
 
     const lsp_ctx_result = try common.getLspContext(ctx, params);
     switch (lsp_ctx_result) {
         .ready => |lsp_ctx| {
             // Build didChange params
-            const version = json.getInteger(obj, "version") orelse 1;
+            const version = p.version orelse 1;
             var lsp_params = try json.buildObjectMap(ctx.allocator, .{
                 .{ "textDocument", try json.buildObject(ctx.allocator, .{
                     .{ "uri", json.jsonString(lsp_ctx.uri) },
@@ -41,9 +47,9 @@ pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
             });
 
             // Forward content changes if present
-            if (obj.get("changes")) |changes| {
+            if (p.changes) |changes| {
                 try lsp_params.put("contentChanges", changes);
-            } else if (json.getString(obj, "text")) |text| {
+            } else if (p.text) |text| {
                 var change = ObjectMap.init(ctx.allocator);
                 try change.put("text", json.jsonString(text));
                 var changes_arr = std.json.Array.init(ctx.allocator);
@@ -59,20 +65,20 @@ pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
     }
 
     // Also forward to Copilot client
-    forwardDidChangeToCopilot(ctx, obj);
+    forwardDidChangeToCopilot(ctx, p);
 
     return .{ .empty = {} };
 }
 
 /// Forward didChange to the Copilot client (if active and initialized).
-fn forwardDidChangeToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
+fn forwardDidChangeToCopilot(ctx: *HandlerContext, p: DidChangeParams) void {
     const copilot_client = ctx.registry.copilot_client orelse return;
     if (ctx.registry.isInitializing(registry_mod.LspRegistry.copilot_key)) return;
 
-    const file = json.getString(obj, "file") orelse return;
+    const file = p.file orelse return;
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
-    const version = json.getInteger(obj, "version") orelse 1;
+    const version = p.version orelse 1;
 
     var td = ObjectMap.init(ctx.allocator);
     td.put("uri", json.jsonString(uri)) catch return;
@@ -81,9 +87,9 @@ fn forwardDidChangeToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
     var lsp_params = ObjectMap.init(ctx.allocator);
     lsp_params.put("textDocument", .{ .object = td }) catch return;
 
-    if (obj.get("changes")) |changes| {
+    if (p.changes) |changes| {
         lsp_params.put("contentChanges", changes) catch return;
-    } else if (json.getString(obj, "text")) |text| {
+    } else if (p.text) |text| {
         var change = ObjectMap.init(ctx.allocator);
         change.put("text", json.jsonString(text)) catch return;
         var changes_arr = std.json.Array.init(ctx.allocator);

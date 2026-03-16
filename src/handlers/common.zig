@@ -87,14 +87,21 @@ pub fn getLspContext(ctx: *HandlerContext, params: Value) !LspContextResult {
     return getLspContextEx(ctx, params, true);
 }
 
+const FileParam = struct {
+    file: ?[]const u8 = null,
+};
+
+const PositionParam = struct {
+    file: ?[]const u8 = null,
+    line: ?i64 = null,
+    column: ?i64 = null,
+};
+
 /// Get LSP context, optionally allowing initializing clients (for handleFileOpen).
 pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool) !LspContextResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .not_available = {} },
-    };
+    const p = json.parseTyped(FileParam, ctx.allocator, params) orelse return .{ .not_available = {} };
 
-    const file = json.getString(obj, "file") orelse return .{ .not_available = {} };
+    const file = p.file orelse return .{ .not_available = {} };
     const real_path = registry_mod.extractRealPath(file);
     const ssh_host = registry_mod.extractSshHost(file);
 
@@ -214,13 +221,12 @@ pub fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []co
         .not_available => return .{ .empty = {} },
     };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
+    const p = json.parseTyped(PositionParam, ctx.allocator, params) orelse return .{ .empty = {} };
+    const line_i64 = p.line orelse return .{ .empty = {} };
+    const col_i64 = p.column orelse return .{ .empty = {} };
+    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line: u32 = @intCast(line_i64);
+    const column: u32 = @intCast(col_i64);
 
     const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
@@ -238,13 +244,12 @@ pub fn sendCapabilityCheckedPositionRequest(ctx: *HandlerContext, params: Value,
 
     if (checkUnsupported(ctx, lsp_ctx.client_key, capability, feature_name)) return .{ .empty = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
+    const p = json.parseTyped(PositionParam, ctx.allocator, params) orelse return .{ .empty = {} };
+    const line_i64 = p.line orelse return .{ .empty = {} };
+    const col_i64 = p.column orelse return .{ .empty = {} };
+    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line: u32 = @intCast(line_i64);
+    const column: u32 = @intCast(col_i64);
 
     const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);

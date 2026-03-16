@@ -1,13 +1,11 @@
 const std = @import("std");
 const json_utils = @import("../json_utils.zig");
 const lsp_registry_mod = @import("registry.zig");
-const transform_navigation = @import("transform_navigation.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
 const ObjectMap = json_utils.ObjectMap;
-const Position = transform_navigation.Position;
-const extractStartPosition = transform_navigation.extractStartPosition;
 
 pub fn symbolKindName(kind: ?i64) []const u8 {
     const k = kind orelse return "Symbol";
@@ -51,38 +49,31 @@ fn collectDocumentSymbols(
     depth: i64,
 ) !void {
     for (arr) |sym_val| {
-        const sym = switch (sym_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const name = json_utils.getString(sym, "name") orelse continue;
-        const kind_int = json_utils.getInteger(sym, "kind");
-        const kind_name = symbolKindName(kind_int);
-        // Use LSP detail if present (e.g. type annotation), fall back to kind name
-        const lsp_detail = json_utils.getString(sym, "detail");
+        const sym = types.parse(types.DocumentSymbol, alloc, sym_val) orelse continue;
+        const name = sym.name orelse continue;
+        const kind_name = symbolKindName(sym.kind);
+        const lsp_detail = sym.detail;
 
-        var pos: Position = .{ .line = 0, .column = 0 };
-        const range_val = sym.get("selectionRange") orelse sym.get("range");
-        if (range_val) |rv| {
-            if (extractStartPosition(rv)) |p| pos = p;
+        var line: i64 = 0;
+        var column: i64 = 0;
+        if (sym.selectionRange orelse sym.range) |range| {
+            line = range.start.line;
+            column = range.start.character;
         }
 
         try items.append(try json_utils.buildObject(alloc, .{
             .{ "label", json_utils.jsonString(name) },
             .{ "detail", json_utils.jsonString(lsp_detail orelse "") },
             .{ "file", json_utils.jsonString(file) },
-            .{ "line", json_utils.jsonInteger(pos.line) },
-            .{ "column", json_utils.jsonInteger(pos.column) },
+            .{ "line", json_utils.jsonInteger(line) },
+            .{ "column", json_utils.jsonInteger(column) },
             .{ "depth", json_utils.jsonInteger(depth) },
             .{ "kind", json_utils.jsonString(kind_name) },
         }));
 
         // Recurse into children
-        if (sym.get("children")) |children_val| {
-            switch (children_val) {
-                .array => |ca| try collectDocumentSymbols(alloc, ca.items, items, file, depth + 1),
-                else => {},
-            }
+        if (sym.children) |children| {
+            try collectDocumentSymbols(alloc, children, items, file, depth + 1);
         }
     }
 }
@@ -114,30 +105,28 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
     } else {
         // SymbolInformation format (workspace/symbol) — flat list with location
         for (arr) |sym_val| {
-            const sym = switch (sym_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const name = json_utils.getString(sym, "name") orelse continue;
-            const kind_int = json_utils.getInteger(sym, "kind");
-            const kind_name = symbolKindName(kind_int);
-            const container = json_utils.getString(sym, "containerName");
+            const sym = types.parse(types.DocumentSymbol, alloc, sym_val) orelse continue;
+            const name = sym.name orelse continue;
+            const kind_name = symbolKindName(sym.kind);
+            const container = sym.containerName;
             const detail = if (container) |c|
                 std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
             else
                 kind_name;
 
             var file: []const u8 = "";
-            var pos: Position = .{ .line = 0, .column = 0 };
-            if (json_utils.getObject(sym, "location")) |loc| {
-                if (json_utils.getString(loc, "uri")) |uri| {
+            var line: i64 = 0;
+            var column: i64 = 0;
+            if (sym.location) |loc| {
+                if (loc.uri) |uri| {
                     file = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse "";
                     if (ssh_host) |host| {
                         file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
                     }
                 }
-                if (loc.get("range")) |range_val| {
-                    if (extractStartPosition(range_val)) |p| pos = p;
+                if (loc.range) |range| {
+                    line = range.start.line;
+                    column = range.start.character;
                 }
             }
 
@@ -145,8 +134,8 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
                 .{ "label", json_utils.jsonString(name) },
                 .{ "detail", json_utils.jsonString(detail) },
                 .{ "file", json_utils.jsonString(file) },
-                .{ "line", json_utils.jsonInteger(pos.line) },
-                .{ "column", json_utils.jsonInteger(pos.column) },
+                .{ "line", json_utils.jsonInteger(line) },
+                .{ "column", json_utils.jsonInteger(column) },
                 .{ "depth", json_utils.jsonInteger(0) },
                 .{ "kind", json_utils.jsonString(kind_name) },
             }));

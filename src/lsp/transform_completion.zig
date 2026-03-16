@@ -1,5 +1,6 @@
 const std = @import("std");
 const json_utils = @import("../json_utils.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -33,56 +34,46 @@ pub fn transformCompletionResult(alloc: Allocator, result: Value) !Value {
         else => &[_]Value{},
     };
 
-    // Cap items to avoid serializing/transmitting thousands of entries.
-    // LSP servers like rust-analyzer pre-sort by relevance, so truncating
-    // preserves the most useful items.
     const capped = if (items_slice.len > max_items) items_slice[0..max_items] else items_slice;
 
     var items = std.json.Array.init(alloc);
 
     for (capped) |item_val| {
-        const ci = switch (item_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
-        // label is required
-        const label = json_utils.getString(ci, "label") orelse continue;
+        const ci = types.parse(types.CompletionItem, alloc, item_val) orelse continue;
+        const label = ci.label orelse continue;
 
         var item = ObjectMap.init(alloc);
         try item.put("label", json_utils.jsonString(label));
 
-        // Optional fields — only include if present
-        if (json_utils.getInteger(ci, "kind")) |kind| {
+        if (ci.kind) |kind| {
             try item.put("kind", json_utils.jsonInteger(kind));
         }
-        if (json_utils.getString(ci, "detail")) |detail| {
+        if (ci.detail) |detail| {
             try item.put("detail", json_utils.jsonString(detail));
         }
-        if (json_utils.getString(ci, "insertText")) |insert_text| {
+        if (ci.insertText) |insert_text| {
             try item.put("insertText", json_utils.jsonString(insert_text));
         }
-        if (json_utils.getString(ci, "filterText")) |filter_text| {
+        if (ci.filterText) |filter_text| {
             try item.put("filterText", json_utils.jsonString(filter_text));
         }
-        if (json_utils.getString(ci, "sortText")) |sort_text| {
+        if (ci.sortText) |sort_text| {
             try item.put("sortText", json_utils.jsonString(sort_text));
         }
 
-        // documentation: string | {kind, value} — truncate to max_doc_bytes
-        if (ci.get("documentation")) |doc_val| {
+        // documentation: string | {kind, value} — kept as Value in typed struct
+        if (ci.documentation) |doc_val| {
             switch (doc_val) {
                 .string => |s| {
                     try item.put("documentation", json_utils.jsonString(truncateUtf8(s, max_doc_bytes)));
                 },
-                .object => |doc_obj| {
-                    // MarkupContent: {kind: "markdown"|"plaintext", value: "..."}
-                    const kind_str = json_utils.getString(doc_obj, "kind") orelse "plaintext";
-                    const value = json_utils.getString(doc_obj, "value") orelse "";
-                    var new_doc = ObjectMap.init(alloc);
-                    try new_doc.put("kind", json_utils.jsonString(kind_str));
-                    try new_doc.put("value", json_utils.jsonString(truncateUtf8(value, max_doc_bytes)));
-                    try item.put("documentation", .{ .object = new_doc });
+                .object => {
+                    if (types.parse(types.MarkupContent, alloc, doc_val)) |mc| {
+                        var new_doc = ObjectMap.init(alloc);
+                        try new_doc.put("kind", json_utils.jsonString(mc.kind));
+                        try new_doc.put("value", json_utils.jsonString(truncateUtf8(mc.value, max_doc_bytes)));
+                        try item.put("documentation", .{ .object = new_doc });
+                    }
                 },
                 else => {},
             }
@@ -98,7 +89,6 @@ pub fn transformCompletionResult(alloc: Allocator, result: Value) !Value {
 
 /// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, filterText, range?, command?}]}
 pub fn transformInlineCompletionResult(alloc: Allocator, result: Value) !Value {
-    // Result can be InlineCompletionList {items: []} or InlineCompletionItem[]
     const items_arr: []Value = switch (result) {
         .object => |obj| json_utils.getArray(obj, "items") orelse return .null,
         .array => |a| a.items,
@@ -108,34 +98,29 @@ pub fn transformInlineCompletionResult(alloc: Allocator, result: Value) !Value {
 
     var out_items = std.json.Array.init(alloc);
     for (items_arr) |item_val| {
-        const item = switch (item_val) {
-            .object => |o| o,
-            else => continue,
-        };
+        const ici = types.parse(types.InlineCompletionItem, alloc, item_val) orelse continue;
 
         var out = ObjectMap.init(alloc);
 
-        // insertText is required
-        if (item.get("insertText")) |insert_text| {
-            switch (insert_text) {
-                .string => try out.put("insertText", insert_text),
-                .object => |obj| {
-                    // StringValue {value: string}
-                    if (json_utils.getString(obj, "value")) |v| {
-                        try out.put("insertText", json_utils.jsonString(v));
-                    }
-                },
-                else => continue,
-            }
-        } else continue;
+        // insertText: string | {value: string} — kept as Value in typed struct
+        const insert_text = ici.insertText orelse continue;
+        switch (insert_text) {
+            .string => try out.put("insertText", insert_text),
+            .object => {
+                if (types.parse(types.StringValue, alloc, insert_text)) |sv| {
+                    try out.put("insertText", json_utils.jsonString(sv.value));
+                } else continue;
+            },
+            else => continue,
+        }
 
-        if (json_utils.getString(item, "filterText")) |ft| {
+        if (ici.filterText) |ft| {
             try out.put("filterText", json_utils.jsonString(ft));
         }
-        if (item.get("range")) |range| {
+        if (ici.range) |range| {
             try out.put("range", range);
         }
-        if (item.get("command")) |cmd| {
+        if (ici.command) |cmd| {
             try out.put("command", cmd);
         }
 

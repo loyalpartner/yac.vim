@@ -12,13 +12,25 @@ const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 
+// -- Typed param structs for parseTyped usage --
+
+const LspStatusParams = struct {
+    file: ?[]const u8 = null,
+};
+
+const FileOpenParams = struct {
+    file: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+};
+
+const LspResetFailedParams = struct {
+    language: ?[]const u8 = null,
+};
+
 /// Synchronous handler: query daemon-internal LSP readiness without any LSP round-trip.
 pub fn handleLspStatus(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const p = json.parseTyped(LspStatusParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const file = p.file orelse return .{ .empty = {} };
     const real_path = registry_mod.extractRealPath(file);
     const language = registry_mod.LspRegistry.detectLanguage(real_path) orelse {
         return .{ .data = try json.buildObject(ctx.allocator, .{
@@ -53,10 +65,7 @@ pub fn handleLspStatus(ctx: *HandlerContext, params: Value) !DispatchResult {
 pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     ts_handlers.parseIfSupported(ctx, params);
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     const lsp_ctx_result = try common.getLspContextEx(ctx, params, false);
 
@@ -67,7 +76,7 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
         .ready => |lsp_ctx| {
             workspace_uri = lsp_mod.extractWorkspaceFromKey(lsp_ctx.client_key);
 
-            const content_to_use = json.getString(obj, "text") orelse
+            const content_to_use = p.text orelse
                 (std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
                     log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
                     return .{ .empty = {} };
@@ -96,7 +105,7 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     }
 
     // Also send didOpen to Copilot client if it exists and is ready
-    forwardDidOpenToCopilot(ctx, obj);
+    forwardDidOpenToCopilot(ctx, params);
 
     const result_data = try json.buildObject(ctx.allocator, .{
         .{ "action", json.jsonString("none") },
@@ -110,11 +119,8 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
 
 /// Reset the spawn-failed flag for a language so the daemon will retry spawning.
 pub fn handleLspResetFailed(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-    const language = json.getString(obj, "language") orelse return .{ .empty = {} };
+    const p = json.parseTyped(LspResetFailedParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const language = p.language orelse return .{ .empty = {} };
 
     ctx.registry.resetSpawnFailed(language);
 
@@ -124,13 +130,14 @@ pub fn handleLspResetFailed(ctx: *HandlerContext, params: Value) !DispatchResult
 }
 
 /// Forward didOpen to the Copilot client (if active and initialized).
-fn forwardDidOpenToCopilot(ctx: *HandlerContext, obj: ObjectMap) void {
+fn forwardDidOpenToCopilot(ctx: *HandlerContext, params: Value) void {
     if (ctx.registry.copilot_client == null) return;
 
-    const file = json.getString(obj, "file") orelse return;
+    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return;
+    const file = p.file orelse return;
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
-    const content = json.getString(obj, "text") orelse
+    const content = p.text orelse
         (std.fs.cwd().readFileAlloc(ctx.allocator, real_path, 10 * 1024 * 1024) catch return);
     const lang = registry_mod.LspRegistry.detectLanguage(real_path) orelse "plaintext";
 

@@ -10,6 +10,35 @@ const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 const LspRegistry = registry_mod.LspRegistry;
 
+// ============================================================================
+// Vim → daemon param types
+// ============================================================================
+
+const SignInConfirmParams = struct {
+    userCode: ?[]const u8 = null,
+};
+
+const CopilotCompleteParams = struct {
+    file: ?[]const u8 = null,
+    line: ?i64 = null,
+    column: ?i64 = null,
+    tab_size: ?i64 = null,
+    insert_spaces: Value = .null,
+};
+
+const FileParams = struct {
+    file: ?[]const u8 = null,
+};
+
+const AcceptParams = struct {
+    uuid: Value = .null,
+};
+
+const PartialAcceptParams = struct {
+    item_id: ?[]const u8 = null,
+    accepted_text: ?[]const u8 = null,
+};
+
 /// Track which URIs have been didOpen'd to the Copilot client.
 /// Reset when copilot client is recreated (spawn_failed resets).
 var copilot_opened_uris: std.StringHashMap(void) = std.StringHashMap(void).init(std.heap.page_allocator);
@@ -97,13 +126,10 @@ pub fn handleCopilotSignInConfirm(ctx: *HandlerContext, params: Value) !Dispatch
     const client = getCopilotClient(ctx) orelse return .{ .empty = {} };
     if (!copilotReady(ctx)) return .{ .initializing = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(SignInConfirmParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     var confirm_params = ObjectMap.init(ctx.allocator);
-    if (json.getString(obj, "userCode")) |code| {
+    if (p.userCode) |code| {
         try confirm_params.put("userCode", json.jsonString(code));
     }
 
@@ -119,14 +145,14 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, params: Value) !DispatchResul
     const client = getCopilotClient(ctx) orelse return .{ .empty = {} };
     if (!copilotReady(ctx)) return .{ .initializing = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(CopilotCompleteParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
+    const file = p.file orelse return .{ .empty = {} };
+    const line_i64 = p.line orelse return .{ .empty = {} };
+    const col_i64 = p.column orelse return .{ .empty = {} };
+    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line: u32 = @intCast(line_i64);
+    const column: u32 = @intCast(col_i64);
 
     // Ensure file is open in Copilot before requesting completions
     ensureCopilotDidOpen(ctx, client, file);
@@ -134,11 +160,11 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, params: Value) !DispatchResul
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 
     // Build textDocument/inlineCompletion params
-    const tab_size = json.getInteger(obj, "tab_size") orelse 4;
-    const insert_spaces = if (obj.get("insert_spaces")) |v| switch (v) {
+    const tab_size: i64 = p.tab_size orelse 4;
+    const insert_spaces: bool = switch (p.insert_spaces) {
         .bool => |b| b,
         else => true,
-    } else true;
+    };
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try json.buildObject(ctx.allocator, .{
@@ -169,12 +195,8 @@ pub fn handleCopilotDidFocus(ctx: *HandlerContext, params: Value) !DispatchResul
     const client = ctx.registry.copilot_client orelse return .{ .empty = {} };
     if (!copilotReady(ctx)) return .{ .empty = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+    const p = json.parseTyped(FileParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const file = p.file orelse return .{ .empty = {} };
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 
     const notify_params = try json.buildObject(ctx.allocator, .{
@@ -194,15 +216,12 @@ pub fn handleCopilotAccept(ctx: *HandlerContext, params: Value) !DispatchResult 
     const client = ctx.registry.copilot_client orelse return .{ .empty = {} };
     if (!copilotReady(ctx)) return .{ .empty = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(AcceptParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     // Build workspace/executeCommand for acceptance telemetry
     var args = std.json.Array.init(ctx.allocator);
-    if (obj.get("uuid")) |uuid| {
-        try args.append(uuid);
+    if (p.uuid != .null) {
+        try args.append(p.uuid);
     }
 
     const cmd_params = try json.buildObject(ctx.allocator, .{
@@ -221,16 +240,13 @@ pub fn handleCopilotPartialAccept(ctx: *HandlerContext, params: Value) !Dispatch
     const client = ctx.registry.copilot_client orelse return .{ .empty = {} };
     if (!copilotReady(ctx)) return .{ .empty = {} };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(PartialAcceptParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     var notify_params = ObjectMap.init(ctx.allocator);
-    if (json.getString(obj, "item_id")) |id| {
+    if (p.item_id) |id| {
         try notify_params.put("itemId", json.jsonString(id));
     }
-    if (json.getString(obj, "accepted_text")) |text| {
+    if (p.accepted_text) |text| {
         try notify_params.put("acceptedLength", json.jsonInteger(@intCast(text.len)));
     }
 

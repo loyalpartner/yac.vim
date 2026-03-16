@@ -8,31 +8,41 @@ const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 
+// ============================================================================
+// Vim → daemon param types
+// ============================================================================
+
+const PickerOpenParams = struct {
+    cwd: ?[]const u8 = null,
+    recent_files: Value = .null,
+};
+
+const PickerQueryParams = struct {
+    query: ?[]const u8 = null,
+    mode: ?[]const u8 = null,
+    file: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+};
+
 pub fn handlePickerOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-    const cwd = json.getString(obj, "cwd") orelse return .{ .empty = {} };
+    const p = json.parseTyped(PickerOpenParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const cwd = p.cwd orelse return .{ .empty = {} };
 
     var result = try json.buildObjectMap(ctx.allocator, .{
         .{ "action", json.jsonString("picker_init") },
         .{ "cwd", json.jsonString(cwd) },
     });
-    if (obj.get("recent_files")) |rf| {
-        try result.put("recent_files", rf);
+    if (p.recent_files != .null) {
+        try result.put("recent_files", p.recent_files);
     }
 
     return .{ .data = .{ .object = result } };
 }
 
 pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-    const query = json.getString(obj, "query") orelse "";
-    const mode = json.getString(obj, "mode") orelse "file";
+    const p = json.parseTyped(PickerQueryParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const query = p.query orelse "";
+    const mode = p.mode orelse "file";
 
     if (std.mem.eql(u8, mode, "workspace_symbol")) {
         const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
@@ -53,12 +63,12 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
         }) };
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
         const ts_state = ctx.ts orelse return .{ .empty = {} };
-        const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+        const file = p.file orelse return .{ .empty = {} };
         const lang_state = ts_state.fromExtension(file) orelse return .{ .empty = {} };
 
         // Auto-parse if buffer not yet tracked (e.g. picker opened before highlights ran)
         if (ts_state.getTree(file) == null) {
-            if (json.getString(obj, "text")) |text| {
+            if (p.text) |text| {
                 ts_state.parseBuffer(file, text) catch {};
             }
         }

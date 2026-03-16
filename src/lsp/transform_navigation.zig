@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_utils = @import("../json_utils.zig");
 const lsp_registry_mod = @import("registry.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -8,19 +9,10 @@ const ObjectMap = json_utils.ObjectMap;
 
 pub const Position = struct { line: i64, column: i64 };
 
-/// Extract start position (line, character) from a range object.
-pub fn extractStartPosition(range_val: Value) ?Position {
-    const range_obj = switch (range_val) {
-        .object => |o| o,
-        else => return null,
-    };
-    const start_obj = switch (range_obj.get("start") orelse return null) {
-        .object => |o| o,
-        else => return null,
-    };
-    const line = json_utils.getInteger(start_obj, "line") orelse return null;
-    const column = json_utils.getInteger(start_obj, "character") orelse return null;
-    return .{ .line = line, .column = column };
+/// Extract start position (line, character) from a range object using typed parsing.
+pub fn extractStartPosition(alloc: Allocator, range_val: Value) ?Position {
+    const range = types.parse(types.Range, alloc, range_val) orelse return null;
+    return .{ .line = range.start.line, .column = range.start.character };
 }
 
 /// Build a {file, line, column} JSON object from a file path and position.
@@ -51,21 +43,12 @@ pub fn transformGotoResult(alloc: Allocator, result: Value, ssh_host: ?[]const u
 
     if (location == .null) return .null;
 
-    const loc_obj = switch (location) {
-        .object => |o| o,
-        else => return .null,
-    };
-
-    const uri = json_utils.getString(loc_obj, "uri") orelse
-        json_utils.getString(loc_obj, "targetUri") orelse
-        return .null;
-
+    const loc = types.parse(types.Location, alloc, location) orelse return .null;
+    const uri = loc.uri orelse loc.targetUri orelse return .null;
     const file_path = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse return .null;
+    const range = loc.range orelse loc.targetSelectionRange orelse return .null;
 
-    const range_val = loc_obj.get("range") orelse loc_obj.get("targetSelectionRange") orelse return .null;
-    const pos = extractStartPosition(range_val) orelse return .null;
-
-    return makeLocationObject(alloc, file_path, pos.line, pos.column, ssh_host);
+    return makeLocationObject(alloc, file_path, range.start.line, range.start.character, ssh_host);
 }
 
 /// Transform a references LSP response (Location[]) into {locations: [{file, line, column}]}.
@@ -77,14 +60,11 @@ pub fn transformReferencesResult(alloc: Allocator, result: Value, ssh_host: ?[]c
 
     var locations = std.json.Array.init(alloc);
     for (items) |item| {
-        const loc = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const uri = json_utils.getString(loc, "uri") orelse continue;
+        const loc = types.parse(types.Location, alloc, item) orelse continue;
+        const uri = loc.uri orelse continue;
         const file_path = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse continue;
-        const pos = extractStartPosition(loc.get("range") orelse continue) orelse continue;
-        const loc_val = makeLocationObject(alloc, file_path, pos.line, pos.column, ssh_host) catch continue;
+        const range = loc.range orelse continue;
+        const loc_val = makeLocationObject(alloc, file_path, range.start.line, range.start.character, ssh_host) catch continue;
         try locations.append(loc_val);
     }
 
@@ -102,31 +82,14 @@ pub fn transformFormattingResult(alloc: Allocator, result: Value) !Value {
 
     var edits = std.json.Array.init(alloc);
     for (items) |item| {
-        const edit = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const range_val = edit.get("range") orelse continue;
-        const range_obj = switch (range_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const start_obj = switch (range_obj.get("start") orelse continue) {
-            .object => |o| o,
-            else => continue,
-        };
-        const end_obj = switch (range_obj.get("end") orelse continue) {
-            .object => |o| o,
-            else => continue,
-        };
-        const new_text = json_utils.getString(edit, "newText") orelse "";
+        const edit = types.parse(types.TextEdit, alloc, item) orelse continue;
 
         try edits.append(try json_utils.buildObject(alloc, .{
-            .{ "start_line", json_utils.jsonInteger(json_utils.getInteger(start_obj, "line") orelse 0) },
-            .{ "start_column", json_utils.jsonInteger(json_utils.getInteger(start_obj, "character") orelse 0) },
-            .{ "end_line", json_utils.jsonInteger(json_utils.getInteger(end_obj, "line") orelse 0) },
-            .{ "end_column", json_utils.jsonInteger(json_utils.getInteger(end_obj, "character") orelse 0) },
-            .{ "new_text", json_utils.jsonString(new_text) },
+            .{ "start_line", json_utils.jsonInteger(edit.range.start.line) },
+            .{ "start_column", json_utils.jsonInteger(edit.range.start.character) },
+            .{ "end_line", json_utils.jsonInteger(edit.range.end.line) },
+            .{ "end_column", json_utils.jsonInteger(edit.range.end.character) },
+            .{ "new_text", json_utils.jsonString(edit.newText) },
         }));
     }
 
@@ -145,33 +108,19 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
 
     var hints = std.json.Array.init(alloc);
     for (items) |item| {
-        const hint = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
+        const hint = types.parse(types.InlayHint, alloc, item) orelse continue;
 
-        // position: {line, character}
-        const pos_obj = switch (hint.get("position") orelse continue) {
-            .object => |o| o,
-            else => continue,
-        };
-        const line = json_utils.getInteger(pos_obj, "line") orelse continue;
-        const character = json_utils.getInteger(pos_obj, "character") orelse continue;
+        const line = hint.position.line;
+        const character = hint.position.character;
 
-        // label: string | InlayHintLabelPart[]
-        const label_val = hint.get("label") orelse continue;
-        const label: []const u8 = switch (label_val) {
+        // label: string | InlayHintLabelPart[] (kept as Value in typed struct)
+        const label: []const u8 = switch (hint.label) {
             .string => |s| s,
             .array => |parts| blk: {
-                // Concatenate all label parts
                 var buf: std.ArrayListUnmanaged(u8) = .{};
                 for (parts.items) |part| {
-                    const part_obj = switch (part) {
-                        .object => |o| o,
-                        else => continue,
-                    };
-                    if (json_utils.getString(part_obj, "value")) |v| {
-                        buf.appendSlice(alloc, v) catch continue;
+                    if (types.parse(types.InlayHintLabelPart, alloc, part)) |lp| {
+                        buf.appendSlice(alloc, lp.value) catch continue;
                     }
                 }
                 break :blk buf.items;
@@ -181,22 +130,15 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
         if (label.len == 0) continue;
 
         // kind: 1=Type, 2=Parameter (optional)
-        const kind_int = json_utils.getInteger(hint, "kind");
-        const kind_str: []const u8 = if (kind_int) |k| switch (k) {
+        const kind_str: []const u8 = if (hint.kind) |k| switch (k) {
             1 => "type",
             2 => "parameter",
             else => "other",
         } else "other";
 
         // paddingLeft / paddingRight
-        const padding_left = if (hint.get("paddingLeft")) |v| switch (v) {
-            .bool => |b| b,
-            else => false,
-        } else false;
-        const padding_right = if (hint.get("paddingRight")) |v| switch (v) {
-            .bool => |b| b,
-            else => false,
-        } else false;
+        const padding_left = hint.paddingLeft orelse false;
+        const padding_right = hint.paddingRight orelse false;
 
         // Build display text with padding
         const display = if (padding_left and padding_right)
@@ -231,35 +173,14 @@ pub fn transformDocumentHighlightResult(alloc: Allocator, result: Value) !Value 
 
     var highlights = std.json.Array.init(alloc);
     for (items) |item| {
-        const obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const range_val = obj.get("range") orelse continue;
-        const range_obj = switch (range_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const start_obj = switch (range_obj.get("start") orelse continue) {
-            .object => |o| o,
-            else => continue,
-        };
-        const end_obj = switch (range_obj.get("end") orelse continue) {
-            .object => |o| o,
-            else => continue,
-        };
-        const kind = json_utils.getInteger(obj, "kind") orelse 1;
-        const sl = json_utils.getInteger(start_obj, "line") orelse continue;
-        const sc = json_utils.getInteger(start_obj, "character") orelse continue;
-        const el = json_utils.getInteger(end_obj, "line") orelse continue;
-        const ec = json_utils.getInteger(end_obj, "character") orelse continue;
+        const dh = types.parse(types.DocumentHighlight, alloc, item) orelse continue;
 
         try highlights.append(try json_utils.buildObject(alloc, .{
-            .{ "line", json_utils.jsonInteger(sl) },
-            .{ "col", json_utils.jsonInteger(sc) },
-            .{ "end_line", json_utils.jsonInteger(el) },
-            .{ "end_col", json_utils.jsonInteger(ec) },
-            .{ "kind", json_utils.jsonInteger(kind) },
+            .{ "line", json_utils.jsonInteger(dh.range.start.line) },
+            .{ "col", json_utils.jsonInteger(dh.range.start.character) },
+            .{ "end_line", json_utils.jsonInteger(dh.range.end.line) },
+            .{ "end_col", json_utils.jsonInteger(dh.range.end.character) },
+            .{ "kind", json_utils.jsonInteger(dh.kind) },
         }));
     }
 

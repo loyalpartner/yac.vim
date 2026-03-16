@@ -7,6 +7,11 @@ const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
 
+const ReferencesParams = struct {
+    line: ?i64 = null,
+    column: ?i64 = null,
+};
+
 pub fn handleGotoDefinition(ctx: *HandlerContext, params: Value) !DispatchResult {
     return common.sendPositionRequest(ctx, params, "textDocument/definition");
 }
@@ -30,13 +35,12 @@ pub fn handleReferences(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
+    const p = json.parseTyped(ReferencesParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const line_i64 = p.line orelse return .{ .empty = {} };
+    const col_i64 = p.column orelse return .{ .empty = {} };
+    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line: u32 = @intCast(line_i64);
+    const column: u32 = @intCast(col_i64);
 
     // Build references params (includes context.includeDeclaration)
     var lsp_params_obj = switch (try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column)) {

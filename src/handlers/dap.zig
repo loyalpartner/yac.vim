@@ -6,6 +6,7 @@ const dap_client_mod = @import("../dap/client.zig");
 const dap_session_mod = @import("../dap/session.zig");
 const dap_config = @import("../dap/config.zig");
 const dap_protocol = @import("../dap/protocol.zig");
+const types = @import("../dap/types.zig");
 const lsp_registry = @import("../lsp/registry.zig");
 
 const Value = json.Value;
@@ -26,16 +27,13 @@ const DapSession = dap_session_mod.DapSession;
 /// Params: {file, program?, args?, breakpoints?: [{file, line}], stop_on_entry?}
 pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     log.debug("handleDapStart: entered", .{});
-    const obj = switch (params) {
-        .object => |o| o,
-        else => {
-            log.err("handleDapStart: params is not object", .{});
-            return .{ .empty = {} };
-        },
+    const p = types.parse(types.DapStartParams, ctx.allocator, params) orelse {
+        log.err("handleDapStart: failed to parse params", .{});
+        return .{ .empty = {} };
     };
 
     // Determine adapter from file extension
-    const file = json.getString(obj, "file") orelse {
+    const file = p.file orelse {
         log.err("handleDapStart: no 'file' in params", .{});
         return .{ .empty = {} };
     };
@@ -47,18 +45,14 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     };
 
     // User can override adapter command and args
-    const command = json.getString(obj, "adapter_command") orelse config.command;
+    const command = p.adapter_command orelse config.command;
 
     // Build args: prefer user-supplied adapter_args, fall back to config
     var user_args: std.ArrayList([]const u8) = .{};
     defer user_args.deinit(ctx.allocator);
-    if (obj.get("adapter_args")) |aa| {
-        if (aa == .array) {
-            for (aa.array.items) |item| {
-                if (item == .string) {
-                    user_args.append(ctx.allocator, item.string) catch continue;
-                }
-            }
+    for (p.adapter_args) |item| {
+        if (item == .string) {
+            user_args.append(ctx.allocator, item.string) catch continue;
         }
     }
     const args: []const []const u8 = if (user_args.items.len > 0) user_args.items else config.args;
@@ -95,96 +89,83 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
 
     // Save launch params for deferred execution after 'initialized' event.
     // Must dupe strings into gpa — the request arena is freed after this handler returns.
-    const program_raw = json.getString(obj, "program") orelse file;
+    const program_raw = p.program orelse file;
     const program = ctx.gpa_allocator.dupe(u8, program_raw) catch return .{ .empty = {} };
-    const stop_on_entry = if (obj.get("stop_on_entry")) |v| switch (v) {
+    const stop_on_entry = switch (p.stop_on_entry) {
         .bool => |b| b,
         .integer => |i| i != 0,
         else => false,
-    } else false;
+    };
 
     // Parse breakpoints: [{file, line}, ...]
     var bp_files = std.StringArrayHashMap(std.ArrayList(u32)).init(ctx.gpa_allocator);
-    if (obj.get("breakpoints")) |bp_val| {
-        if (bp_val == .array) {
-            for (bp_val.array.items) |item| {
-                const bp_obj = switch (item) {
-                    .object => |o| o,
-                    else => continue,
-                };
-                const bp_file_raw = json.getString(bp_obj, "file") orelse continue;
-                const bp_line = json.getU32(bp_obj, "line") orelse continue;
+    for (p.breakpoints) |item| {
+        const bp = types.parse(types.BreakpointParam, ctx.allocator, item) orelse continue;
+        const bp_file_raw = bp.file orelse continue;
+        const bp_line_i64 = bp.line orelse continue;
+        if (bp_line_i64 < 0) continue;
 
-                // Dupe the file key into gpa since it outlives the arena
-                const bp_file = ctx.gpa_allocator.dupe(u8, bp_file_raw) catch continue;
-                const gop = bp_files.getOrPut(bp_file) catch {
-                    ctx.gpa_allocator.free(bp_file);
-                    continue;
-                };
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = .{};
-                } else {
-                    // Key already existed; free the dupe
-                    ctx.gpa_allocator.free(bp_file);
-                }
-                gop.value_ptr.append(ctx.gpa_allocator, bp_line) catch continue;
-            }
+        // Dupe the file key into gpa since it outlives the arena
+        const bp_file = ctx.gpa_allocator.dupe(u8, bp_file_raw) catch continue;
+        const gop = bp_files.getOrPut(bp_file) catch {
+            ctx.gpa_allocator.free(bp_file);
+            continue;
+        };
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        } else {
+            // Key already existed; free the dupe
+            ctx.gpa_allocator.free(bp_file);
         }
+        gop.value_ptr.append(ctx.gpa_allocator, @intCast(bp_line_i64)) catch continue;
     }
 
     // Parse args: ["arg1", "arg2", ...]
     var launch_args: std.ArrayList([]const u8) = .{};
-    if (obj.get("args")) |args_val| {
-        if (args_val == .array) {
-            for (args_val.array.items) |item| {
-                const s = switch (item) {
-                    .string => |str| str,
-                    else => continue,
-                };
-                const duped = ctx.gpa_allocator.dupe(u8, s) catch continue;
-                launch_args.append(ctx.gpa_allocator, duped) catch {
-                    ctx.gpa_allocator.free(duped);
-                    continue;
-                };
-            }
-        }
+    for (p.args) |item| {
+        const s = switch (item) {
+            .string => |str| str,
+            else => continue,
+        };
+        const duped = ctx.gpa_allocator.dupe(u8, s) catch continue;
+        launch_args.append(ctx.gpa_allocator, duped) catch {
+            ctx.gpa_allocator.free(duped);
+            continue;
+        };
     }
 
-    // Parse module (e.g. "pytest" — uses debugpy's "module" instead of "program")
-    const module: ?[]const u8 = if (json.getString(obj, "module")) |m|
+    // Module (e.g. "pytest" — uses debugpy's "module" instead of "program")
+    const module: ?[]const u8 = if (p.module) |m|
         ctx.gpa_allocator.dupe(u8, m) catch null
     else
         null;
 
-    // Parse cwd (working directory for the debuggee)
-    const cwd: ?[]const u8 = if (json.getString(obj, "cwd")) |c|
+    // cwd (working directory for the debuggee)
+    const cwd: ?[]const u8 = if (p.cwd) |c|
         ctx.gpa_allocator.dupe(u8, c) catch null
     else
         null;
 
-    // Parse env (JSON object) — serialize to string for deferred use
-    const env_json: ?[]const u8 = env_blk: {
-        const env_val = obj.get("env") orelse break :env_blk null;
-        if (env_val != .object) break :env_blk null;
-        break :env_blk json.stringifyAlloc(ctx.gpa_allocator, env_val) catch null;
-    };
+    // env (JSON object) — serialize to string for deferred use
+    const env_json: ?[]const u8 = if (p.env == .object)
+        json.stringifyAlloc(ctx.gpa_allocator, p.env) catch null
+    else
+        null;
 
-    // Parse extra (JSON object) — adapter-specific fields merged to top level
-    const extra_json: ?[]const u8 = extra_blk: {
-        const extra_val = obj.get("extra") orelse break :extra_blk null;
-        if (extra_val != .object) break :extra_blk null;
-        break :extra_blk json.stringifyAlloc(ctx.gpa_allocator, extra_val) catch null;
-    };
+    // extra (JSON object) — adapter-specific fields merged to top level
+    const extra_json: ?[]const u8 = if (p.extra == .object)
+        json.stringifyAlloc(ctx.gpa_allocator, p.extra) catch null
+    else
+        null;
 
-    // Parse request type (launch or attach)
-    const request_type: dap_client_mod.RequestType = req_blk: {
-        const req_str = json.getString(obj, "request") orelse break :req_blk .launch;
-        if (std.mem.eql(u8, req_str, "attach")) break :req_blk .attach;
-        break :req_blk .launch;
-    };
+    // Request type (launch or attach)
+    const request_type: dap_client_mod.RequestType = if (p.request) |req_str|
+        if (std.mem.eql(u8, req_str, "attach")) .attach else .launch
+    else
+        .launch;
 
-    // Parse pid (for attach mode)
-    const pid: ?u32 = json.getU32(obj, "pid");
+    // pid (for attach mode)
+    const pid: ?u32 = if (p.pid) |pid_i64| if (pid_i64 >= 0) @intCast(pid_i64) else null else null;
 
     client.launch_params = .{
         .program = program,
@@ -217,33 +198,23 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Params: {file, breakpoints: [{line, condition?, hit_condition?, log_message?}]}
 pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapBreakpointParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-    const bp_array = switch (obj.get("breakpoints") orelse return .{ .empty = {} }) {
-        .array => |a| a,
-        else => return .{ .empty = {} },
-    };
+    const file = p.file orelse return .{ .empty = {} };
 
     // Extract breakpoint info
     var breakpoints: std.ArrayList(dap_client_mod.BreakpointInfo) = .{};
     defer breakpoints.deinit(ctx.allocator);
-    for (bp_array.items) |item| {
-        const bp_obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        if (json.getU32(bp_obj, "line")) |line| {
-            try breakpoints.append(ctx.allocator, .{
-                .line = line,
-                .condition = json.getString(bp_obj, "condition"),
-                .hit_condition = json.getString(bp_obj, "hit_condition"),
-                .log_message = json.getString(bp_obj, "log_message"),
-            });
-        }
+    for (p.breakpoints) |item| {
+        const bp = types.parse(types.BreakpointParam, ctx.allocator, item) orelse continue;
+        const line_i64 = bp.line orelse continue;
+        if (line_i64 < 0) continue;
+        try breakpoints.append(ctx.allocator, .{
+            .line = @intCast(line_i64),
+            .condition = bp.condition,
+            .hit_condition = bp.hit_condition,
+            .log_message = bp.log_message,
+        });
     }
 
     _ = try session.client.sendSetBreakpoints(ctx.allocator, file, breakpoints.items);
@@ -256,19 +227,11 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
 /// Params: {filters: ["raised", "uncaught", ...]}
 pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
-
-    const filters_val = switch (obj.get("filters") orelse return .{ .empty = {} }) {
-        .array => |a| a,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapExceptionBreakpointsParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     var filters: std.ArrayList([]const u8) = .{};
     defer filters.deinit(ctx.allocator);
-    for (filters_val.items) |item| {
+    for (p.filters) |item| {
         switch (item) {
             .string => |s| try filters.append(ctx.allocator, s),
             else => {},
@@ -314,13 +277,10 @@ pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Get stack trace for the stopped thread.
 pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapThreadControlParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try session.client.sendStackTrace(thread_id);
+    const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
+    _ = try session.client.sendStackTrace(thread_id orelse session.client.active_thread_id orelse 1);
     // Response will come asynchronously via processDapOutput
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
@@ -330,13 +290,11 @@ pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult 
 /// Get scopes for a stack frame.
 pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapScopesParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const frame_id = json.getU32(obj, "frame_id") orelse return .{ .empty = {} };
-    _ = try session.client.sendScopes(frame_id);
+    const frame_id_i64 = p.frame_id orelse return .{ .empty = {} };
+    if (frame_id_i64 < 0) return .{ .empty = {} };
+    _ = try session.client.sendScopes(@intCast(frame_id_i64));
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -345,13 +303,11 @@ pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Get variables for a scope reference.
 pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapVariablesParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const variables_ref = json.getU32(obj, "variables_ref") orelse return .{ .empty = {} };
-    _ = try session.client.sendVariables(variables_ref);
+    const ref_i64 = p.variables_ref orelse return .{ .empty = {} };
+    if (ref_i64 < 0) return .{ .empty = {} };
+    _ = try session.client.sendVariables(@intCast(ref_i64));
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
     }) };
@@ -360,14 +316,11 @@ pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Evaluate an expression in the debug context.
 pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapEvaluateParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
-    const frame_id = json.getU32(obj, "frame_id");
-    const eval_context = json.getString(obj, "context") orelse "repl";
+    const expression = p.expression orelse return .{ .empty = {} };
+    const frame_id: ?u32 = if (p.frame_id) |fid| if (fid >= 0) @intCast(fid) else null else null;
+    const eval_context = p.context orelse "repl";
     _ = try session.client.sendEvaluate(expression, frame_id, eval_context);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "pending", .{ .bool = true } },
@@ -409,13 +362,11 @@ pub fn handleDapGetPanel(ctx: *HandlerContext, _: Value) !DispatchResult {
 /// Params: {frame_index}
 pub fn handleDapSwitchFrame(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapSwitchFrameParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const frame_idx = json.getU32(obj, "frame_index") orelse return .{ .empty = {} };
-    session.switchFrame(frame_idx) catch |e| {
+    const frame_idx_i64 = p.frame_index orelse return .{ .empty = {} };
+    if (frame_idx_i64 < 0) return .{ .empty = {} };
+    session.switchFrame(@intCast(frame_idx_i64)) catch |e| {
         log.err("DAP switchFrame failed: {any}", .{e});
         return .{ .empty = {} };
     };
@@ -428,12 +379,9 @@ pub fn handleDapSwitchFrame(ctx: *HandlerContext, params: Value) !DispatchResult
 /// Params: {path: [0, 2, 1]}
 pub fn handleDapExpandVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapPathParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const path = try parsePath(ctx, obj) orelse return .{ .empty = {} };
+    const path = try parsePathValues(ctx, p.path) orelse return .{ .empty = {} };
     defer ctx.allocator.free(path);
 
     session.expandVariable(path) catch |e| {
@@ -449,12 +397,9 @@ pub fn handleDapExpandVariable(ctx: *HandlerContext, params: Value) !DispatchRes
 /// Params: {path: [0, 2]}
 pub fn handleDapCollapseVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapPathParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const path = try parsePath(ctx, obj) orelse return .{ .empty = {} };
+    const path = try parsePathValues(ctx, p.path) orelse return .{ .empty = {} };
     defer ctx.allocator.free(path);
 
     session.collapseVariable(path);
@@ -467,12 +412,9 @@ pub fn handleDapCollapseVariable(ctx: *HandlerContext, params: Value) !DispatchR
 /// Params: {expression}
 pub fn handleDapAddWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapWatchParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
+    const expression = p.expression orelse return .{ .empty = {} };
     try session.addWatch(expression);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
@@ -483,13 +425,11 @@ pub fn handleDapAddWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
 /// Params: {index}
 pub fn handleDapRemoveWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapRemoveWatchParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const index = json.getU32(obj, "index") orelse return .{ .empty = {} };
-    session.removeWatch(index);
+    const index_i64 = p.index orelse return .{ .empty = {} };
+    if (index_i64 < 0) return .{ .empty = {} };
+    session.removeWatch(@intCast(index_i64));
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };
@@ -500,20 +440,17 @@ pub fn handleDapRemoveWatch(ctx: *HandlerContext, params: Value) !DispatchResult
 ///
 /// Params: {project_root, file, dirname}
 pub fn handleDapLoadConfig(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const obj = switch (params) {
-        .object => |o| o,
-        else => {
-            log.err("handleDapLoadConfig: params is not object", .{});
-            return .{ .empty = {} };
-        },
+    const p = types.parse(types.DapLoadConfigParams, ctx.allocator, params) orelse {
+        log.err("handleDapLoadConfig: failed to parse params", .{});
+        return .{ .empty = {} };
     };
 
-    const project_root = json.getString(obj, "project_root") orelse {
+    const project_root = p.project_root orelse {
         log.err("handleDapLoadConfig: no 'project_root' in params", .{});
         return .{ .empty = {} };
     };
-    const file = json.getString(obj, "file") orelse "";
-    const dirname = json.getString(obj, "dirname") orelse "";
+    const file = p.file orelse "";
+    const dirname = p.dirname orelse "";
 
     const result = dap_config.loadDebugConfig(ctx.allocator, project_root, file, dirname) catch |e| {
         log.err("handleDapLoadConfig: loadDebugConfig failed: {any}", .{e});
@@ -544,15 +481,15 @@ fn sendEmptyConfigs(ctx: *HandlerContext) !void {
 // Internal helpers
 // ============================================================================
 
-fn parsePath(ctx: *HandlerContext, obj: json.ObjectMap) !?[]const u32 {
-    const path_arr = switch (obj.get("path") orelse return null) {
-        .array => |a| a,
-        else => return null,
-    };
-    const path = try ctx.allocator.alloc(u32, path_arr.items.len);
-    for (path_arr.items, 0..) |item, i| {
+fn parsePathValues(ctx: *HandlerContext, path_vals: []const Value) !?[]const u32 {
+    if (path_vals.len == 0) return null;
+    const path = try ctx.allocator.alloc(u32, path_vals.len);
+    for (path_vals, 0..) |item, i| {
         path[i] = switch (item) {
-            .integer => |val| @intCast(val),
+            .integer => |val| if (val >= 0) @intCast(val) else {
+                ctx.allocator.free(path);
+                return null;
+            },
             else => {
                 ctx.allocator.free(path);
                 return null;
@@ -566,13 +503,10 @@ fn parsePath(ctx: *HandlerContext, obj: json.ObjectMap) !?[]const u32 {
 /// Extracts thread_id from params (falling back to active thread), calls the given send function.
 fn handleThreadControl(ctx: *HandlerContext, params: Value, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !DispatchResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = types.parse(types.DapThreadControlParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
-    _ = try sendFn(session.client, thread_id);
+    const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
+    _ = try sendFn(session.client, thread_id orelse session.client.active_thread_id orelse 1);
     return .{ .data = try json.buildObject(ctx.allocator, .{
         .{ "ok", .{ .bool = true } },
     }) };

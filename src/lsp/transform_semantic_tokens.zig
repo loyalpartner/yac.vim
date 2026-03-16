@@ -1,5 +1,6 @@
 const std = @import("std");
 const json_utils = @import("../json_utils.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -70,30 +71,12 @@ fn hasModifier(modifiers: u32, modifier_names: []const []const u8, target: []con
     return false;
 }
 
-/// Extract the semantic token legend from server capabilities.
-/// Returns (tokenTypes, tokenModifiers) slices or null.
-fn extractLegend(capabilities: ?Value) ?struct { types: []const Value, modifiers: []const Value } {
-    const caps = switch (capabilities orelse return null) {
-        .object => |o| o,
-        else => return null,
-    };
-    const provider = switch (caps.get("semanticTokensProvider") orelse return null) {
-        .object => |o| o,
-        else => return null,
-    };
-    const legend = switch (provider.get("legend") orelse return null) {
-        .object => |o| o,
-        else => return null,
-    };
-    const types = switch (legend.get("tokenTypes") orelse return null) {
-        .array => |a| a.items,
-        else => return null,
-    };
-    const modifiers = switch (legend.get("tokenModifiers") orelse return null) {
-        .array => |a| a.items,
-        else => return null,
-    };
-    return .{ .types = types, .modifiers = modifiers };
+/// Extract the semantic token legend from server capabilities using typed parsing.
+fn extractLegend(alloc: Allocator, capabilities: ?Value) ?struct { types_arr: []const Value, modifiers: []const Value } {
+    const caps = types.parse(types.ServerCapabilities, alloc, capabilities orelse return null) orelse return null;
+    const provider = caps.semanticTokensProvider orelse return null;
+    const legend = provider.legend orelse return null;
+    return .{ .types_arr = legend.tokenTypes, .modifiers = legend.tokenModifiers };
 }
 
 /// Transform LSP semantic tokens response into grouped highlights
@@ -102,20 +85,13 @@ fn extractLegend(capabilities: ?Value) ?struct { types: []const Value, modifiers
 /// Input (LSP): {data: [deltaLine, deltaStart, length, tokenType, tokenModifiers, ...]}
 /// Output:      {highlights: {GroupName: [[l1, c1, l2, c2], ...], ...}, range: [lo, hi]}
 pub fn transformSemanticTokensResult(alloc: Allocator, result: Value, capabilities: ?Value) !Value {
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return .null,
-    };
-
-    const data_arr = switch (obj.get("data") orelse return .null) {
-        .array => |a| a.items,
-        else => return .null,
-    };
+    const tokens = types.parse(types.SemanticTokensResult, alloc, result) orelse return .null;
+    const data_arr = tokens.data;
 
     if (data_arr.len < 5) return .null;
 
     // Extract legend
-    const legend = extractLegend(capabilities) orelse return .null;
+    const legend = extractLegend(alloc, capabilities) orelse return .null;
 
     // Build modifier name list for hasModifier lookups
     var modifier_names_buf: [32][]const u8 = undefined;
@@ -151,9 +127,9 @@ pub fn transformSemanticTokensResult(alloc: Allocator, result: Value, capabiliti
             char += delta_start;
         }
 
-        if (token_type_idx < 0 or @as(usize, @intCast(token_type_idx)) >= legend.types.len) continue;
+        if (token_type_idx < 0 or @as(usize, @intCast(token_type_idx)) >= legend.types_arr.len) continue;
 
-        const type_name = switch (legend.types[@intCast(token_type_idx)]) {
+        const type_name = switch (legend.types_arr[@intCast(token_type_idx)]) {
             .string => |s| s,
             else => continue,
         };

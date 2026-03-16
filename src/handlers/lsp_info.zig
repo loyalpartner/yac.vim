@@ -3,9 +3,24 @@ const json = @import("../json_utils.zig");
 const common = @import("common.zig");
 
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
 const DispatchResult = common.DispatchResult;
+
+// ============================================================================
+// Vim → daemon param types
+// ============================================================================
+
+const CompletionParams = struct {
+    file: ?[]const u8 = null,
+    line: ?i64 = null,
+    column: ?i64 = null,
+};
+
+const InlayHintParams = struct {
+    file: ?[]const u8 = null,
+    start_line: ?i64 = null,
+    end_line: ?i64 = null,
+};
 
 pub fn handleHover(ctx: *HandlerContext, params: Value) !DispatchResult {
     return common.sendPositionRequest(ctx, params, "textDocument/hover");
@@ -18,13 +33,15 @@ pub fn handleCompletion(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(CompletionParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-    const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
+    const line_i64 = p.line orelse return .{ .empty = {} };
+    if (line_i64 < 0) return .{ .empty = {} };
+    const line: u32 = @intCast(line_i64);
+
+    const col_i64 = p.column orelse return .{ .empty = {} };
+    if (col_i64 < 0) return .{ .empty = {} };
+    const column: u32 = @intCast(col_i64);
 
     const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
     const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
@@ -56,13 +73,10 @@ pub fn handleInlayHints(ctx: *HandlerContext, params: Value) !DispatchResult {
         .not_available => return .{ .empty = {} },
     };
 
-    const obj = switch (params) {
-        .object => |o| o,
-        else => return .{ .empty = {} },
-    };
+    const p = json.parseTyped(InlayHintParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
-    const start_line: u32 = json.getU32(obj, "start_line") orelse 0;
-    const end_line: u32 = json.getU32(obj, "end_line") orelse 100;
+    const start_line: u32 = if (p.start_line) |sl| if (sl >= 0) @as(u32, @intCast(sl)) else 0 else 0;
+    const end_line: u32 = if (p.end_line) |el| if (el >= 0) @as(u32, @intCast(el)) else 100 else 100;
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri) },

@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -79,28 +80,27 @@ pub fn buildDapResponse(allocator: Allocator, seq: u32, request_seq: u32, comman
 
 /// Parse a JSON object into a DapMessage (response or event).
 /// Returns null for unrecognized message types (e.g. reverse requests).
-pub fn parseDapMessage(obj: ObjectMap) ?DapMessage {
-    const msg_type = json.getString(obj, "type") orelse return null;
+pub fn parseDapMessage(alloc: Allocator, obj: ObjectMap) ?DapMessage {
+    const raw = types.parse(types.DapMessageRaw, alloc, .{ .object = obj }) orelse return null;
+    const msg_type = raw.@"type" orelse return null;
 
     if (std.mem.eql(u8, msg_type, "response")) {
-        const request_seq = json.getU32(obj, "request_seq") orelse return null;
-        const success = switch (obj.get("success") orelse return null) {
-            .bool => |b| b,
-            else => return null,
-        };
+        const req_seq = raw.request_seq orelse return null;
+        if (req_seq < 0) return null;
+        const success = raw.success orelse return null;
         return .{ .response = .{
-            .request_seq = request_seq,
+            .request_seq = @intCast(req_seq),
             .success = success,
-            .command = json.getString(obj, "command") orelse "",
-            .message = json.getString(obj, "message"),
-            .body = obj.get("body") orelse .null,
+            .command = raw.command orelse "",
+            .message = raw.message,
+            .body = raw.body,
         } };
     }
 
     if (std.mem.eql(u8, msg_type, "event")) {
         return .{ .event = .{
-            .event = json.getString(obj, "event") orelse return null,
-            .body = obj.get("body") orelse .null,
+            .event = raw.event orelse return null,
+            .body = raw.body,
         } };
     }
 
@@ -175,7 +175,7 @@ test "parseDapMessage: response" {
         else => return error.NotObject,
     };
 
-    const msg = parseDapMessage(obj) orelse return error.ParseFailed;
+    const msg = parseDapMessage(alloc, obj) orelse return error.ParseFailed;
     switch (msg) {
         .response => |r| {
             try std.testing.expectEqual(@as(u32, 1), r.request_seq);
@@ -205,7 +205,7 @@ test "parseDapMessage: event" {
         else => return error.NotObject,
     };
 
-    const msg = parseDapMessage(obj) orelse return error.ParseFailed;
+    const msg = parseDapMessage(alloc, obj) orelse return error.ParseFailed;
     switch (msg) {
         .event => |e| {
             try std.testing.expectEqualStrings("stopped", e.event);
@@ -238,7 +238,7 @@ test "parseDapMessage: failed response" {
         else => return error.NotObject,
     };
 
-    const msg = parseDapMessage(obj) orelse return error.ParseFailed;
+    const msg = parseDapMessage(alloc, obj) orelse return error.ParseFailed;
     switch (msg) {
         .response => |r| {
             try std.testing.expect(!r.success);
@@ -261,7 +261,7 @@ test "parseDapMessage: unknown type returns null" {
         else => return error.NotObject,
     };
 
-    try std.testing.expect(parseDapMessage(obj) == null);
+    try std.testing.expect(parseDapMessage(alloc, obj) == null);
 }
 
 test "parseDapMessage: missing type returns null" {
@@ -277,5 +277,5 @@ test "parseDapMessage: missing type returns null" {
         else => return error.NotObject,
     };
 
-    try std.testing.expect(parseDapMessage(obj) == null);
+    try std.testing.expect(parseDapMessage(alloc, obj) == null);
 }

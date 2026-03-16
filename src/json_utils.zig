@@ -82,6 +82,12 @@ pub fn parse(allocator: Allocator, input: []const u8) !std.json.Parsed(Value) {
     return std.json.parseFromSlice(Value, allocator, input, .{});
 }
 
+/// Parse a std.json.Value into a typed struct T using parseFromValueLeaky.
+/// Unknown JSON fields are silently ignored. Returns null on parse error.
+pub fn parseTyped(comptime T: type, alloc: Allocator, value: Value) ?T {
+    return std.json.parseFromValueLeaky(T, alloc, value, .{ .ignore_unknown_fields = true }) catch null;
+}
+
 /// Create a JSON string value.
 pub fn jsonString(s: []const u8) Value {
     return .{ .string = s };

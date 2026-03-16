@@ -543,7 +543,7 @@ pub const DapClient = struct {
                 .object => |o| o,
                 else => continue,
             };
-            if (protocol.parseDapMessage(obj)) |msg| {
+            if (protocol.parseDapMessage(parse_alloc, obj)) |msg| {
                 switch (msg) {
                     .response => |r| log.debug("DAP parsed: response cmd={s} success={}", .{ r.command, r.success }),
                     .event => |e| log.debug("DAP parsed: event={s}", .{e.event}),
@@ -622,7 +622,7 @@ test "DapClient: state transitions from events" {
         else => return error.NotObject,
     };
 
-    const msg = protocol.parseDapMessage(stopped_obj) orelse return error.ParseFailed;
+    const msg = protocol.parseDapMessage(alloc, stopped_obj) orelse return error.ParseFailed;
     switch (msg) {
         .event => |e| {
             try std.testing.expectEqualStrings("stopped", e.event);

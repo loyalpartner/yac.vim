@@ -3,6 +3,7 @@ const json = @import("../json_utils.zig");
 const log = @import("../log.zig");
 const dap_client_mod = @import("client.zig");
 const dap_protocol = @import("protocol.zig");
+const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -390,35 +391,33 @@ pub const DapSession = struct {
     // ========================================================================
 
     fn parseStackTrace(self: *DapSession, body: Value) !void {
-        const obj = switch (body) {
-            .object => |o| o,
-            else => return,
-        };
-        const frames_arr = switch (obj.get("stackFrames") orelse return) {
-            .array => |a| a,
-            else => return,
-        };
+        // Use a temporary arena for intermediate parseFromValueLeaky allocations
+        // (e.g. []const Value slices). We dupe the strings we need into self.allocator.
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const tmp_alloc = tmp.allocator();
+
+        const trace = types.parse(types.StackTraceBody, tmp_alloc, body) orelse return;
 
         // Free old frame strings before clearing
         self.freeFrameStrings();
         self.cached_frames.clearRetainingCapacity();
-        for (frames_arr.items) |item| {
-            const fobj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const source_obj = json.getObject(fobj, "source");
+        for (trace.stackFrames) |item| {
+            const frame = types.parse(types.DapStackFrame, tmp_alloc, item) orelse continue;
+            const id_i64 = frame.id orelse continue;
+            if (id_i64 < 0) continue;
+
             // Dupe strings — JSON buffer may be freed after this function returns
-            const name_raw = json.getString(fobj, "name") orelse "";
-            const path_raw = if (source_obj) |s| json.getString(s, "path") orelse "" else "";
-            const sname_raw = if (source_obj) |s| json.getString(s, "name") orelse "" else "";
+            const name_raw = frame.name orelse "";
+            const path_raw = if (frame.source) |s| s.path orelse "" else "";
+            const sname_raw = if (frame.source) |s| s.name orelse "" else "";
             try self.cached_frames.append(self.allocator, .{
-                .id = json.getU32(fobj, "id") orelse continue,
+                .id = @intCast(id_i64),
                 .name = if (name_raw.len > 0) try self.allocator.dupe(u8, name_raw) else "",
                 .source_path = if (path_raw.len > 0) try self.allocator.dupe(u8, path_raw) else "",
                 .source_name = if (sname_raw.len > 0) try self.allocator.dupe(u8, sname_raw) else "",
-                .line = json.getU32(fobj, "line") orelse 0,
-                .column = json.getU32(fobj, "column") orelse 0,
+                .line = if (frame.line) |l| if (l >= 0) @intCast(l) else 0 else 0,
+                .column = if (frame.column) |c| if (c >= 0) @intCast(c) else 0 else 0,
             });
         }
 
@@ -429,66 +428,55 @@ pub const DapSession = struct {
     }
 
     fn parseScopesForLocals(self: *DapSession, body: Value) ?u32 {
-        _ = self;
-        const obj = switch (body) {
-            .object => |o| o,
-            else => return null,
-        };
-        const scopes_arr = switch (obj.get("scopes") orelse return null) {
-            .array => |a| a,
-            else => return null,
-        };
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const tmp_alloc = tmp.allocator();
 
-        for (scopes_arr.items) |item| {
-            const sobj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const hint = json.getString(sobj, "presentationHint") orelse "";
-            const name = json.getString(sobj, "name") orelse "";
+        const scopes_body = types.parse(types.ScopesBody, tmp_alloc, body) orelse return null;
+
+        for (scopes_body.scopes) |item| {
+            const scope = types.parse(types.DapScope, tmp_alloc, item) orelse continue;
+            const hint = scope.presentationHint orelse "";
+            const name = scope.name orelse "";
             if (std.mem.eql(u8, hint, "locals") or
                 std.ascii.indexOfIgnoreCase(name, "local") != null)
             {
-                return json.getU32(sobj, "variablesReference");
+                const ref = scope.variablesReference orelse continue;
+                if (ref < 0) continue;
+                return @intCast(ref);
             }
         }
-        if (scopes_arr.items.len > 0) {
-            const first = switch (scopes_arr.items[0]) {
-                .object => |o| o,
-                else => return null,
-            };
-            return json.getU32(first, "variablesReference");
+        if (scopes_body.scopes.len > 0) {
+            const first = types.parse(types.DapScope, tmp_alloc, scopes_body.scopes[0]) orelse return null;
+            const ref = first.variablesReference orelse return null;
+            if (ref < 0) return null;
+            return @intCast(ref);
         }
         return null;
     }
 
     fn parseVariables(self: *DapSession, body: Value) !void {
-        const obj = switch (body) {
-            .object => |o| o,
-            else => return,
-        };
-        const vars_arr = switch (obj.get("variables") orelse return) {
-            .array => |a| a,
-            else => return,
-        };
+        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+        defer tmp.deinit();
+        const tmp_alloc = tmp.allocator();
 
-        log.debug("DAP chain: parsing {d} variables for ref={?}", .{ vars_arr.items.len, if (self.chain_trigger == .variable_expand) self.expand_ref else self.locals_ref });
+        const vars_body = types.parse(types.VariablesBody, tmp_alloc, body) orelse return;
+
+        log.debug("DAP chain: parsing {d} variables for ref={?}", .{ vars_body.variables.len, if (self.chain_trigger == .variable_expand) self.expand_ref else self.locals_ref });
         var list: VarList = .{};
-        for (vars_arr.items) |item| {
-            const vobj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
+        for (vars_body.variables) |item| {
+            const v = types.parse(types.DapVariable, tmp_alloc, item) orelse continue;
             // Dupe strings — source JSON lives in a temporary arena that is freed
             // after processDapOutput returns.
-            const name_raw = json.getString(vobj, "name") orelse "";
-            const value_raw = json.getString(vobj, "value") orelse "";
-            const type_raw = json.getString(vobj, "type") orelse "";
+            const name_raw = v.name orelse "";
+            const value_raw = v.value orelse "";
+            const type_raw = v.@"type" orelse "";
+            const ref_i64 = v.variablesReference orelse 0;
             try list.append(self.allocator, .{
                 .name = if (name_raw.len > 0) try self.allocator.dupe(u8, name_raw) else "",
                 .value = if (value_raw.len > 0) try self.allocator.dupe(u8, value_raw) else "",
                 .var_type = if (type_raw.len > 0) try self.allocator.dupe(u8, type_raw) else "",
-                .variables_reference = json.getU32(vobj, "variablesReference") orelse 0,
+                .variables_reference = if (ref_i64 >= 0) @intCast(ref_i64) else 0,
             });
         }
 
@@ -565,18 +553,14 @@ pub const DapSession = struct {
     }
 
     fn handleWatchEvalResponse(self: *DapSession, alloc: Allocator, body: Value) !void {
-        _ = alloc;
-        const obj = switch (body) {
-            .object => |o| o,
-            else => {
-                if (self.watches_pending > 0) self.watches_pending -= 1;
-                if (self.watches_pending == 0) self.chain_stage = .idle;
-                return;
-            },
+        const eval = types.parse(types.EvalResult, alloc, body) orelse {
+            if (self.watches_pending > 0) self.watches_pending -= 1;
+            if (self.watches_pending == 0) self.chain_stage = .idle;
+            return;
         };
 
-        const result_raw = json.getString(obj, "result") orelse "";
-        const type_raw = json.getString(obj, "type") orelse "";
+        const result_raw = eval.result orelse "";
+        const type_raw = eval.@"type" orelse "";
 
         // Dupe strings — source JSON lives in a temporary arena.
         try self.watch_results.append(self.allocator, .{
