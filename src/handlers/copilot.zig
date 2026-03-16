@@ -22,11 +22,11 @@ pub const CopilotCompleteParams = struct {
     line: ?i64 = null,
     column: ?i64 = null,
     tab_size: ?i64 = null,
-    insert_spaces: Value = .null,
+    insert_spaces: bool = true,
 };
 
 pub const AcceptParams = struct {
-    uuid: Value = .null,
+    uuid: ?[]const u8 = null,
 };
 
 pub const PartialAcceptParams = struct {
@@ -189,16 +189,12 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, p: CopilotCompleteParams) !?V
 
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
     const tab_size: i64 = p.tab_size orelse 4;
-    const insert_spaces: bool = switch (p.insert_spaces) {
-        .bool => |b| b,
-        else => true,
-    };
 
     try copilotRequest(ctx, client, "textDocument/inlineCompletion", InlineCompletionLspParams{
         .textDocument = .{ .uri = uri },
         .position = .{ .line = @intCast(line_i64), .character = @intCast(col_i64) },
         .context = .{},
-        .formattingOptions = .{ .tabSize = tab_size, .insertSpaces = insert_spaces },
+        .formattingOptions = .{ .tabSize = tab_size, .insertSpaces = p.insert_spaces },
     }, lsp_transform.transformInlineComp);
     return null;
 }
@@ -226,8 +222,8 @@ pub fn handleCopilotAccept(ctx: *HandlerContext, p: AcceptParams) !void {
     if (!copilotReady(ctx)) return;
 
     var args = std.json.Array.init(ctx.allocator);
-    if (p.uuid != .null) {
-        try args.append(p.uuid);
+    if (p.uuid) |uuid| {
+        try args.append(json.jsonString(uuid));
     }
 
     client.sendNotification("workspace/executeCommand", ExecuteCommandLspParams{

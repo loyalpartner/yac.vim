@@ -24,13 +24,13 @@ pub const RangeFormattingParams = struct {
     end_line: ?i64 = null,
     end_column: ?i64 = null,
     tab_size: ?i64 = null,
-    insert_spaces: Value = .null,
+    insert_spaces: bool = true,
 };
 
 pub const FormattingParams = struct {
     file: ?[]const u8 = null,
     tab_size: ?i64 = null,
-    insert_spaces: Value = .null,
+    insert_spaces: bool = true,
 };
 
 pub const ExecuteCommandParams = struct {
@@ -84,16 +84,10 @@ pub fn handleCodeAction(ctx: *HandlerContext, p: common.PositionParams) !?Value 
 }
 
 /// Build LSP FormattingOptions from parsed params.
-fn buildFormattingOptions(allocator: std.mem.Allocator, tab_size: ?i64, insert_spaces: Value) !Value {
-    const ts: i64 = tab_size orelse 4;
-    const is: bool = switch (insert_spaces) {
-        .bool => |b| b,
-        else => true,
-    };
-
+fn buildFormattingOptions(allocator: std.mem.Allocator, tab_size: ?i64, insert_spaces: bool) !Value {
     return json.buildObject(allocator, .{
-        .{ "tabSize", json.jsonInteger(ts) },
-        .{ "insertSpaces", json.jsonBool(is) },
+        .{ "tabSize", json.jsonInteger(tab_size orelse 4) },
+        .{ "insertSpaces", json.jsonBool(insert_spaces) },
     });
 }
 

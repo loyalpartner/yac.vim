@@ -100,17 +100,6 @@ pub fn removeIfSupportedFile(ctx: *HandlerContext, file: []const u8) void {
     tc.ts.removeBuffer(tc.file);
 }
 
-/// Parse a buffer for tree-sitter if the file type is supported (raw Value — for handleFileOpen).
-pub fn parseIfSupported(ctx: *HandlerContext, params: Value) void {
-    const p = json.parseTyped(TsBaseParams, ctx.allocator, params) orelse return;
-    parseIfSupportedFile(ctx, p.file orelse return, p.text);
-}
-
-/// Remove a buffer from tree-sitter tracking (raw Value — for handleFileOpen).
-pub fn removeIfSupported(ctx: *HandlerContext, params: Value) void {
-    const p = json.parseTyped(TsBaseParams, ctx.allocator, params) orelse return;
-    removeIfSupportedFile(ctx, p.file orelse return);
-}
 
 pub fn handleTsSymbols(ctx: *HandlerContext, p: TsBaseParams) !?Value {
     const tc = getTsContext(ctx, p.file orelse return null, p.text) orelse return null;

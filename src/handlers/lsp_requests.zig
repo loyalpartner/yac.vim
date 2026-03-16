@@ -65,10 +65,8 @@ pub fn handleLspStatus(ctx: *HandlerContext, p: LspStatusParams) !LspStatusResul
     }
 }
 
-pub fn handleFileOpen(ctx: *HandlerContext, params: Value) anyerror!?Value {
-    ts_handlers.parseIfSupported(ctx, params);
-
-    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return null;
+pub fn handleFileOpen(ctx: *HandlerContext, p: FileOpenParams) anyerror!?Value {
+    if (p.file) |file| ts_handlers.parseIfSupportedFile(ctx, file, p.text);
 
     const file = p.file orelse return null;
     const lsp_ctx_result = try common.getLspContextForFileEx(ctx, file, false);
@@ -101,7 +99,7 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) anyerror!?Value {
     }
 
     // Also send didOpen to Copilot client if it exists and is ready
-    forwardDidOpenToCopilot(ctx, params);
+    forwardDidOpenToCopilot(ctx, p);
 
     return try json.buildObject(ctx.allocator, .{
         .{ "action", json.jsonString("none") },
@@ -116,10 +114,9 @@ pub fn handleLspResetFailed(ctx: *HandlerContext, p: LspResetFailedParams) !OkRe
 }
 
 /// Forward didOpen to the Copilot client (if active and initialized).
-fn forwardDidOpenToCopilot(ctx: *HandlerContext, params: Value) void {
+fn forwardDidOpenToCopilot(ctx: *HandlerContext, p: FileOpenParams) void {
     if (ctx.registry.copilot_client == null) return;
 
-    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return;
     const file = p.file orelse return;
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
