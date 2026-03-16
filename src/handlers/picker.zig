@@ -59,9 +59,9 @@ pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
         const file = p.file orelse return null;
         const lsp_ctx = ctx.lsp(file) orelse return null;
 
-        try ctx.lspRequest(lsp_ctx.client, lsp_types.WorkspaceSymbol{ .params = .{
+        try ctx.lspRequest(lsp_ctx.client, try (lsp_types.WorkspaceSymbol{ .params = .{
             .query = query,
-        } }, .{ .transform = lsp_transform.transformPickerSymbols });
+        } }).wire(ctx.allocator), .{ .transform = lsp_transform.transformPickerSymbols });
         return null;
     } else if (std.mem.eql(u8, mode, "grep")) {
         return try json.structToValue(ctx.allocator, PickerActionResult{

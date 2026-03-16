@@ -64,17 +64,36 @@ pub const DapBridge = struct {
     fn processOutput(self: DapBridge) void {
         const session = self.dap_session.* orelse return;
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-
-        var messages = session.client.readMessages(arena.allocator()) catch |e| {
-            log.debug("DAP readMessages error: {any}", .{e});
+        var raw = session.client.readRaw() catch |e| {
+            log.debug("DAP readRaw error: {any}", .{e});
             if (e == error.AdapterClosed) self.cleanup();
             return;
         };
-        defer messages.deinit(session.client.allocator);
+        defer {
+            for (raw.items) |msg| self.allocator.free(msg);
+            raw.deinit(self.allocator);
+        }
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        var messages = self.parseRawMessages(arena.allocator(), raw.items);
+        defer messages.deinit(self.allocator);
 
         self.dispatchMessages(arena.allocator(), session, messages.items);
+    }
+
+    /// Parse raw JSON strings into typed DAP messages.
+    /// `parse_alloc` owns parsed JSON values (arena); ArrayList uses `self.allocator`.
+    fn parseRawMessages(self: DapBridge, parse_alloc: Allocator, raw_items: []const []const u8) std.ArrayList(dap_protocol.Message) {
+        var messages: std.ArrayList(dap_protocol.Message) = .{};
+        for (raw_items) |raw_msg| {
+            const parsed = json_utils.parse(parse_alloc, raw_msg) catch continue;
+            const obj = json_utils.asObject(parsed.value) orelse continue;
+            const msg = dap_protocol.Message.fromValue(parse_alloc, obj) orelse continue;
+            messages.append(self.allocator, msg) catch continue;
+        }
+        return messages;
     }
 
     fn dispatchMessages(self: DapBridge, alloc: Allocator, session: *DapSession, messages: []const dap_protocol.Message) void {
@@ -95,9 +114,15 @@ pub const DapBridge = struct {
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
 
-                var msgs = session.client.readMessages(arena.allocator()) catch break;
-                defer msgs.deinit(session.client.allocator);
-                if (msgs.items.len == 0) break;
+                var raw = session.client.readRaw() catch break;
+                defer {
+                    for (raw.items) |msg| self.allocator.free(msg);
+                    raw.deinit(self.allocator);
+                }
+                if (raw.items.len == 0) break;
+
+                var msgs = self.parseRawMessages(arena.allocator(), raw.items);
+                defer msgs.deinit(self.allocator);
 
                 self.dispatchMessages(arena.allocator(), session, msgs.items);
                 if (self.dap_session.* == null) break;

@@ -32,10 +32,10 @@ pub fn handleCompletion(ctx: *HandlerContext, p: CompletionParams) !?Value {
     const col_i64 = p.column orelse return null;
     if (col_i64 < 0) return null;
 
-    try ctx.lspRequest(lsp_ctx.client, lsp_types.Completion{ .params = .{
+    try ctx.lspRequest(lsp_ctx.client, try (lsp_types.Completion{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
         .position = .{ .line = line_i64, .character = col_i64 },
-    } }, .{
+    } }).wire(ctx.allocator), .{
         .client_key = lsp_ctx.client_key,
         .transform = lsp_transform.transformCompletion,
     });
@@ -49,13 +49,13 @@ pub fn handleInlayHints(ctx: *HandlerContext, p: InlayHintParams) !?Value {
     const start_line: i64 = if (p.start_line) |sl| if (sl >= 0) sl else 0 else 0;
     const end_line: i64 = if (p.end_line) |el| if (el >= 0) el else 100 else 100;
 
-    try ctx.lspRequest(lsp_ctx.client, lsp_types.InlayHints{ .params = .{
+    try ctx.lspRequest(lsp_ctx.client, try (lsp_types.InlayHints{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
         .range = .{
             .start = .{ .line = start_line, .character = 0 },
             .end = .{ .line = end_line, .character = 0 },
         },
-    } }, .{ .transform = lsp_transform.transformInlayHint });
+    } }).wire(ctx.allocator), .{ .transform = lsp_transform.transformInlayHint });
     return null;
 }
 
@@ -65,9 +65,9 @@ pub fn handleSemanticTokens(ctx: *HandlerContext, p: common.FileParams) !?Value 
 
     if (common.checkUnsupported(ctx, lsp_ctx.client_key, "semanticTokensProvider", "semantic tokens")) return null;
 
-    try ctx.lspRequest(lsp_ctx.client, lsp_types.SemanticTokens{ .params = .{
+    try ctx.lspRequest(lsp_ctx.client, try (lsp_types.SemanticTokens{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
-    } }, .{
+    } }).wire(ctx.allocator), .{
         .client_key = lsp_ctx.client_key,
         .transform = lsp_transform.transformSemTokens,
     });
@@ -88,9 +88,9 @@ pub fn handleDocumentHighlightLsp(ctx: *HandlerContext, p: common.PositionParams
     const col_i64 = p.column orelse return null;
     if (line_i64 < 0 or col_i64 < 0) return null;
 
-    try ctx.lspRequest(lsp_ctx.client, lsp_types.DocumentHighlightRequest{ .params = .{
+    try ctx.lspRequest(lsp_ctx.client, try (lsp_types.DocumentHighlightRequest{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
         .position = .{ .line = line_i64, .character = col_i64 },
-    } }, .{ .transform = lsp_transform.transformDocHighlight });
+    } }).wire(ctx.allocator), .{ .transform = lsp_transform.transformDocHighlight });
     return null;
 }

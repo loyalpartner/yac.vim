@@ -89,9 +89,9 @@ pub fn handleFileOpen(ctx: *HandlerContext, p: FileOpenParams) anyerror!?Value {
                     log.err("Failed to queue pending open: {any}", .{e});
                 };
             } else {
-                lsp_ctx.client.notify(lsp_types.DidOpen{ .params = .{
+                lsp_ctx.client.notify(try (lsp_types.DidOpen{ .params = .{
                     .textDocument = .{ .uri = lsp_ctx.uri, .languageId = lsp_ctx.language, .text = content_to_use },
-                } }) catch |e| {
+                } }).wire(ctx.allocator)) catch |e| {
                     log.err("Failed to send didOpen: {any}", .{e});
                 };
             }
@@ -135,9 +135,9 @@ fn forwardDidOpenToCopilot(ctx: *HandlerContext, p: FileOpenParams) void {
 
     const copilot_client = ctx.registry.copilot_client orelse return;
 
-    copilot_client.notify(lsp_types.DidOpen{ .params = .{
+    copilot_client.notify((lsp_types.DidOpen{ .params = .{
         .textDocument = .{ .uri = uri, .languageId = lang, .text = content },
-    } }) catch |e| {
+    } }).wire(ctx.allocator) catch return) catch |e| {
         log.err("Failed to send didOpen to Copilot: {any}", .{e});
         return;
     };

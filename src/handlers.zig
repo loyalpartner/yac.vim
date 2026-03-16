@@ -29,10 +29,10 @@ fn lspPosition(comptime RequestType: type, comptime transform: lsp_transform.Tra
             const line = p.line orelse return;
             const col = p.column orelse return;
             if (line < 0 or col < 0) return;
-            try ctx.lspRequest(lsp.client, RequestType{ .params = .{
+            try ctx.lspRequest(lsp.client, try (RequestType{ .params = .{
                 .textDocument = .{ .uri = lsp.uri },
                 .position = .{ .line = line, .character = col },
-            } }, .{ .transform = transform });
+            } }).wire(ctx.allocator), .{ .transform = transform });
         }
     }.handle;
 }
@@ -41,9 +41,9 @@ fn lspFile(comptime RequestType: type, comptime transform: lsp_transform.Transfo
     return &struct {
         fn handle(ctx: *HandlerContext, p: common.FileParams) !void {
             const lsp = ctx.lsp(p.file orelse return) orelse return;
-            try ctx.lspRequest(lsp.client, RequestType{ .params = .{
+            try ctx.lspRequest(lsp.client, try (RequestType{ .params = .{
                 .textDocument = .{ .uri = lsp.uri },
-            } }, .{ .transform = transform });
+            } }).wire(ctx.allocator), .{ .transform = transform });
         }
     }.handle;
 }
@@ -56,10 +56,10 @@ fn lspCapPosition(comptime RequestType: type, comptime capability: []const u8, c
             const line = p.line orelse return;
             const col = p.column orelse return;
             if (line < 0 or col < 0) return;
-            try ctx.lspRequest(lsp.client, RequestType{ .params = .{
+            try ctx.lspRequest(lsp.client, try (RequestType{ .params = .{
                 .textDocument = .{ .uri = lsp.uri },
                 .position = .{ .line = line, .character = col },
-            } }, .{ .transform = transform });
+            } }).wire(ctx.allocator), .{ .transform = transform });
         }
     }.handle;
 }

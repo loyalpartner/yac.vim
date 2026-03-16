@@ -14,11 +14,26 @@ pub const MessageFramer = @import("../lsp/protocol.zig").MessageFramer;
 // Comptime command ↔ args binding (mirrors LSP's LspRequest pattern)
 // ============================================================================
 
+/// Concrete wire-format type for DAP requests.
+/// Produced by `wire()` on typed requests.
+pub const Wire = struct {
+    command: []const u8,
+    arguments: Value,
+};
+
 pub fn DapRequest(comptime command_name: []const u8, comptime Args: type) type {
     return struct {
         pub const command = command_name;
         pub const ArgsType = Args;
         arguments: Args,
+
+        /// Serialize typed args to wire format.
+        pub fn wire(self: @This(), alloc: Allocator) !Wire {
+            return .{
+                .command = command,
+                .arguments = if (Args == Value) self.arguments else try json.structToValue(alloc, self.arguments),
+            };
+        }
     };
 }
 

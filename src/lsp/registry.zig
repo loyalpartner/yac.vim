@@ -348,7 +348,9 @@ pub const LspRegistry = struct {
 
         // Copilot requires workspace/didChangeConfiguration after initialized
         if (std.mem.eql(u8, client_key, copilot_key)) {
-            client.notify(lsp_types.CopilotDidChangeConfig{ .params = .{ .settings = .{} } }) catch |e| {
+            var config_arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer config_arena.deinit();
+            client.notify((lsp_types.CopilotDidChangeConfig{ .params = .{ .settings = .{} } }).wire(config_arena.allocator()) catch return) catch |e| {
                 log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
             };
         }
@@ -391,10 +393,12 @@ pub const LspRegistry = struct {
         }
     }
 
-    fn sendDidOpen(_: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
-        try client.notify(lsp_types.DidOpen{ .params = .{
+    fn sendDidOpen(self: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        try client.notify(try (lsp_types.DidOpen{ .params = .{
             .textDocument = .{ .uri = open.uri, .languageId = open.language_id, .text = open.content },
-        } });
+        } }).wire(arena.allocator()));
     }
 
     /// Check if a client is still initializing.

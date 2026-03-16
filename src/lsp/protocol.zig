@@ -158,11 +158,26 @@ pub const MessageFramer = struct {
 // sendRequest/sendNotification use @hasDecl(T, "method") to enforce this.
 // ============================================================================
 
+/// Concrete wire-format type for LSP requests and notifications.
+/// Produced by `wire()` on typed requests/notifications.
+pub const Wire = struct {
+    method: []const u8,
+    params: Value,
+};
+
 pub fn LspRequest(comptime method_name: []const u8, comptime Params: type) type {
     return struct {
         pub const method = method_name;
         pub const ParamsType = Params;
         params: Params,
+
+        /// Serialize typed params to wire format.
+        pub fn wire(self: @This(), alloc: Allocator) !Wire {
+            return .{
+                .method = method,
+                .params = if (Params == Value) self.params else try json.structToValue(alloc, self.params),
+            };
+        }
     };
 }
 
@@ -171,6 +186,14 @@ pub fn LspNotification(comptime method_name: []const u8, comptime Params: type) 
         pub const method = method_name;
         pub const ParamsType = Params;
         params: Params,
+
+        /// Serialize typed params to wire format.
+        pub fn wire(self: @This(), alloc: Allocator) !Wire {
+            return .{
+                .method = method,
+                .params = if (Params == Value) self.params else try json.structToValue(alloc, self.params),
+            };
+        }
     };
 }
 

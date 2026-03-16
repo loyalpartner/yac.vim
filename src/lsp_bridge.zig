@@ -74,17 +74,33 @@ pub const LspBridge = struct {
     fn processOutput(self: LspBridge, client_key: []const u8) void {
         const client = self.lsp.registry.getClient(client_key) orelse return;
 
-        var messages = client.readMessages() catch |e| {
+        var raw_messages = client.readRaw() catch |e| {
             log.err("LSP read error for {s}: {any}", .{ client_key, e });
             return;
         };
         defer {
-            for (messages.items) |*msg| msg.deinit();
-            messages.deinit(self.allocator);
+            for (raw_messages.items) |msg| self.allocator.free(msg);
+            raw_messages.deinit(self.allocator);
         }
 
-        for (messages.items) |*msg| {
-            switch (msg.kind) {
+        // Arena for JSON parsing — lives until all messages are dispatched
+        var parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer parse_arena.deinit();
+        const parse_alloc = parse_arena.allocator();
+
+        for (raw_messages.items) |raw_msg| {
+            const parsed = json_utils.parse(parse_alloc, raw_msg) catch continue;
+            const msg = lsp_protocol.Message.fromValue(parse_alloc, parsed.value) orelse continue;
+
+            // Remove pending request tracking for responses
+            switch (msg) {
+                .response => |resp| {
+                    if (resp.id.asU32()) |int_id| _ = client.pending_requests.remove(int_id);
+                },
+                else => {},
+            }
+
+            switch (msg) {
                 .response => |resp| self.handleResponse(client_key, resp),
                 .notification => |n| self.handleNotification(client_key, n.method, n.params),
                 .request => |req| self.handleServerRequest(client_key, req),

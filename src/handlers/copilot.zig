@@ -52,9 +52,9 @@ fn ensureCopilotDidOpen(ctx: *HandlerContext, client: *@import("../lsp/client.zi
     const content = std.fs.cwd().readFileAlloc(ctx.allocator, real_path, 10 * 1024 * 1024) catch return;
     const lang = LspRegistry.detectLanguage(real_path) orelse "plaintext";
 
-    client.notify(lsp_types.DidOpen{ .params = .{
+    client.notify((lsp_types.DidOpen{ .params = .{
         .textDocument = .{ .uri = uri, .languageId = lang, .text = content },
-    } }) catch |e| {
+    } }).wire(ctx.allocator) catch return) catch |e| {
         log.err("Failed to send didOpen to Copilot: {any}", .{e});
         return;
     };
@@ -84,9 +84,9 @@ fn copilotReady(ctx: *HandlerContext) bool {
     return !ctx.registry.isInitializing(LspRegistry.copilot_key);
 }
 
-/// Send a typed LSP request to Copilot and track it as pending.
-fn copilotRequest(ctx: *HandlerContext, client: *@import("../lsp/client.zig").LspClient, request: anytype, transform: lsp_transform.TransformFn) !void {
-    const request_id = try client.request(request);
+/// Send a pre-serialized LSP request to Copilot and track it as pending.
+fn copilotRequest(ctx: *HandlerContext, client: *@import("../lsp/client.zig").LspClient, req: @import("../lsp/protocol.zig").Wire, transform: lsp_transform.TransformFn) !void {
+    const request_id = try client.request(req);
     ctx._pending = .{ .request_id = request_id, .client_key = LspRegistry.copilot_key, .transform = transform };
 }
 
@@ -102,7 +102,7 @@ pub fn handleCopilotSignIn(ctx: *HandlerContext) !?Value {
         return null;
     }
 
-    try copilotRequest(ctx, client, lsp_types.CopilotSignIn{ .params = .{} }, lsp_transform.transformIdentity);
+    try copilotRequest(ctx, client, try (lsp_types.CopilotSignIn{ .params = .{} }).wire(ctx.allocator), lsp_transform.transformIdentity);
     return null;
 }
 
@@ -113,7 +113,7 @@ pub fn handleCopilotSignOut(ctx: *HandlerContext) !?Value {
         return null;
     }
 
-    try copilotRequest(ctx, client, lsp_types.CopilotSignOut{ .params = .{} }, lsp_transform.transformIdentity);
+    try copilotRequest(ctx, client, try (lsp_types.CopilotSignOut{ .params = .{} }).wire(ctx.allocator), lsp_transform.transformIdentity);
     return null;
 }
 
@@ -124,7 +124,7 @@ pub fn handleCopilotCheckStatus(ctx: *HandlerContext) !?Value {
         return null;
     }
 
-    try copilotRequest(ctx, client, lsp_types.CopilotCheckStatus{ .params = .{} }, lsp_transform.transformIdentity);
+    try copilotRequest(ctx, client, try (lsp_types.CopilotCheckStatus{ .params = .{} }).wire(ctx.allocator), lsp_transform.transformIdentity);
     return null;
 }
 
@@ -135,9 +135,9 @@ pub fn handleCopilotSignInConfirm(ctx: *HandlerContext, p: SignInConfirmParams) 
         return null;
     }
 
-    try copilotRequest(ctx, client, lsp_types.CopilotSignInConfirm{ .params = .{
+    try copilotRequest(ctx, client, try (lsp_types.CopilotSignInConfirm{ .params = .{
         .userCode = p.userCode,
-    } }, lsp_transform.transformIdentity);
+    } }).wire(ctx.allocator), lsp_transform.transformIdentity);
     return null;
 }
 
@@ -163,12 +163,12 @@ pub fn handleCopilotComplete(ctx: *HandlerContext, p: CopilotCompleteParams) !?V
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
     const tab_size: i64 = p.tab_size orelse 4;
 
-    try copilotRequest(ctx, client, lsp_types.CopilotInlineCompletion{ .params = .{
+    try copilotRequest(ctx, client, try (lsp_types.CopilotInlineCompletion{ .params = .{
         .textDocument = .{ .uri = uri },
         .position = .{ .line = @intCast(line_i64), .character = @intCast(col_i64) },
         .context = .{},
         .formattingOptions = .{ .tabSize = tab_size, .insertSpaces = p.insert_spaces },
-    } }, lsp_transform.transformInlineComp);
+    } }).wire(ctx.allocator), lsp_transform.transformInlineComp);
     return null;
 }
 
@@ -183,9 +183,9 @@ pub fn handleCopilotDidFocus(ctx: *HandlerContext, p: common.FileParams) !void {
     const file = p.file orelse return;
     const uri = try registry_mod.filePathToUri(ctx.allocator, registry_mod.extractRealPath(file));
 
-    client.notify(lsp_types.CopilotDidFocus{ .params = .{
+    client.notify(try (lsp_types.CopilotDidFocus{ .params = .{
         .textDocument = .{ .uri = uri },
-    } }) catch |e| {
+    } }).wire(ctx.allocator)) catch |e| {
         log.err("Failed to send didFocus to Copilot: {any}", .{e});
     };
 }
@@ -199,10 +199,10 @@ pub fn handleCopilotAccept(ctx: *HandlerContext, p: AcceptParams) !void {
         try args.append(json.jsonString(uuid));
     }
 
-    client.notify(lsp_types.CopilotExecCommand{ .params = .{
+    client.notify(try (lsp_types.CopilotExecCommand{ .params = .{
         .command = "github.copilot.didAcceptCompletionItem",
         .arguments = .{ .array = args },
-    } }) catch |e| {
+    } }).wire(ctx.allocator)) catch |e| {
         log.err("Failed to send Copilot accept: {any}", .{e});
     };
 }
@@ -212,10 +212,10 @@ pub fn handleCopilotPartialAccept(ctx: *HandlerContext, p: PartialAcceptParams) 
     if (!copilotReady(ctx)) return;
 
     const accepted_len: ?i64 = if (p.accepted_text) |text| @intCast(text.len) else null;
-    client.notify(lsp_types.CopilotPartialAccept{ .params = .{
+    client.notify(try (lsp_types.CopilotPartialAccept{ .params = .{
         .itemId = p.item_id,
         .acceptedLength = accepted_len,
-    } }) catch |e| {
+    } }).wire(ctx.allocator)) catch |e| {
         log.err("Failed to send Copilot partial accept: {any}", .{e});
     };
 }
