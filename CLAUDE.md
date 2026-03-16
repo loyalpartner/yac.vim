@@ -120,6 +120,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
 - After renaming or refactoring, grep for all usages of the old name to catch stale references.
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
+- **Never pass raw `std.json.Value` through function boundaries.** Define explicit structs and use `json_utils.parseTyped(T, alloc, value)` at the boundary. Raw `Value` with manual `switch`/`getString` chains is prohibited in new code. Existing `Value` parameters should be incrementally migrated to typed structs. Acceptable exceptions: protocol serialization (`rpc.zig`, `lsp/protocol.zig`) and generic transform functions that must handle arbitrary JSON.
 
 ## Tree-sitter Gotchas
 
