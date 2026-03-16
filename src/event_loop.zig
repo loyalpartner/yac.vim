@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_utils = @import("json_utils.zig");
 const vim = @import("vim_protocol.zig");
+const rpc = @import("rpc.zig");
 const lsp_registry_mod = @import("lsp/registry.zig");
 const handlers_mod = @import("handlers.zig");
 const picker_mod = @import("picker.zig");
@@ -12,9 +13,9 @@ const lsp_mod = @import("lsp/lsp.zig");
 const progress_mod = @import("progress.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const queue_mod = @import("queue.zig");
-const dap_client_mod = @import("dap/client.zig");
 const dap_session_mod = @import("dap/session.zig");
 const dap_protocol = @import("dap/protocol.zig");
+const lsp_protocol = @import("lsp/protocol.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -63,8 +64,6 @@ pub const EventLoop = struct {
     in_ts: queue_mod.InQueue = .{},
     /// Outgoing message queue: worker/main threads → writer thread.
     out_queue: queue_mod.OutQueue = .{},
-
-    const DeferredRequest = lsp_mod.Lsp.DeferredRequest;
 
     pub fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
         const ts_state = treesitter_mod.TreeSitter.init(allocator);
@@ -521,7 +520,7 @@ pub const EventLoop = struct {
         }
 
         // Parse as JSON-RPC
-        const msg = vim.parseJsonRpc(arr) catch |e| {
+        const msg = rpc.Message.deserialize(alloc, arr) catch |e| {
             log.err("Protocol parse error: {any}", .{e});
             return;
         };
@@ -570,7 +569,7 @@ pub const EventLoop = struct {
             .allocator = alloc,
             .gpa_allocator = self.allocator,
             .registry = &self.lsp.registry,
-            .lsp = &self.lsp,
+            .lsp_state = &self.lsp,
             .client_stream = client_stream,
             .client_id = cid,
             .ts = &self.ts,
@@ -585,38 +584,34 @@ pub const EventLoop = struct {
             return;
         };
 
-        switch (result) {
-            .data => |data| {
-                switch (self.picker.processAction(alloc, data)) {
-                    .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
-                    .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
-                    .respond => |v| self.sendVimResponseTo(cid, alloc, vim_id, v),
-                    .query_buffers => self.sendVimExprTo(cid, alloc, vim_id, "map(getbufinfo({'buflisted':1}), {_, b -> b.name})", .picker_buffers),
-                }
-            },
-            .empty => {
-                if (vim_id != null) {
+        // Route based on framework state set by the handler.
+        // Priority: deferred > pending_lsp > subscribe + data > data > null
+        if (ctx._deferred) {
+            if (vim_id != null) {
+                if (self.lsp.enqueueDeferred(cid, raw_line)) {
+                    log.info("Deferred {s} request (LSP initializing)", .{method});
+                    if (lsp_transform.formatToastCmd(alloc, "[yac] LSP initializing, request queued...", null)) |cmd|
+                        self.sendVimExTo(cid, alloc, cmd);
+                } else {
                     self.sendVimResponseTo(cid, alloc, vim_id, .null);
                 }
-            },
-            .initializing => {
-                if (vim_id != null) {
-                    if (self.lsp.enqueueDeferred(cid, raw_line)) {
-                        log.info("Deferred {s} request (LSP initializing)", .{method});
-                        if (lsp_transform.formatToastCmd(alloc, "[yac] LSP initializing, request queued...", null)) |cmd|
-                            self.sendVimExTo(cid, alloc, cmd);
-                    } else {
-                        self.sendVimResponseTo(cid, alloc, vim_id, .null);
-                    }
-                }
-            },
-            .pending_lsp => |pending| {
-                self.trackPendingRequest(pending.lsp_request_id, cid, vim_id, method, params, pending.client_key);
-            },
-            .data_with_subscribe => |ds| {
-                self.clients.subscribeClient(cid, ds.workspace_uri);
-                self.sendVimResponseTo(cid, alloc, vim_id, ds.data);
-            },
+            }
+        } else if (ctx._pending) |pending| {
+            self.trackPendingRequest(pending.request_id, cid, vim_id, method, params, pending.client_key, pending.transform);
+        } else if (result) |data| {
+            if (ctx._subscribe_workspace) |ws| {
+                self.clients.subscribeClient(cid, ws);
+            }
+            switch (self.picker.processAction(alloc, data)) {
+                .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
+                .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
+                .respond => |v| self.sendVimResponseTo(cid, alloc, vim_id, v),
+                .query_buffers => self.sendVimExprTo(cid, alloc, vim_id, "map(getbufinfo({'buflisted':1}), {_, b -> b.name})", .picker_buffers),
+            }
+        } else {
+            if (vim_id != null) {
+                self.sendVimResponseTo(cid, alloc, vim_id, .null);
+            }
         }
 
         // After did_save: notify other clients in the same workspace to reload
@@ -626,13 +621,12 @@ pub const EventLoop = struct {
     }
 
     /// Track a pending LSP request so the response can be routed back to the correct Vim client.
-    fn trackPendingRequest(self: *EventLoop, lsp_request_id: u32, cid: ClientId, vim_id: ?u64, method: []const u8, params: Value, client_key: ?[]const u8) void {
+    fn trackPendingRequest(self: *EventLoop, lsp_request_id: u32, cid: ClientId, vim_id: ?u64, method: []const u8, params: Value, client_key: ?[]const u8, transform: lsp_transform.TransformFn) void {
         const params_obj: ?ObjectMap = switch (params) {
             .object => |o| o,
             else => null,
         };
         const file = if (params_obj) |obj| json_utils.getString(obj, "file") else null;
-        const ssh_host = if (file) |f| lsp_registry_mod.extractSshHost(f) else null;
 
         // Cancel older in-flight requests of the same method+client (e.g. completion)
         if (client_key) |key| {
@@ -658,18 +652,9 @@ pub const EventLoop = struct {
             log.err("Failed to track pending request: {any}", .{e});
             return;
         };
-        const ssh_host_owned = if (ssh_host) |h|
-            self.allocator.dupe(u8, h) catch |e| {
-                self.allocator.free(method_owned);
-                log.err("Failed to track pending request: {any}", .{e});
-                return;
-            }
-        else
-            null;
         const file_owned = if (file) |f|
             self.allocator.dupe(u8, f) catch |e| {
                 self.allocator.free(method_owned);
-                if (ssh_host_owned) |h| self.allocator.free(h);
                 log.err("Failed to track pending request: {any}", .{e});
                 return;
             }
@@ -678,7 +663,6 @@ pub const EventLoop = struct {
         const client_key_owned = if (client_key) |key|
             self.allocator.dupe(u8, key) catch |e| {
                 self.allocator.free(method_owned);
-                if (ssh_host_owned) |h| self.allocator.free(h);
                 if (file_owned) |f| self.allocator.free(f);
                 log.err("Failed to track pending request: {any}", .{e});
                 return;
@@ -689,13 +673,12 @@ pub const EventLoop = struct {
         self.requests.addLsp(lsp_request_id, .{
             .vim_request_id = vim_id,
             .method = method_owned,
-            .ssh_host = ssh_host_owned,
             .file = file_owned,
             .client_id = cid,
             .lsp_client_key = client_key_owned,
+            .transform = transform,
         }) catch |e| {
             self.allocator.free(method_owned);
-            if (ssh_host_owned) |h| self.allocator.free(h);
             if (file_owned) |f| self.allocator.free(f);
             if (client_key_owned) |k| self.allocator.free(k);
             log.err("Failed to track pending request: {any}", .{e});
@@ -718,9 +701,14 @@ pub const EventLoop = struct {
         for (messages.items) |*msg| {
             switch (msg.kind) {
                 .response => |resp| {
+                    const rid = resp.id.asU32() orelse {
+                        log.debug("Unmatched LSP response id={any}", .{resp.id});
+                        continue;
+                    };
+
                     // Check if this is an initialize response
                     if (self.lsp.registry.getInitRequestId(client_key)) |init_id| {
-                        if (resp.id == init_id) {
+                        if (rid == init_id) {
                             self.lsp.registry.handleInitializeResponse(client_key, resp.result) catch |e| {
                                 log.err("Failed to handle init response: {any}", .{e});
                             };
@@ -732,7 +720,7 @@ pub const EventLoop = struct {
                     }
 
                     // Route to pending Vim request
-                    if (self.requests.removeLsp(resp.id)) |pending| {
+                    if (self.requests.removeLsp(rid)) |pending| {
                         defer pending.deinit(self.allocator);
 
                         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -740,31 +728,21 @@ pub const EventLoop = struct {
 
                         if (resp.err) |err_val| {
                             const err_str = json_utils.stringifyAlloc(arena.allocator(), err_val) catch "?";
-                            log.err("LSP error for request {d} ({s}): {s}", .{ resp.id, pending.method, err_str });
+                            log.err("LSP error for request {any} ({s}): {s}", .{ resp.id, pending.method, err_str });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
                         } else {
-                            const transformed = if (std.mem.eql(u8, pending.method, "semantic_tokens")) blk: {
-                                // Semantic tokens need the server capabilities to decode the legend
-                                const caps_val = if (pending.lsp_client_key) |key|
+                            const tctx = lsp_transform.TransformContext{
+                                .server_caps = if (pending.lsp_client_key) |key|
                                     if (self.lsp.registry.server_capabilities.get(key)) |parsed| parsed.value else null
                                 else
-                                    null;
-                                break :blk lsp_transform.transformSemanticTokensResult(
-                                    arena.allocator(),
-                                    resp.result,
-                                    caps_val,
-                                ) catch .null;
-                            } else lsp_transform.transformLspResult(
-                                arena.allocator(),
-                                pending.method,
-                                resp.result,
-                                pending.ssh_host,
-                            );
-                            log.debug("LSP response [{d}]: {s} -> Vim[{d}] (null={any})", .{ resp.id, pending.method, pending.client_id, transformed == .null });
+                                    null,
+                            };
+                            const transformed = pending.transform(arena.allocator(), resp.result, tctx);
+                            log.debug("LSP response [{any}]: {s} -> Vim[{d}] (null={any})", .{ resp.id, pending.method, pending.client_id, transformed == .null });
                             self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, transformed);
                         }
                     } else {
-                        log.debug("Unmatched LSP response id={d}", .{resp.id});
+                        log.debug("Unmatched LSP response id={any}", .{resp.id});
                     }
                 },
                 .notification => |notif| {
@@ -778,14 +756,13 @@ pub const EventLoop = struct {
     }
 
     /// Handle a server-to-client request (e.g. workspace/applyEdit).
-    fn handleServerRequest(self: *EventLoop, client_key: []const u8, id: i64, method: []const u8, params: Value) void {
+    fn handleServerRequest(self: *EventLoop, client_key: []const u8, id: lsp_protocol.RequestId, method: []const u8, params: Value) void {
         const lsp_client = self.lsp.registry.getClient(client_key) orelse return;
 
         if (std.mem.eql(u8, method, "workspace/applyEdit")) {
-            // Acknowledge the edit request
-            var result_obj = ObjectMap.init(self.allocator);
-            result_obj.put("applied", json_utils.jsonBool(true)) catch {};
-            lsp_client.sendResponse(id, .{ .object = result_obj }) catch |e| {
+            const ApplyEditResult = struct { applied: bool };
+            const result_value: Value = json_utils.structToValue(self.allocator, ApplyEditResult{ .applied = true }) catch .null;
+            lsp_client.sendResponse(id, result_value) catch |e| {
                 log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
             };
 
@@ -793,7 +770,7 @@ pub const EventLoop = struct {
             const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
-            const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "applyEdit", params) catch return;
+            const encoded = (rpc.Message{ .notification = .{ .method = "applyEdit", .params = params } }).serialize(arena.allocator()) catch return;
             self.sendToWorkspace(workspace_uri, encoded);
             return;
         }
@@ -803,9 +780,10 @@ pub const EventLoop = struct {
             !std.mem.eql(u8, method, "client/registerCapability") and
             !std.mem.eql(u8, method, "client/unregisterCapability"))
         {
-            log.debug("Unknown server request: {s} (id={d})", .{ method, id });
+            log.debug("Unknown server request: {s} (id={any})", .{ method, id });
         }
-        lsp_client.sendResponse(id, .null) catch |e| {
+        const null_value: Value = .null;
+        lsp_client.sendResponse(id, null_value) catch |e| {
             log.err("Failed to respond to {s}: {any}", .{ method, e });
         };
     }
@@ -1057,7 +1035,7 @@ pub const EventLoop = struct {
         } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
             var arena = std.heap.ArenaAllocator.init(self.allocator);
             defer arena.deinit();
-            const encoded = vim.encodeJsonRpcNotification(arena.allocator(), "diagnostics", params) catch return;
+            const encoded = (rpc.Message{ .notification = .{ .method = "diagnostics", .params = params } }).serialize(arena.allocator()) catch return;
             self.sendToWorkspace(workspace_uri, encoded);
         } else {
             log.debug("LSP notification: {s}", .{method});
@@ -1118,7 +1096,7 @@ pub const EventLoop = struct {
     fn sendVimResponseTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, result: Value) void {
         const id = vim_id orelse return;
         const client = self.clients.get(cid) orelse return;
-        const encoded = vim.encodeJsonRpcResponse(alloc, @intCast(id), result) catch return;
+        const encoded = (rpc.Message{ .response = .{ .id = @intCast(id), .result = result } }).serialize(alloc) catch return;
         defer alloc.free(encoded);
         self.pushToOutQueue(client.stream, encoded);
     }

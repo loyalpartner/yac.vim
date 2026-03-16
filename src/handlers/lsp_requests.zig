@@ -8,13 +8,11 @@ const registry_mod = @import("../lsp/registry.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
 
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
-const DispatchResult = common.DispatchResult;
 
-// -- Typed param structs for parseTyped usage --
+// -- Typed param structs --
 
-const LspStatusParams = struct {
+pub const LspStatusParams = struct {
     file: ?[]const u8 = null,
 };
 
@@ -23,20 +21,28 @@ const FileOpenParams = struct {
     text: ?[]const u8 = null,
 };
 
-const LspResetFailedParams = struct {
+pub const LspResetFailedParams = struct {
     language: ?[]const u8 = null,
 };
 
+// -- Named return types --
+
+pub const LspStatusResult = struct {
+    ready: bool,
+    reason: ?[]const u8 = null,
+    state: ?[]const u8 = null,
+    initializing: ?bool = null,
+    indexing: ?bool = null,
+};
+
+const OkResult = common.OkResult;
+
 /// Synchronous handler: query daemon-internal LSP readiness without any LSP round-trip.
-pub fn handleLspStatus(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const p = json.parseTyped(LspStatusParams, ctx.allocator, params) orelse return .{ .empty = {} };
-    const file = p.file orelse return .{ .empty = {} };
+pub fn handleLspStatus(ctx: *HandlerContext, p: LspStatusParams) !LspStatusResult {
+    const file = p.file orelse return .{ .ready = false, .reason = "no_file" };
     const real_path = registry_mod.extractRealPath(file);
     const language = registry_mod.LspRegistry.detectLanguage(real_path) orelse {
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "ready", .{ .bool = false } },
-            .{ "reason", json.jsonString("unsupported_language") },
-        }) };
+        return .{ .ready = false, .reason = "unsupported_language" };
     };
 
     const client_result = ctx.registry.findClient(language, real_path);
@@ -45,41 +51,38 @@ pub fn handleLspStatus(ctx: *HandlerContext, params: Value) !DispatchResult {
         const initializing = ctx.registry.isInitializing(cr.client_key);
         const state = cr.client.state;
         const lang_from_key = lsp_mod.extractLanguageFromKey(cr.client_key);
-        const indexing = ctx.lsp.isLanguageIndexing(lang_from_key);
+        const indexing = ctx.lsp_state.isLanguageIndexing(lang_from_key);
         const ready = state == .initialized and !initializing and !indexing;
 
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "ready", json.jsonBool(ready) },
-            .{ "state", json.jsonString(@tagName(state)) },
-            .{ "initializing", json.jsonBool(initializing) },
-            .{ "indexing", json.jsonBool(indexing) },
-        }) };
+        return .{
+            .ready = ready,
+            .state = @tagName(state),
+            .initializing = initializing,
+            .indexing = indexing,
+        };
     } else {
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "ready", .{ .bool = false } },
-            .{ "reason", json.jsonString("no_client") },
-        }) };
+        return .{ .ready = false, .reason = "no_client" };
     }
 }
 
-pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleFileOpen(ctx: *HandlerContext, params: Value) anyerror!?Value {
     ts_handlers.parseIfSupported(ctx, params);
 
-    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    const p = json.parseTyped(FileOpenParams, ctx.allocator, params) orelse return null;
 
-    const lsp_ctx_result = try common.getLspContextEx(ctx, params, false);
-
-    var workspace_uri: ?[]const u8 = null;
+    const file = p.file orelse return null;
+    const lsp_ctx_result = try common.getLspContextForFileEx(ctx, file, false);
 
     // Send didOpen to language-specific LSP if available
     switch (lsp_ctx_result) {
         .ready => |lsp_ctx| {
-            workspace_uri = lsp_mod.extractWorkspaceFromKey(lsp_ctx.client_key);
+            const workspace_uri = lsp_mod.extractWorkspaceFromKey(lsp_ctx.client_key);
+            if (workspace_uri) |ws| ctx.subscribeWorkspace(ws);
 
             const content_to_use = p.text orelse
                 (std.fs.cwd().readFileAlloc(ctx.allocator, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
                     log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
-                    return .{ .empty = {} };
+                    return null;
                 });
 
             if (ctx.registry.isInitializing(lsp_ctx.client_key)) {
@@ -87,16 +90,9 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
                     log.err("Failed to queue pending open: {any}", .{e});
                 };
             } else {
-                var td_item = ObjectMap.init(ctx.allocator);
-                try td_item.put("uri", json.jsonString(lsp_ctx.uri));
-                try td_item.put("languageId", json.jsonString(lsp_ctx.language));
-                try td_item.put("version", json.jsonInteger(1));
-                try td_item.put("text", json.jsonString(content_to_use));
-
-                var did_open_params = ObjectMap.init(ctx.allocator);
-                try did_open_params.put("textDocument", .{ .object = td_item });
-
-                lsp_ctx.client.sendNotification("textDocument/didOpen", .{ .object = did_open_params }) catch |e| {
+                lsp_ctx.client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+                    .textDocument = .{ .uri = lsp_ctx.uri, .languageId = lsp_ctx.language, .text = content_to_use },
+                }) catch |e| {
                     log.err("Failed to send didOpen: {any}", .{e});
                 };
             }
@@ -107,26 +103,16 @@ pub fn handleFileOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Also send didOpen to Copilot client if it exists and is ready
     forwardDidOpenToCopilot(ctx, params);
 
-    const result_data = try json.buildObject(ctx.allocator, .{
+    return try json.buildObject(ctx.allocator, .{
         .{ "action", json.jsonString("none") },
     });
-
-    if (workspace_uri) |ws| {
-        return .{ .data_with_subscribe = .{ .data = result_data, .workspace_uri = ws } };
-    }
-    return .{ .data = result_data };
 }
 
 /// Reset the spawn-failed flag for a language so the daemon will retry spawning.
-pub fn handleLspResetFailed(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const p = json.parseTyped(LspResetFailedParams, ctx.allocator, params) orelse return .{ .empty = {} };
-    const language = p.language orelse return .{ .empty = {} };
-
+pub fn handleLspResetFailed(ctx: *HandlerContext, p: LspResetFailedParams) !OkResult {
+    const language = p.language orelse return .{ .ok = false };
     ctx.registry.resetSpawnFailed(language);
-
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Forward didOpen to the Copilot client (if active and initialized).
@@ -151,16 +137,9 @@ fn forwardDidOpenToCopilot(ctx: *HandlerContext, params: Value) void {
 
     const copilot_client = ctx.registry.copilot_client orelse return;
 
-    var td_item = ObjectMap.init(ctx.allocator);
-    td_item.put("uri", json.jsonString(uri)) catch return;
-    td_item.put("languageId", json.jsonString(lang)) catch return;
-    td_item.put("version", json.jsonInteger(1)) catch return;
-    td_item.put("text", json.jsonString(content)) catch return;
-
-    var params_obj = ObjectMap.init(ctx.allocator);
-    params_obj.put("textDocument", .{ .object = td_item }) catch return;
-
-    copilot_client.sendNotification("textDocument/didOpen", .{ .object = params_obj }) catch |e| {
+    copilot_client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+        .textDocument = .{ .uri = uri, .languageId = lang, .text = content },
+    }) catch |e| {
         log.err("Failed to send didOpen to Copilot: {any}", .{e});
         return;
     };

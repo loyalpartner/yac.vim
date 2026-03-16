@@ -4,7 +4,9 @@
 //! are handled gracefully (no parse errors on incomplete responses).
 
 const std = @import("std");
+const json = @import("../json_utils.zig");
 const Value = std.json.Value;
+const Allocator = std.mem.Allocator;
 
 // ============================================================================
 // Core primitives
@@ -35,6 +37,16 @@ pub const Location = struct {
 pub const TextEdit = struct {
     range: Range = .{},
     newText: []const u8 = "",
+
+    pub fn toVim(self: TextEdit, alloc: Allocator) !Value {
+        return json.structToValue(alloc, VimTextEdit{
+            .start_line = self.range.start.line,
+            .start_column = self.range.start.character,
+            .end_line = self.range.end.line,
+            .end_column = self.range.end.character,
+            .new_text = self.newText,
+        });
+    }
 };
 
 // ============================================================================
@@ -44,6 +56,16 @@ pub const TextEdit = struct {
 pub const DocumentHighlight = struct {
     range: Range = .{},
     kind: i64 = 1, // 1=Text, 2=Read, 3=Write
+
+    pub fn toVim(self: DocumentHighlight, alloc: Allocator) !Value {
+        return json.structToValue(alloc, VimDocumentHighlight{
+            .line = self.range.start.line,
+            .col = self.range.start.character,
+            .end_line = self.range.end.line,
+            .end_col = self.range.end.character,
+            .kind = self.kind,
+        });
+    }
 };
 
 // ============================================================================
@@ -130,6 +152,43 @@ pub const ServerCapabilities = struct {
 
 pub const SemanticTokensResult = struct {
     data: []const Value = &.{},
+};
+
+// ============================================================================
+// Vim output types — define the JSON schema sent to Vim
+// ============================================================================
+
+/// Vim format for a text edit: {start_line, start_column, end_line, end_column, new_text}
+pub const VimTextEdit = struct {
+    start_line: i64,
+    start_column: i64,
+    end_line: i64,
+    end_column: i64,
+    new_text: []const u8,
+};
+
+/// Vim format for a document highlight: {line, col, end_line, end_col, kind}
+pub const VimDocumentHighlight = struct {
+    line: i64,
+    col: i64,
+    end_line: i64,
+    end_col: i64,
+    kind: i64,
+};
+
+/// Vim format for a location: {file, line, column}
+pub const VimLocation = struct {
+    file: []const u8,
+    line: i64,
+    column: i64,
+};
+
+/// Vim format for an inlay hint: {line, column, label, kind}
+pub const VimInlayHint = struct {
+    line: i64,
+    column: i64,
+    label: []const u8,
+    kind: []const u8,
 };
 
 // ============================================================================

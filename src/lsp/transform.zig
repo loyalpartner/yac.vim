@@ -12,7 +12,6 @@ pub const symbols = @import("transform_symbols.zig");
 pub const semantic_tokens = @import("transform_semantic_tokens.zig");
 
 // Re-export all public transform functions for backward compatibility.
-// Callers can continue to use @import("lsp/transform.zig").transformGotoResult, etc.
 pub const transformCompletionResult = completion.transformCompletionResult;
 pub const transformInlineCompletionResult = completion.transformInlineCompletionResult;
 pub const truncateUtf8 = completion.truncateUtf8;
@@ -30,6 +29,65 @@ pub const transformPickerSymbolResult = symbols.transformPickerSymbolResult;
 pub const symbolKindName = symbols.symbolKindName;
 
 pub const transformSemanticTokensResult = semantic_tokens.transformSemanticTokensResult;
+
+// ============================================================================
+// Unified transform function type
+// ============================================================================
+
+/// Context passed to transform functions alongside the LSP result.
+pub const TransformContext = struct {
+    server_caps: ?Value = null,
+};
+
+/// Unified signature for all LSP response → Vim format transforms.
+pub const TransformFn = *const fn (Allocator, Value, TransformContext) Value;
+
+/// Identity transform: returns the LSP result as-is.
+pub fn identity(_: Allocator, result: Value, _: TransformContext) Value {
+    return result;
+}
+
+// Adapters: wrap each existing transform into the unified TransformFn signature.
+
+fn wrapGoto(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformGotoResult(alloc, result, null) catch .null;
+}
+fn wrapReferences(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformReferencesResult(alloc, result, null) catch .null;
+}
+fn wrapPickerSymbol(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformPickerSymbolResult(alloc, result, null) catch .null;
+}
+fn wrapCompletion(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformCompletionResult(alloc, result) catch .null;
+}
+fn wrapInlineCompletion(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformInlineCompletionResult(alloc, result) catch .null;
+}
+fn wrapFormatting(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformFormattingResult(alloc, result) catch .null;
+}
+fn wrapInlayHints(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformInlayHintsResult(alloc, result) catch .null;
+}
+fn wrapDocumentHighlight(alloc: Allocator, result: Value, _: TransformContext) Value {
+    return transformDocumentHighlightResult(alloc, result) catch .null;
+}
+fn wrapSemanticTokens(alloc: Allocator, result: Value, tctx: TransformContext) Value {
+    return transformSemanticTokensResult(alloc, result, tctx.server_caps) catch .null;
+}
+
+// Public pointers for use in handler dispatch table.
+pub const transformGoto: TransformFn = &wrapGoto;
+pub const transformRefs: TransformFn = &wrapReferences;
+pub const transformPickerSymbols: TransformFn = &wrapPickerSymbol;
+pub const transformCompletion: TransformFn = &wrapCompletion;
+pub const transformInlineComp: TransformFn = &wrapInlineCompletion;
+pub const transformFmt: TransformFn = &wrapFormatting;
+pub const transformInlayHint: TransformFn = &wrapInlayHints;
+pub const transformDocHighlight: TransformFn = &wrapDocumentHighlight;
+pub const transformSemTokens: TransformFn = &wrapSemanticTokens;
+pub const transformIdentity: TransformFn = &identity;
 
 /// Escape a string for safe use in Vim's echo '...' syntax.
 /// Handles single quotes, backslashes, newlines/carriage returns, and truncates long messages.

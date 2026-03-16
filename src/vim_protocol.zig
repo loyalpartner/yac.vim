@@ -3,80 +3,7 @@ const json = @import("json_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const Writer = std.io.Writer;
-
-// ============================================================================
-// JSON-RPC Messages (Vim <-> yacd)
-//
-// Vim channel protocol uses JSON arrays:
-//   Request:      [positive_id, {"method": "xxx", "params": {...}}]
-//   Response:     [negative_id, result]
-//   Notification: [{"method": "xxx", "params": {...}}]
-// ============================================================================
-
-pub const JsonRpcMessage = union(enum) {
-    request: struct {
-        id: u64,
-        method: []const u8,
-        params: Value,
-    },
-    response: struct {
-        id: i64,
-        result: Value,
-    },
-    notification: struct {
-        method: []const u8,
-        params: Value,
-    },
-};
-
-/// Parse a Vim channel JSON array into a JsonRpcMessage.
-pub fn parseJsonRpc(arr: []const Value) !JsonRpcMessage {
-    switch (arr.len) {
-        1 => {
-            // Notification: [{"method": "xxx", "params": ...}]
-            const obj = switch (arr[0]) {
-                .object => |o| o,
-                else => return error.InvalidProtocol,
-            };
-            const method = json.getString(obj, "method") orelse return error.InvalidProtocol;
-            const params = obj.get("params") orelse .null;
-            return .{ .notification = .{ .method = method, .params = params } };
-        },
-        2 => {
-            // Request or Response based on sign of ID
-            const id_val = switch (arr[0]) {
-                .integer => |i| i,
-                else => return error.InvalidProtocol,
-            };
-
-            if (id_val > 0) {
-                // Request: [positive_id, {"method": "xxx", "params": ...}]
-                const obj = switch (arr[1]) {
-                    .object => |o| o,
-                    else => return error.InvalidProtocol,
-                };
-                const method = json.getString(obj, "method") orelse return error.InvalidProtocol;
-                const params = obj.get("params") orelse .null;
-                return .{ .request = .{
-                    .id = @intCast(id_val),
-                    .method = method,
-                    .params = params,
-                } };
-            } else if (id_val < 0) {
-                // Response: [negative_id, result]
-                return .{ .response = .{
-                    .id = id_val,
-                    .result = arr[1],
-                } };
-            } else {
-                return error.InvalidProtocol;
-            }
-        },
-        else => return error.InvalidProtocol,
-    }
-}
 
 // ============================================================================
 // Channel Commands (yacd -> Vim)
@@ -154,114 +81,9 @@ pub fn encodeChannelCommand(allocator: Allocator, cmd: ChannelCommand) ![]const 
     return aw.toOwnedSlice();
 }
 
-/// Encode a JSON-RPC response as a JSON line.
-pub fn encodeJsonRpcResponse(allocator: Allocator, id: i64, result: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-
-    try w.print("[{d},", .{id});
-    try json.stringifyToWriter(result, w);
-    try w.writeByte(']');
-
-    return aw.toOwnedSlice();
-}
-
-/// Encode a JSON-RPC request as a JSON line.
-pub fn encodeJsonRpcRequest(allocator: Allocator, id: u64, method: []const u8, params: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-
-    try w.print("[{d},{{\"method\":", .{id});
-    try json.stringifyToWriter(json.jsonString(method), w);
-    try w.writeAll(",\"params\":");
-    try json.stringifyToWriter(params, w);
-    try w.writeAll("}]");
-
-    return aw.toOwnedSlice();
-}
-
-/// Encode a JSON-RPC notification as a JSON line.
-/// Vim JSON channel protocol: [0, {data}] for unsolicited messages.
-pub fn encodeJsonRpcNotification(allocator: Allocator, method: []const u8, params: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-
-    try w.writeAll("[0,{\"action\":");
-    try json.stringifyToWriter(json.jsonString(method), w);
-    try w.writeAll(",\"params\":");
-    try json.stringifyToWriter(params, w);
-    try w.writeAll("}]");
-
-    return aw.toOwnedSlice();
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
-
-test "parse JSON-RPC request" {
-    const allocator = std.testing.allocator;
-    const input = "[1,{\"method\":\"goto_definition\",\"params\":{\"file\":\"test.rs\"}}]";
-    const parsed = try json.parse(allocator, input);
-    defer parsed.deinit();
-
-    const arr = switch (parsed.value) {
-        .array => |a| a.items,
-        else => unreachable,
-    };
-
-    const msg = try parseJsonRpc(arr);
-    switch (msg) {
-        .request => |r| {
-            try std.testing.expectEqual(@as(u64, 1), r.id);
-            try std.testing.expectEqualStrings("goto_definition", r.method);
-        },
-        else => unreachable,
-    }
-}
-
-test "parse JSON-RPC response" {
-    const allocator = std.testing.allocator;
-    const input = "[-42,{\"result\":\"success\"}]";
-    const parsed = try json.parse(allocator, input);
-    defer parsed.deinit();
-
-    const arr = switch (parsed.value) {
-        .array => |a| a.items,
-        else => unreachable,
-    };
-
-    const msg = try parseJsonRpc(arr);
-    switch (msg) {
-        .response => |r| {
-            try std.testing.expectEqual(@as(i64, -42), r.id);
-        },
-        else => unreachable,
-    }
-}
-
-test "parse JSON-RPC notification" {
-    const allocator = std.testing.allocator;
-    const input = "[{\"method\":\"did_change\",\"params\":{\"file\":\"test.rs\"}}]";
-    const parsed = try json.parse(allocator, input);
-    defer parsed.deinit();
-
-    const arr = switch (parsed.value) {
-        .array => |a| a.items,
-        else => unreachable,
-    };
-
-    const msg = try parseJsonRpc(arr);
-    switch (msg) {
-        .notification => |n| {
-            try std.testing.expectEqualStrings("did_change", n.method);
-        },
-        else => unreachable,
-    }
-}
 
 test "encode channel command - call async" {
     const allocator = std.testing.allocator;
@@ -295,11 +117,4 @@ test "encode channel command - redraw force" {
     const encoded = try encodeChannelCommand(allocator, cmd);
     defer allocator.free(encoded);
     try std.testing.expectEqualStrings("[\"redraw\",\"force\"]", encoded);
-}
-
-test "encode JSON-RPC response" {
-    const allocator = std.testing.allocator;
-    const encoded = try encodeJsonRpcResponse(allocator, -42, .{ .string = "ok" });
-    defer allocator.free(encoded);
-    try std.testing.expectEqualStrings("[-42,\"ok\"]", encoded);
 }

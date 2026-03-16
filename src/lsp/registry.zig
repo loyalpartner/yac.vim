@@ -347,10 +347,9 @@ pub const LspRegistry = struct {
 
         // Copilot requires workspace/didChangeConfiguration after initialized
         if (std.mem.eql(u8, client_key, copilot_key)) {
-            const settings = ObjectMap.init(self.allocator);
-            var config_params = ObjectMap.init(self.allocator);
-            try config_params.put("settings", .{ .object = settings });
-            client.sendNotification("workspace/didChangeConfiguration", .{ .object = config_params }) catch |e| {
+            const EmptySettings = struct {};
+            const DidChangeConfigParams = struct { settings: EmptySettings };
+            client.sendNotification("workspace/didChangeConfiguration", DidChangeConfigParams{ .settings = .{} }) catch |e| {
                 log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
             };
         }
@@ -393,21 +392,11 @@ pub const LspRegistry = struct {
         }
     }
 
-    fn sendDidOpen(self: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var td_item = ObjectMap.init(alloc);
-        try td_item.put("uri", json.jsonString(open.uri));
-        try td_item.put("languageId", json.jsonString(open.language_id));
-        try td_item.put("version", json.jsonInteger(1));
-        try td_item.put("text", json.jsonString(open.content));
-
-        var params = ObjectMap.init(alloc);
-        try params.put("textDocument", .{ .object = td_item });
-
-        try client.sendNotification("textDocument/didOpen", .{ .object = params });
+    fn sendDidOpen(_: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
+        const common = @import("../handlers/common.zig");
+        try client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+            .textDocument = .{ .uri = open.uri, .languageId = open.language_id, .text = open.content },
+        });
     }
 
     /// Check if a client is still initializing.

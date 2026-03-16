@@ -23,11 +23,54 @@ const DapState = dap_client_mod.DapState;
 // DapClient handles raw DAP protocol; DapSession handles the UX logic.
 // ============================================================================
 
+// ============================================================================
+// Vim output types — define the JSON schema sent to Vim
+// ============================================================================
+
+pub const VimFrame = struct {
+    id: u32,
+    name: []const u8,
+    source_path: []const u8,
+    source_name: []const u8,
+    line: u32,
+};
+
+pub const VimWatchResult = struct {
+    expression: []const u8,
+    result: []const u8,
+    type: []const u8,
+    @"error": bool,
+};
+
+pub const VimVariable = struct {
+    name: []const u8,
+    value: []const u8,
+    type: []const u8,
+    expandable: bool,
+    expanded: bool,
+    depth: u32,
+};
+
+// ============================================================================
+// Cache types
+// ============================================================================
+
 pub const CachedVariable = struct {
     name: []const u8,
     value: []const u8,
     var_type: []const u8,
     variables_reference: u32,
+
+    pub fn toVim(self: CachedVariable, alloc: Allocator, expanded: bool, depth: u32) !Value {
+        return json.structToValue(alloc, VimVariable{
+            .name = self.name,
+            .value = self.value,
+            .type = self.var_type,
+            .expandable = self.variables_reference > 0,
+            .expanded = expanded,
+            .depth = depth,
+        });
+    }
 };
 
 pub const CachedFrame = struct {
@@ -37,6 +80,16 @@ pub const CachedFrame = struct {
     source_name: []const u8,
     line: u32,
     column: u32,
+
+    pub fn toVim(self: CachedFrame, alloc: Allocator) !Value {
+        return json.structToValue(alloc, VimFrame{
+            .id = self.id,
+            .name = self.name,
+            .source_path = self.source_path,
+            .source_name = self.source_name,
+            .line = self.line,
+        });
+    }
 };
 
 pub const WatchResult = struct {
@@ -44,6 +97,15 @@ pub const WatchResult = struct {
     result: []const u8,
     var_type: []const u8,
     is_error: bool,
+
+    pub fn toVim(self: WatchResult, alloc: Allocator) !Value {
+        return json.structToValue(alloc, VimWatchResult{
+            .expression = self.expression,
+            .result = self.result,
+            .type = self.var_type,
+            .@"error" = self.is_error,
+        });
+    }
 };
 
 pub const ChainStage = enum {
@@ -292,13 +354,7 @@ pub const DapSession = struct {
 
         var frames_arr = std.json.Array.init(alloc);
         for (self.cached_frames.items) |frame| {
-            try frames_arr.append(try json.buildObject(alloc, .{
-                .{ "id", json.jsonInteger(@intCast(frame.id)) },
-                .{ "name", json.jsonString(frame.name) },
-                .{ "source_path", json.jsonString(frame.source_path) },
-                .{ "source_name", json.jsonString(frame.source_name) },
-                .{ "line", json.jsonInteger(@intCast(frame.line)) },
-            }));
+            try frames_arr.append(try frame.toVim(alloc));
         }
 
         var vars_arr = std.json.Array.init(alloc);
@@ -309,12 +365,7 @@ pub const DapSession = struct {
 
         var watches_arr = std.json.Array.init(alloc);
         for (self.watch_results.items) |w| {
-            try watches_arr.append(try json.buildObject(alloc, .{
-                .{ "expression", json.jsonString(w.expression) },
-                .{ "result", json.jsonString(w.result) },
-                .{ "type", json.jsonString(w.var_type) },
-                .{ "error", .{ .bool = w.is_error } },
-            }));
+            try watches_arr.append(try w.toVim(alloc));
         }
 
         var status_file: []const u8 = "";
@@ -470,7 +521,7 @@ pub const DapSession = struct {
             // after processDapOutput returns.
             const name_raw = v.name orelse "";
             const value_raw = v.value orelse "";
-            const type_raw = v.@"type" orelse "";
+            const type_raw = v.type orelse "";
             const ref_i64 = v.variablesReference orelse 0;
             try list.append(self.allocator, .{
                 .name = if (name_raw.len > 0) try self.allocator.dupe(u8, name_raw) else "",
@@ -515,17 +566,8 @@ pub const DapSession = struct {
             return;
         };
         for (vars.items) |v| {
-            const expandable = v.variables_reference > 0;
             const has_children = self.var_cache.contains(v.variables_reference);
-
-            try arr.append(try json.buildObject(alloc, .{
-                .{ "name", json.jsonString(v.name) },
-                .{ "value", json.jsonString(v.value) },
-                .{ "type", json.jsonString(v.var_type) },
-                .{ "expandable", .{ .bool = expandable } },
-                .{ "expanded", .{ .bool = has_children } },
-                .{ "depth", json.jsonInteger(@intCast(depth)) },
-            }));
+            try arr.append(try v.toVim(alloc, has_children, depth));
 
             if (has_children) {
                 try self.buildVariableTree(alloc, arr, v.variables_reference, depth + 1);
@@ -560,7 +602,7 @@ pub const DapSession = struct {
         };
 
         const result_raw = eval.result orelse "";
-        const type_raw = eval.@"type" orelse "";
+        const type_raw = eval.type orelse "";
 
         // Dupe strings — source JSON lives in a temporary arena.
         try self.watch_results.append(self.allocator, .{

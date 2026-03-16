@@ -1,6 +1,6 @@
-const std = @import("std");
 const log = @import("log.zig");
 const json = @import("json_utils.zig");
+const rpc = @import("rpc.zig");
 const common = @import("handlers/common.zig");
 const lsp_requests = @import("handlers/lsp_requests.zig");
 const lsp_navigation = @import("handlers/lsp_navigation.zig");
@@ -11,105 +11,112 @@ const picker_handlers = @import("handlers/picker.zig");
 const ts_handlers = @import("handlers/treesitter.zig");
 const copilot = @import("handlers/copilot.zig");
 const dap_handlers = @import("handlers/dap.zig");
+const lsp_transform = common.lsp_transform;
 
 pub const HandlerContext = common.HandlerContext;
-pub const DispatchResult = common.DispatchResult;
 const Value = json.Value;
+const R = rpc.Router;
 
 // ============================================================================
-// Handler Dispatch Table
-//
-// Comptime inline for: zero runtime overhead, no vtable.
+// Route table — declarative, zero runtime overhead
 // ============================================================================
 
-pub const Handler = struct {
-    name: []const u8,
-    handleFn: *const fn (*HandlerContext, Value) anyerror!DispatchResult,
+pub const routes = [_]R.MethodEntry{
+    // LSP lifecycle
+    R.register("lsp_status", lsp_requests.handleLspStatus),
+    R.register("file_open", lsp_requests.handleFileOpen),
+    R.register("lsp_reset_failed", lsp_requests.handleLspResetFailed),
+
+    // LSP navigation — declarative (no handler functions needed)
+    R.lspPosition("goto_definition", "textDocument/definition", lsp_transform.transformGoto),
+    R.lspPosition("goto_declaration", "textDocument/declaration", lsp_transform.transformGoto),
+    R.lspPosition("goto_type_definition", "textDocument/typeDefinition", lsp_transform.transformGoto),
+    R.lspPosition("goto_implementation", "textDocument/implementation", lsp_transform.transformGoto),
+    R.lspPosition("call_hierarchy", "textDocument/prepareCallHierarchy", lsp_transform.transformIdentity),
+    R.lspCapPosition("type_hierarchy", "textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy", lsp_transform.transformIdentity),
+    R.lspPosition("hover", "textDocument/hover", lsp_transform.transformIdentity),
+    R.lspCapPosition("signature_help", "textDocument/signatureHelp", "signatureHelpProvider", "signature help", lsp_transform.transformIdentity),
+    R.lspFile("document_symbols", "textDocument/documentSymbol", lsp_transform.transformIdentity),
+    R.lspFile("folding_range", "textDocument/foldingRange", lsp_transform.transformIdentity),
+
+    // LSP navigation/info — custom handlers
+    R.register("references", lsp_navigation.handleReferences),
+    R.register("completion", lsp_info.handleCompletion),
+    R.register("inlay_hints", lsp_info.handleInlayHints),
+    R.register("semantic_tokens", lsp_info.handleSemanticTokens),
+
+    // LSP editing
+    R.register("rename", lsp_editing.handleRename),
+    R.register("code_action", lsp_editing.handleCodeAction),
+    R.register("formatting", lsp_editing.handleFormatting),
+    R.register("range_formatting", lsp_editing.handleRangeFormatting),
+    R.register("execute_command", lsp_editing.handleExecuteCommand),
+
+    // LSP notifications
+    R.register("diagnostics", lsp_notifications.handleDiagnostics),
+    R.register("did_change", lsp_notifications.handleDidChange),
+    R.register("did_save", lsp_notifications.handleDidSave),
+    R.register("did_close", lsp_notifications.handleDidClose),
+    R.register("will_save", lsp_notifications.handleWillSave),
+
+    // Tree-sitter
+    R.register("document_highlight", ts_handlers.handleDocumentHighlight),
+    R.register("load_language", ts_handlers.handleLoadLanguage),
+    R.register("ts_symbols", ts_handlers.handleTsSymbols),
+    R.register("ts_folding", ts_handlers.handleTsFolding),
+    R.register("ts_navigate", ts_handlers.handleTsNavigate),
+    R.register("ts_textobjects", ts_handlers.handleTsTextObjects),
+    R.register("ts_highlights", ts_handlers.handleTsHighlights),
+    R.register("ts_hover_highlight", ts_handlers.handleTsHoverHighlight),
+
+    // Copilot
+    R.register("copilot_sign_in", copilot.handleCopilotSignIn),
+    R.register("copilot_sign_out", copilot.handleCopilotSignOut),
+    R.register("copilot_check_status", copilot.handleCopilotCheckStatus),
+    R.register("copilot_sign_in_confirm", copilot.handleCopilotSignInConfirm),
+    R.register("copilot_complete", copilot.handleCopilotComplete),
+    R.register("copilot_did_focus", copilot.handleCopilotDidFocus),
+    R.register("copilot_accept", copilot.handleCopilotAccept),
+    R.register("copilot_partial_accept", copilot.handleCopilotPartialAccept),
+
+    // Picker
+    R.register("picker_open", picker_handlers.handlePickerOpen),
+    R.register("picker_query", picker_handlers.handlePickerQuery),
+    R.register("picker_close", picker_handlers.handlePickerClose),
+
+    // DAP
+    R.register("dap_load_config", dap_handlers.handleDapLoadConfig),
+    R.register("dap_start", dap_handlers.handleDapStart),
+    R.register("dap_breakpoint", dap_handlers.handleDapBreakpoint),
+    R.register("dap_exception_breakpoints", dap_handlers.handleDapExceptionBreakpoints),
+    R.register("dap_threads", dap_handlers.handleDapThreads),
+    R.register("dap_continue", dap_handlers.handleDapContinue),
+    R.register("dap_next", dap_handlers.handleDapNext),
+    R.register("dap_step_in", dap_handlers.handleDapStepIn),
+    R.register("dap_step_out", dap_handlers.handleDapStepOut),
+    R.register("dap_stack_trace", dap_handlers.handleDapStackTrace),
+    R.register("dap_scopes", dap_handlers.handleDapScopes),
+    R.register("dap_variables", dap_handlers.handleDapVariables),
+    R.register("dap_evaluate", dap_handlers.handleDapEvaluate),
+    R.register("dap_terminate", dap_handlers.handleDapTerminate),
+    R.register("dap_status", dap_handlers.handleDapStatus),
+    R.register("dap_get_panel", dap_handlers.handleDapGetPanel),
+    R.register("dap_switch_frame", dap_handlers.handleDapSwitchFrame),
+    R.register("dap_expand_variable", dap_handlers.handleDapExpandVariable),
+    R.register("dap_collapse_variable", dap_handlers.handleDapCollapseVariable),
+    R.register("dap_add_watch", dap_handlers.handleDapAddWatch),
+    R.register("dap_remove_watch", dap_handlers.handleDapRemoveWatch),
+
+    // System
+    R.register("exit", handleExit),
 };
 
-pub const handlers = [_]Handler{
-    .{ .name = "lsp_status", .handleFn = lsp_requests.handleLspStatus },
-    .{ .name = "file_open", .handleFn = lsp_requests.handleFileOpen },
-    .{ .name = "lsp_reset_failed", .handleFn = lsp_requests.handleLspResetFailed },
-    .{ .name = "goto_definition", .handleFn = lsp_navigation.handleGotoDefinition },
-    .{ .name = "goto_declaration", .handleFn = lsp_navigation.handleGotoDeclaration },
-    .{ .name = "goto_type_definition", .handleFn = lsp_navigation.handleGotoTypeDefinition },
-    .{ .name = "goto_implementation", .handleFn = lsp_navigation.handleGotoImplementation },
-    .{ .name = "hover", .handleFn = lsp_info.handleHover },
-    .{ .name = "document_highlight", .handleFn = ts_handlers.handleDocumentHighlight },
-    .{ .name = "completion", .handleFn = lsp_info.handleCompletion },
-    .{ .name = "references", .handleFn = lsp_navigation.handleReferences },
-    .{ .name = "rename", .handleFn = lsp_editing.handleRename },
-    .{ .name = "code_action", .handleFn = lsp_editing.handleCodeAction },
-    .{ .name = "document_symbols", .handleFn = lsp_info.handleDocumentSymbols },
-    .{ .name = "diagnostics", .handleFn = lsp_notifications.handleDiagnostics },
-    .{ .name = "did_change", .handleFn = lsp_notifications.handleDidChange },
-    .{ .name = "did_save", .handleFn = lsp_notifications.handleDidSave },
-    .{ .name = "did_close", .handleFn = lsp_notifications.handleDidClose },
-    .{ .name = "will_save", .handleFn = lsp_notifications.handleWillSave },
-    .{ .name = "inlay_hints", .handleFn = lsp_info.handleInlayHints },
-    .{ .name = "folding_range", .handleFn = lsp_info.handleFoldingRange },
-    .{ .name = "call_hierarchy", .handleFn = lsp_navigation.handleCallHierarchy },
-    .{ .name = "type_hierarchy", .handleFn = lsp_navigation.handleTypeHierarchy },
-    .{ .name = "formatting", .handleFn = lsp_editing.handleFormatting },
-    .{ .name = "range_formatting", .handleFn = lsp_editing.handleRangeFormatting },
-    .{ .name = "signature_help", .handleFn = lsp_info.handleSignatureHelp },
-    .{ .name = "semantic_tokens", .handleFn = lsp_info.handleSemanticTokens },
-    .{ .name = "execute_command", .handleFn = lsp_editing.handleExecuteCommand },
-    .{ .name = "picker_open", .handleFn = picker_handlers.handlePickerOpen },
-    .{ .name = "picker_query", .handleFn = picker_handlers.handlePickerQuery },
-    .{ .name = "picker_close", .handleFn = picker_handlers.handlePickerClose },
-    .{ .name = "load_language", .handleFn = ts_handlers.handleLoadLanguage },
-    .{ .name = "ts_symbols", .handleFn = ts_handlers.handleTsSymbols },
-    .{ .name = "ts_folding", .handleFn = ts_handlers.handleTsFolding },
-    .{ .name = "ts_navigate", .handleFn = ts_handlers.handleTsNavigate },
-    .{ .name = "ts_textobjects", .handleFn = ts_handlers.handleTsTextObjects },
-    .{ .name = "ts_highlights", .handleFn = ts_handlers.handleTsHighlights },
-    .{ .name = "ts_hover_highlight", .handleFn = ts_handlers.handleTsHoverHighlight },
-    .{ .name = "copilot_sign_in", .handleFn = copilot.handleCopilotSignIn },
-    .{ .name = "copilot_sign_out", .handleFn = copilot.handleCopilotSignOut },
-    .{ .name = "copilot_check_status", .handleFn = copilot.handleCopilotCheckStatus },
-    .{ .name = "copilot_sign_in_confirm", .handleFn = copilot.handleCopilotSignInConfirm },
-    .{ .name = "copilot_complete", .handleFn = copilot.handleCopilotComplete },
-    .{ .name = "copilot_did_focus", .handleFn = copilot.handleCopilotDidFocus },
-    .{ .name = "copilot_accept", .handleFn = copilot.handleCopilotAccept },
-    .{ .name = "copilot_partial_accept", .handleFn = copilot.handleCopilotPartialAccept },
-    .{ .name = "dap_load_config", .handleFn = dap_handlers.handleDapLoadConfig },
-    .{ .name = "dap_start", .handleFn = dap_handlers.handleDapStart },
-    .{ .name = "dap_breakpoint", .handleFn = dap_handlers.handleDapBreakpoint },
-    .{ .name = "dap_exception_breakpoints", .handleFn = dap_handlers.handleDapExceptionBreakpoints },
-    .{ .name = "dap_threads", .handleFn = dap_handlers.handleDapThreads },
-    .{ .name = "dap_continue", .handleFn = dap_handlers.handleDapContinue },
-    .{ .name = "dap_next", .handleFn = dap_handlers.handleDapNext },
-    .{ .name = "dap_step_in", .handleFn = dap_handlers.handleDapStepIn },
-    .{ .name = "dap_step_out", .handleFn = dap_handlers.handleDapStepOut },
-    .{ .name = "dap_stack_trace", .handleFn = dap_handlers.handleDapStackTrace },
-    .{ .name = "dap_scopes", .handleFn = dap_handlers.handleDapScopes },
-    .{ .name = "dap_variables", .handleFn = dap_handlers.handleDapVariables },
-    .{ .name = "dap_evaluate", .handleFn = dap_handlers.handleDapEvaluate },
-    .{ .name = "dap_terminate", .handleFn = dap_handlers.handleDapTerminate },
-    .{ .name = "dap_status", .handleFn = dap_handlers.handleDapStatus },
-    .{ .name = "dap_get_panel", .handleFn = dap_handlers.handleDapGetPanel },
-    .{ .name = "dap_switch_frame", .handleFn = dap_handlers.handleDapSwitchFrame },
-    .{ .name = "dap_expand_variable", .handleFn = dap_handlers.handleDapExpandVariable },
-    .{ .name = "dap_collapse_variable", .handleFn = dap_handlers.handleDapCollapseVariable },
-    .{ .name = "dap_add_watch", .handleFn = dap_handlers.handleDapAddWatch },
-    .{ .name = "dap_remove_watch", .handleFn = dap_handlers.handleDapRemoveWatch },
-    .{ .name = "exit", .handleFn = handleExit },
-};
-
-fn handleExit(ctx: *HandlerContext, _: Value) !DispatchResult {
+fn handleExit(ctx: *HandlerContext) !?Value {
     log.info("Exit requested by client {d}", .{ctx.client_id});
     ctx.shutdown_flag.* = true;
-    return .{ .data = .{ .string = "ok" } };
+    return .{ .string = "ok" };
 }
 
-pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !DispatchResult {
-    inline for (handlers) |h| {
-        if (std.mem.eql(u8, method, h.name)) {
-            return h.handleFn(ctx, params);
-        }
-    }
-    log.warn("Unknown method: {s}", .{method});
-    return .{ .empty = {} };
+pub fn dispatch(ctx: *HandlerContext, method: []const u8, params: Value) !?Value {
+    return R.dispatch(&routes, ctx, method, params);
 }

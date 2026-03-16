@@ -82,7 +82,7 @@ pub fn buildDapResponse(allocator: Allocator, seq: u32, request_seq: u32, comman
 /// Returns null for unrecognized message types (e.g. reverse requests).
 pub fn parseDapMessage(alloc: Allocator, obj: ObjectMap) ?DapMessage {
     const raw = types.parse(types.DapMessageRaw, alloc, .{ .object = obj }) orelse return null;
-    const msg_type = raw.@"type" orelse return null;
+    const msg_type = raw.type orelse return null;
 
     if (std.mem.eql(u8, msg_type, "response")) {
         const req_seq = raw.request_seq orelse return null;

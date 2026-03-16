@@ -10,6 +10,48 @@ const HEADER_DELIMITER = "\r\n\r\n";
 const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB
 
 // ============================================================================
+// JSON-RPC Request ID — integer or string per JSON-RPC 2.0 spec
+// ============================================================================
+
+pub const RequestId = union(enum) {
+    integer: i64,
+    string: []const u8,
+
+    /// Try to extract as u32 (for matching our generated request IDs).
+    pub fn asU32(self: RequestId) ?u32 {
+        return switch (self) {
+            .integer => |i| std.math.cast(u32, i),
+            .string => null,
+        };
+    }
+
+    /// Convert from a JSON Value. Returns null for non-id types.
+    pub fn fromValue(val: Value) ?RequestId {
+        return switch (val) {
+            .integer => |i| .{ .integer = i },
+            .string => |s| .{ .string = s },
+            else => null,
+        };
+    }
+
+    /// Convert to a JSON Value (for serialization).
+    pub fn toValue(self: RequestId) Value {
+        return switch (self) {
+            .integer => |i| .{ .integer = i },
+            .string => |s| .{ .string = s },
+        };
+    }
+
+    /// std.fmt support — prints integer as number, string as quoted string.
+    pub fn format(self: RequestId, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        switch (self) {
+            .integer => |i| try writer.print("{d}", .{i}),
+            .string => |s| try writer.print("\"{s}\"", .{s}),
+        }
+    }
+};
+
+// ============================================================================
 // LSP Message Framing
 //
 // LSP uses Content-Length headers:
@@ -139,12 +181,14 @@ pub fn buildLspNotification(allocator: Allocator, method: []const u8, params: Va
 }
 
 /// Build a JSON-RPC response for LSP (responding to server requests).
-pub fn buildLspResponse(allocator: Allocator, id: i64, result: Value) ![]const u8 {
+pub fn buildLspResponse(allocator: Allocator, id: RequestId, result: Value) ![]const u8 {
     var aw: Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     const w = &aw.writer;
 
-    try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":", .{id});
+    try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+    try json.stringifyToWriter(id.toValue(), w);
+    try w.writeAll(",\"result\":");
     try json.stringifyToWriter(result, w);
     try w.writeByte('}');
 
@@ -221,7 +265,7 @@ test "build LSP request" {
 
 test "build LSP response" {
     const allocator = std.testing.allocator;
-    const response = try buildLspResponse(allocator, 42, .null);
+    const response = try buildLspResponse(allocator, .{ .integer = 42 }, .null);
     defer allocator.free(response);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":null}",

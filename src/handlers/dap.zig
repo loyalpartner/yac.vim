@@ -5,13 +5,10 @@ const log = @import("../log.zig");
 const dap_client_mod = @import("../dap/client.zig");
 const dap_session_mod = @import("../dap/session.zig");
 const dap_config = @import("../dap/config.zig");
-const dap_protocol = @import("../dap/protocol.zig");
 const types = @import("../dap/types.zig");
-const lsp_registry = @import("../lsp/registry.zig");
 
 const Value = json.Value;
 const HandlerContext = common.HandlerContext;
-const DispatchResult = common.DispatchResult;
 const DapClient = dap_client_mod.DapClient;
 const DapSession = dap_session_mod.DapSession;
 
@@ -20,28 +17,39 @@ const DapSession = dap_session_mod.DapSession;
 //
 // Each handler corresponds to a Vim-side yac#dap_* function.
 // The active DAP session is stored in the EventLoop (single session).
+//
+// Params are parsed by the dispatch layer (typed() wrapper in handlers.zig).
+// Handlers receive typed structs directly — no manual JSON parsing needed.
 // ============================================================================
 
+// -- Named return types --
+
+pub const DapStartResult = struct {
+    status: []const u8,
+    adapter: []const u8,
+};
+
+const OkResult = common.OkResult;
+const PendingResult = common.PendingResult;
+
+pub const DapStatusActiveResult = struct {
+    active: bool,
+};
+
 /// Start a debug session: spawn adapter, initialize, set breakpoints, launch.
-///
-/// Params: {file, program?, args?, breakpoints?: [{file, line}], stop_on_entry?}
-pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapStart(ctx: *HandlerContext, p: types.DapStartParams) !?Value {
     log.debug("handleDapStart: entered", .{});
-    const p = types.parse(types.DapStartParams, ctx.allocator, params) orelse {
-        log.err("handleDapStart: failed to parse params", .{});
-        return .{ .empty = {} };
-    };
 
     // Determine adapter from file extension
     const file = p.file orelse {
         log.err("handleDapStart: no 'file' in params", .{});
-        return .{ .empty = {} };
+        return null;
     };
     const ext = std.fs.path.extension(file);
     const config = dap_config.findByExtension(ext) orelse {
-        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] No debug adapter for {s} files')", .{ext}) catch return .{ .empty = {} };
-        try common.vimEx(ctx, msg);
-        return .{ .empty = {} };
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] No debug adapter for {s} files')", .{ext}) catch return null;
+        try ctx.vimEx(msg);
+        return null;
     };
 
     // User can override adapter command and args
@@ -72,15 +80,15 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Spawn the debug adapter
     const client = DapClient.spawn(ctx.gpa_allocator, command, args, workspace_dir) catch |e| {
         log.err("Failed to spawn DAP adapter '{s}': {any}", .{ command, e });
-        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{command}) catch return .{ .empty = {} };
-        try common.vimEx(ctx, msg);
-        return .{ .empty = {} };
+        const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Failed to start debug adapter: {s}')", .{command}) catch return null;
+        try ctx.vimEx(msg);
+        return null;
     };
 
     // Create session wrapping the client
     const session = ctx.gpa_allocator.create(DapSession) catch {
         client.deinit();
-        return .{ .empty = {} };
+        return null;
     };
     session.* = DapSession.init(ctx.gpa_allocator, client);
     session.session_state = .initializing;
@@ -90,7 +98,7 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Save launch params for deferred execution after 'initialized' event.
     // Must dupe strings into gpa — the request arena is freed after this handler returns.
     const program_raw = p.program orelse file;
-    const program = ctx.gpa_allocator.dupe(u8, program_raw) catch return .{ .empty = {} };
+    const program = ctx.gpa_allocator.dupe(u8, program_raw) catch return null;
     const stop_on_entry = switch (p.stop_on_entry) {
         .bool => |b| b,
         .integer => |i| i != 0,
@@ -183,24 +191,21 @@ pub fn handleDapStart(ctx: *HandlerContext, params: Value) !DispatchResult {
     // Send initialize request — the rest happens when 'initialized' event arrives
     _ = client.initialize() catch |e| {
         log.err("DAP initialize failed: {any}", .{e});
-        return .{ .empty = {} };
+        return null;
     };
 
     log.info("DAP session starting for {s} ({s})", .{ file, config.language_id });
 
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "status", json.jsonString("initializing") },
-        .{ "adapter", json.jsonString(command) },
-    }) };
+    return try json.structToValue(ctx.allocator, DapStartResult{
+        .status = "initializing",
+        .adapter = command,
+    });
 }
 
 /// Set breakpoints for a file.
-/// Params: {file, breakpoints: [{line, condition?, hit_condition?, log_message?}]}
-pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapBreakpoint(ctx: *HandlerContext, p: types.DapBreakpointParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapBreakpointParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const file = p.file orelse return .{ .empty = {} };
+    const file = p.file orelse return .{ .ok = false };
 
     // Extract breakpoint info
     var breakpoints: std.ArrayList(dap_client_mod.BreakpointInfo) = .{};
@@ -218,16 +223,12 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, params: Value) !DispatchResult 
     }
 
     _ = try session.client.sendSetBreakpoints(ctx.allocator, file, breakpoints.items);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Set exception breakpoints.
-/// Params: {filters: ["raised", "uncaught", ...]}
-pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, p: types.DapExceptionBreakpointsParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapExceptionBreakpointsParams, ctx.allocator, params) orelse return .{ .empty = {} };
 
     var filters: std.ArrayList([]const u8) = .{};
     defer filters.deinit(ctx.allocator);
@@ -239,215 +240,155 @@ pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, params: Value) !Dispa
     }
 
     _ = try session.client.sendSetExceptionBreakpoints(ctx.allocator, filters.items);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Get all threads.
-pub fn handleDapThreads(ctx: *HandlerContext, _: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+pub fn handleDapThreads(ctx: *HandlerContext) !PendingResult {
+    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
     _ = try session.client.sendThreads();
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "pending", .{ .bool = true } },
-    }) };
+    return .{ .pending = true };
 }
 
 /// Continue execution.
-/// Params: {thread_id?}
-pub fn handleDapContinue(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleThreadControl(ctx, params, DapClient.sendContinue);
+pub fn handleDapContinue(ctx: *HandlerContext, p: types.DapThreadControlParams) !OkResult {
+    return handleThreadControl(ctx, p, DapClient.sendContinue);
 }
 
 /// Step over (next line).
-pub fn handleDapNext(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleThreadControl(ctx, params, DapClient.sendNext);
+pub fn handleDapNext(ctx: *HandlerContext, p: types.DapThreadControlParams) !OkResult {
+    return handleThreadControl(ctx, p, DapClient.sendNext);
 }
 
 /// Step into function.
-pub fn handleDapStepIn(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleThreadControl(ctx, params, DapClient.sendStepIn);
+pub fn handleDapStepIn(ctx: *HandlerContext, p: types.DapThreadControlParams) !OkResult {
+    return handleThreadControl(ctx, p, DapClient.sendStepIn);
 }
 
 /// Step out of function.
-pub fn handleDapStepOut(ctx: *HandlerContext, params: Value) !DispatchResult {
-    return handleThreadControl(ctx, params, DapClient.sendStepOut);
+pub fn handleDapStepOut(ctx: *HandlerContext, p: types.DapThreadControlParams) !OkResult {
+    return handleThreadControl(ctx, p, DapClient.sendStepOut);
 }
 
 /// Get stack trace for the stopped thread.
-pub fn handleDapStackTrace(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapThreadControlParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
+pub fn handleDapStackTrace(ctx: *HandlerContext, p: types.DapThreadControlParams) !PendingResult {
+    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
     const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
     _ = try session.client.sendStackTrace(thread_id orelse session.client.active_thread_id orelse 1);
-    // Response will come asynchronously via processDapOutput
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "pending", .{ .bool = true } },
-    }) };
+    return .{ .pending = true };
 }
 
 /// Get scopes for a stack frame.
-pub fn handleDapScopes(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapScopesParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const frame_id_i64 = p.frame_id orelse return .{ .empty = {} };
-    if (frame_id_i64 < 0) return .{ .empty = {} };
+pub fn handleDapScopes(ctx: *HandlerContext, p: types.DapScopesParams) !PendingResult {
+    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const frame_id_i64 = p.frame_id orelse return .{ .pending = false };
+    if (frame_id_i64 < 0) return .{ .pending = false };
     _ = try session.client.sendScopes(@intCast(frame_id_i64));
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "pending", .{ .bool = true } },
-    }) };
+    return .{ .pending = true };
 }
 
 /// Get variables for a scope reference.
-pub fn handleDapVariables(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapVariablesParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const ref_i64 = p.variables_ref orelse return .{ .empty = {} };
-    if (ref_i64 < 0) return .{ .empty = {} };
+pub fn handleDapVariables(ctx: *HandlerContext, p: types.DapVariablesParams) !PendingResult {
+    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const ref_i64 = p.variables_ref orelse return .{ .pending = false };
+    if (ref_i64 < 0) return .{ .pending = false };
     _ = try session.client.sendVariables(@intCast(ref_i64));
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "pending", .{ .bool = true } },
-    }) };
+    return .{ .pending = true };
 }
 
 /// Evaluate an expression in the debug context.
-pub fn handleDapEvaluate(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapEvaluateParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const expression = p.expression orelse return .{ .empty = {} };
+pub fn handleDapEvaluate(ctx: *HandlerContext, p: types.DapEvaluateParams) !PendingResult {
+    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const expression = p.expression orelse return .{ .pending = false };
     const frame_id: ?u32 = if (p.frame_id) |fid| if (fid >= 0) @intCast(fid) else null else null;
     const eval_context = p.context orelse "repl";
     _ = try session.client.sendEvaluate(expression, frame_id, eval_context);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "pending", .{ .bool = true } },
-    }) };
+    return .{ .pending = true };
 }
 
 /// Terminate the debug session.
-pub fn handleDapTerminate(ctx: *HandlerContext, _: Value) !DispatchResult {
+pub fn handleDapTerminate(ctx: *HandlerContext) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
     _ = session.client.sendTerminate() catch {};
     _ = session.client.sendDisconnect(true) catch {};
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Get current DAP session status (returns full panel data).
-pub fn handleDapStatus(ctx: *HandlerContext, _: Value) !DispatchResult {
+pub fn handleDapStatus(ctx: *HandlerContext) !?Value {
     const session = ctx.dap_session.* orelse {
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "active", .{ .bool = false } },
-        }) };
+        return try json.structToValue(ctx.allocator, DapStatusActiveResult{ .active = false });
     };
-
-    return .{ .data = try session.buildPanelData(ctx.allocator) };
+    return try session.buildPanelData(ctx.allocator);
 }
 
-// ============================================================================
-// New session-aware handlers
-// ============================================================================
-
 /// Get panel data (variables, frames, watches).
-pub fn handleDapGetPanel(ctx: *HandlerContext, _: Value) !DispatchResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
-    return .{ .data = try session.buildPanelData(ctx.allocator) };
+pub fn handleDapGetPanel(ctx: *HandlerContext) !?Value {
+    const session = ctx.dap_session.* orelse {
+        notRunningToast(ctx);
+        return null;
+    };
+    return try session.buildPanelData(ctx.allocator);
 }
 
 /// Switch to a different stack frame.
-/// Params: {frame_index}
-pub fn handleDapSwitchFrame(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapSwitchFrame(ctx: *HandlerContext, p: types.DapSwitchFrameParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapSwitchFrameParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const frame_idx_i64 = p.frame_index orelse return .{ .empty = {} };
-    if (frame_idx_i64 < 0) return .{ .empty = {} };
+    const frame_idx_i64 = p.frame_index orelse return .{ .ok = false };
+    if (frame_idx_i64 < 0) return .{ .ok = false };
     session.switchFrame(@intCast(frame_idx_i64)) catch |e| {
         log.err("DAP switchFrame failed: {any}", .{e});
-        return .{ .empty = {} };
+        return .{ .ok = false };
     };
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Expand a variable by path indices.
-/// Params: {path: [0, 2, 1]}
-pub fn handleDapExpandVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapExpandVariable(ctx: *HandlerContext, p: types.DapPathParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapPathParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const path = try parsePathValues(ctx, p.path) orelse return .{ .empty = {} };
+    const path = try parsePathValues(ctx, p.path) orelse return .{ .ok = false };
     defer ctx.allocator.free(path);
 
     session.expandVariable(path) catch |e| {
         log.err("DAP expandVariable failed: {any}", .{e});
-        return .{ .empty = {} };
+        return .{ .ok = false };
     };
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Collapse a variable by path indices.
-/// Params: {path: [0, 2]}
-pub fn handleDapCollapseVariable(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapCollapseVariable(ctx: *HandlerContext, p: types.DapPathParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapPathParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const path = try parsePathValues(ctx, p.path) orelse return .{ .empty = {} };
+    const path = try parsePathValues(ctx, p.path) orelse return .{ .ok = false };
     defer ctx.allocator.free(path);
 
     session.collapseVariable(path);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Add a watch expression.
-/// Params: {expression}
-pub fn handleDapAddWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapAddWatch(ctx: *HandlerContext, p: types.DapWatchParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapWatchParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const expression = p.expression orelse return .{ .empty = {} };
+    const expression = p.expression orelse return .{ .ok = false };
     try session.addWatch(expression);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Remove a watch expression by index.
-/// Params: {index}
-pub fn handleDapRemoveWatch(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDapRemoveWatch(ctx: *HandlerContext, p: types.DapRemoveWatchParams) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapRemoveWatchParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const index_i64 = p.index orelse return .{ .empty = {} };
-    if (index_i64 < 0) return .{ .empty = {} };
+    const index_i64 = p.index orelse return .{ .ok = false };
+    if (index_i64 < 0) return .{ .ok = false };
     session.removeWatch(@intCast(index_i64));
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
 /// Load debug config from project (.yacd/debug.json or .zed/debug.json).
 /// Strips // comments, substitutes variables, and calls back to Vim with the result.
-///
-/// Params: {project_root, file, dirname}
-pub fn handleDapLoadConfig(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const p = types.parse(types.DapLoadConfigParams, ctx.allocator, params) orelse {
-        log.err("handleDapLoadConfig: failed to parse params", .{});
-        return .{ .empty = {} };
-    };
-
+pub fn handleDapLoadConfig(ctx: *HandlerContext, p: types.DapLoadConfigParams) !void {
     const project_root = p.project_root orelse {
         log.err("handleDapLoadConfig: no 'project_root' in params", .{});
-        return .{ .empty = {} };
+        return;
     };
     const file = p.file orelse "";
     const dirname = p.dirname orelse "";
@@ -456,25 +397,22 @@ pub fn handleDapLoadConfig(ctx: *HandlerContext, params: Value) !DispatchResult 
         log.err("handleDapLoadConfig: loadDebugConfig failed: {any}", .{e});
         // Return empty configs — Vim will fall back to auto-detect
         try sendEmptyConfigs(ctx);
-        return .{ .empty = {} };
+        return;
     };
 
     if (result) |configs| {
-        // Wrap in array for vimCallAsync: ["call", "yac_dap#on_debug_configs", [configs]]
         var args_array = std.json.Array.init(ctx.allocator);
         try args_array.append(configs);
-        try common.vimCallAsync(ctx, "yac_dap#on_debug_configs", .{ .array = args_array });
+        try ctx.vimCallAsync("yac_dap#on_debug_configs", .{ .array = args_array });
     } else {
         try sendEmptyConfigs(ctx);
     }
-
-    return .{ .empty = {} };
 }
 
 fn sendEmptyConfigs(ctx: *HandlerContext) !void {
     var args_array = std.json.Array.init(ctx.allocator);
     try args_array.append(.{ .array = std.json.Array.init(ctx.allocator) });
-    try common.vimCallAsync(ctx, "yac_dap#on_debug_configs", .{ .array = args_array });
+    try ctx.vimCallAsync("yac_dap#on_debug_configs", .{ .array = args_array });
 }
 
 // ============================================================================
@@ -500,20 +438,24 @@ fn parsePathValues(ctx: *HandlerContext, path_vals: []const Value) !?[]const u32
 }
 
 /// Shared implementation for thread-control handlers (continue, next, stepIn, stepOut).
-/// Extracts thread_id from params (falling back to active thread), calls the given send function.
-fn handleThreadControl(ctx: *HandlerContext, params: Value, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !DispatchResult {
+fn handleThreadControl(ctx: *HandlerContext, p: types.DapThreadControlParams, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !OkResult {
     const session = ctx.dap_session.* orelse return notRunning(ctx);
-    const p = types.parse(types.DapThreadControlParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
     const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
     _ = try sendFn(session.client, thread_id orelse session.client.active_thread_id orelse 1);
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "ok", .{ .bool = true } },
-    }) };
+    return .{ .ok = true };
 }
 
-fn notRunning(ctx: *HandlerContext) !DispatchResult {
+fn notRunningToast(ctx: *HandlerContext) void {
     const msg = "call yac#toast('[yac] No active debug session')";
-    try common.vimEx(ctx, msg);
-    return .{ .empty = {} };
+    ctx.vimEx(msg) catch {};
+}
+
+fn notRunning(ctx: *HandlerContext) OkResult {
+    notRunningToast(ctx);
+    return .{ .ok = false };
+}
+
+fn notRunningPending(ctx: *HandlerContext) PendingResult {
+    notRunningToast(ctx);
+    return .{ .pending = false };
 }

@@ -8,17 +8,18 @@ pub const treesitter_mod = @import("../treesitter/treesitter.zig");
 const queue_mod = @import("../queue.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
 const clients_mod = @import("../clients.zig");
+pub const lsp_transform = @import("../lsp/transform.zig");
 
 const dap_session_mod = @import("../dap/session.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
+pub const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const LspRegistry = registry_mod.LspRegistry;
 const ClientId = clients_mod.ClientId;
 
 // ============================================================================
-// Handler Context - what every handler receives
+// Handler Context
 // ============================================================================
 
 pub const HandlerContext = struct {
@@ -27,7 +28,7 @@ pub const HandlerContext = struct {
     /// GPA allocator for allocations that must outlive the request (e.g. OutMessage bytes).
     gpa_allocator: Allocator,
     registry: *LspRegistry,
-    lsp: *lsp_mod.Lsp,
+    lsp_state: *lsp_mod.Lsp,
     client_stream: std.net.Stream,
     client_id: ClientId,
     ts: ?*treesitter_mod.TreeSitter = null,
@@ -37,30 +38,101 @@ pub const HandlerContext = struct {
     out_queue: *queue_mod.OutQueue,
     /// Set to true to request daemon shutdown.
     shutdown_flag: *bool = undefined,
-};
 
-/// Result of dispatching a handler.
-pub const DispatchResult = union(enum) {
-    /// Handler produced a direct response value.
-    data: Value,
-    /// Handler produced nothing (e.g., goto found nothing).
-    empty: void,
-    /// Handler sent an LSP request and is waiting for a response.
-    pending_lsp: struct {
-        lsp_request_id: u32,
+    // -- Framework state (set by handlers, read by event_loop after dispatch) --
+
+    /// LSP request in flight — event_loop will track and route the response.
+    _pending: ?PendingLsp = null,
+    /// Request should be deferred (LSP still initializing).
+    _deferred: bool = false,
+    /// Subscribe this client to workspace change notifications.
+    _subscribe_workspace: ?[]const u8 = null,
+
+    pub const PendingLsp = struct {
+        request_id: u32,
         client_key: ?[]const u8 = null,
-    },
-    /// LSP client is still initializing; caller should defer and retry.
-    initializing: void,
-    /// Handler produced a response AND requests workspace subscription.
-    data_with_subscribe: struct {
-        data: Value,
-        workspace_uri: []const u8,
-    },
+        transform: lsp_transform.TransformFn = lsp_transform.transformIdentity,
+    };
+
+    // -- LSP convenience methods --
+
+    /// Resolve LSP context for a file. Returns null if unavailable.
+    /// If the LSP is still initializing, sets `_deferred = true` and returns null.
+    pub fn lsp(self: *HandlerContext, file: []const u8) ?LspContext {
+        const result = getLspContextForFileEx(self, file, true) catch return null;
+        switch (result) {
+            .ready => |c| return c,
+            .initializing => {
+                self._deferred = true;
+                return null;
+            },
+            .not_available => return null,
+        }
+    }
+
+    /// Like lsp(), but doesn't require the client to be fully initialized.
+    pub fn lspAllowInit(self: *HandlerContext, file: []const u8) ?LspContext {
+        const result = getLspContextForFileEx(self, file, false) catch return null;
+        switch (result) {
+            .ready => |c| return c,
+            .initializing, .not_available => return null,
+        }
+    }
+
+    /// Send an LSP request and track it for async response routing.
+    /// After calling this, the handler should return null — the response will
+    /// arrive later via the LSP response callback path.
+    pub fn lspRequest(self: *HandlerContext, client: *LspClient, method: []const u8, params: anytype, opts: LspRequestOpts) !void {
+        const request_id = try client.sendRequest(method, params);
+        self._pending = .{
+            .request_id = request_id,
+            .client_key = opts.client_key,
+            .transform = opts.transform,
+        };
+    }
+
+    pub const LspRequestOpts = struct {
+        client_key: ?[]const u8 = null,
+        transform: lsp_transform.TransformFn = lsp_transform.transformIdentity,
+    };
+
+    /// Mark a workspace URI for client subscription (checked by event_loop after dispatch).
+    pub fn subscribeWorkspace(self: *HandlerContext, uri: []const u8) void {
+        self._subscribe_workspace = uri;
+    }
+
+    /// Send a Vim ex command via the out_queue (non-blocking; drops if queue full).
+    pub fn vimEx(self: *HandlerContext, command: []const u8) !void {
+        const encoded = try vim.encodeChannelCommand(self.allocator, .{ .ex = .{ .command = command } });
+        defer self.allocator.free(encoded);
+        const msg = try self.gpa_allocator.alloc(u8, encoded.len + 1);
+        @memcpy(msg[0..encoded.len], encoded);
+        msg[encoded.len] = '\n';
+        if (!self.out_queue.push(.{ .stream = self.client_stream, .bytes = msg })) {
+            self.gpa_allocator.free(msg);
+            log.warn("vimEx: out queue full, dropping command", .{});
+        }
+    }
+
+    /// Send a Vim call_async command via the out_queue (non-blocking; drops if queue full).
+    pub fn vimCallAsync(self: *HandlerContext, func: []const u8, args: Value) !void {
+        const encoded = try vim.encodeChannelCommand(self.allocator, .{ .call_async = .{
+            .func = func,
+            .args = args,
+        } });
+        defer self.allocator.free(encoded);
+        const msg = try self.gpa_allocator.alloc(u8, encoded.len + 1);
+        @memcpy(msg[0..encoded.len], encoded);
+        msg[encoded.len] = '\n';
+        if (!self.out_queue.push(.{ .stream = self.client_stream, .bytes = msg })) {
+            self.gpa_allocator.free(msg);
+            log.warn("vimCallAsync: out queue full, dropping call", .{});
+        }
+    }
 };
 
 // ============================================================================
-// Helper: extract file/line/column, detect language, get LSP client
+// LSP context resolution (internal)
 // ============================================================================
 
 pub const LspContext = struct {
@@ -68,42 +140,36 @@ pub const LspContext = struct {
     client_key: []const u8,
     uri: []const u8,
     client: *LspClient,
-    ssh_host: ?[]const u8,
     real_path: []const u8,
 };
 
-/// Result of trying to get LSP context.
+/// Result of trying to get LSP context (internal — handlers use ctx.lsp() instead).
 pub const LspContextResult = union(enum) {
-    /// Context is ready.
     ready: LspContext,
-    /// Client is still initializing (caller should defer).
     initializing: void,
-    /// No context available (unsupported language, bad params, etc.).
     not_available: void,
 };
 
-/// Get LSP context for a request.
-pub fn getLspContext(ctx: *HandlerContext, params: Value) !LspContextResult {
-    return getLspContextEx(ctx, params, true);
-}
+// -- Common return types (shared across handlers) --
 
-const FileParam = struct {
+pub const OkResult = struct { ok: bool };
+pub const PendingResult = struct { pending: bool };
+
+/// Common param type: file path only.
+pub const FileParams = struct {
     file: ?[]const u8 = null,
 };
 
-const PositionParam = struct {
+/// Common param type: file + position.
+pub const PositionParams = struct {
     file: ?[]const u8 = null,
     line: ?i64 = null,
     column: ?i64 = null,
 };
 
-/// Get LSP context, optionally allowing initializing clients (for handleFileOpen).
-pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool) !LspContextResult {
-    const p = json.parseTyped(FileParam, ctx.allocator, params) orelse return .{ .not_available = {} };
-
-    const file = p.file orelse return .{ .not_available = {} };
+/// Get LSP context from a file path, optionally allowing initializing clients.
+pub fn getLspContextForFileEx(ctx: *HandlerContext, file: []const u8, require_ready: bool) !LspContextResult {
     const real_path = registry_mod.extractRealPath(file);
-    const ssh_host = registry_mod.extractSshHost(file);
 
     const language = LspRegistry.detectLanguage(real_path) orelse {
         log.debug("No language detected for {s}", .{real_path});
@@ -129,7 +195,7 @@ pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool)
         const msg = std.fmt.allocPrint(ctx.allocator, "call yac_install#on_spawn_failed('{s}', '{s}')", .{ language, cmd }) catch {
             return .{ .not_available = {} };
         };
-        vimEx(ctx, msg) catch {};
+        ctx.vimEx(msg) catch {};
         return .{ .not_available = {} };
     };
 
@@ -142,10 +208,13 @@ pub fn getLspContextEx(ctx: *HandlerContext, params: Value, require_ready: bool)
         .client_key = result.client_key,
         .uri = uri,
         .client = result.client,
-        .ssh_host = ssh_host,
         .real_path = real_path,
     } };
 }
+
+// ============================================================================
+// Shared LSP param builders
+// ============================================================================
 
 /// Build textDocument/position params for LSP.
 pub fn buildTextDocumentPosition(allocator: Allocator, uri: []const u8, line: u32, column: u32) !Value {
@@ -186,89 +255,72 @@ pub fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value
     });
 }
 
-/// Send a Vim ex command via the out_queue (non-blocking; drops if queue full).
-pub fn vimEx(ctx: *HandlerContext, command: []const u8) !void {
-    const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .ex = .{ .command = command } });
-    defer ctx.allocator.free(encoded);
-    // GPA-allocate bytes including newline so they survive past the arena.
-    const msg = try ctx.gpa_allocator.alloc(u8, encoded.len + 1);
-    @memcpy(msg[0..encoded.len], encoded);
-    msg[encoded.len] = '\n';
-    if (!ctx.out_queue.push(.{ .stream = ctx.client_stream, .bytes = msg })) {
-        ctx.gpa_allocator.free(msg);
-        log.warn("vimEx: out queue full, dropping command", .{});
+// ============================================================================
+// LSP param types (for structToValue serialization)
+// ============================================================================
+
+/// LSP TextDocumentItem — used in didOpen.
+pub const TextDocumentItem = struct {
+    uri: []const u8,
+    languageId: []const u8,
+    version: i64 = 1,
+    text: []const u8,
+};
+
+/// LSP VersionedTextDocumentIdentifier — used in didChange.
+pub const VersionedTextDocument = struct {
+    uri: []const u8,
+    version: i64 = 1,
+};
+
+/// LSP didOpen params.
+pub const DidOpenParams = struct {
+    textDocument: TextDocumentItem,
+};
+
+/// LSP didChange params.
+pub const DidChangeParams = struct {
+    textDocument: VersionedTextDocument,
+    contentChanges: ?Value = null,
+};
+
+/// LSP willSave params.
+pub const WillSaveParams = struct {
+    textDocument: TextDocumentUri,
+    reason: i64 = 1,
+};
+
+/// LSP TextDocumentIdentifier (uri only).
+pub const TextDocumentUri = struct {
+    uri: []const u8,
+};
+
+/// LSP didSave/didClose params.
+pub const TextDocumentParams = struct {
+    textDocument: TextDocumentUri,
+};
+
+/// Build contentChanges Value from either a forwarded Value or raw text.
+pub fn buildContentChanges(allocator: Allocator, changes: ?Value, text: ?[]const u8) !?Value {
+    if (changes) |c| return c;
+    if (text) |t| {
+        var arr = std.json.Array.init(allocator);
+        try arr.append(try json.structToValue(allocator, ContentChange{ .text = t }));
+        return .{ .array = arr };
     }
+    return null;
 }
+
+const ContentChange = struct {
+    text: []const u8,
+};
 
 /// Check if the server supports a capability; if not, send a toast and return true (= unsupported).
 pub fn checkUnsupported(ctx: *HandlerContext, client_key: []const u8, capability: []const u8, feature_name: []const u8) bool {
     if (!ctx.registry.serverSupports(client_key, capability)) {
         const msg = std.fmt.allocPrint(ctx.allocator, "call yac#toast('[yac] Server does not support {s}')", .{feature_name}) catch return true;
-        vimEx(ctx, msg) catch {};
+        ctx.vimEx(msg) catch {};
         return true;
     }
     return false;
-}
-
-// ============================================================================
-// Shared LSP request helpers (used by lsp_navigation, lsp_info, lsp_editing)
-// ============================================================================
-
-pub fn sendPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8) !DispatchResult {
-    const lsp_ctx = switch (try getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
-
-    const p = json.parseTyped(PositionParam, ctx.allocator, params) orelse return .{ .empty = {} };
-    const line_i64 = p.line orelse return .{ .empty = {} };
-    const col_i64 = p.column orelse return .{ .empty = {} };
-    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
-    const line: u32 = @intCast(line_i64);
-    const column: u32 = @intCast(col_i64);
-
-    const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
-    const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
-}
-
-/// Like sendPositionRequest, but first checks that the server advertises the given capability.
-pub fn sendCapabilityCheckedPositionRequest(ctx: *HandlerContext, params: Value, lsp_method: []const u8, capability: []const u8, feature_name: []const u8) !DispatchResult {
-    const lsp_ctx = switch (try getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
-
-    if (checkUnsupported(ctx, lsp_ctx.client_key, capability, feature_name)) return .{ .empty = {} };
-
-    const p = json.parseTyped(PositionParam, ctx.allocator, params) orelse return .{ .empty = {} };
-    const line_i64 = p.line orelse return .{ .empty = {} };
-    const col_i64 = p.column orelse return .{ .empty = {} };
-    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
-    const line: u32 = @intCast(line_i64);
-    const column: u32 = @intCast(col_i64);
-
-    const lsp_params = try buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column);
-    const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
-}
-
-/// Send a Vim call_async command via the out_queue (non-blocking; drops if queue full).
-pub fn vimCallAsync(ctx: *HandlerContext, func: []const u8, args: Value) !void {
-    const encoded = try vim.encodeChannelCommand(ctx.allocator, .{ .call_async = .{
-        .func = func,
-        .args = args,
-    } });
-    defer ctx.allocator.free(encoded);
-    const msg = try ctx.gpa_allocator.alloc(u8, encoded.len + 1);
-    @memcpy(msg[0..encoded.len], encoded);
-    msg[encoded.len] = '\n';
-    if (!ctx.out_queue.push(.{ .stream = ctx.client_stream, .bytes = msg })) {
-        ctx.gpa_allocator.free(msg);
-        log.warn("vimCallAsync: out queue full, dropping call", .{});
-    }
 }

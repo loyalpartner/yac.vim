@@ -1,32 +1,43 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
+const lsp_transform = common.lsp_transform;
 const ts_mod = common.treesitter_mod;
 
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
-const DispatchResult = common.DispatchResult;
 
 // ============================================================================
 // Vim → daemon param types
 // ============================================================================
 
-const PickerOpenParams = struct {
+pub const PickerOpenParams = struct {
     cwd: ?[]const u8 = null,
     recent_files: Value = .null,
 };
 
-const PickerQueryParams = struct {
+pub const PickerQueryParams = struct {
     query: ?[]const u8 = null,
     mode: ?[]const u8 = null,
     file: ?[]const u8 = null,
     text: ?[]const u8 = null,
 };
 
-pub fn handlePickerOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const p = json.parseTyped(PickerOpenParams, ctx.allocator, params) orelse return .{ .empty = {} };
-    const cwd = p.cwd orelse return .{ .empty = {} };
+// -- Named return types --
+
+pub const PickerInitResult = struct {
+    action: []const u8,
+    cwd: []const u8,
+    recent_files: Value = .null,
+};
+
+pub const PickerActionResult = struct {
+    action: []const u8,
+    query: []const u8 = "",
+};
+
+pub fn handlePickerOpen(ctx: *HandlerContext, p: PickerOpenParams) !?Value {
+    const cwd = p.cwd orelse return null;
 
     var result = try json.buildObjectMap(ctx.allocator, .{
         .{ "action", json.jsonString("picker_init") },
@@ -36,35 +47,31 @@ pub fn handlePickerOpen(ctx: *HandlerContext, params: Value) !DispatchResult {
         try result.put("recent_files", p.recent_files);
     }
 
-    return .{ .data = .{ .object = result } };
+    return .{ .object = result };
 }
 
-pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const p = json.parseTyped(PickerQueryParams, ctx.allocator, params) orelse return .{ .empty = {} };
+pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
     const query = p.query orelse "";
     const mode = p.mode orelse "file";
 
     if (std.mem.eql(u8, mode, "workspace_symbol")) {
-        const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-            .ready => |c| c,
-            .initializing => return .{ .initializing = {} },
-            .not_available => return .{ .empty = {} },
-        };
+        const file = p.file orelse return null;
+        const lsp_ctx = ctx.lsp(file) orelse return null;
 
         const ws_params = try json.buildObject(ctx.allocator, .{
             .{ "query", json.jsonString(query) },
         });
-        const request_id = try lsp_ctx.client.sendRequest("workspace/symbol", ws_params);
-        return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+        try ctx.lspRequest(lsp_ctx.client, "workspace/symbol", ws_params, .{ .transform = lsp_transform.transformPickerSymbols });
+        return null;
     } else if (std.mem.eql(u8, mode, "grep")) {
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "action", json.jsonString("picker_grep_query") },
-            .{ "query", json.jsonString(query) },
-        }) };
+        return try json.structToValue(ctx.allocator, PickerActionResult{
+            .action = "picker_grep_query",
+            .query = query,
+        });
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
-        const ts_state = ctx.ts orelse return .{ .empty = {} };
-        const file = p.file orelse return .{ .empty = {} };
-        const lang_state = ts_state.fromExtension(file) orelse return .{ .empty = {} };
+        const ts_state = ctx.ts orelse return null;
+        const file = p.file orelse return null;
+        const lang_state = ts_state.fromExtension(file) orelse return null;
 
         // Auto-parse if buffer not yet tracked (e.g. picker opened before highlights ran)
         if (ts_state.getTree(file) == null) {
@@ -73,28 +80,25 @@ pub fn handlePickerQuery(ctx: *HandlerContext, params: Value) !DispatchResult {
             }
         }
 
-        const tree = ts_state.getTree(file) orelse return .{ .empty = {} };
-        const source = ts_state.getSource(file) orelse return .{ .empty = {} };
-        const sym_query = lang_state.symbols orelse return .{ .empty = {} };
+        const tree = ts_state.getTree(file) orelse return null;
+        const source = ts_state.getSource(file) orelse return null;
+        const sym_query = lang_state.symbols orelse return null;
 
-        const result = try ts_mod.symbols.extractPickerSymbols(
+        return try ts_mod.symbols.extractPickerSymbols(
             ctx.allocator,
             sym_query,
             tree,
             source,
         );
-        return .{ .data = result };
     } else {
-        return .{ .data = try json.buildObject(ctx.allocator, .{
-            .{ "action", json.jsonString("picker_file_query") },
-            .{ "query", json.jsonString(query) },
-        }) };
+        return try json.structToValue(ctx.allocator, PickerActionResult{
+            .action = "picker_file_query",
+            .query = query,
+        });
     }
 }
 
-pub fn handlePickerClose(ctx: *HandlerContext, params: Value) !DispatchResult {
-    _ = params;
-    return .{ .data = try json.buildObject(ctx.allocator, .{
-        .{ "action", json.jsonString("picker_close") },
-    }) };
+pub fn handlePickerClose(ctx: *HandlerContext) !PickerActionResult {
+    _ = ctx;
+    return .{ .action = "picker_close" };
 }

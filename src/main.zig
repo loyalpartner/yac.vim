@@ -81,6 +81,7 @@ test {
     _ = @import("event_loop.zig");
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
+    _ = @import("rpc.zig");
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/registry.zig");
     _ = @import("lsp/client.zig");

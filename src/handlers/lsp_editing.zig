@@ -1,30 +1,23 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
+const lsp_transform = common.lsp_transform;
 
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
-const DispatchResult = common.DispatchResult;
 
 // ============================================================================
 // Vim → daemon param types
 // ============================================================================
 
-const PositionParams = struct {
-    file: ?[]const u8 = null,
-    line: ?i64 = null,
-    column: ?i64 = null,
-};
-
-const RenameParams = struct {
+pub const RenameParams = struct {
     file: ?[]const u8 = null,
     line: ?i64 = null,
     column: ?i64 = null,
     new_name: ?[]const u8 = null,
 };
 
-const RangeFormattingParams = struct {
+pub const RangeFormattingParams = struct {
     file: ?[]const u8 = null,
     start_line: ?i64 = null,
     start_column: ?i64 = null,
@@ -34,33 +27,28 @@ const RangeFormattingParams = struct {
     insert_spaces: Value = .null,
 };
 
-const FormattingParams = struct {
+pub const FormattingParams = struct {
     file: ?[]const u8 = null,
     tab_size: ?i64 = null,
     insert_spaces: Value = .null,
 };
 
-const ExecuteCommandParams = struct {
+pub const ExecuteCommandParams = struct {
     file: ?[]const u8 = null,
     lsp_command: ?[]const u8 = null,
     arguments: Value = .null,
 };
 
-pub fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
+pub fn handleRename(ctx: *HandlerContext, p: RenameParams) !?Value {
+    const file = p.file orelse return null;
+    const lsp_ctx = ctx.lsp(file) orelse return null;
 
-    const p = json.parseTyped(RenameParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const line_i64 = p.line orelse return .{ .empty = {} };
-    const col_i64 = p.column orelse return .{ .empty = {} };
-    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line_i64 = p.line orelse return null;
+    const col_i64 = p.column orelse return null;
+    if (line_i64 < 0 or col_i64 < 0) return null;
     const line: u32 = @intCast(line_i64);
     const column: u32 = @intCast(col_i64);
-    const new_name = p.new_name orelse return .{ .empty = {} };
+    const new_name = p.new_name orelse return null;
 
     var lsp_params_obj = switch (try common.buildTextDocumentPosition(ctx.allocator, lsp_ctx.uri, line, column)) {
         .object => |o| o,
@@ -68,22 +56,18 @@ pub fn handleRename(ctx: *HandlerContext, params: Value) !DispatchResult {
     };
     try lsp_params_obj.put("newName", json.jsonString(new_name));
 
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/rename", .{ .object = lsp_params_obj });
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    const lsp_params: Value = .{ .object = lsp_params_obj };
+    try ctx.lspRequest(lsp_ctx.client, "textDocument/rename", lsp_params, .{});
+    return null;
 }
 
-pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
+pub fn handleCodeAction(ctx: *HandlerContext, p: common.PositionParams) !?Value {
+    const file = p.file orelse return null;
+    const lsp_ctx = ctx.lsp(file) orelse return null;
 
-    const p = json.parseTyped(PositionParams, ctx.allocator, params) orelse return .{ .empty = {} };
-    const line_i64 = p.line orelse return .{ .empty = {} };
-    const col_i64 = p.column orelse return .{ .empty = {} };
-    if (line_i64 < 0 or col_i64 < 0) return .{ .empty = {} };
+    const line_i64 = p.line orelse return null;
+    const col_i64 = p.column orelse return null;
+    if (line_i64 < 0 or col_i64 < 0) return null;
     const line: u32 = @intCast(line_i64);
     const column: u32 = @intCast(col_i64);
 
@@ -95,9 +79,8 @@ pub fn handleCodeAction(ctx: *HandlerContext, params: Value) !DispatchResult {
         }) },
     });
 
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/codeAction", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    try ctx.lspRequest(lsp_ctx.client, "textDocument/codeAction", lsp_params, .{});
+    return null;
 }
 
 /// Build LSP FormattingOptions from parsed params.
@@ -114,37 +97,26 @@ fn buildFormattingOptions(allocator: std.mem.Allocator, tab_size: ?i64, insert_s
     });
 }
 
-pub fn handleFormatting(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
+pub fn handleFormatting(ctx: *HandlerContext, p: FormattingParams) !?Value {
+    const file = p.file orelse return null;
+    const lsp_ctx = ctx.lsp(file) orelse return null;
 
-    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentFormattingProvider", "formatting")) return .{ .empty = {} };
-
-    const p = json.parseTyped(FormattingParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentFormattingProvider", "formatting")) return null;
 
     const lsp_params = try json.buildObject(ctx.allocator, .{
         .{ "textDocument", try common.buildTextDocumentValue(ctx.allocator, lsp_ctx.uri) },
         .{ "options", try buildFormattingOptions(ctx.allocator, p.tab_size, p.insert_spaces) },
     });
 
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/formatting", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    try ctx.lspRequest(lsp_ctx.client, "textDocument/formatting", lsp_params, .{ .transform = lsp_transform.transformFmt });
+    return null;
 }
 
-pub fn handleRangeFormatting(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
+pub fn handleRangeFormatting(ctx: *HandlerContext, p: RangeFormattingParams) !?Value {
+    const file = p.file orelse return null;
+    const lsp_ctx = ctx.lsp(file) orelse return null;
 
-    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentRangeFormattingProvider", "range formatting")) return .{ .empty = {} };
-
-    const p = json.parseTyped(RangeFormattingParams, ctx.allocator, params) orelse return .{ .empty = {} };
+    if (common.checkUnsupported(ctx, lsp_ctx.client_key, "documentRangeFormattingProvider", "range formatting")) return null;
 
     const start_line: u32 = if (p.start_line) |sl| if (sl >= 0) @intCast(sl) else 0 else 0;
     const start_col: u32 = if (p.start_column) |sc| if (sc >= 0) @intCast(sc) else 0 else 0;
@@ -157,21 +129,15 @@ pub fn handleRangeFormatting(ctx: *HandlerContext, params: Value) !DispatchResul
         .{ "range", try common.buildRange(ctx.allocator, start_line, start_col, end_line, end_col) },
     });
 
-    const request_id = try lsp_ctx.client.sendRequest("textDocument/rangeFormatting", lsp_params);
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    try ctx.lspRequest(lsp_ctx.client, "textDocument/rangeFormatting", lsp_params, .{ .transform = lsp_transform.transformFmt });
+    return null;
 }
 
-pub fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing => return .{ .initializing = {} },
-        .not_available => return .{ .empty = {} },
-    };
+pub fn handleExecuteCommand(ctx: *HandlerContext, p: ExecuteCommandParams) !?Value {
+    const file = p.file orelse return null;
+    const lsp_ctx = ctx.lsp(file) orelse return null;
 
-    const p = json.parseTyped(ExecuteCommandParams, ctx.allocator, params) orelse return .{ .empty = {} };
-
-    const command = p.lsp_command orelse return .{ .empty = {} };
+    const command = p.lsp_command orelse return null;
 
     var lsp_params = try json.buildObjectMap(ctx.allocator, .{
         .{ "command", json.jsonString(command) },
@@ -180,7 +146,7 @@ pub fn handleExecuteCommand(ctx: *HandlerContext, params: Value) !DispatchResult
         try lsp_params.put("arguments", p.arguments);
     }
 
-    const request_id = try lsp_ctx.client.sendRequest("workspace/executeCommand", .{ .object = lsp_params });
-
-    return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
+    const exec_value: Value = .{ .object = lsp_params };
+    try ctx.lspRequest(lsp_ctx.client, "workspace/executeCommand", exec_value, .{});
+    return null;
 }

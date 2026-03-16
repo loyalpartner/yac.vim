@@ -1,4 +1,5 @@
 const std = @import("std");
+const lsp_transform = @import("lsp/transform.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -7,14 +8,13 @@ pub const ClientId = @import("clients.zig").ClientId;
 pub const PendingLspRequest = struct {
     vim_request_id: ?u64,
     method: []const u8,
-    ssh_host: ?[]const u8,
     file: ?[]const u8,
     client_id: ClientId,
     lsp_client_key: ?[]const u8,
+    transform: lsp_transform.TransformFn = lsp_transform.transformIdentity,
 
     pub fn deinit(self: PendingLspRequest, allocator: Allocator) void {
         allocator.free(self.method);
-        if (self.ssh_host) |ssh_host| allocator.free(ssh_host);
         if (self.file) |file| allocator.free(file);
         if (self.lsp_client_key) |key| allocator.free(key);
     }
@@ -163,7 +163,6 @@ test "addLsp then removeLsp returns entry" {
     try reqs.addLsp(42, .{
         .vim_request_id = 100,
         .method = try allocator.dupe(u8, "textDocument/hover"),
-        .ssh_host = null,
         .file = null,
         .client_id = 1,
         .lsp_client_key = null,
@@ -192,7 +191,6 @@ test "cancelByMethodAndClientKey removes matching entries" {
     try reqs.addLsp(1, .{
         .vim_request_id = 10,
         .method = try allocator.dupe(u8, "textDocument/completion"),
-        .ssh_host = null,
         .file = null,
         .client_id = 1,
         .lsp_client_key = try allocator.dupe(u8, "typescript"),
@@ -200,7 +198,6 @@ test "cancelByMethodAndClientKey removes matching entries" {
     try reqs.addLsp(2, .{
         .vim_request_id = 20,
         .method = try allocator.dupe(u8, "textDocument/hover"),
-        .ssh_host = null,
         .file = null,
         .client_id = 1,
         .lsp_client_key = try allocator.dupe(u8, "typescript"),
@@ -228,7 +225,6 @@ test "cancelByMethodAndClientKey returns vim info for cancelled requests" {
     try reqs.addLsp(7, .{
         .vim_request_id = 55,
         .method = try allocator.dupe(u8, "textDocument/completion"),
-        .ssh_host = null,
         .file = null,
         .client_id = 3,
         .lsp_client_key = try allocator.dupe(u8, "zls"),

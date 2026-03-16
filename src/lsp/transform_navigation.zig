@@ -23,10 +23,10 @@ pub fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, co
     else
         file_path;
 
-    return json_utils.buildObject(alloc, .{
-        .{ "file", json_utils.jsonString(result_path) },
-        .{ "line", json_utils.jsonInteger(line) },
-        .{ "column", json_utils.jsonInteger(column) },
+    return json_utils.structToValue(alloc, types.VimLocation{
+        .file = result_path,
+        .line = line,
+        .column = column,
     });
 }
 
@@ -83,14 +83,7 @@ pub fn transformFormattingResult(alloc: Allocator, result: Value) !Value {
     var edits = std.json.Array.init(alloc);
     for (items) |item| {
         const edit = types.parse(types.TextEdit, alloc, item) orelse continue;
-
-        try edits.append(try json_utils.buildObject(alloc, .{
-            .{ "start_line", json_utils.jsonInteger(edit.range.start.line) },
-            .{ "start_column", json_utils.jsonInteger(edit.range.start.character) },
-            .{ "end_line", json_utils.jsonInteger(edit.range.end.line) },
-            .{ "end_column", json_utils.jsonInteger(edit.range.end.character) },
-            .{ "new_text", json_utils.jsonString(edit.newText) },
-        }));
+        try edits.append(try edit.toVim(alloc));
     }
 
     return json_utils.buildObject(alloc, .{
@@ -150,11 +143,11 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
         else
             label;
 
-        try hints.append(try json_utils.buildObject(alloc, .{
-            .{ "line", json_utils.jsonInteger(line) },
-            .{ "column", json_utils.jsonInteger(character) },
-            .{ "label", json_utils.jsonString(display) },
-            .{ "kind", json_utils.jsonString(kind_str) },
+        try hints.append(try json_utils.structToValue(alloc, types.VimInlayHint{
+            .line = line,
+            .column = character,
+            .label = display,
+            .kind = kind_str,
         }));
     }
 
@@ -174,14 +167,7 @@ pub fn transformDocumentHighlightResult(alloc: Allocator, result: Value) !Value 
     var highlights = std.json.Array.init(alloc);
     for (items) |item| {
         const dh = types.parse(types.DocumentHighlight, alloc, item) orelse continue;
-
-        try highlights.append(try json_utils.buildObject(alloc, .{
-            .{ "line", json_utils.jsonInteger(dh.range.start.line) },
-            .{ "col", json_utils.jsonInteger(dh.range.start.character) },
-            .{ "end_line", json_utils.jsonInteger(dh.range.end.line) },
-            .{ "end_col", json_utils.jsonInteger(dh.range.end.character) },
-            .{ "kind", json_utils.jsonInteger(dh.kind) },
-        }));
+        try highlights.append(try dh.toVim(alloc));
     }
 
     return json_utils.buildObject(alloc, .{

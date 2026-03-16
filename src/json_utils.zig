@@ -129,6 +129,56 @@ pub fn buildObjectMap(allocator: Allocator, entries: anytype) !ObjectMap {
     return map;
 }
 
+/// Serialize a Zig struct to a JSON Value (ObjectMap).
+/// Optional fields that are null are omitted from the output.
+/// Supported field types: []const u8, bool, i64, other integer types, Value, nested structs.
+pub fn structToValue(alloc: Allocator, value: anytype) !Value {
+    const T = @TypeOf(value);
+    if (@typeInfo(T) != .@"struct") @compileError("structToValue expects a struct, got " ++ @typeName(T));
+
+    const fields = @typeInfo(T).@"struct".fields;
+    var map = ObjectMap.init(alloc);
+    inline for (fields) |field| {
+        const field_val = @field(value, field.name);
+        if (@typeInfo(field.type) == .optional) {
+            if (field_val) |v| {
+                try map.put(field.name, try valueFromField(alloc, v));
+            }
+        } else {
+            try map.put(field.name, try valueFromField(alloc, field_val));
+        }
+    }
+    return .{ .object = map };
+}
+
+/// Convert a single field value to JSON Value (used by structToValue).
+fn valueFromField(alloc: Allocator, value: anytype) !Value {
+    const T = @TypeOf(value);
+    if (T == Value) return value;
+    if (T == []const u8) return .{ .string = value };
+    if (T == bool) return if (value) .{ .bool = true } else .{ .bool = false };
+    if (T == i64) return .{ .integer = value };
+    if (@typeInfo(T) == .int or @typeInfo(T) == .comptime_int) return .{ .integer = @intCast(value) };
+    if (@typeInfo(T) == .@"struct") return structToValue(alloc, value);
+    // String-like types: [:0]const u8, *const [N:0]u8, *const [N]u8 (literals, tagName, etc.)
+    if (comptime isStringCoercible(T)) return .{ .string = value };
+    @compileError("structToValue: unsupported field type: " ++ @typeName(T));
+}
+
+/// Check if T can coerce to []const u8 (sentinel slices, pointer-to-array, etc.).
+fn isStringCoercible(comptime T: type) bool {
+    const info = @typeInfo(T);
+    if (info != .pointer) return false;
+    const ptr = info.pointer;
+    // Sentinel-terminated slice of u8 (e.g., [:0]const u8)
+    if (ptr.size == .slice and ptr.child == u8) return true;
+    // Pointer to u8 array (e.g., *const [N]u8, *const [N:0]u8)
+    if (ptr.size == .one) {
+        if (@typeInfo(ptr.child) == .array and @typeInfo(ptr.child).array.child == u8) return true;
+    }
+    return false;
+}
+
 /// Coerce a value to Value. Accepts Value directly or anonymous struct literals
 /// like .{ .array = arr }, .{ .object = obj }, .{ .bool = b }.
 fn coerceValue(v: anytype) Value {
@@ -187,6 +237,49 @@ test "buildObjectMap" {
     try map.put("extra", jsonInteger(99));
     try std.testing.expectEqualStrings("val", getString(map, "key").?);
     try std.testing.expectEqual(@as(i64, 99), getInteger(map, "extra").?);
+}
+
+test "structToValue — basic struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const val = try structToValue(alloc, struct {
+        name: []const u8,
+        line: i64,
+        ok: bool,
+    }{ .name = "foo", .line = 42, .ok = true });
+    const obj = val.object;
+    try std.testing.expectEqualStrings("foo", getString(obj, "name").?);
+    try std.testing.expectEqual(@as(i64, 42), getInteger(obj, "line").?);
+    try std.testing.expect(obj.get("ok").?.bool == true);
+}
+
+test "structToValue — optional fields omitted when null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const val = try structToValue(alloc, struct {
+        name: []const u8,
+        detail: ?[]const u8,
+    }{ .name = "foo", .detail = null });
+    const obj = val.object;
+    try std.testing.expectEqualStrings("foo", getString(obj, "name").?);
+    try std.testing.expect(obj.get("detail") == null);
+}
+
+test "structToValue — optional fields present when set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const val = try structToValue(alloc, struct {
+        name: []const u8,
+        detail: ?[]const u8,
+    }{ .name = "foo", .detail = "bar" });
+    const obj = val.object;
+    try std.testing.expectEqualStrings("bar", getString(obj, "detail").?);
 }
 
 test "getU32: returns value for valid non-negative integer" {

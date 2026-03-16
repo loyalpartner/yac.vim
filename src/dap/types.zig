@@ -41,7 +41,7 @@ pub const ScopesBody = struct {
 pub const DapVariable = struct {
     name: ?[]const u8 = null,
     value: ?[]const u8 = null,
-    @"type": ?[]const u8 = null,
+    type: ?[]const u8 = null,
     variablesReference: ?i64 = null,
 };
 
@@ -51,7 +51,7 @@ pub const VariablesBody = struct {
 
 pub const EvalResult = struct {
     result: ?[]const u8 = null,
-    @"type": ?[]const u8 = null,
+    type: ?[]const u8 = null,
     variablesReference: ?i64 = null,
 };
 
@@ -61,7 +61,7 @@ pub const EvalResult = struct {
 
 pub const DapMessageRaw = struct {
     seq: ?i64 = null,
-    @"type": ?[]const u8 = null,
+    type: ?[]const u8 = null,
     request_seq: ?i64 = null,
     success: ?bool = null,
     command: ?[]const u8 = null,
@@ -215,7 +215,7 @@ test "parse DapVariable with @type keyword field" {
     const v = parse(DapVariable, alloc, .{ .object = obj }).?;
     try std.testing.expectEqualStrings("x", v.name.?);
     try std.testing.expectEqualStrings("42", v.value.?);
-    try std.testing.expectEqualStrings("int", v.@"type".?);
+    try std.testing.expectEqualStrings("int", v.type.?);
     try std.testing.expectEqual(@as(i64, 0), v.variablesReference.?);
 }
 
@@ -232,7 +232,7 @@ test "parse DapMessageRaw — response" {
     try obj.put("command", .{ .string = "initialize" });
 
     const msg = parse(DapMessageRaw, alloc, .{ .object = obj }).?;
-    try std.testing.expectEqualStrings("response", msg.@"type".?);
+    try std.testing.expectEqualStrings("response", msg.type.?);
     try std.testing.expectEqual(@as(i64, 1), msg.request_seq.?);
     try std.testing.expect(msg.success.?);
     try std.testing.expectEqualStrings("initialize", msg.command.?);

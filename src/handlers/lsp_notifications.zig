@@ -6,68 +6,42 @@ const ts_handlers = @import("treesitter.zig");
 const registry_mod = @import("../lsp/registry.zig");
 
 const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const HandlerContext = common.HandlerContext;
-const DispatchResult = common.DispatchResult;
 
 // Typed param structs for JSON-RPC notifications
-const DidChangeParams = struct {
+pub const DidChangeParams = struct {
     file: ?[]const u8 = null,
     version: ?i64 = null,
     text: ?[]const u8 = null,
     changes: ?Value = null,
 };
 
-pub fn handleDiagnostics(_: *HandlerContext, _: Value) !DispatchResult {
+pub fn handleDiagnostics(_: *HandlerContext) !void {
     // Diagnostics are pushed by the server via notifications, not pulled.
-    return .{ .empty = {} };
 }
 
 // ============================================================================
 // Document lifecycle notifications (fire-and-forget to LSP)
 // ============================================================================
 
-pub fn handleDidChange(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDidChange(ctx: *HandlerContext, p: DidChangeParams) !void {
     // Tree-sitter parse: independent of LSP — always parse if supported
-    ts_handlers.parseIfSupported(ctx, params);
+    if (p.file) |file| {
+        ts_handlers.parseIfSupportedFile(ctx, file, p.text);
+    }
 
-    const p = json.parseTyped(DidChangeParams, ctx.allocator, params) orelse
-        return .{ .empty = {} };
-
-    const lsp_ctx_result = try common.getLspContext(ctx, params);
-    switch (lsp_ctx_result) {
-        .ready => |lsp_ctx| {
-            // Build didChange params
-            const version = p.version orelse 1;
-            var lsp_params = try json.buildObjectMap(ctx.allocator, .{
-                .{ "textDocument", try json.buildObject(ctx.allocator, .{
-                    .{ "uri", json.jsonString(lsp_ctx.uri) },
-                    .{ "version", json.jsonInteger(version) },
-                }) },
-            });
-
-            // Forward content changes if present
-            if (p.changes) |changes| {
-                try lsp_params.put("contentChanges", changes);
-            } else if (p.text) |text| {
-                var change = ObjectMap.init(ctx.allocator);
-                try change.put("text", json.jsonString(text));
-                var changes_arr = std.json.Array.init(ctx.allocator);
-                try changes_arr.append(.{ .object = change });
-                try lsp_params.put("contentChanges", .{ .array = changes_arr });
-            }
-
-            lsp_ctx.client.sendNotification("textDocument/didChange", .{ .object = lsp_params }) catch |e| {
-                log.err("Failed to send didChange: {any}", .{e});
-            };
-        },
-        .initializing, .not_available => {},
+    const file = p.file orelse return;
+    if (ctx.lspAllowInit(file)) |lc| {
+        lc.client.sendNotification("textDocument/didChange", common.DidChangeParams{
+            .textDocument = .{ .uri = lc.uri, .version = p.version orelse 1 },
+            .contentChanges = try common.buildContentChanges(ctx.allocator, p.changes, p.text),
+        }) catch |e| {
+            log.err("Failed to send didChange: {any}", .{e});
+        };
     }
 
     // Also forward to Copilot client
     forwardDidChangeToCopilot(ctx, p);
-
-    return .{ .empty = {} };
 }
 
 /// Forward didChange to the Copilot client (if active and initialized).
@@ -78,75 +52,49 @@ fn forwardDidChangeToCopilot(ctx: *HandlerContext, p: DidChangeParams) void {
     const file = p.file orelse return;
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
-    const version = p.version orelse 1;
 
-    var td = ObjectMap.init(ctx.allocator);
-    td.put("uri", json.jsonString(uri)) catch return;
-    td.put("version", json.jsonInteger(version)) catch return;
-
-    var lsp_params = ObjectMap.init(ctx.allocator);
-    lsp_params.put("textDocument", .{ .object = td }) catch return;
-
-    if (p.changes) |changes| {
-        lsp_params.put("contentChanges", changes) catch return;
-    } else if (p.text) |text| {
-        var change = ObjectMap.init(ctx.allocator);
-        change.put("text", json.jsonString(text)) catch return;
-        var changes_arr = std.json.Array.init(ctx.allocator);
-        changes_arr.append(.{ .object = change }) catch return;
-        lsp_params.put("contentChanges", .{ .array = changes_arr }) catch return;
-    }
-
-    copilot_client.sendNotification("textDocument/didChange", .{ .object = lsp_params }) catch |e| {
+    copilot_client.sendNotification("textDocument/didChange", common.DidChangeParams{
+        .textDocument = .{ .uri = uri, .version = p.version orelse 1 },
+        .contentChanges = common.buildContentChanges(ctx.allocator, p.changes, p.text) catch return,
+    }) catch |e| {
         log.err("Failed to send didChange to Copilot: {any}", .{e});
     };
 }
 
-pub fn handleDidSave(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing, .not_available => return .{ .empty = {} },
-    };
+pub fn handleDidSave(ctx: *HandlerContext, p: common.FileParams) !void {
+    const file = p.file orelse return;
+    const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
-
-    lsp_ctx.client.sendNotification("textDocument/didSave", lsp_params) catch |e| {
+    lsp_ctx.client.sendNotification("textDocument/didSave", common.TextDocumentParams{
+        .textDocument = .{ .uri = lsp_ctx.uri },
+    }) catch |e| {
         log.err("Failed to send didSave: {any}", .{e});
     };
-
-    return .{ .empty = {} };
 }
 
-pub fn handleDidClose(ctx: *HandlerContext, params: Value) !DispatchResult {
+pub fn handleDidClose(ctx: *HandlerContext, p: common.FileParams) !void {
     // Tree-sitter cleanup: independent of LSP
-    ts_handlers.removeIfSupported(ctx, params);
+    if (p.file) |file| {
+        ts_handlers.removeIfSupportedFile(ctx, file);
+    }
 
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing, .not_available => return .{ .empty = {} },
-    };
+    const file = p.file orelse return;
+    const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri);
-
-    lsp_ctx.client.sendNotification("textDocument/didClose", lsp_params) catch |e| {
+    lsp_ctx.client.sendNotification("textDocument/didClose", common.TextDocumentParams{
+        .textDocument = .{ .uri = lsp_ctx.uri },
+    }) catch |e| {
         log.err("Failed to send didClose: {any}", .{e});
     };
-
-    return .{ .empty = {} };
 }
 
-pub fn handleWillSave(ctx: *HandlerContext, params: Value) !DispatchResult {
-    const lsp_ctx = switch (try common.getLspContext(ctx, params)) {
-        .ready => |c| c,
-        .initializing, .not_available => return .{ .empty = {} },
-    };
+pub fn handleWillSave(ctx: *HandlerContext, p: common.FileParams) !void {
+    const file = p.file orelse return;
+    const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    var lsp_params = (try common.buildTextDocumentIdentifier(ctx.allocator, lsp_ctx.uri)).object;
-    try lsp_params.put("reason", json.jsonInteger(1)); // Manual save
-
-    lsp_ctx.client.sendNotification("textDocument/willSave", .{ .object = lsp_params }) catch |e| {
+    lsp_ctx.client.sendNotification("textDocument/willSave", common.WillSaveParams{
+        .textDocument = .{ .uri = lsp_ctx.uri },
+    }) catch |e| {
         log.err("Failed to send willSave: {any}", .{e});
     };
-
-    return .{ .empty = {} };
 }
