@@ -16,15 +16,6 @@ const ClientId = clients_mod.ClientId;
 
 pub const IDLE_TIMEOUT_NS: i128 = 60 * std.time.ns_per_s;
 
-/// Maximum bytes buffered per client before the connection is dropped.
-pub const MAX_CLIENT_BUF: usize = 4 * 1024 * 1024; // 4 MB
-
-/// Returns true if adding `incoming` bytes to a buffer of `current_len`
-/// would exceed MAX_CLIENT_BUF.
-pub fn clientBufWouldOverflow(current_len: usize, incoming: usize) bool {
-    return current_len + incoming > MAX_CLIENT_BUF;
-}
-
 /// Owns all subsystem state. Heap-allocated so internal pointers are stable.
 /// Bridges and MessageDispatcher hold pointers to sibling fields — safe because
 /// the Daemon lives on the heap and never moves.
@@ -189,15 +180,3 @@ pub const Daemon = struct {
 // Tests
 // ============================================================================
 
-test "MAX_CLIENT_BUF is 4MB" {
-    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), MAX_CLIENT_BUF);
-}
-
-test "clientBufWouldOverflow: returns true when adding data exceeds limit" {
-    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF, 1));
-    try std.testing.expect(!clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 1));
-    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 2));
-    try std.testing.expect(!clientBufWouldOverflow(0, 0));
-    try std.testing.expect(!clientBufWouldOverflow(0, MAX_CLIENT_BUF));
-    try std.testing.expect(clientBufWouldOverflow(0, MAX_CLIENT_BUF + 1));
-}

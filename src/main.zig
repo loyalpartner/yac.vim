@@ -82,6 +82,7 @@ pub fn main() !void {
 test {
     _ = @import("queue.zig");
     _ = @import("poll_set.zig");
+    _ = @import("line_framer.zig");
     _ = @import("requests.zig");
     _ = @import("daemon.zig");
     _ = @import("event_loop.zig");

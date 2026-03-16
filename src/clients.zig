@@ -1,22 +1,26 @@
 const std = @import("std");
 const log = @import("log.zig");
 const poll_set_mod = @import("poll_set.zig");
+const line_framer_mod = @import("line_framer.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const ClientId = u32;
 
+/// Maximum bytes buffered per client before the connection is dropped.
+const MAX_CLIENT_BUF: usize = 4 * 1024 * 1024; // 4 MB
+
 pub const VimClient = struct {
     id: ClientId,
     stream: std.net.Stream,
-    read_buf: std.ArrayList(u8),
+    framer: line_framer_mod.LineFramer,
     subscribed_workspaces: std.StringHashMap(void),
 
     fn init(allocator: Allocator, id: ClientId, stream: std.net.Stream) VimClient {
         return .{
             .id = id,
             .stream = stream,
-            .read_buf = .{},
+            .framer = line_framer_mod.LineFramer.init(MAX_CLIENT_BUF),
             .subscribed_workspaces = std.StringHashMap(void).init(allocator),
         };
     }
@@ -27,7 +31,7 @@ pub const VimClient = struct {
             allocator.free(key_ptr.*);
         }
         self.subscribed_workspaces.deinit();
-        self.read_buf.deinit(allocator);
+        self.framer.deinit(allocator);
         self.stream.close();
     }
 

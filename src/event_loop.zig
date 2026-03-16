@@ -5,7 +5,8 @@ const poll_set_mod = @import("poll_set.zig");
 const daemon_mod = @import("daemon.zig");
 
 const Allocator = std.mem.Allocator;
-const ClientId = @import("clients.zig").ClientId;
+const clients_mod = @import("clients.zig");
+const ClientId = clients_mod.ClientId;
 const Daemon = daemon_mod.Daemon;
 
 /// Pure I/O layer: poll + dispatch + thread lifecycle.
@@ -172,68 +173,54 @@ pub const EventLoop = struct {
             d.removeClient(cid);
             return;
         }
-        if (daemon_mod.clientBufWouldOverflow(client.read_buf.items.len, n)) {
-            log.err("client {d} read_buf overflow ({d} bytes), disconnecting", .{ cid, client.read_buf.items.len + n });
-            d.removeClient(cid);
-            return;
-        }
-        client.read_buf.appendSlice(d.allocator, buf[0..n]) catch |e| {
-            log.err("client {d} buf append failed: {any}", .{ cid, e });
-            return;
+        client.framer.feed(d.allocator, buf[0..n]) catch |e| switch (e) {
+            error.Overflow => {
+                log.err("client {d} buffer overflow, disconnecting", .{cid});
+                d.removeClient(cid);
+                return;
+            },
+            error.OutOfMemory => {
+                log.err("client {d} buf append OOM: {any}", .{ cid, e });
+                return;
+            },
         };
-        self.processClientInput(cid);
+        while (client.framer.nextLine()) |line| {
+            if (line.len > 0) self.routeLine(cid, client, line);
+        }
     }
 
-    fn processClientInput(self: *EventLoop, cid: ClientId) void {
+    /// Route a complete line to the appropriate queue or dispatch inline.
+    fn routeLine(self: *EventLoop, cid: ClientId, client: *clients_mod.VimClient, line: []const u8) void {
         const d = self.daemon;
-        while (true) {
-            const client = d.clients.get(cid) orelse break;
-            const newline_pos = std.mem.indexOf(u8, client.read_buf.items, "\n") orelse break;
+        const raw_line = d.allocator.dupe(u8, line) catch {
+            log.err("OOM routing work item for client {d}", .{cid});
+            return;
+        };
 
-            const line = client.read_buf.items[0..newline_pos];
-            if (line.len > 0) {
-                const raw_line = d.allocator.dupe(u8, line) catch |e| {
-                    log.err("OOM routing work item: {any}", .{e});
-                    const c2 = d.clients.get(cid) orelse break;
-                    const rem2 = c2.read_buf.items.len - newline_pos - 1;
-                    if (rem2 > 0) std.mem.copyForwards(u8, c2.read_buf.items[0..rem2], c2.read_buf.items[newline_pos + 1 ..]);
-                    c2.read_buf.shrinkRetainingCapacity(rem2);
-                    continue;
-                };
+        if (queue_mod.isDapActionMethod(line)) {
+            defer d.allocator.free(raw_line);
+            var arena = std.heap.ArenaAllocator.init(d.allocator);
+            defer arena.deinit();
+            d.msg.handleWorkItem(.{
+                .client_id = cid,
+                .client_stream = client.stream,
+                .raw_line = raw_line,
+            }, arena.allocator());
+        } else {
+            const item = queue_mod.Envelope{
+                .client_id = cid,
+                .client_stream = client.stream,
+                .raw_line = raw_line,
+            };
+            const routed = if (queue_mod.isTsMethod(line))
+                d.in_ts.push(item)
+            else
+                d.in_general.push(item);
 
-                if (queue_mod.isDapActionMethod(line)) {
-                    defer d.allocator.free(raw_line);
-                    var arena = std.heap.ArenaAllocator.init(d.allocator);
-                    defer arena.deinit();
-                    d.msg.handleWorkItem(.{
-                        .client_id = cid,
-                        .client_stream = client.stream,
-                        .raw_line = raw_line,
-                    }, arena.allocator());
-                } else {
-                    const item = queue_mod.Envelope{
-                        .client_id = cid,
-                        .client_stream = client.stream,
-                        .raw_line = raw_line,
-                    };
-                    const routed = if (queue_mod.isTsMethod(line))
-                        d.in_ts.push(item)
-                    else
-                        d.in_general.push(item);
-
-                    if (!routed) {
-                        item.deinit(d.allocator);
-                        log.warn("Work queue full, dropping line from client {d}", .{cid});
-                    }
-                }
+            if (!routed) {
+                item.deinit(d.allocator);
+                log.warn("Work queue full, dropping line from client {d}", .{cid});
             }
-
-            const c = d.clients.get(cid) orelse break;
-            const remaining = c.read_buf.items.len - newline_pos - 1;
-            if (remaining > 0) {
-                std.mem.copyForwards(u8, c.read_buf.items[0..remaining], c.read_buf.items[newline_pos + 1 ..]);
-            }
-            c.read_buf.shrinkRetainingCapacity(remaining);
         }
     }
 };
