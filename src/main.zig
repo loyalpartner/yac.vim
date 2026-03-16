@@ -60,6 +60,7 @@ pub fn main() !void {
     restrictSocketPermissions(socket_path);
 
     var event_loop = EventLoop.init(allocator, server);
+    event_loop.initBridges();
     defer event_loop.deinit();
 
     event_loop.run() catch |e| {

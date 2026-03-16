@@ -69,12 +69,12 @@ pub fn handleDapStart(ctx: *HandlerContext, p: types.DapStartParams) !?Value {
     const workspace_dir = std.fs.path.dirname(file);
 
     // If there's an existing session, terminate it first
-    if (ctx.dap_session.*) |old| {
+    if (ctx.dap.dap_session) |old| {
         _ = old.client.sendDisconnect(true) catch 0;
         old.client.deinit();
         old.deinit();
         ctx.gpa_allocator.destroy(old);
-        ctx.dap_session.* = null;
+        ctx.dap.dap_session = null;
     }
 
     // Spawn the debug adapter
@@ -93,7 +93,7 @@ pub fn handleDapStart(ctx: *HandlerContext, p: types.DapStartParams) !?Value {
     session.* = DapSession.init(ctx.gpa_allocator, client);
     session.session_state = .initializing;
     session.owner_client_id = ctx.client_id;
-    ctx.dap_session.* = session;
+    ctx.dap.dap_session = session;
 
     // Save launch params for deferred execution after 'initialized' event.
     // Must dupe strings into gpa — the request arena is freed after this handler returns.
@@ -204,7 +204,7 @@ pub fn handleDapStart(ctx: *HandlerContext, p: types.DapStartParams) !?Value {
 
 /// Set breakpoints for a file.
 pub fn handleDapBreakpoint(ctx: *HandlerContext, p: types.DapBreakpointParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const file = p.file orelse return .{ .ok = false };
 
     // Extract breakpoint info
@@ -228,7 +228,7 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, p: types.DapBreakpointParams) !
 
 /// Set exception breakpoints.
 pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, p: types.DapExceptionBreakpointsParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
 
     var filters: std.ArrayList([]const u8) = .{};
     defer filters.deinit(ctx.allocator);
@@ -245,7 +245,7 @@ pub fn handleDapExceptionBreakpoints(ctx: *HandlerContext, p: types.DapException
 
 /// Get all threads.
 pub fn handleDapThreads(ctx: *HandlerContext) !PendingResult {
-    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const session = ctx.dap.dap_session orelse return notRunningPending(ctx);
     _ = try session.client.sendThreads();
     return .{ .pending = true };
 }
@@ -272,7 +272,7 @@ pub fn handleDapStepOut(ctx: *HandlerContext, p: types.DapThreadControlParams) !
 
 /// Get stack trace for the stopped thread.
 pub fn handleDapStackTrace(ctx: *HandlerContext, p: types.DapThreadControlParams) !PendingResult {
-    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const session = ctx.dap.dap_session orelse return notRunningPending(ctx);
     const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
     _ = try session.client.sendStackTrace(thread_id orelse session.client.active_thread_id orelse 1);
     return .{ .pending = true };
@@ -280,7 +280,7 @@ pub fn handleDapStackTrace(ctx: *HandlerContext, p: types.DapThreadControlParams
 
 /// Get scopes for a stack frame.
 pub fn handleDapScopes(ctx: *HandlerContext, p: types.DapScopesParams) !PendingResult {
-    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const session = ctx.dap.dap_session orelse return notRunningPending(ctx);
     const frame_id_i64 = p.frame_id orelse return .{ .pending = false };
     if (frame_id_i64 < 0) return .{ .pending = false };
     _ = try session.client.sendScopes(@intCast(frame_id_i64));
@@ -289,7 +289,7 @@ pub fn handleDapScopes(ctx: *HandlerContext, p: types.DapScopesParams) !PendingR
 
 /// Get variables for a scope reference.
 pub fn handleDapVariables(ctx: *HandlerContext, p: types.DapVariablesParams) !PendingResult {
-    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const session = ctx.dap.dap_session orelse return notRunningPending(ctx);
     const ref_i64 = p.variables_ref orelse return .{ .pending = false };
     if (ref_i64 < 0) return .{ .pending = false };
     _ = try session.client.sendVariables(@intCast(ref_i64));
@@ -298,7 +298,7 @@ pub fn handleDapVariables(ctx: *HandlerContext, p: types.DapVariablesParams) !Pe
 
 /// Evaluate an expression in the debug context.
 pub fn handleDapEvaluate(ctx: *HandlerContext, p: types.DapEvaluateParams) !PendingResult {
-    const session = ctx.dap_session.* orelse return notRunningPending(ctx);
+    const session = ctx.dap.dap_session orelse return notRunningPending(ctx);
     const expression = p.expression orelse return .{ .pending = false };
     const frame_id: ?u32 = if (p.frame_id) |fid| if (fid >= 0) @intCast(fid) else null else null;
     const eval_context = p.context orelse "repl";
@@ -308,7 +308,7 @@ pub fn handleDapEvaluate(ctx: *HandlerContext, p: types.DapEvaluateParams) !Pend
 
 /// Terminate the debug session.
 pub fn handleDapTerminate(ctx: *HandlerContext) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     _ = session.client.sendTerminate() catch {};
     _ = session.client.sendDisconnect(true) catch {};
     return .{ .ok = true };
@@ -316,7 +316,7 @@ pub fn handleDapTerminate(ctx: *HandlerContext) !OkResult {
 
 /// Get current DAP session status (returns full panel data).
 pub fn handleDapStatus(ctx: *HandlerContext) !?Value {
-    const session = ctx.dap_session.* orelse {
+    const session = ctx.dap.dap_session orelse {
         return try json.structToValue(ctx.allocator, DapStatusActiveResult{ .active = false });
     };
     return try session.buildPanelData(ctx.allocator);
@@ -324,7 +324,7 @@ pub fn handleDapStatus(ctx: *HandlerContext) !?Value {
 
 /// Get panel data (variables, frames, watches).
 pub fn handleDapGetPanel(ctx: *HandlerContext) !?Value {
-    const session = ctx.dap_session.* orelse {
+    const session = ctx.dap.dap_session orelse {
         notRunningToast(ctx);
         return null;
     };
@@ -333,7 +333,7 @@ pub fn handleDapGetPanel(ctx: *HandlerContext) !?Value {
 
 /// Switch to a different stack frame.
 pub fn handleDapSwitchFrame(ctx: *HandlerContext, p: types.DapSwitchFrameParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const frame_idx_i64 = p.frame_index orelse return .{ .ok = false };
     if (frame_idx_i64 < 0) return .{ .ok = false };
     session.switchFrame(@intCast(frame_idx_i64)) catch |e| {
@@ -345,7 +345,7 @@ pub fn handleDapSwitchFrame(ctx: *HandlerContext, p: types.DapSwitchFrameParams)
 
 /// Expand a variable by path indices.
 pub fn handleDapExpandVariable(ctx: *HandlerContext, p: types.DapPathParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const path = try parsePathValues(ctx, p.path) orelse return .{ .ok = false };
     defer ctx.allocator.free(path);
 
@@ -358,7 +358,7 @@ pub fn handleDapExpandVariable(ctx: *HandlerContext, p: types.DapPathParams) !Ok
 
 /// Collapse a variable by path indices.
 pub fn handleDapCollapseVariable(ctx: *HandlerContext, p: types.DapPathParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const path = try parsePathValues(ctx, p.path) orelse return .{ .ok = false };
     defer ctx.allocator.free(path);
 
@@ -368,7 +368,7 @@ pub fn handleDapCollapseVariable(ctx: *HandlerContext, p: types.DapPathParams) !
 
 /// Add a watch expression.
 pub fn handleDapAddWatch(ctx: *HandlerContext, p: types.DapWatchParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const expression = p.expression orelse return .{ .ok = false };
     try session.addWatch(expression);
     return .{ .ok = true };
@@ -376,7 +376,7 @@ pub fn handleDapAddWatch(ctx: *HandlerContext, p: types.DapWatchParams) !OkResul
 
 /// Remove a watch expression by index.
 pub fn handleDapRemoveWatch(ctx: *HandlerContext, p: types.DapRemoveWatchParams) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const index_i64 = p.index orelse return .{ .ok = false };
     if (index_i64 < 0) return .{ .ok = false };
     session.removeWatch(@intCast(index_i64));
@@ -439,7 +439,7 @@ fn parsePathValues(ctx: *HandlerContext, path_vals: []const Value) !?[]const u32
 
 /// Shared implementation for thread-control handlers (continue, next, stepIn, stepOut).
 fn handleThreadControl(ctx: *HandlerContext, p: types.DapThreadControlParams, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !OkResult {
-    const session = ctx.dap_session.* orelse return notRunning(ctx);
+    const session = ctx.dap.dap_session orelse return notRunning(ctx);
     const thread_id = if (p.thread_id) |tid| if (tid >= 0) @as(u32, @intCast(tid)) else null else null;
     _ = try sendFn(session.client, thread_id orelse session.client.active_thread_id orelse 1);
     return .{ .ok = true };

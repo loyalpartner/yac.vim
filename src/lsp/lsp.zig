@@ -1,6 +1,7 @@
 const std = @import("std");
 const lsp_registry_mod = @import("registry.zig");
 const clients_mod = @import("../clients.zig");
+const progress_mod = @import("../progress.zig");
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -9,6 +10,7 @@ const ClientId = clients_mod.ClientId;
 pub const Lsp = struct {
     allocator: Allocator,
     registry: lsp_registry_mod.LspRegistry,
+    progress: progress_mod.Progress,
     indexing_counts: std.StringHashMap(u32),
     deferred_requests: std.ArrayList(DeferredRequest),
 
@@ -25,6 +27,7 @@ pub const Lsp = struct {
         return .{
             .allocator = allocator,
             .registry = lsp_registry_mod.LspRegistry.init(allocator),
+            .progress = progress_mod.Progress.init(allocator),
             .indexing_counts = std.StringHashMap(u32).init(allocator),
             .deferred_requests = .{},
         };
@@ -33,6 +36,7 @@ pub const Lsp = struct {
     pub fn deinit(self: *Lsp) void {
         self.registry.shutdownAll();
         self.registry.deinit();
+        self.progress.deinit();
         {
             var icit = self.indexing_counts.iterator();
             while (icit.next()) |entry| {
@@ -79,6 +83,15 @@ pub const Lsp = struct {
             if (count.* > 0) return true;
         }
         return false;
+    }
+
+    /// Check if a query method targeting a file should be deferred (server still indexing).
+    pub fn shouldDefer(self: *Lsp, method: []const u8, file: ?[]const u8) bool {
+        if (!isQueryMethod(method)) return false;
+        const f = file orelse return false;
+        const real_path = lsp_registry_mod.extractRealPath(f);
+        const language = lsp_registry_mod.LspRegistry.detectLanguage(real_path) orelse return false;
+        return self.isLanguageIndexing(language);
     }
 
     // ====================================================================

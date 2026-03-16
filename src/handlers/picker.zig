@@ -4,6 +4,7 @@ const common = @import("common.zig");
 const lsp_types = @import("../lsp/types.zig");
 const lsp_transform = common.lsp_transform;
 const ts_mod = common.treesitter_mod;
+const picker_mod = common.picker_mod;
 
 const Value = json.Value;
 const HandlerContext = common.HandlerContext;
@@ -24,36 +25,33 @@ pub const PickerQueryParams = struct {
     text: ?[]const u8 = null,
 };
 
-// -- Named return types --
-
-pub const PickerInitResult = struct {
-    action: []const u8,
-    cwd: []const u8,
-    recent_files: Value = .null,
-};
-
-pub const PickerActionResult = struct {
-    action: []const u8,
-    query: []const u8 = "",
-};
-
 pub fn handlePickerOpen(ctx: *HandlerContext, p: PickerOpenParams) !?Value {
     const cwd = p.cwd orelse return null;
+    const picker = ctx.picker;
 
-    var result = try json.buildObjectMap(ctx.allocator, .{
-        .{ "action", json.jsonString("picker_init") },
-        .{ "cwd", json.jsonString(cwd) },
-    });
-    if (p.recent_files != .null) {
-        try result.put("recent_files", p.recent_files);
+    if (!picker.start(cwd)) return null;
+
+    // Pre-seed MRU from Vim
+    if (p.recent_files == .array) {
+        const rf_arr = p.recent_files.array.items;
+        var names: std.ArrayList([]const u8) = .{};
+        defer names.deinit(ctx.allocator);
+        for (rf_arr) |v| {
+            if (v == .string) names.append(ctx.allocator, v.string) catch {};
+        }
+        picker.setRecentFiles(names.items);
     }
 
-    return .{ .object = result };
+    // Request buffer list from Vim — result handled in handleVimExprResponse.
+    // For now, return recent files immediately; buffer list will be merged on response.
+    ctx._picker_query_buffers = true;
+    return null;
 }
 
 pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
     const query = p.query orelse "";
     const mode = p.mode orelse "file";
+    const picker = ctx.picker;
 
     if (std.mem.eql(u8, mode, "workspace_symbol")) {
         const file = p.file orelse return null;
@@ -64,10 +62,9 @@ pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
         } }).wire(ctx.allocator), .{ .transform = lsp_transform.transformPickerSymbols });
         return null;
     } else if (std.mem.eql(u8, mode, "grep")) {
-        return try json.structToValue(ctx.allocator, PickerActionResult{
-            .action = "picker_grep_query",
-            .query = query,
-        });
+        if (query.len == 0) return null;
+        const cwd = picker.cwd orelse return null;
+        return picker_mod.runGrep(ctx.allocator, query, cwd) catch return null;
     } else if (std.mem.eql(u8, mode, "document_symbol")) {
         const ts_state = ctx.ts orelse return null;
         const file = p.file orelse return null;
@@ -91,14 +88,24 @@ pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
             source,
         );
     } else {
-        return try json.structToValue(ctx.allocator, PickerActionResult{
-            .action = "picker_file_query",
-            .query = query,
-        });
+        // File mode — query the picker's file index directly
+        if (!picker.hasIndex()) return null;
+        picker.pollScan();
+        if (query.len == 0) {
+            return picker_mod.buildPickerResults(ctx.allocator, picker.recentFiles(), "file");
+        }
+        const file_list = picker.files();
+        const recent = picker.recentFiles();
+        const indices = picker_mod.filterAndSort(ctx.allocator, file_list, query, recent) catch return null;
+        var items: std.ArrayList([]const u8) = .{};
+        for (indices) |idx| {
+            items.append(ctx.allocator, file_list[idx]) catch {};
+        }
+        return picker_mod.buildPickerResults(ctx.allocator, items.items, "file");
     }
 }
 
-pub fn handlePickerClose(ctx: *HandlerContext) !PickerActionResult {
-    _ = ctx;
-    return .{ .action = "picker_close" };
+pub fn handlePickerClose(ctx: *HandlerContext) !?Value {
+    ctx.picker.close();
+    return null;
 }

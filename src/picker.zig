@@ -268,65 +268,25 @@ pub const Picker = struct {
         return fi.recent_files.items;
     }
 
+    /// Merge buffer names from Vim's getbufinfo() into the recent files list
+    /// and return picker results. Returns .null if no index is active.
+    pub fn mergeBufferList(self: *Picker, alloc: Allocator, result: Value) Value {
+        if (!self.hasIndex()) return .null;
+        const arr = switch (result) {
+            .array => |a| a.items,
+            else => &[_]Value{},
+        };
+        for (arr) |item| {
+            if (item == .string) self.appendIfMissing(item.string);
+        }
+        return buildPickerResults(alloc, self.recentFiles(), "file");
+    }
+
     pub fn files(self: *Picker) []const []const u8 {
         const fi = self.file_index orelse return &.{};
         return fi.files.items;
     }
 
-    pub const PickerAction = union(enum) {
-        none,
-        respond_null,
-        respond: Value,
-        query_buffers,
-    };
-
-    /// Process a picker action from handler data. Returns what the EventLoop should do.
-    pub fn processAction(self: *Picker, alloc: Allocator, data: Value) PickerAction {
-        const obj = switch (data) {
-            .object => |o| o,
-            else => return .none,
-        };
-        const action = json_utils.getString(obj, "action") orelse return .none;
-
-        if (std.mem.eql(u8, action, "picker_init")) {
-            const cwd = json_utils.getString(obj, "cwd") orelse return .respond_null;
-            if (!self.start(cwd)) return .respond_null;
-            // Pre-seed MRU from Vim
-            if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
-                var names: std.ArrayList([]const u8) = .{};
-                defer names.deinit(alloc);
-                for (rf_arr) |v| {
-                    if (v == .string) names.append(alloc, v.string) catch {};
-                }
-                self.setRecentFiles(names.items);
-            }
-            return .query_buffers;
-        } else if (std.mem.eql(u8, action, "picker_file_query")) {
-            const query = json_utils.getString(obj, "query") orelse "";
-            if (!self.hasIndex()) return .respond_null;
-            self.pollScan();
-            if (query.len == 0) {
-                return .{ .respond = buildPickerResults(alloc, self.recentFiles(), "file") };
-            }
-            const file_list = self.files();
-            const recent = self.recentFiles();
-            const indices = filterAndSort(alloc, file_list, query, recent) catch return .respond_null;
-            var items: std.ArrayList([]const u8) = .{};
-            for (indices) |idx| {
-                items.append(alloc, file_list[idx]) catch {};
-            }
-            return .{ .respond = buildPickerResults(alloc, items.items, "file") };
-        } else if (std.mem.eql(u8, action, "picker_grep_query")) {
-            const query = json_utils.getString(obj, "query") orelse "";
-            if (query.len == 0) return .respond_null;
-            const cwd = self.cwd orelse return .respond_null;
-            return .{ .respond = runGrep(alloc, query, cwd) catch return .respond_null };
-        } else if (std.mem.eql(u8, action, "picker_close")) {
-            self.close();
-            return .respond_null;
-        }
-        return .none;
-    }
 };
 
 /// Build picker results in the standard JSON format for Vim.
@@ -349,7 +309,7 @@ pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []c
 
 /// Spawn rg synchronously and return results as a picker Value.
 /// Caller's arena allocator owns all memory.
-fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
+pub fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
     const argv: []const []const u8 = &.{
         "rg",             "--vimgrep", "--max-count", "5",     "--max-columns", "200",
         "--max-filesize", "1M",        "--color",     "never", "--",            pattern,

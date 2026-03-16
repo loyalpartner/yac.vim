@@ -3,7 +3,7 @@ const json_utils = @import("json_utils.zig");
 const vim = @import("vim_protocol.zig");
 const rpc = @import("rpc.zig");
 const clients_mod = @import("clients.zig");
-const requests_mod = @import("requests.zig");
+const vim_expr_tracker_mod = @import("vim_expr_tracker.zig");
 const queue_mod = @import("queue.zig");
 const log = @import("log.zig");
 
@@ -11,7 +11,7 @@ const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
 const ObjectMap = json_utils.ObjectMap;
 const ClientId = clients_mod.ClientId;
-const PendingVimExpr = requests_mod.PendingVimExpr;
+const PendingVimExpr = vim_expr_tracker_mod.PendingVimExpr;
 
 /// Lightweight context for sending messages to Vim clients.
 /// Constructed on the fly from EventLoop fields — zero-cost (stack pointers only).
@@ -19,7 +19,7 @@ pub const VimTransport = struct {
     allocator: Allocator,
     out_queue: *queue_mod.OutQueue,
     clients: *clients_mod.Clients,
-    requests: *requests_mod.Requests,
+    expr_tracker: *vim_expr_tracker_mod.VimExprTracker,
 
     /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
     /// Drops the message silently if the queue is full (back-pressure).
@@ -56,8 +56,8 @@ pub const VimTransport = struct {
     /// Send an expr request to a specific Vim client and register a pending entry.
     pub fn sendExprTo(self: VimTransport, cid: ClientId, alloc: Allocator, vim_id: ?u64, expr: []const u8, tag: PendingVimExpr.Tag) void {
         const client = self.clients.get(cid) orelse return;
-        const id = self.requests.nextExprId();
-        self.requests.addExpr(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {
+        const id = self.expr_tracker.nextExprId();
+        self.expr_tracker.add(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {
             log.err("Failed to register pending vim expr (OOM)", .{});
             return;
         };
@@ -94,6 +94,18 @@ pub const VimTransport = struct {
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
         defer alloc.free(encoded);
         self.sendToWorkspace(workspace_uri, encoded);
+    }
+
+    /// Broadcast a Vim ex command to workspace-subscribed clients except the sender.
+    pub fn broadcastExToOthers(self: VimTransport, sender_cid: ClientId, workspace_uri: []const u8, alloc: Allocator, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        var cit = self.clients.valueIterator();
+        while (cit.next()) |client_ptr| {
+            if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
+                self.pushToOutQueue(client_ptr.*.stream, encoded);
+            }
+        }
     }
 
     /// Send an error response to a specific Vim client.

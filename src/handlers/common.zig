@@ -10,8 +10,9 @@ const queue_mod = @import("../queue.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
 const clients_mod = @import("../clients.zig");
 pub const lsp_transform = @import("../lsp/transform.zig");
+pub const picker_mod = @import("../picker.zig");
 
-const dap_session_mod = @import("../dap/session.zig");
+const dap_bridge_mod = @import("../dap_bridge.zig");
 
 const Allocator = std.mem.Allocator;
 pub const Value = json.Value;
@@ -33,8 +34,10 @@ pub const HandlerContext = struct {
     client_stream: std.net.Stream,
     client_id: ClientId,
     ts: ?*treesitter_mod.TreeSitter = null,
-    /// Active DAP debug session (single session at a time).
-    dap_session: *?*dap_session_mod.DapSession = undefined,
+    /// DAP bridge (owns DAP session lifecycle).
+    dap: *dap_bridge_mod.DapBridge = undefined,
+    /// Picker state (file/grep/symbol picker).
+    picker: *picker_mod.Picker = undefined,
     /// Outgoing message queue — push OutMessages here instead of writing directly.
     out_queue: *queue_mod.OutQueue,
     /// Set to true to request daemon shutdown.
@@ -48,6 +51,8 @@ pub const HandlerContext = struct {
     _deferred: bool = false,
     /// Subscribe this client to workspace change notifications.
     _subscribe_workspace: ?[]const u8 = null,
+    /// Picker needs buffer list from Vim (sends expr request).
+    _picker_query_buffers: bool = false,
 
     pub const PendingLsp = struct {
         request_id: u32,
