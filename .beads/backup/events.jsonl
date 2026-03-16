@@ -200,3 +200,8 @@
 {"actor":"lee","comment":null,"created_at":"2026-03-16T21:51:01Z","event_type":"created","id":200,"issue_id":"yac-579","new_value":"","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-16T21:51:01Z","event_type":"created","id":201,"issue_id":"yac-jmy","new_value":"","old_value":""}
 {"actor":"lee","comment":null,"created_at":"2026-03-16T21:51:01Z","event_type":"created","id":202,"issue_id":"yac-1j9","new_value":"","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-16T22:17:34Z","event_type":"closed","id":203,"issue_id":"yac-579","new_value":"All 5 phases of EventLoop decoupling refactor completed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-16T22:17:34Z","event_type":"closed","id":204,"issue_id":"yac-jyp","new_value":"All 5 phases of EventLoop decoupling refactor completed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-16T22:17:34Z","event_type":"closed","id":205,"issue_id":"yac-jmy","new_value":"All 5 phases of EventLoop decoupling refactor completed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-16T22:17:34Z","event_type":"closed","id":206,"issue_id":"yac-9u3","new_value":"All 5 phases of EventLoop decoupling refactor completed","old_value":""}
+{"actor":"lee","comment":null,"created_at":"2026-03-16T22:17:34Z","event_type":"closed","id":207,"issue_id":"yac-1j9","new_value":"All 5 phases of EventLoop decoupling refactor completed","old_value":""}
