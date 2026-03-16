@@ -82,6 +82,9 @@ test {
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
     _ = @import("rpc.zig");
+    _ = @import("vim_transport.zig");
+    _ = @import("dap_bridge.zig");
+    _ = @import("lsp_bridge.zig");
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/registry.zig");
     _ = @import("lsp/client.zig");

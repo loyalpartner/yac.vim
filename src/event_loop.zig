@@ -14,8 +14,9 @@ const progress_mod = @import("progress.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const queue_mod = @import("queue.zig");
 const dap_session_mod = @import("dap/session.zig");
-const dap_protocol = @import("dap/protocol.zig");
-const lsp_protocol = @import("lsp/protocol.zig");
+const vim_transport_mod = @import("vim_transport.zig");
+const dap_bridge_mod = @import("dap_bridge.zig");
+const lsp_bridge_mod = @import("lsp_bridge.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -77,6 +78,34 @@ pub const EventLoop = struct {
             .idle_deadline = std.time.nanoTimestamp(),
             .picker = picker_mod.Picker.init(allocator),
             .ts = ts_state,
+        };
+    }
+
+    pub fn lspBridge(self: *EventLoop) lsp_bridge_mod.LspBridge {
+        return .{
+            .allocator = self.allocator,
+            .lsp = &self.lsp,
+            .progress = &self.progress,
+            .in_general = &self.in_general,
+            .in_ts = &self.in_ts,
+            .transport = self.transport(),
+        };
+    }
+
+    pub fn dapBridge(self: *EventLoop) dap_bridge_mod.DapBridge {
+        return .{
+            .allocator = self.allocator,
+            .dap_session = &self.dap_session,
+            .transport = self.transport(),
+        };
+    }
+
+    pub fn transport(self: *EventLoop) vim_transport_mod.VimTransport {
+        return .{
+            .allocator = self.allocator,
+            .out_queue = &self.out_queue,
+            .clients = &self.clients,
+            .requests = &self.requests,
         };
     }
 
@@ -225,64 +254,6 @@ pub const EventLoop = struct {
         }
     }
 
-    fn handleLspFds(
-        self: *EventLoop,
-        poll_fds: []std.posix.pollfd,
-        client_count: usize,
-        poll_client_keys: []const []const u8,
-    ) void {
-        const lsp_end = 1 + client_count + poll_client_keys.len;
-        for (poll_fds[1 + client_count .. lsp_end], 0..) |pfd, i| {
-            if (pfd.revents & std.posix.POLL.IN != 0) {
-                const client_key = poll_client_keys[i];
-                self.processLspOutput(client_key);
-            }
-            if (pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-                const dead_key = poll_client_keys[i];
-                self.handleLspDeath(dead_key);
-            }
-        }
-    }
-
-    fn handleDapFd(self: *EventLoop, poll_fds: []std.posix.pollfd, dap_fd_index: ?usize) void {
-        const dfi = dap_fd_index orelse return;
-        const revents = poll_fds[dfi].revents;
-
-        // Always process available data first, even when HUP is also set.
-        // The adapter may send initialize response + initialized event then close.
-        if (revents & std.posix.POLL.IN != 0) {
-            self.processDapOutput();
-        }
-
-        if (revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-            // Drain any remaining data before cleanup
-            if (self.dap_session) |session| {
-                while (true) {
-                    var arena = std.heap.ArenaAllocator.init(self.allocator);
-                    defer arena.deinit();
-                    const alloc = arena.allocator();
-
-                    var msgs = session.client.readMessages(alloc) catch break;
-                    defer msgs.deinit(self.allocator);
-                    if (msgs.items.len == 0) break;
-
-                    for (msgs.items) |msg| {
-                        switch (msg) {
-                            .response => |r| self.handleDapResponse(alloc, session, r),
-                            .event => |e| self.handleDapEvent(alloc, session, e),
-                        }
-                        if (self.dap_session == null) break;
-                    }
-                    if (self.dap_session == null) break;
-                }
-            }
-            if (self.dap_session != null) {
-                log.info("DAP adapter disconnected (HUP/ERR)", .{});
-                self.cleanupDapSession();
-            }
-        }
-    }
-
     fn handlePickerFd(self: *EventLoop, poll_fds: []std.posix.pollfd, picker_fd_index: ?usize) void {
         if (picker_fd_index) |pfi| {
             if (poll_fds[pfi].revents & (std.posix.POLL.IN | std.posix.POLL.HUP) != 0) {
@@ -382,8 +353,8 @@ pub const EventLoop = struct {
             self.state_lock.lock();
             self.handleListener(poll_fds.items);
             self.handleClientFds(poll_fds.items, poll_setup.client_count, client_id_order.items, buf[0..]);
-            self.handleLspFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
-            self.handleDapFd(poll_fds.items, poll_setup.dap_fd_index);
+            self.lspBridge().handleFds(poll_fds.items, poll_setup.client_count, poll_client_keys.items);
+            self.dapBridge().handleFd(poll_fds.items, poll_setup.dap_fd_index);
             self.handlePickerFd(poll_fds.items, poll_setup.picker_fd_index);
             const should_exit = self.shutdown_requested;
             self.state_lock.unlock();
@@ -558,7 +529,7 @@ pub const EventLoop = struct {
                     if (self.lsp.enqueueDeferred(cid, raw_line)) {
                         log.info("Deferred {s} request (LSP indexing in progress)", .{method});
                         if (lsp_transform.formatToastCmd(alloc, "[yac] LSP indexing, request queued...", null)) |cmd|
-                            self.sendVimExTo(cid, alloc, cmd);
+                            self.transport().sendExTo(cid, alloc, cmd);
                     }
                     return;
                 }
@@ -580,7 +551,7 @@ pub const EventLoop = struct {
 
         const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {
             log.err("Handler error for {s}: {any}", .{ method, e });
-            self.sendVimErrorTo(cid, alloc, vim_id, "Handler error");
+            self.transport().sendErrorTo(cid, alloc, vim_id, "Handler error");
             return;
         };
 
@@ -591,9 +562,9 @@ pub const EventLoop = struct {
                 if (self.lsp.enqueueDeferred(cid, raw_line)) {
                     log.info("Deferred {s} request (LSP initializing)", .{method});
                     if (lsp_transform.formatToastCmd(alloc, "[yac] LSP initializing, request queued...", null)) |cmd|
-                        self.sendVimExTo(cid, alloc, cmd);
+                        self.transport().sendExTo(cid, alloc, cmd);
                 } else {
-                    self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                    self.transport().sendResponseTo(cid, alloc, vim_id, .null);
                 }
             }
         } else if (ctx._pending) |pending| {
@@ -603,14 +574,14 @@ pub const EventLoop = struct {
                 self.clients.subscribeClient(cid, ws);
             }
             switch (self.picker.processAction(alloc, data)) {
-                .none => self.sendVimResponseTo(cid, alloc, vim_id, data),
-                .respond_null => self.sendVimResponseTo(cid, alloc, vim_id, .null),
-                .respond => |v| self.sendVimResponseTo(cid, alloc, vim_id, v),
-                .query_buffers => self.sendVimExprTo(cid, alloc, vim_id, "map(getbufinfo({'buflisted':1}), {_, b -> b.name})", .picker_buffers),
+                .none => self.transport().sendResponseTo(cid, alloc, vim_id, data),
+                .respond_null => self.transport().sendResponseTo(cid, alloc, vim_id, .null),
+                .respond => |v| self.transport().sendResponseTo(cid, alloc, vim_id, v),
+                .query_buffers => self.transport().sendExprTo(cid, alloc, vim_id, "map(getbufinfo({'buflisted':1}), {_, b -> b.name})", .picker_buffers),
             }
         } else {
             if (vim_id != null) {
-                self.sendVimResponseTo(cid, alloc, vim_id, .null);
+                self.transport().sendResponseTo(cid, alloc, vim_id, .null);
             }
         }
 
@@ -642,7 +613,7 @@ pub const EventLoop = struct {
                 }
                 // Send null responses to Vim for cancelled requests so callbacks don't hang
                 for (cancelled.cancelled_vim_info.items) |info| {
-                    self.sendVimResponseTo(info.client_id, self.allocator, info.vim_request_id, .null);
+                    self.transport().sendResponseTo(info.client_id, self.allocator, info.vim_request_id, .null);
                 }
                 log.debug("Cancelled {d} old {s} request(s)", .{ cancelled.lsp_ids.items.len, method });
             }
@@ -685,444 +656,6 @@ pub const EventLoop = struct {
         };
     }
 
-    /// Process output from an LSP server.
-    fn processLspOutput(self: *EventLoop, client_key: []const u8) void {
-        const client = self.lsp.registry.getClient(client_key) orelse return;
-
-        var messages = client.readMessages() catch |e| {
-            log.err("LSP read error for {s}: {any}", .{ client_key, e });
-            return;
-        };
-        defer {
-            for (messages.items) |*msg| msg.deinit();
-            messages.deinit(self.allocator);
-        }
-
-        for (messages.items) |*msg| {
-            switch (msg.kind) {
-                .response => |resp| {
-                    const rid = resp.id.asU32() orelse {
-                        log.debug("Unmatched LSP response id={any}", .{resp.id});
-                        continue;
-                    };
-
-                    // Check if this is an initialize response
-                    if (self.lsp.registry.getInitRequestId(client_key)) |init_id| {
-                        if (rid == init_id) {
-                            self.lsp.registry.handleInitializeResponse(client_key, resp.result) catch |e| {
-                                log.err("Failed to handle init response: {any}", .{e});
-                            };
-                            if (!self.lsp.isAnyLanguageIndexing()) {
-                                self.flushDeferredRequests();
-                            }
-                            continue;
-                        }
-                    }
-
-                    // Route to pending Vim request
-                    if (self.requests.removeLsp(rid)) |pending| {
-                        defer pending.deinit(self.allocator);
-
-                        var arena = std.heap.ArenaAllocator.init(self.allocator);
-                        defer arena.deinit();
-
-                        if (resp.err) |err_val| {
-                            const err_str = json_utils.stringifyAlloc(arena.allocator(), err_val) catch "?";
-                            log.err("LSP error for request {any} ({s}): {s}", .{ resp.id, pending.method, err_str });
-                            self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, .null);
-                        } else {
-                            const tctx = lsp_transform.TransformContext{
-                                .server_caps = if (pending.lsp_client_key) |key|
-                                    if (self.lsp.registry.server_capabilities.get(key)) |parsed| parsed.value else null
-                                else
-                                    null,
-                            };
-                            const transformed = pending.transform(arena.allocator(), resp.result, tctx);
-                            log.debug("LSP response [{any}]: {s} -> Vim[{d}] (null={any})", .{ resp.id, pending.method, pending.client_id, transformed == .null });
-                            self.sendVimResponseTo(pending.client_id, arena.allocator(), pending.vim_request_id, transformed);
-                        }
-                    } else {
-                        log.debug("Unmatched LSP response id={any}", .{resp.id});
-                    }
-                },
-                .notification => |notif| {
-                    self.handleLspNotification(client_key, notif.method, notif.params);
-                },
-                .server_request => |req| {
-                    self.handleServerRequest(client_key, req.id, req.method, req.params);
-                },
-            }
-        }
-    }
-
-    /// Handle a server-to-client request (e.g. workspace/applyEdit).
-    fn handleServerRequest(self: *EventLoop, client_key: []const u8, id: lsp_protocol.RequestId, method: []const u8, params: Value) void {
-        const lsp_client = self.lsp.registry.getClient(client_key) orelse return;
-
-        if (std.mem.eql(u8, method, "workspace/applyEdit")) {
-            const ApplyEditResult = struct { applied: bool };
-            const result_value: Value = json_utils.structToValue(self.allocator, ApplyEditResult{ .applied = true }) catch .null;
-            lsp_client.sendResponse(id, result_value) catch |e| {
-                log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
-            };
-
-            // Forward the edit to subscribed Vim clients
-            const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena.deinit();
-            const encoded = (rpc.Message{ .notification = .{ .method = "applyEdit", .params = params } }).serialize(arena.allocator()) catch return;
-            self.sendToWorkspace(workspace_uri, encoded);
-            return;
-        }
-
-        // All other server requests: acknowledge with null
-        if (!std.mem.eql(u8, method, "window/workDoneProgress/create") and
-            !std.mem.eql(u8, method, "client/registerCapability") and
-            !std.mem.eql(u8, method, "client/unregisterCapability"))
-        {
-            log.debug("Unknown server request: {s} (id={any})", .{ method, id });
-        }
-        const null_value: Value = .null;
-        lsp_client.sendResponse(id, null_value) catch |e| {
-            log.err("Failed to respond to {s}: {any}", .{ method, e });
-        };
-    }
-
-    /// Handle an LSP server that has died (HUP/ERR on its stdout fd).
-    // ====================================================================
-    // DAP output processing
-    // ====================================================================
-
-    fn processDapOutput(self: *EventLoop) void {
-        const session = self.dap_session orelse return;
-
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var messages = session.client.readMessages(alloc) catch |e| {
-            log.debug("DAP readMessages error: {any}", .{e});
-            if (e == error.AdapterClosed) self.cleanupDapSession();
-            return;
-        };
-        defer messages.deinit(self.allocator);
-
-        for (messages.items) |msg| {
-            switch (msg) {
-                .response => |r| self.handleDapResponse(alloc, session, r),
-                .event => |e| self.handleDapEvent(alloc, session, e),
-            }
-            if (self.dap_session == null) break;
-        }
-    }
-
-    fn handleDapResponse(self: *EventLoop, alloc: std.mem.Allocator, session: *dap_session_mod.DapSession, response: dap_protocol.DapResponse) void {
-        _ = session.client.pending_requests.fetchRemove(response.request_seq);
-
-        if (std.mem.eql(u8, response.command, "initialize")) {
-            session.client.handleInitializeResponse(response);
-            // debugpy requires launch BEFORE it sends 'initialized' event.
-            // Send launch immediately after initialize response.
-            session.client.sendLaunchAfterInit();
-            return;
-        }
-
-        if (std.mem.eql(u8, response.command, "launch") and response.success) {
-            session.client.state = .running;
-            session.session_state = .running;
-            log.info("DAP: launch succeeded", .{});
-        }
-
-        if (!response.success) {
-            const err_msg = response.message orelse "unknown error";
-            log.err("DAP {s} failed: {s}", .{ response.command, err_msg });
-        }
-
-        // Try routing through session chain (auto stopped→stackTrace→scopes→variables).
-        // Failed responses are also routed so the chain can abort gracefully
-        // instead of getting stuck in an awaiting_* stage forever.
-        const chain_handled = session.handleResponse(alloc, response) catch |e| blk: {
-            log.err("DAP chain error: {any}", .{e});
-            break :blk false;
-        };
-
-        if (chain_handled) {
-            if (session.isChainComplete()) {
-                // Chain finished — send full panel data to Vim
-                log.info("DAP chain complete, sending panel update", .{});
-                const panel_data = session.buildPanelData(alloc) catch return;
-                self.sendDapCallbackToOwner(alloc, "yac_dap#on_panel_update", panel_data);
-            }
-            // Chain-managed responses are NOT forwarded individually —
-            // the panel update callback replaces per-response callbacks.
-            return;
-        }
-
-        // Non-chain responses: forward individually for backward compatibility
-        if (std.mem.eql(u8, response.command, "stackTrace") or
-            std.mem.eql(u8, response.command, "scopes") or
-            std.mem.eql(u8, response.command, "variables") or
-            std.mem.eql(u8, response.command, "evaluate") or
-            std.mem.eql(u8, response.command, "threads"))
-        {
-            const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{response.command}) catch return;
-            self.sendDapCallbackToOwner(alloc, func, response.body);
-        }
-    }
-
-    fn handleDapEvent(self: *EventLoop, alloc: std.mem.Allocator, session: *dap_session_mod.DapSession, event: dap_protocol.DapEvent) void {
-        session.client.handleEvent(event);
-
-        if (std.mem.eql(u8, event.event, "initialized")) {
-            session.session_state = .configured;
-            session.client.sendDeferredConfiguration();
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_initialized", .null);
-        } else if (std.mem.eql(u8, event.event, "stopped")) {
-            session.session_state = .stopped;
-            // Extract reason from event body
-            const reason = if (event.body == .object)
-                json_utils.getString(event.body.object, "reason") orelse "unknown"
-            else
-                "unknown";
-            // Start chain: stackTrace → scopes → variables (automatic)
-            session.startStoppedChain(reason) catch |e| {
-                log.err("DAP chain start failed: {any}", .{e});
-            };
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_stopped", event.body);
-        } else if (std.mem.eql(u8, event.event, "continued")) {
-            session.session_state = .running;
-            session.clearCache();
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_continued", .null);
-        } else if (std.mem.eql(u8, event.event, "terminated")) {
-            session.session_state = .terminated;
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_terminated", .null);
-            self.cleanupDapSession();
-        } else if (std.mem.eql(u8, event.event, "exited")) {
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_exited", event.body);
-        } else if (std.mem.eql(u8, event.event, "output")) {
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_output", event.body);
-        } else if (std.mem.eql(u8, event.event, "breakpoint")) {
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_breakpoint", event.body);
-        } else if (std.mem.eql(u8, event.event, "thread")) {
-            self.sendDapCallbackToOwner(alloc, "yac_dap#on_thread", event.body);
-        }
-    }
-
-    /// Send DAP callback only to the client that owns the session.
-    fn sendDapCallbackToOwner(self: *EventLoop, alloc: std.mem.Allocator, func: []const u8, args: Value) void {
-        const session = self.dap_session orelse return;
-        const owner_id = session.owner_client_id;
-        const client_entry = self.clients.get(owner_id) orelse {
-            log.warn("DAP callback: owner client {d} disconnected", .{owner_id});
-            return;
-        };
-
-        var arg_array = std.json.Array.init(alloc);
-        arg_array.append(args) catch return;
-
-        const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{
-            .func = func,
-            .args = .{ .array = arg_array },
-        } }) catch return;
-
-        const msg = self.allocator.alloc(u8, encoded.len + 1) catch return;
-        @memcpy(msg[0..encoded.len], encoded);
-        msg[encoded.len] = '\n';
-        if (!self.out_queue.push(.{ .stream = client_entry.stream, .bytes = msg })) {
-            self.allocator.free(msg);
-            log.warn("DAP callback: out queue full for client {d}", .{owner_id});
-        }
-    }
-
-    fn sendVimExToAll(self: *EventLoop, alloc: std.mem.Allocator, command: []const u8) void {
-        var cit = self.clients.iterator();
-        while (cit.next()) |entry| {
-            const cid = entry.key_ptr.*;
-            self.sendVimExTo(cid, alloc, command);
-        }
-    }
-
-    fn cleanupDapSession(self: *EventLoop) void {
-        if (self.dap_session) |session| {
-            session.client.deinit();
-            session.deinit();
-            self.allocator.destroy(session);
-            self.dap_session = null;
-            log.info("DAP session cleaned up", .{});
-        }
-    }
-
-    fn handleLspDeath(self: *EventLoop, client_key: []const u8) void {
-        log.err("LSP server died: {s}", .{client_key});
-
-        const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
-
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        // Read stderr for diagnostics
-        const stderr_snippet = blk: {
-            const client = self.lsp.registry.getClient(client_key) orelse break :blk null;
-            const stderr_file = client.child.stderr orelse break :blk null;
-            var stderr_buf: [4096]u8 = undefined;
-            const n = stderr_file.read(&stderr_buf) catch break :blk null;
-            if (n == 0) break :blk null;
-            log.err("LSP stderr: {s}", .{stderr_buf[0..n]});
-            break :blk stderr_buf[0..@min(n, 200)];
-        };
-
-        const crash_msg = if (stderr_snippet) |msg|
-            std.fmt.allocPrint(alloc, "[yac] LSP server crashed: {s}", .{msg}) catch return
-        else
-            "[yac] LSP server crashed (no stderr output)";
-        if (lsp_transform.formatToastCmd(alloc, crash_msg, "ErrorMsg")) |cmd|
-            self.sendVimExToWorkspace(workspace_uri, alloc, cmd);
-
-        self.lsp.registry.removeClient(client_key);
-    }
-
-    /// Handle LSP server notifications.
-    fn handleLspNotification(self: *EventLoop, client_key: []const u8, method: []const u8, params: Value) void {
-        const workspace_uri = lsp_mod.extractWorkspaceFromKey(client_key);
-
-        if (std.mem.eql(u8, method, "$/progress")) {
-            const language = lsp_mod.extractLanguageFromKey(client_key);
-            const params_obj = switch (params) {
-                .object => |o| o,
-                else => return,
-            };
-            const value_obj = json_utils.getObject(params_obj, "value") orelse return;
-            const kind = json_utils.getString(value_obj, "kind") orelse return;
-
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena.deinit();
-            const alloc = arena.allocator();
-
-            const token_key: ?[]const u8 = blk: {
-                const token_val = params_obj.get("token") orelse break :blk null;
-                switch (token_val) {
-                    .string => |s| break :blk s,
-                    .integer => |i| break :blk std.fmt.allocPrint(alloc, "{d}", .{i}) catch null,
-                    else => break :blk null,
-                }
-            };
-
-            const message = json_utils.getString(value_obj, "message");
-            const percentage = json_utils.getInteger(value_obj, "percentage");
-
-            if (std.mem.eql(u8, kind, "begin")) {
-                self.lsp.incrementIndexingCount(language);
-                const title = json_utils.getString(value_obj, "title");
-                if (token_key) |tk| if (title) |t| self.progress.storeTitle(tk, t);
-                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
-                    self.sendVimExToWorkspace(workspace_uri, alloc, echo_cmd);
-                }
-            } else if (std.mem.eql(u8, kind, "report")) {
-                const title = if (token_key) |tk| self.progress.getTitle(tk) else null;
-                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |echo_cmd| {
-                    self.sendVimExToWorkspace(workspace_uri, alloc, echo_cmd);
-                }
-            } else if (std.mem.eql(u8, kind, "end")) {
-                if (token_key) |tk| self.progress.removeTitle(tk);
-                self.lsp.decrementIndexingCount(language);
-                if (!self.lsp.isAnyLanguageIndexing()) {
-                    if (lsp_transform.formatToastCmd(alloc, "[yac] Indexing complete", null)) |cmd|
-                        self.sendVimExToWorkspace(workspace_uri, alloc, cmd);
-                    self.flushDeferredRequests();
-                }
-            }
-        } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
-            var arena = std.heap.ArenaAllocator.init(self.allocator);
-            defer arena.deinit();
-            const encoded = (rpc.Message{ .notification = .{ .method = "diagnostics", .params = params } }).serialize(arena.allocator()) catch return;
-            self.sendToWorkspace(workspace_uri, encoded);
-        } else {
-            log.debug("LSP notification: {s}", .{method});
-        }
-    }
-
-    /// Flush deferred requests after LSP indexing completes.
-    /// Re-routes each deferred line back to the appropriate work queue.
-    fn flushDeferredRequests(self: *EventLoop) void {
-        var requests = self.lsp.takeDeferredRequests();
-        defer {
-            for (requests.items) |req| self.allocator.free(req.raw_line);
-            requests.deinit(self.allocator);
-        }
-
-        for (requests.items) |req| {
-            const client = self.clients.get(req.client_id) orelse continue;
-            // Duplicate raw_line since the defer block above frees the original.
-            const raw_line_copy = self.allocator.dupe(u8, req.raw_line) catch continue;
-            const item = queue_mod.WorkItem{
-                .client_id = req.client_id,
-                .client_stream = client.stream,
-                .raw_line = raw_line_copy,
-            };
-            // Re-apply the same routing logic as processClientInput.
-            const routed = if (queue_mod.isTsMethod(req.raw_line))
-                self.in_ts.push(item)
-            else
-                self.in_general.push(item);
-            if (!routed) {
-                item.deinit(self.allocator);
-                log.warn("Work queue full, dropping deferred request", .{});
-            }
-        }
-    }
-
-    // ====================================================================
-    // Send helpers — push to out_queue instead of writing directly.
-    // All callers must hold state_lock when accessing clients map.
-    // ====================================================================
-
-    /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
-    /// Drops the message silently if the queue is full (back-pressure).
-    fn pushToOutQueue(self: *EventLoop, stream: std.net.Stream, encoded: []const u8) void {
-        const msg_bytes = self.allocator.alloc(u8, encoded.len + 1) catch {
-            log.err("OOM: failed to allocate out message", .{});
-            return;
-        };
-        @memcpy(msg_bytes[0..encoded.len], encoded);
-        msg_bytes[encoded.len] = '\n';
-        if (!self.out_queue.push(.{ .stream = stream, .bytes = msg_bytes })) {
-            self.allocator.free(msg_bytes);
-            log.warn("Out queue full, dropping message", .{});
-        }
-    }
-
-    /// Send a JSON-RPC response to a specific Vim client.
-    fn sendVimResponseTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, result: Value) void {
-        const id = vim_id orelse return;
-        const client = self.clients.get(cid) orelse return;
-        const encoded = (rpc.Message{ .response = .{ .id = @intCast(id), .result = result } }).serialize(alloc) catch return;
-        defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
-    }
-
-    /// Send a Vim ex command to a specific client.
-    fn sendVimExTo(self: *EventLoop, cid: ClientId, alloc: Allocator, command: []const u8) void {
-        const client = self.clients.get(cid) orelse return;
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
-    }
-
-    /// Send an expr request to a specific Vim client and register a pending entry.
-    fn sendVimExprTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, expr: []const u8, tag: PendingVimExpr.Tag) void {
-        const client = self.clients.get(cid) orelse return;
-        const id = self.requests.nextExprId();
-        // Register pending entry BEFORE sending, so we never send an expr we can't track
-        self.requests.addExpr(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {
-            log.err("Failed to register pending vim expr (OOM)", .{});
-            return;
-        };
-        const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
-        defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
-    }
-
     /// Handle the result of a daemon->Vim expr request.
     fn handleVimExprResponse(self: *EventLoop, alloc: Allocator, pending: PendingVimExpr, result: Value) void {
         switch (pending.tag) {
@@ -1135,7 +668,7 @@ pub const EventLoop = struct {
                 for (arr) |item| {
                     if (item == .string) self.picker.appendIfMissing(item.string);
                 }
-                self.sendVimResponseTo(pending.cid, alloc, pending.vim_id, picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file"));
+                self.transport().sendResponseTo(pending.cid, alloc, pending.vim_id, picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file"));
             },
         }
     }
@@ -1159,56 +692,11 @@ pub const EventLoop = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
+                self.transport().pushToOutQueue(client_ptr.*.stream, encoded);
             }
         }
     }
 
-    /// Send a raw encoded message to clients subscribed to a workspace.
-    /// Falls back to broadcast if workspace_uri is null (e.g. copilot notifications).
-    fn sendToWorkspace(self: *EventLoop, workspace_uri: ?[]const u8, encoded: []const u8) void {
-        if (workspace_uri == null) {
-            self.broadcastRaw(encoded);
-            return;
-        }
-        var cit = self.clients.valueIterator();
-        while (cit.next()) |client_ptr| {
-            if (client_ptr.*.isSubscribedTo(workspace_uri.?)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
-            }
-        }
-    }
-
-    /// Send a Vim ex command to clients subscribed to a workspace.
-    fn sendVimExToWorkspace(self: *EventLoop, workspace_uri: ?[]const u8, alloc: Allocator, command: []const u8) void {
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        self.sendToWorkspace(workspace_uri, encoded);
-    }
-
-    /// Send a Vim ex command to ALL connected clients.
-    fn broadcastVimEx(self: *EventLoop, alloc: Allocator, command: []const u8) void {
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        self.broadcastRaw(encoded);
-    }
-
-    /// Broadcast a raw encoded message to all connected clients.
-    fn broadcastRaw(self: *EventLoop, encoded: []const u8) void {
-        var cit = self.clients.valueIterator();
-        while (cit.next()) |client_ptr| {
-            self.pushToOutQueue(client_ptr.*.stream, encoded);
-        }
-    }
-
-    /// Send an error response to a specific Vim client.
-    fn sendVimErrorTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, message: []const u8) void {
-        if (vim_id) |id| {
-            var err_obj = ObjectMap.init(alloc);
-            err_obj.put("error", json_utils.jsonString(message)) catch return;
-            self.sendVimResponseTo(cid, alloc, id, .{ .object = err_obj });
-        }
-    }
 };
 
 // ============================================================================
