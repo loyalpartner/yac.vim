@@ -1,6 +1,7 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
+const lsp_types = @import("../lsp/types.zig");
 const log = @import("../log.zig");
 const ts_handlers = @import("treesitter.zig");
 const registry_mod = @import("../lsp/registry.zig");
@@ -32,10 +33,10 @@ pub fn handleDidChange(ctx: *HandlerContext, p: DidChangeParams) !void {
 
     const file = p.file orelse return;
     if (ctx.lspAllowInit(file)) |lc| {
-        lc.client.sendNotification("textDocument/didChange", common.DidChangeParams{
+        lc.client.notify(lsp_types.DidChange{ .params = .{
             .textDocument = .{ .uri = lc.uri, .version = p.version orelse 1 },
             .contentChanges = try common.buildContentChanges(ctx.allocator, p.changes, p.text),
-        }) catch |e| {
+        } }) catch |e| {
             log.err("Failed to send didChange: {any}", .{e});
         };
     }
@@ -53,10 +54,10 @@ fn forwardDidChangeToCopilot(ctx: *HandlerContext, p: DidChangeParams) void {
     const real_path = registry_mod.extractRealPath(file);
     const uri = registry_mod.filePathToUri(ctx.allocator, real_path) catch return;
 
-    copilot_client.sendNotification("textDocument/didChange", common.DidChangeParams{
+    copilot_client.notify(lsp_types.DidChange{ .params = .{
         .textDocument = .{ .uri = uri, .version = p.version orelse 1 },
         .contentChanges = common.buildContentChanges(ctx.allocator, p.changes, p.text) catch return,
-    }) catch |e| {
+    } }) catch |e| {
         log.err("Failed to send didChange to Copilot: {any}", .{e});
     };
 }
@@ -65,9 +66,9 @@ pub fn handleDidSave(ctx: *HandlerContext, p: common.FileParams) !void {
     const file = p.file orelse return;
     const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    lsp_ctx.client.sendNotification("textDocument/didSave", common.TextDocumentParams{
+    lsp_ctx.client.notify(lsp_types.DidSave{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
-    }) catch |e| {
+    } }) catch |e| {
         log.err("Failed to send didSave: {any}", .{e});
     };
 }
@@ -81,9 +82,9 @@ pub fn handleDidClose(ctx: *HandlerContext, p: common.FileParams) !void {
     const file = p.file orelse return;
     const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    lsp_ctx.client.sendNotification("textDocument/didClose", common.TextDocumentParams{
+    lsp_ctx.client.notify(lsp_types.DidClose{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
-    }) catch |e| {
+    } }) catch |e| {
         log.err("Failed to send didClose: {any}", .{e});
     };
 }
@@ -92,9 +93,9 @@ pub fn handleWillSave(ctx: *HandlerContext, p: common.FileParams) !void {
     const file = p.file orelse return;
     const lsp_ctx = ctx.lspAllowInit(file) orelse return;
 
-    lsp_ctx.client.sendNotification("textDocument/willSave", common.WillSaveParams{
+    lsp_ctx.client.notify(lsp_types.WillSave{ .params = .{
         .textDocument = .{ .uri = lsp_ctx.uri },
-    }) catch |e| {
+    } }) catch |e| {
         log.err("Failed to send willSave: {any}", .{e});
     };
 }

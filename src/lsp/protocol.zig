@@ -150,50 +150,121 @@ pub const MessageFramer = struct {
     }
 };
 
-/// Build a JSON-RPC request for LSP.
-pub fn buildLspRequest(allocator: Allocator, id: u32, method: []const u8, params: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
+// ============================================================================
+// Comptime method ↔ params binding
+//
+// LspRequest("textDocument/hover", TextDocumentPositionParams) generates a
+// struct that pairs the method string with its params type at compile time.
+// sendRequest/sendNotification use @hasDecl(T, "method") to enforce this.
+// ============================================================================
 
-    try w.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":", .{id});
-    try json.stringifyToWriter(json.jsonString(method), w);
-    try w.writeAll(",\"params\":");
-    try json.stringifyToWriter(params, w);
-    try w.writeByte('}');
-
-    return aw.toOwnedSlice();
+pub fn LspRequest(comptime method_name: []const u8, comptime Params: type) type {
+    return struct {
+        pub const method = method_name;
+        pub const ParamsType = Params;
+        params: Params,
+    };
 }
 
-/// Build a JSON-RPC notification for LSP.
-pub fn buildLspNotification(allocator: Allocator, method: []const u8, params: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
-
-    try w.writeAll("{\"jsonrpc\":\"2.0\",\"method\":");
-    try json.stringifyToWriter(json.jsonString(method), w);
-    try w.writeAll(",\"params\":");
-    try json.stringifyToWriter(params, w);
-    try w.writeByte('}');
-
-    return aw.toOwnedSlice();
+pub fn LspNotification(comptime method_name: []const u8, comptime Params: type) type {
+    return struct {
+        pub const method = method_name;
+        pub const ParamsType = Params;
+        params: Params,
+    };
 }
 
-/// Build a JSON-RPC response for LSP (responding to server requests).
-pub fn buildLspResponse(allocator: Allocator, id: RequestId, result: Value) ![]const u8 {
-    var aw: Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    const w = &aw.writer;
+// ============================================================================
+// JSON-RPC Message — unified protocol type with serialize/deserialize
+// ============================================================================
 
-    try w.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-    try json.stringifyToWriter(id.toValue(), w);
-    try w.writeAll(",\"result\":");
-    try json.stringifyToWriter(result, w);
-    try w.writeByte('}');
+pub const Request = struct { id: RequestId, method: []const u8, params: Value };
+pub const Response = struct { id: RequestId, result: Value, err: ?Value = null };
+pub const Notification = struct { method: []const u8, params: Value };
 
-    return aw.toOwnedSlice();
-}
+pub const Message = union(enum) {
+    /// Request (method + id) — outgoing or incoming (server request)
+    request: Request,
+    /// Response (id + result/error)
+    response: Response,
+    /// Notification (method, no id, no response expected)
+    notification: Notification,
+
+    /// Serialize to Content-Length framed JSON-RPC bytes (wire format).
+    pub fn serialize(self: Message, allocator: Allocator) ![]const u8 {
+        // Step 1: serialize JSON body
+        var body_w: Writer.Allocating = .init(allocator);
+        errdefer body_w.deinit();
+        const bw = &body_w.writer;
+
+        switch (self) {
+            .request => |r| {
+                try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+                try json.stringifyToWriter(r.id.toValue(), bw);
+                try bw.writeAll(",\"method\":");
+                try json.stringifyToWriter(json.jsonString(r.method), bw);
+                try bw.writeAll(",\"params\":");
+                try json.stringifyToWriter(r.params, bw);
+                try bw.writeByte('}');
+            },
+            .response => |r| {
+                try bw.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+                try json.stringifyToWriter(r.id.toValue(), bw);
+                try bw.writeAll(",\"result\":");
+                try json.stringifyToWriter(r.result, bw);
+                try bw.writeByte('}');
+            },
+            .notification => |n| {
+                try bw.writeAll("{\"jsonrpc\":\"2.0\",\"method\":");
+                try json.stringifyToWriter(json.jsonString(n.method), bw);
+                try bw.writeAll(",\"params\":");
+                try json.stringifyToWriter(n.params, bw);
+                try bw.writeByte('}');
+            },
+        }
+
+        const body = try body_w.toOwnedSlice();
+        defer allocator.free(body);
+
+        // Step 2: frame with Content-Length header
+        var aw: Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+
+        try w.writeAll(CONTENT_LENGTH_HEADER);
+        try w.print("{d}", .{body.len});
+        try w.writeAll(HEADER_DELIMITER);
+        try w.writeAll(body);
+
+        return aw.toOwnedSlice();
+    }
+
+    /// Classify a parsed JSON-RPC value into a Message.
+    pub fn fromValue(allocator: Allocator, value: Value) ?Message {
+        const raw = json.parseTyped(RpcRaw, allocator, value) orelse return null;
+
+        if (raw.method) |method| {
+            if (raw.id) |id_val| {
+                const id = RequestId.fromValue(id_val) orelse return null;
+                return .{ .request = .{ .id = id, .method = method, .params = raw.params } };
+            } else {
+                return .{ .notification = .{ .method = method, .params = raw.params } };
+            }
+        } else if (raw.id) |id_val| {
+            const id = RequestId.fromValue(id_val) orelse return null;
+            return .{ .response = .{ .id = id, .result = raw.result orelse .null, .err = raw.@"error" } };
+        }
+        return null;
+    }
+
+    const RpcRaw = struct {
+        id: ?Value = null,
+        method: ?[]const u8 = null,
+        params: Value = .null,
+        result: ?Value = null,
+        @"error": ?Value = null,
+    };
+};
 
 // ============================================================================
 // Tests
@@ -253,22 +324,77 @@ test "parse partial message" {
     try std.testing.expectEqualStrings("hello", messages2.items[0]);
 }
 
-test "build LSP request" {
+test "Message serialize request" {
     const allocator = std.testing.allocator;
-    const request = try buildLspRequest(allocator, 1, "initialize", .null);
-    defer allocator.free(request);
-    try std.testing.expectEqualStrings(
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":null}",
-        request,
-    );
+    const msg = Message{ .request = .{ .id = .{ .integer = 1 }, .method = "initialize", .params = .null } };
+    const data = try msg.serialize(allocator);
+    defer allocator.free(data);
+
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":null}";
+    const expected = "Content-Length: 60\r\n\r\n" ++ body;
+    try std.testing.expectEqualStrings(expected, data);
 }
 
-test "build LSP response" {
+test "Message serialize response" {
     const allocator = std.testing.allocator;
-    const response = try buildLspResponse(allocator, .{ .integer = 42 }, .null);
-    defer allocator.free(response);
-    try std.testing.expectEqualStrings(
-        "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":null}",
-        response,
-    );
+    const msg = Message{ .response = .{ .id = .{ .integer = 42 }, .result = .null } };
+    const data = try msg.serialize(allocator);
+    defer allocator.free(data);
+
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":null}";
+    const expected = "Content-Length: 39\r\n\r\n" ++ body;
+    try std.testing.expectEqualStrings(expected, data);
+}
+
+test "Message fromValue — response" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var obj = std.json.ObjectMap.init(alloc);
+    try obj.put("id", .{ .integer = 1 });
+    try obj.put("result", .null);
+
+    const msg = Message.fromValue(alloc, .{ .object = obj }).?;
+    switch (msg) {
+        .response => |r| {
+            try std.testing.expectEqual(@as(i64, 1), r.id.integer);
+            try std.testing.expect(r.result == .null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "Message fromValue — notification" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var obj = std.json.ObjectMap.init(alloc);
+    try obj.put("method", .{ .string = "textDocument/didOpen" });
+
+    const msg = Message.fromValue(alloc, .{ .object = obj }).?;
+    switch (msg) {
+        .notification => |n| try std.testing.expectEqualStrings("textDocument/didOpen", n.method),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "Message fromValue — request (server→client)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var obj = std.json.ObjectMap.init(alloc);
+    try obj.put("id", .{ .integer = 5 });
+    try obj.put("method", .{ .string = "workspace/applyEdit" });
+
+    const msg = Message.fromValue(alloc, .{ .object = obj }).?;
+    switch (msg) {
+        .request => |r| {
+            try std.testing.expectEqualStrings("workspace/applyEdit", r.method);
+            try std.testing.expectEqual(@as(i64, 5), r.id.integer);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

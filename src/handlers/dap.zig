@@ -167,7 +167,7 @@ pub fn handleDapStart(ctx: *HandlerContext, p: types.DapStartParams) !?Value {
         null;
 
     // Request type (launch or attach)
-    const request_type: dap_client_mod.RequestType = if (p.request) |req_str|
+    const request_type: types.RequestType = if (p.request) |req_str|
         if (std.mem.eql(u8, req_str, "attach")) .attach else .launch
     else
         .launch;
@@ -208,7 +208,7 @@ pub fn handleDapBreakpoint(ctx: *HandlerContext, p: types.DapBreakpointParams) !
     const file = p.file orelse return .{ .ok = false };
 
     // Extract breakpoint info
-    var breakpoints: std.ArrayList(dap_client_mod.BreakpointInfo) = .{};
+    var breakpoints: std.ArrayList(types.BreakpointInfo) = .{};
     defer breakpoints.deinit(ctx.allocator);
     for (p.breakpoints) |item| {
         const bp = types.parse(types.BreakpointParam, ctx.allocator, item) orelse continue;

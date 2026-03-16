@@ -598,7 +598,7 @@ pub const EventLoop = struct {
             if (cancelled.lsp_ids.items.len > 0) {
                 if (self.lsp.registry.getClient(key)) |lsp_client| {
                     for (cancelled.lsp_ids.items) |old_id| {
-                        lsp_client.sendCancelNotification(old_id) catch |e| {
+                        lsp_client.cancelRequest(old_id) catch |e| {
                             log.warn("Failed to send $/cancelRequest for id={d}: {any}", .{ old_id, e });
                         };
                     }

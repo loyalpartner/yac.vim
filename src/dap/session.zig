@@ -9,7 +9,7 @@ const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const DapClient = dap_client_mod.DapClient;
-const DapState = dap_client_mod.DapState;
+const DapState = types.DapState;
 
 // ============================================================================
 // DapSession — high-level DAP session management
@@ -23,33 +23,10 @@ const DapState = dap_client_mod.DapState;
 // DapClient handles raw DAP protocol; DapSession handles the UX logic.
 // ============================================================================
 
-// ============================================================================
-// Vim output types — define the JSON schema sent to Vim
-// ============================================================================
-
-pub const VimFrame = struct {
-    id: u32,
-    name: []const u8,
-    source_path: []const u8,
-    source_name: []const u8,
-    line: u32,
-};
-
-pub const VimWatchResult = struct {
-    expression: []const u8,
-    result: []const u8,
-    type: []const u8,
-    @"error": bool,
-};
-
-pub const VimVariable = struct {
-    name: []const u8,
-    value: []const u8,
-    type: []const u8,
-    expandable: bool,
-    expanded: bool,
-    depth: u32,
-};
+// Vim output types are in dap/types.zig.
+const VimFrame = types.VimFrame;
+const VimVariable = types.VimVariable;
+const VimWatchResult = types.VimWatchResult;
 
 // ============================================================================
 // Cache types
@@ -199,7 +176,7 @@ pub const DapSession = struct {
 
     /// Called when a DAP response arrives. Returns true if chain advanced.
     /// Failed responses abort the chain gracefully (→ idle) so it doesn't get stuck.
-    pub fn handleResponse(self: *DapSession, alloc: Allocator, response: dap_protocol.DapResponse) !bool {
+    pub fn handleResponse(self: *DapSession, alloc: Allocator, response: dap_protocol.Response) !bool {
         switch (self.chain_stage) {
             .awaiting_stack_trace => {
                 if (!std.mem.eql(u8, response.command, "stackTrace")) return false;

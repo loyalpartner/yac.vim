@@ -9,8 +9,6 @@ const log = @import("log.zig");
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
 const DapSession = dap_session_mod.DapSession;
-const DapResponse = dap_protocol.DapResponse;
-const DapEvent = dap_protocol.DapEvent;
 
 // ============================================================================
 // Dispatch tables
@@ -79,11 +77,12 @@ pub const DapBridge = struct {
         self.dispatchMessages(arena.allocator(), session, messages.items);
     }
 
-    fn dispatchMessages(self: DapBridge, alloc: Allocator, session: *DapSession, messages: []const dap_protocol.DapMessage) void {
+    fn dispatchMessages(self: DapBridge, alloc: Allocator, session: *DapSession, messages: []const dap_protocol.Message) void {
         for (messages) |msg| {
             switch (msg) {
                 .response => |r| self.handleResponse(alloc, session, r),
                 .event => |e| self.handleEvent(alloc, session, e),
+                .request => {},
             }
             if (self.dap_session.* == null) break;
         }
@@ -114,7 +113,7 @@ pub const DapBridge = struct {
     // Responses
     // ----------------------------------------------------------------
 
-    fn handleResponse(self: DapBridge, alloc: Allocator, session: *DapSession, resp: DapResponse) void {
+    fn handleResponse(self: DapBridge, alloc: Allocator, session: *DapSession, resp: dap_protocol.Response) void {
         _ = session.client.pending_requests.fetchRemove(resp.request_seq);
 
         if (std.mem.eql(u8, resp.command, "initialize")) {
@@ -140,7 +139,7 @@ pub const DapBridge = struct {
 
     /// Route through session chain (stopped → stackTrace → scopes → variables).
     /// Returns true if the chain consumed this response.
-    fn tryChainRoute(self: DapBridge, alloc: Allocator, session: *DapSession, resp: DapResponse) bool {
+    fn tryChainRoute(self: DapBridge, alloc: Allocator, session: *DapSession, resp: dap_protocol.Response) bool {
         const handled = session.handleResponse(alloc, resp) catch |e| {
             log.err("DAP chain error: {any}", .{e});
             return false;
@@ -156,7 +155,7 @@ pub const DapBridge = struct {
     }
 
     /// Forward non-chain responses individually to Vim.
-    fn forwardResponse(self: DapBridge, alloc: Allocator, resp: DapResponse) void {
+    fn forwardResponse(self: DapBridge, alloc: Allocator, resp: dap_protocol.Response) void {
         if (!isInTable(forwarded_commands, resp.command)) return;
         const func = std.fmt.allocPrint(alloc, "yac_dap#on_{s}", .{resp.command}) catch return;
         self.sendCallbackToOwner(alloc, func, resp.body);
@@ -166,7 +165,7 @@ pub const DapBridge = struct {
     // Events
     // ----------------------------------------------------------------
 
-    fn handleEvent(self: DapBridge, alloc: Allocator, session: *DapSession, event: DapEvent) void {
+    fn handleEvent(self: DapBridge, alloc: Allocator, session: *DapSession, event: dap_protocol.Event) void {
         session.client.handleEvent(event);
 
         if (std.mem.eql(u8, event.event, "initialized")) {
@@ -193,7 +192,7 @@ pub const DapBridge = struct {
         self.sendCallbackToOwner(alloc, "yac_dap#on_initialized", .null);
     }
 
-    fn onStopped(self: DapBridge, alloc: Allocator, session: *DapSession, event: DapEvent) void {
+    fn onStopped(self: DapBridge, alloc: Allocator, session: *DapSession, event: dap_protocol.Event) void {
         session.session_state = .stopped;
         const reason = json_utils.getStringField(event.body, "reason") orelse "unknown";
         session.startStoppedChain(reason) catch |e| {

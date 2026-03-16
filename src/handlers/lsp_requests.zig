@@ -1,6 +1,7 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
+const lsp_types = @import("../lsp/types.zig");
 const log = @import("../log.zig");
 const ts_handlers = @import("treesitter.zig");
 const registry_mod = @import("../lsp/registry.zig");
@@ -88,9 +89,9 @@ pub fn handleFileOpen(ctx: *HandlerContext, p: FileOpenParams) anyerror!?Value {
                     log.err("Failed to queue pending open: {any}", .{e});
                 };
             } else {
-                lsp_ctx.client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+                lsp_ctx.client.notify(lsp_types.DidOpen{ .params = .{
                     .textDocument = .{ .uri = lsp_ctx.uri, .languageId = lsp_ctx.language, .text = content_to_use },
-                }) catch |e| {
+                } }) catch |e| {
                     log.err("Failed to send didOpen: {any}", .{e});
                 };
             }
@@ -134,9 +135,9 @@ fn forwardDidOpenToCopilot(ctx: *HandlerContext, p: FileOpenParams) void {
 
     const copilot_client = ctx.registry.copilot_client orelse return;
 
-    copilot_client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+    copilot_client.notify(lsp_types.DidOpen{ .params = .{
         .textDocument = .{ .uri = uri, .languageId = lang, .text = content },
-    }) catch |e| {
+    } }) catch |e| {
         log.err("Failed to send didOpen to Copilot: {any}", .{e});
         return;
     };

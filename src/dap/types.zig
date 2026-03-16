@@ -56,6 +56,68 @@ pub const EvalResult = struct {
 };
 
 // ============================================================================
+// DAP client state & request types
+// ============================================================================
+
+pub const DapState = enum {
+    uninitialized,
+    initializing, // sent initialize, waiting for response
+    configured, // received initialized event, configuration done
+    running, // debuggee is executing
+    stopped, // debuggee stopped (breakpoint, step, etc.)
+    terminated, // session ended
+};
+
+pub const PendingDapRequest = struct {};
+
+pub const RequestType = enum {
+    launch,
+    attach,
+};
+
+/// Saved launch params for deferred launch after initialized event.
+pub const LaunchParams = struct {
+    program: []const u8,
+    module: ?[]const u8,
+    stop_on_entry: bool,
+    breakpoint_files: std.StringArrayHashMap(std.ArrayList(u32)),
+    args: std.ArrayList([]const u8),
+    cwd: ?[]const u8,
+    env_json: ?[]const u8, // Serialized JSON object for environment variables
+    extra_json: ?[]const u8, // Serialized JSON object for adapter-specific fields
+    request_type: RequestType,
+    pid: ?u32,
+
+    pub fn deinit(self: *LaunchParams) void {
+        const allocator = self.breakpoint_files.allocator;
+        // Free GPA-duped strings
+        allocator.free(self.program);
+        if (self.module) |m| allocator.free(m);
+        if (self.cwd) |c| allocator.free(c);
+        if (self.env_json) |e| allocator.free(e);
+        if (self.extra_json) |x| allocator.free(x);
+        // Free GPA-duped breakpoint file keys + line arrays
+        var it = self.breakpoint_files.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(allocator);
+        }
+        self.breakpoint_files.deinit();
+        // Free GPA-duped args
+        for (self.args.items) |arg| allocator.free(arg);
+        self.args.deinit(allocator);
+    }
+};
+
+/// Breakpoint info passed from handler.
+pub const BreakpointInfo = struct {
+    line: u32,
+    condition: ?[]const u8 = null,
+    hit_condition: ?[]const u8 = null,
+    log_message: ?[]const u8 = null,
+};
+
+// ============================================================================
 // DAP protocol message (raw wire format)
 // ============================================================================
 
@@ -68,6 +130,34 @@ pub const DapMessageRaw = struct {
     message: ?[]const u8 = null,
     body: Value = .null,
     event: ?[]const u8 = null,
+};
+
+// ============================================================================
+// Vim output types — define the JSON schema sent to Vim
+// ============================================================================
+
+pub const VimFrame = struct {
+    id: u32,
+    name: []const u8,
+    source_path: []const u8,
+    source_name: []const u8,
+    line: u32,
+};
+
+pub const VimWatchResult = struct {
+    expression: []const u8,
+    result: []const u8,
+    type: []const u8,
+    @"error": bool,
+};
+
+pub const VimVariable = struct {
+    name: []const u8,
+    value: []const u8,
+    type: []const u8,
+    expandable: bool,
+    expanded: bool,
+    depth: u32,
 };
 
 // ============================================================================
@@ -158,6 +248,57 @@ pub const DapLoadConfigParams = struct {
     file: ?[]const u8 = null,
     dirname: ?[]const u8 = null,
 };
+
+// ============================================================================
+// Typed DAP commands — comptime binding of command string ↔ args type
+// ============================================================================
+
+const dap = @import("protocol.zig");
+
+// -- Typed arg structs --
+
+pub const InitializeArgs = struct {
+    clientID: []const u8 = "yac",
+    clientName: []const u8 = "yac.vim",
+    adapterID: []const u8 = "yac",
+    locale: []const u8 = "en-US",
+    linesStartAt1: bool = true,
+    columnsStartAt1: bool = true,
+    pathFormat: []const u8 = "path",
+    supportsVariableType: bool = true,
+    supportsRunInTerminalRequest: bool = false,
+};
+
+pub const ThreadIdArgs = struct { threadId: u32 };
+pub const FrameIdArgs = struct { frameId: u32 };
+pub const VariablesRefArgs = struct { variablesReference: u32 };
+pub const DisconnectArgs = struct { terminateDebuggee: bool };
+pub const EvaluateArgs = struct {
+    expression: []const u8,
+    context: []const u8,
+    frameId: ?u32 = null,
+};
+
+// -- Request bindings --
+
+pub const Initialize = dap.DapRequest("initialize", InitializeArgs);
+pub const ConfigurationDone = dap.DapRequest("configurationDone", Value);
+pub const Threads = dap.DapRequest("threads", Value);
+pub const Terminate = dap.DapRequest("terminate", Value);
+pub const Continue = dap.DapRequest("continue", ThreadIdArgs);
+pub const Next = dap.DapRequest("next", ThreadIdArgs);
+pub const StepIn = dap.DapRequest("stepIn", ThreadIdArgs);
+pub const StepOut = dap.DapRequest("stepOut", ThreadIdArgs);
+pub const StackTrace = dap.DapRequest("stackTrace", ThreadIdArgs);
+pub const Scopes = dap.DapRequest("scopes", FrameIdArgs);
+pub const Variables = dap.DapRequest("variables", VariablesRefArgs);
+pub const Evaluate = dap.DapRequest("evaluate", EvaluateArgs);
+pub const Disconnect = dap.DapRequest("disconnect", DisconnectArgs);
+// launch/attach/setBreakpoints/setExceptionBreakpoints use Value (dynamic args)
+pub const Launch = dap.DapRequest("launch", Value);
+pub const Attach = dap.DapRequest("attach", Value);
+pub const SetBreakpoints = dap.DapRequest("setBreakpoints", Value);
+pub const SetExceptionBreakpoints = dap.DapRequest("setExceptionBreakpoints", Value);
 
 // ============================================================================
 // Helpers

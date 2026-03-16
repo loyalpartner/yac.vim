@@ -148,7 +148,8 @@ pub fn buildObjectMap(allocator: Allocator, entries: anytype) !ObjectMap {
 /// Supported field types: []const u8, bool, i64, other integer types, Value, nested structs.
 pub fn structToValue(alloc: Allocator, value: anytype) !Value {
     const T = @TypeOf(value);
-    if (@typeInfo(T) != .@"struct") @compileError("structToValue expects a struct, got " ++ @typeName(T));
+    if (T == Value) return value;
+    if (@typeInfo(T) != .@"struct") @compileError("structToValue expects a struct or Value, got " ++ @typeName(T));
 
     const fields = @typeInfo(T).@"struct".fields;
     var map = ObjectMap.init(alloc);

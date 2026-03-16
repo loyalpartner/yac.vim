@@ -155,6 +155,186 @@ pub const SemanticTokensResult = struct {
 };
 
 // ============================================================================
+// LSP document params (sent TO the server via sendNotification)
+// ============================================================================
+
+/// LSP TextDocumentItem — used in didOpen.
+pub const TextDocumentItem = struct {
+    uri: []const u8,
+    languageId: []const u8,
+    version: i64 = 1,
+    text: []const u8,
+};
+
+/// LSP VersionedTextDocumentIdentifier — used in didChange.
+pub const VersionedTextDocument = struct {
+    uri: []const u8,
+    version: i64 = 1,
+};
+
+/// LSP TextDocumentIdentifier (uri only).
+pub const TextDocumentUri = struct {
+    uri: []const u8,
+};
+
+/// LSP didOpen params.
+pub const DidOpenParams = struct {
+    textDocument: TextDocumentItem,
+};
+
+/// LSP didChange params (sent to server).
+pub const LspDidChangeParams = struct {
+    textDocument: VersionedTextDocument,
+    contentChanges: ?Value = null,
+};
+
+/// LSP willSave params.
+pub const WillSaveParams = struct {
+    textDocument: TextDocumentUri,
+    reason: i64 = 1,
+};
+
+/// LSP didSave/didClose/semanticTokens/documentSymbol params.
+pub const TextDocumentParams = struct {
+    textDocument: TextDocumentUri,
+};
+
+// ============================================================================
+// LSP request params (sent TO the server via sendRequest)
+// ============================================================================
+
+/// textDocument/completion, hover, definition, declaration, typeDefinition,
+/// implementation, signatureHelp, documentHighlight, callHierarchy
+pub const TextDocumentPositionParams = struct {
+    textDocument: TextDocumentUri,
+    position: Position,
+};
+
+/// textDocument/references
+pub const ReferenceContext = struct { includeDeclaration: bool = true };
+pub const ReferenceParams = struct {
+    textDocument: TextDocumentUri,
+    position: Position,
+    context: ReferenceContext = .{},
+};
+
+/// textDocument/rename
+pub const RenameParams = struct {
+    textDocument: TextDocumentUri,
+    position: Position,
+    newName: []const u8,
+};
+
+/// textDocument/inlayHint
+pub const InlayHintParams = struct {
+    textDocument: TextDocumentUri,
+    range: Range,
+};
+
+/// textDocument/codeAction
+pub const CodeActionContext = struct {
+    diagnostics: Value,
+};
+pub const CodeActionParams = struct {
+    textDocument: TextDocumentUri,
+    range: Range,
+    context: CodeActionContext,
+};
+
+/// textDocument/formatting
+pub const FormattingOptions = struct {
+    tabSize: i64,
+    insertSpaces: bool,
+};
+pub const FormattingParams = struct {
+    textDocument: TextDocumentUri,
+    options: FormattingOptions,
+};
+
+/// textDocument/rangeFormatting
+pub const RangeFormattingParams = struct {
+    textDocument: TextDocumentUri,
+    range: Range,
+    options: FormattingOptions,
+};
+
+/// workspace/symbol
+pub const WorkspaceSymbolParams = struct {
+    query: []const u8,
+};
+
+/// workspace/executeCommand
+pub const ExecuteCommandParams = struct {
+    command: []const u8,
+    arguments: ?Value = null,
+};
+
+// ============================================================================
+// LSP Initialize params (ClientCapabilities, InitializeParams)
+// ============================================================================
+
+pub const DynReg = struct { dynamicRegistration: bool };
+
+const SignatureParameterInfo = struct { labelOffsetSupport: bool };
+const SignatureInfoCapability = struct {
+    documentationFormat: Value,
+    parameterInformation: SignatureParameterInfo,
+    activeParameterSupport: bool,
+};
+pub const SignatureHelpCapability = struct {
+    dynamicRegistration: bool,
+    signatureInformation: SignatureInfoCapability,
+};
+pub const SyncCapability = struct {
+    didSave: bool,
+    willSave: ?bool = null,
+};
+pub const DiagnosticsCapability = struct { relatedInformation: bool };
+
+pub const TextDocumentCapabilities = struct {
+    completion: ?DynReg = null,
+    signatureHelp: ?SignatureHelpCapability = null,
+    hover: ?DynReg = null,
+    definition: ?DynReg = null,
+    declaration: ?DynReg = null,
+    typeDefinition: ?DynReg = null,
+    implementation: ?DynReg = null,
+    references: ?DynReg = null,
+    synchronization: ?SyncCapability = null,
+    publishDiagnostics: ?DiagnosticsCapability = null,
+    inlineCompletion: ?DynReg = null,
+};
+
+pub const WorkspaceCapabilities = struct {
+    applyEdit: ?bool = null,
+    symbol: ?DynReg = null,
+};
+pub const WindowCapabilities = struct { workDoneProgress: ?bool = null };
+
+pub const ClientCapabilities = struct {
+    textDocument: ?TextDocumentCapabilities = null,
+    workspace: ?WorkspaceCapabilities = null,
+    window: ?WindowCapabilities = null,
+};
+
+pub const NameVersion = struct { name: []const u8, version: []const u8 };
+pub const WorkspaceFolder = struct { uri: []const u8, name: []const u8 };
+
+pub const CopilotInitOptions = struct {
+    editorInfo: NameVersion,
+    editorPluginInfo: NameVersion,
+};
+
+pub const InitializeParams = struct {
+    processId: i64,
+    capabilities: ClientCapabilities,
+    rootUri: Value, // string or null — must always be present per LSP spec
+    workspaceFolders: ?Value = null,
+    clientInfo: NameVersion,
+    initializationOptions: ?CopilotInitOptions = null,
+};
+
+// ============================================================================
 // Vim output types — define the JSON schema sent to Vim
 // ============================================================================
 
@@ -190,6 +370,84 @@ pub const VimInlayHint = struct {
     label: []const u8,
     kind: []const u8,
 };
+
+// ============================================================================
+// Typed LSP methods — comptime binding of method string ↔ params type
+// ============================================================================
+
+const lsp = @import("protocol.zig");
+
+// -- Requests --
+pub const Hover = lsp.LspRequest("textDocument/hover", TextDocumentPositionParams);
+pub const Definition = lsp.LspRequest("textDocument/definition", TextDocumentPositionParams);
+pub const Declaration = lsp.LspRequest("textDocument/declaration", TextDocumentPositionParams);
+pub const TypeDefinition = lsp.LspRequest("textDocument/typeDefinition", TextDocumentPositionParams);
+pub const Implementation = lsp.LspRequest("textDocument/implementation", TextDocumentPositionParams);
+pub const References = lsp.LspRequest("textDocument/references", ReferenceParams);
+pub const Completion = lsp.LspRequest("textDocument/completion", TextDocumentPositionParams);
+pub const SignatureHelp = lsp.LspRequest("textDocument/signatureHelp", TextDocumentPositionParams);
+pub const DocumentHighlightRequest = lsp.LspRequest("textDocument/documentHighlight", TextDocumentPositionParams);
+pub const CallHierarchy = lsp.LspRequest("textDocument/prepareCallHierarchy", TextDocumentPositionParams);
+pub const TypeHierarchy = lsp.LspRequest("textDocument/prepareTypeHierarchy", TextDocumentPositionParams);
+pub const DocumentSymbols = lsp.LspRequest("textDocument/documentSymbol", TextDocumentParams);
+pub const FoldingRange = lsp.LspRequest("textDocument/foldingRange", TextDocumentParams);
+pub const SemanticTokens = lsp.LspRequest("textDocument/semanticTokens/full", TextDocumentParams);
+pub const Rename = lsp.LspRequest("textDocument/rename", RenameParams);
+pub const CodeAction = lsp.LspRequest("textDocument/codeAction", CodeActionParams);
+pub const Formatting = lsp.LspRequest("textDocument/formatting", FormattingParams);
+pub const RangeFormatting = lsp.LspRequest("textDocument/rangeFormatting", RangeFormattingParams);
+pub const ExecuteCommand = lsp.LspRequest("workspace/executeCommand", ExecuteCommandParams);
+pub const WorkspaceSymbol = lsp.LspRequest("workspace/symbol", WorkspaceSymbolParams);
+pub const InlayHints = lsp.LspRequest("textDocument/inlayHint", InlayHintParams);
+pub const Initialize = lsp.LspRequest("initialize", InitializeParams);
+pub const Shutdown = lsp.LspRequest("shutdown", Value);
+
+// -- Notifications --
+pub const DidOpen = lsp.LspNotification("textDocument/didOpen", DidOpenParams);
+pub const DidChange = lsp.LspNotification("textDocument/didChange", LspDidChangeParams);
+pub const DidSave = lsp.LspNotification("textDocument/didSave", TextDocumentParams);
+pub const DidClose = lsp.LspNotification("textDocument/didClose", TextDocumentParams);
+pub const WillSave = lsp.LspNotification("textDocument/willSave", WillSaveParams);
+pub const Initialized = lsp.LspNotification("initialized", struct {});
+pub const Exit = lsp.LspNotification("exit", Value);
+
+// -- Copilot extensions (non-standard LSP methods) --
+
+pub const CopilotPosition = struct { line: u32, character: u32 };
+pub const CopilotTriggerContext = struct { triggerKind: i64 = 1 };
+pub const CopilotFormattingOptions = struct { tabSize: i64, insertSpaces: bool };
+
+pub const CopilotInlineCompletionParams = struct {
+    textDocument: TextDocumentUri,
+    position: CopilotPosition,
+    context: CopilotTriggerContext,
+    formattingOptions: CopilotFormattingOptions,
+};
+
+pub const CopilotSignInConfirmParams = struct {
+    userCode: ?[]const u8 = null,
+};
+
+pub const CopilotPartialAcceptParams = struct {
+    itemId: ?[]const u8 = null,
+    acceptedLength: ?i64 = null,
+};
+
+pub const CopilotExecCommandParams = struct {
+    command: []const u8,
+    arguments: Value,
+};
+
+pub const CopilotSignIn = lsp.LspRequest("signIn", struct {});
+pub const CopilotSignOut = lsp.LspRequest("signOut", struct {});
+pub const CopilotCheckStatus = lsp.LspRequest("checkStatus", struct {});
+pub const CopilotSignInConfirm = lsp.LspRequest("signInConfirm", CopilotSignInConfirmParams);
+pub const CopilotInlineCompletion = lsp.LspRequest("textDocument/inlineCompletion", CopilotInlineCompletionParams);
+
+pub const CopilotDidFocus = lsp.LspNotification("textDocument/didFocus", TextDocumentParams);
+pub const CopilotExecCommand = lsp.LspNotification("workspace/executeCommand", CopilotExecCommandParams);
+pub const CopilotPartialAccept = lsp.LspNotification("textDocument/didPartiallyAcceptCompletion", CopilotPartialAcceptParams);
+pub const CopilotDidChangeConfig = lsp.LspNotification("workspace/didChangeConfiguration", struct { settings: struct {} });
 
 // ============================================================================
 // Helpers

@@ -1,6 +1,7 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const LspClient = @import("client.zig").LspClient;
+const lsp_types = @import("types.zig");
 const log = @import("../log.zig");
 const lsp_config = @import("config.zig");
 const path_utils = @import("path_utils.zig");
@@ -347,9 +348,7 @@ pub const LspRegistry = struct {
 
         // Copilot requires workspace/didChangeConfiguration after initialized
         if (std.mem.eql(u8, client_key, copilot_key)) {
-            const EmptySettings = struct {};
-            const DidChangeConfigParams = struct { settings: EmptySettings };
-            client.sendNotification("workspace/didChangeConfiguration", DidChangeConfigParams{ .settings = .{} }) catch |e| {
+            client.notify(lsp_types.CopilotDidChangeConfig{ .params = .{ .settings = .{} } }) catch |e| {
                 log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
             };
         }
@@ -393,10 +392,9 @@ pub const LspRegistry = struct {
     }
 
     fn sendDidOpen(_: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
-        const common = @import("../handlers/common.zig");
-        try client.sendNotification("textDocument/didOpen", common.DidOpenParams{
+        try client.notify(lsp_types.DidOpen{ .params = .{
             .textDocument = .{ .uri = open.uri, .languageId = open.language_id, .text = open.content },
-        });
+        } });
     }
 
     /// Check if a client is still initializing.

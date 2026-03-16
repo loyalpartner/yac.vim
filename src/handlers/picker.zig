@@ -1,6 +1,7 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
 const common = @import("common.zig");
+const lsp_types = @import("../lsp/types.zig");
 const lsp_transform = common.lsp_transform;
 const ts_mod = common.treesitter_mod;
 
@@ -58,10 +59,9 @@ pub fn handlePickerQuery(ctx: *HandlerContext, p: PickerQueryParams) !?Value {
         const file = p.file orelse return null;
         const lsp_ctx = ctx.lsp(file) orelse return null;
 
-        const ws_params = try json.buildObject(ctx.allocator, .{
-            .{ "query", json.jsonString(query) },
-        });
-        try ctx.lspRequest(lsp_ctx.client, "workspace/symbol", ws_params, .{ .transform = lsp_transform.transformPickerSymbols });
+        try ctx.lspRequest(lsp_ctx.client, lsp_types.WorkspaceSymbol{ .params = .{
+            .query = query,
+        } }, .{ .transform = lsp_transform.transformPickerSymbols });
         return null;
     } else if (std.mem.eql(u8, mode, "grep")) {
         return try json.structToValue(ctx.allocator, PickerActionResult{

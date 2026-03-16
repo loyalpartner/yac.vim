@@ -87,7 +87,7 @@ pub const LspBridge = struct {
             switch (msg.kind) {
                 .response => |resp| self.handleResponse(client_key, resp),
                 .notification => |n| self.handleNotification(client_key, n.method, n.params),
-                .server_request => |req| self.handleServerRequest(client_key, req),
+                .request => |req| self.handleServerRequest(client_key, req),
             }
         }
     }
@@ -96,7 +96,7 @@ pub const LspBridge = struct {
     // Responses
     // ----------------------------------------------------------------
 
-    const LspResponse = lsp_client_mod.LspMessage.Response;
+    const LspResponse = lsp_protocol.Response;
 
     fn handleResponse(self: LspBridge, client_key: []const u8, resp: LspResponse) void {
         const rid = resp.id.asU32() orelse {
@@ -156,7 +156,7 @@ pub const LspBridge = struct {
     // Server-to-client requests
     // ----------------------------------------------------------------
 
-    const ServerRequest = lsp_client_mod.LspMessage.ServerRequest;
+    const LspRequest = lsp_protocol.Request;
 
     /// Known server request methods that we acknowledge silently.
     const silent_server_requests: []const []const u8 = &.{
@@ -165,7 +165,7 @@ pub const LspBridge = struct {
         "client/unregisterCapability",
     };
 
-    fn handleServerRequest(self: LspBridge, client_key: []const u8, req: ServerRequest) void {
+    fn handleServerRequest(self: LspBridge, client_key: []const u8, req: LspRequest) void {
         const lsp_client = self.lsp.registry.getClient(client_key) orelse return;
 
         if (std.mem.eql(u8, req.method, "workspace/applyEdit")) {
@@ -177,18 +177,18 @@ pub const LspBridge = struct {
         if (!isSilentRequest(req.method)) {
             log.debug("Unknown server request: {s} (id={any})", .{ req.method, req.id });
         }
-        lsp_client.sendResponse(req.id, .null) catch |e| {
+        lsp_client.send(.{ .response = .{ .id = req.id, .result = .null } }) catch |e| {
             log.err("Failed to respond to {s}: {any}", .{ req.method, e });
         };
     }
 
-    fn handleApplyEdit(self: LspBridge, client_key: []const u8, lsp_client: *lsp_client_mod.LspClient, req: ServerRequest) void {
+    fn handleApplyEdit(self: LspBridge, client_key: []const u8, lsp_client: *lsp_client_mod.LspClient, req: LspRequest) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
 
         const result = json_utils.structToValue(alloc, .{ .applied = true }) catch .null;
-        lsp_client.sendResponse(req.id, result) catch |e| {
+        lsp_client.send(.{ .response = .{ .id = req.id, .result = result } }) catch |e| {
             log.err("Failed to respond to workspace/applyEdit: {any}", .{e});
         };
 
