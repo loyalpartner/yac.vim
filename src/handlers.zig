@@ -15,10 +15,51 @@ const lsp_transform = common.lsp_transform;
 
 pub const HandlerContext = common.HandlerContext;
 const Value = json.Value;
-const R = rpc.Router;
+const R = rpc.Router(HandlerContext);
 
 // ============================================================================
-// Route table — declarative, zero runtime overhead
+// LSP route helpers — domain-specific, return typed handler function pointers
+// ============================================================================
+
+fn lspPosition(comptime lsp_method: []const u8, comptime transform: lsp_transform.TransformFn) *const fn (*HandlerContext, common.PositionParams) anyerror!void {
+    return &struct {
+        fn handle(ctx: *HandlerContext, p: common.PositionParams) !void {
+            const lsp = ctx.lsp(p.file orelse return) orelse return;
+            const line = p.line orelse return;
+            const col = p.column orelse return;
+            if (line < 0 or col < 0) return;
+            const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp.uri, @intCast(line), @intCast(col));
+            try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
+        }
+    }.handle;
+}
+
+fn lspFile(comptime lsp_method: []const u8, comptime transform: lsp_transform.TransformFn) *const fn (*HandlerContext, common.FileParams) anyerror!void {
+    return &struct {
+        fn handle(ctx: *HandlerContext, p: common.FileParams) !void {
+            const lsp = ctx.lsp(p.file orelse return) orelse return;
+            const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp.uri);
+            try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
+        }
+    }.handle;
+}
+
+fn lspCapPosition(comptime lsp_method: []const u8, comptime capability: []const u8, comptime feature_name: []const u8, comptime transform: lsp_transform.TransformFn) *const fn (*HandlerContext, common.PositionParams) anyerror!void {
+    return &struct {
+        fn handle(ctx: *HandlerContext, p: common.PositionParams) !void {
+            const lsp = ctx.lsp(p.file orelse return) orelse return;
+            if (common.checkUnsupported(ctx, lsp.client_key, capability, feature_name)) return;
+            const line = p.line orelse return;
+            const col = p.column orelse return;
+            if (line < 0 or col < 0) return;
+            const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp.uri, @intCast(line), @intCast(col));
+            try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
+        }
+    }.handle;
+}
+
+// ============================================================================
+// Route table — all routes use R.register
 // ============================================================================
 
 pub const routes = [_]R.MethodEntry{
@@ -27,17 +68,17 @@ pub const routes = [_]R.MethodEntry{
     R.register("file_open", lsp_requests.handleFileOpen),
     R.register("lsp_reset_failed", lsp_requests.handleLspResetFailed),
 
-    // LSP navigation — declarative (no handler functions needed)
-    R.lspPosition("goto_definition", "textDocument/definition", lsp_transform.transformGoto),
-    R.lspPosition("goto_declaration", "textDocument/declaration", lsp_transform.transformGoto),
-    R.lspPosition("goto_type_definition", "textDocument/typeDefinition", lsp_transform.transformGoto),
-    R.lspPosition("goto_implementation", "textDocument/implementation", lsp_transform.transformGoto),
-    R.lspPosition("call_hierarchy", "textDocument/prepareCallHierarchy", lsp_transform.transformIdentity),
-    R.lspCapPosition("type_hierarchy", "textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy", lsp_transform.transformIdentity),
-    R.lspPosition("hover", "textDocument/hover", lsp_transform.transformIdentity),
-    R.lspCapPosition("signature_help", "textDocument/signatureHelp", "signatureHelpProvider", "signature help", lsp_transform.transformIdentity),
-    R.lspFile("document_symbols", "textDocument/documentSymbol", lsp_transform.transformIdentity),
-    R.lspFile("folding_range", "textDocument/foldingRange", lsp_transform.transformIdentity),
+    // LSP navigation — declarative
+    R.register("goto_definition", lspPosition("textDocument/definition", lsp_transform.transformGoto)),
+    R.register("goto_declaration", lspPosition("textDocument/declaration", lsp_transform.transformGoto)),
+    R.register("goto_type_definition", lspPosition("textDocument/typeDefinition", lsp_transform.transformGoto)),
+    R.register("goto_implementation", lspPosition("textDocument/implementation", lsp_transform.transformGoto)),
+    R.register("call_hierarchy", lspPosition("textDocument/prepareCallHierarchy", lsp_transform.transformIdentity)),
+    R.register("type_hierarchy", lspCapPosition("textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy", lsp_transform.transformIdentity)),
+    R.register("hover", lspPosition("textDocument/hover", lsp_transform.transformIdentity)),
+    R.register("signature_help", lspCapPosition("textDocument/signatureHelp", "signatureHelpProvider", "signature help", lsp_transform.transformIdentity)),
+    R.register("document_symbols", lspFile("textDocument/documentSymbol", lsp_transform.transformIdentity)),
+    R.register("folding_range", lspFile("textDocument/foldingRange", lsp_transform.transformIdentity)),
 
     // LSP navigation/info — custom handlers
     R.register("references", lsp_navigation.handleReferences),

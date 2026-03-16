@@ -1,13 +1,10 @@
 const std = @import("std");
 const json = @import("json_utils.zig");
-const common = @import("handlers/common.zig");
 const log = @import("log.zig");
-const lsp_transform = @import("lsp/transform.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const Writer = std.io.Writer;
-const HandlerContext = common.HandlerContext;
 
 // ============================================================================
 // Message — Vim channel protocol messages with serialize/deserialize
@@ -107,110 +104,81 @@ pub fn parseParams(comptime T: type, allocator: Allocator, value: Value) ?T {
 }
 
 // ============================================================================
-// Router — comptime dispatch table with register/dispatch
+// Router — generic comptime dispatch table
+//
+// Generic over context type Ctx so the RPC layer has no domain dependencies.
+// Usage: const R = rpc.Router(HandlerContext);
 // ============================================================================
 
-pub const Router = struct {
-    pub const MethodEntry = struct {
-        name: []const u8,
-        invoke: *const fn (*HandlerContext, Value) anyerror!?Value,
-    };
+pub fn Router(comptime Ctx: type) type {
+    return struct {
+        pub const MethodEntry = struct {
+            name: []const u8,
+            invoke: *const fn (*Ctx, Value) anyerror!?Value,
+        };
 
-    /// Register a handler — auto-derive ParamsType + return conversion from signature.
-    ///   fn(ctx)              → no params
-    ///   fn(ctx, Value)       → raw passthrough
-    ///   fn(ctx, SomeStruct)  → auto parse
-    pub fn register(comptime name: []const u8, comptime handler: anytype) MethodEntry {
-        const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
-        const fn_params = fn_info.params;
-        const Payload = ReturnPayload(@TypeOf(handler));
+        /// Register a handler — auto-derive ParamsType + return conversion from signature.
+        /// Accepts both function values and function pointers:
+        ///   fn(ctx)                  → no params
+        ///   fn(ctx, Value)           → raw passthrough
+        ///   fn(ctx, SomeStruct)      → auto parse
+        ///   *const fn(ctx, S) !void  → function pointer, same rules
+        pub fn register(comptime name: []const u8, comptime handler: anytype) MethodEntry {
+            const FnType = resolveFnType(@TypeOf(handler));
+            const fn_info = @typeInfo(FnType).@"fn";
+            const fn_params = fn_info.params;
+            const Payload = ReturnPayload(FnType);
 
-        if (fn_params.len == 1) {
-            // fn(ctx) — no params
+            if (fn_params.len == 1) {
+                return .{ .name = name, .invoke = &struct {
+                    fn invoke(ctx: *Ctx, _: Value) anyerror!?Value {
+                        return callAndConvert(Payload, ctx, handler, .{ctx});
+                    }
+                }.invoke };
+            }
+
+            const P = fn_params[1].type.?;
+            if (P == Value) {
+                return .{ .name = name, .invoke = &struct {
+                    fn invoke(ctx: *Ctx, raw: Value) anyerror!?Value {
+                        return callAndConvert(Payload, ctx, handler, .{ ctx, raw });
+                    }
+                }.invoke };
+            }
+
             return .{ .name = name, .invoke = &struct {
-                fn invoke(ctx: *HandlerContext, _: Value) anyerror!?Value {
-                    return callAndConvert(Payload, ctx, handler, .{ctx});
+                fn invoke(ctx: *Ctx, raw: Value) anyerror!?Value {
+                    const p = parseParams(P, ctx.allocator, raw) orelse {
+                        log.warn("{s}: failed to parse params as {s}", .{ name, @typeName(P) });
+                        return null;
+                    };
+                    return callAndConvert(Payload, ctx, handler, .{ ctx, p });
                 }
             }.invoke };
         }
 
-        const P = fn_params[1].type.?;
-        if (P == Value) {
-            // fn(ctx, Value) — raw passthrough
-            return .{ .name = name, .invoke = handler };
+        /// Dispatch a request by method name.
+        pub fn dispatch(comptime table: []const MethodEntry, ctx: *Ctx, method_name: []const u8, params: Value) !?Value {
+            inline for (table) |h| {
+                if (std.mem.eql(u8, method_name, h.name)) return h.invoke(ctx, params);
+            }
+            log.warn("Unknown method: {s}", .{method_name});
+            return null;
         }
-
-        // fn(ctx, SomeStruct) — auto parse
-        return .{ .name = name, .invoke = &struct {
-            fn invoke(ctx: *HandlerContext, raw: Value) anyerror!?Value {
-                const p = parseParams(P, ctx.allocator, raw) orelse {
-                    log.warn("{s}: failed to parse params as {s}", .{ name, @typeName(P) });
-                    return null;
-                };
-                return callAndConvert(Payload, ctx, handler, .{ ctx, p });
-            }
-        }.invoke };
-    }
-
-    /// Declarative LSP position request: PositionParams → textDocument/X with position.
-    pub fn lspPosition(comptime name: []const u8, comptime lsp_method: []const u8, comptime transform: lsp_transform.TransformFn) MethodEntry {
-        return .{ .name = name, .invoke = &struct {
-            fn invoke(ctx: *HandlerContext, params: Value) anyerror!?Value {
-                const p = parseParams(common.PositionParams, ctx.allocator, params) orelse return null;
-                const lsp = ctx.lsp(p.file orelse return null) orelse return null;
-                const line = p.line orelse return null;
-                const col = p.column orelse return null;
-                if (line < 0 or col < 0) return null;
-                const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp.uri, @intCast(line), @intCast(col));
-                try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
-                return null;
-            }
-        }.invoke };
-    }
-
-    /// Declarative LSP file request: FileParams → textDocument/X with document identifier.
-    pub fn lspFile(comptime name: []const u8, comptime lsp_method: []const u8, comptime transform: lsp_transform.TransformFn) MethodEntry {
-        return .{ .name = name, .invoke = &struct {
-            fn invoke(ctx: *HandlerContext, params: Value) anyerror!?Value {
-                const p = parseParams(common.FileParams, ctx.allocator, params) orelse return null;
-                const lsp = ctx.lsp(p.file orelse return null) orelse return null;
-                const lsp_params = try common.buildTextDocumentIdentifier(ctx.allocator, lsp.uri);
-                try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
-                return null;
-            }
-        }.invoke };
-    }
-
-    /// Declarative LSP position request with capability check.
-    pub fn lspCapPosition(comptime name: []const u8, comptime lsp_method: []const u8, comptime capability: []const u8, comptime feature_name: []const u8, comptime transform: lsp_transform.TransformFn) MethodEntry {
-        return .{ .name = name, .invoke = &struct {
-            fn invoke(ctx: *HandlerContext, params: Value) anyerror!?Value {
-                const p = parseParams(common.PositionParams, ctx.allocator, params) orelse return null;
-                const lsp = ctx.lsp(p.file orelse return null) orelse return null;
-                if (common.checkUnsupported(ctx, lsp.client_key, capability, feature_name)) return null;
-                const line = p.line orelse return null;
-                const col = p.column orelse return null;
-                if (line < 0 or col < 0) return null;
-                const lsp_params = try common.buildTextDocumentPosition(ctx.allocator, lsp.uri, @intCast(line), @intCast(col));
-                try ctx.lspRequest(lsp.client, lsp_method, lsp_params, .{ .transform = transform });
-                return null;
-            }
-        }.invoke };
-    }
-
-    /// Dispatch a request by method name.
-    pub fn dispatch(comptime table: []const MethodEntry, ctx: *HandlerContext, method_name: []const u8, params: Value) !?Value {
-        inline for (table) |h| {
-            if (std.mem.eql(u8, method_name, h.name)) return h.invoke(ctx, params);
-        }
-        log.warn("Unknown method: {s}", .{method_name});
-        return null;
-    }
-};
+    };
+}
 
 // ============================================================================
-// Internal helpers — comptime return-type introspection
+// Internal helpers
 // ============================================================================
+
+/// Resolve the function type from either a function value or function pointer.
+fn resolveFnType(comptime H: type) type {
+    if (@typeInfo(H) == .@"fn") return H;
+    if (@typeInfo(H) == .pointer and @typeInfo(@typeInfo(H).pointer.child) == .@"fn")
+        return @typeInfo(H).pointer.child;
+    @compileError("register: expected function or function pointer, got " ++ @typeName(H));
+}
 
 /// Extract the payload type from a function's return type (unwrap error union).
 fn ReturnPayload(comptime FnType: type) type {
@@ -225,7 +193,7 @@ fn ReturnPayload(comptime FnType: type) type {
 /// Call a handler and convert its return value to ?Value.
 fn callAndConvert(
     comptime Payload: type,
-    ctx: *HandlerContext,
+    ctx: anytype,
     comptime handleFn: anytype,
     args: anytype,
 ) anyerror!?Value {
