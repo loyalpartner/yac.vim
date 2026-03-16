@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("log.zig");
+const poll_set_mod = @import("poll_set.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -116,6 +117,14 @@ pub const Clients = struct {
 
     pub fn valueIterator(self: *Clients) std.AutoHashMap(ClientId, *VimClient).ValueIterator {
         return self.clients.valueIterator();
+    }
+
+    /// Contribute all client fds to the poll set.
+    pub fn collectFds(self: *Clients, poll: *poll_set_mod.PollSet, alloc: Allocator) !void {
+        var cit = self.clients.iterator();
+        while (cit.next()) |entry| {
+            try poll.add(alloc, entry.value_ptr.*.stream.handle, .{ .client = entry.key_ptr.* });
+        }
     }
 
     pub fn subscribeClient(self: *Clients, cid: ClientId, workspace_uri: []const u8) void {

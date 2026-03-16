@@ -1,5 +1,6 @@
 const std = @import("std");
 const json_utils = @import("json_utils.zig");
+const poll_set_mod = @import("poll_set.zig");
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
 const ObjectMap = json_utils.ObjectMap;
@@ -246,6 +247,12 @@ pub const Picker = struct {
     pub fn getStdoutFd(self: *Picker) ?std.posix.fd_t {
         const fi = self.file_index orelse return null;
         return fi.getStdoutFd();
+    }
+
+    /// Contribute picker child stdout fd to the poll set.
+    pub fn collectFds(self: *Picker, poll: *poll_set_mod.PollSet, alloc: Allocator) !void {
+        if (self.getStdoutFd()) |fd|
+            try poll.add(alloc, fd, .picker_stdout);
     }
 
     pub fn pollScan(self: *Picker) void {

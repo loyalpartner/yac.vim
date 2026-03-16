@@ -5,6 +5,7 @@ const clients_mod = @import("clients.zig");
 const queue_mod = @import("queue.zig");
 const dap_session_mod = @import("dap/session.zig");
 const dap_protocol = @import("dap/protocol.zig");
+const poll_set_mod = @import("poll_set.zig");
 const log = @import("log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -63,6 +64,12 @@ pub const DapBridge = struct {
     pub fn stdoutFd(self: *DapBridge) ?std.posix.fd_t {
         const s = self.dap_session orelse return null;
         return s.client.stdoutFd();
+    }
+
+    /// Contribute DAP adapter stdout fd to the poll set.
+    pub fn collectFds(self: *DapBridge, poll: *poll_set_mod.PollSet, alloc: Allocator) !void {
+        if (self.stdoutFd()) |fd|
+            try poll.add(alloc, fd, .dap_stdout);
     }
 
     // ----------------------------------------------------------------

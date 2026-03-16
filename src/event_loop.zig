@@ -1,6 +1,4 @@
 const std = @import("std");
-const json_utils = @import("json_utils.zig");
-const lsp_registry_mod = @import("lsp/registry.zig");
 const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 const clients_mod = @import("clients.zig");
@@ -11,6 +9,7 @@ const queue_mod = @import("queue.zig");
 const dap_bridge_mod = @import("dap_bridge.zig");
 const lsp_bridge_mod = @import("lsp_bridge.zig");
 const msg_mod = @import("message_dispatcher.zig");
+const poll_set_mod = @import("poll_set.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -59,7 +58,7 @@ pub const EventLoop = struct {
     /// Outgoing message queue: worker/main threads → writer thread.
     out_queue: queue_mod.SendChannel = .{},
     /// Reusable poll set (lives for the entire EventLoop lifetime).
-    poll: PollSet = .{},
+    poll: poll_set_mod.PollSet = .{},
 
     pub fn init(allocator: Allocator, listener: std.net.Server) EventLoop {
         return .{
@@ -113,78 +112,21 @@ pub const EventLoop = struct {
     }
 
     // ====================================================================
-    // Poll infrastructure — PollSet + FdKind (tagged union dispatch)
-    // ====================================================================
-
-    /// Identifies the source of each polled fd for dispatch.
-    pub const FdKind = union(enum) {
-        listener,
-        client: ClientId,
-        lsp_stdout: []const u8, // client_key
-        lsp_stderr: []const u8, // client_key
-        dap_stdout,
-        picker_stdout,
-    };
-
-    /// Paired fd + tag arrays, reused across poll iterations (P2: zero steady-state alloc).
-    const PollSet = struct {
-        fds: std.ArrayListUnmanaged(std.posix.pollfd) = .{},
-        tags: std.ArrayListUnmanaged(FdKind) = .{},
-
-        fn add(self: *PollSet, alloc: Allocator, fd: std.posix.fd_t, tag: FdKind) !void {
-            try self.fds.append(alloc, .{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 });
-            try self.tags.append(alloc, tag);
-        }
-
-        fn clear(self: *PollSet) void {
-            self.fds.clearRetainingCapacity();
-            self.tags.clearRetainingCapacity();
-        }
-
-        fn deinit(self: *PollSet, alloc: Allocator) void {
-            self.fds.deinit(alloc);
-            self.tags.deinit(alloc);
-        }
-    };
-
-    // ====================================================================
     // Poll helpers
     // ====================================================================
 
     /// Rebuild the poll fd set from current state. Must be called under state_lock.
+    /// Each subsystem contributes its own fds via collectFds().
     fn collectFds(self: *EventLoop) !void {
         self.poll.clear();
-
-        // Listener socket
+        // IMPORTANT: clients must appear before dap_stdout so that inline-dispatched
+        // DAP actions (step/continue) are processed before adapter responses in the
+        // same poll cycle.
         try self.poll.add(self.allocator, self.listener.stream.handle, .listener);
-
-        // Vim client connections
-        var cit = self.clients.iterator();
-        while (cit.next()) |entry| {
-            try self.poll.add(self.allocator, entry.value_ptr.*.stream.handle, .{ .client = entry.key_ptr.* });
-        }
-
-        // LSP server stdout + stderr
-        var lsp_it = self.lsp.registry.clients.iterator();
-        while (lsp_it.next()) |entry| {
-            const lsp_client = entry.value_ptr.*;
-            try self.poll.add(self.allocator, lsp_client.stdoutFd(), .{ .lsp_stdout = entry.key_ptr.* });
-            if (lsp_client.stderrFd()) |fd|
-                try self.poll.add(self.allocator, fd, .{ .lsp_stderr = entry.key_ptr.* });
-        }
-        if (self.lsp.registry.copilot_client) |c| {
-            try self.poll.add(self.allocator, c.stdoutFd(), .{ .lsp_stdout = lsp_registry_mod.LspRegistry.copilot_key });
-            if (c.stderrFd()) |fd|
-                try self.poll.add(self.allocator, fd, .{ .lsp_stderr = lsp_registry_mod.LspRegistry.copilot_key });
-        }
-
-        // DAP adapter stdout (stderr is .Ignore)
-        if (self.dap.stdoutFd()) |fd|
-            try self.poll.add(self.allocator, fd, .dap_stdout);
-
-        // Picker child stdout
-        if (self.picker.getStdoutFd()) |fd|
-            try self.poll.add(self.allocator, fd, .picker_stdout);
+        try self.clients.collectFds(&self.poll, self.allocator);
+        try self.lsp_bridge.collectFds(&self.poll, self.allocator);
+        try self.dap.collectFds(&self.poll, self.allocator);
+        try self.picker.collectFds(&self.poll, self.allocator);
     }
 
     fn pollTimeout(self: *EventLoop) i32 {

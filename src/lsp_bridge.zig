@@ -6,10 +6,12 @@ const lsp_mod = @import("lsp/lsp.zig");
 const lsp_transform = @import("lsp/transform.zig");
 const lsp_protocol = @import("lsp/protocol.zig");
 const lsp_client_mod = @import("lsp/client.zig");
+const lsp_registry_mod = @import("lsp/registry.zig");
 const queue_mod = @import("queue.zig");
 const requests_mod = @import("requests.zig");
 const clients_mod = @import("clients.zig");
 const vim_expr_tracker_mod = @import("vim_expr_tracker.zig");
+const poll_set_mod = @import("poll_set.zig");
 const log = @import("log.zig");
 
 const LspPendingRequests = requests_mod.LspPendingRequests;
@@ -77,6 +79,23 @@ pub const LspBridge = struct {
 
     pub fn deinit(self: *LspBridge) void {
         self.lsp_pending.deinit();
+    }
+
+    /// Contribute all LSP-related fds to the poll set.
+    pub fn collectFds(self: *LspBridge, poll: *poll_set_mod.PollSet, alloc: Allocator) !void {
+        const registry = &self.lsp.registry;
+        var it = registry.clients.iterator();
+        while (it.next()) |entry| {
+            const client = entry.value_ptr.*;
+            try poll.add(alloc, client.stdoutFd(), .{ .lsp_stdout = entry.key_ptr.* });
+            if (client.stderrFd()) |fd|
+                try poll.add(alloc, fd, .{ .lsp_stderr = entry.key_ptr.* });
+        }
+        if (registry.copilot_client) |c| {
+            try poll.add(alloc, c.stdoutFd(), .{ .lsp_stdout = lsp_registry_mod.LspRegistry.copilot_key });
+            if (c.stderrFd()) |fd|
+                try poll.add(alloc, fd, .{ .lsp_stderr = lsp_registry_mod.LspRegistry.copilot_key });
+        }
     }
 
     /// Construct a VimTransport for sending messages to Vim clients.
