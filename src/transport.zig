@@ -20,13 +20,7 @@ pub const Transport = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Extract one complete message from the transport's internal buffer.
-        /// Returns null if no complete message is available yet.
-        /// Caller owns the returned slice (allocated with `alloc`).
         readMessage: *const fn (*Transport, Allocator) ReadError!?[]u8,
-
-        /// Send a complete JSON message through the transport.
-        /// The transport handles framing (e.g., appending \n).
         writeMessage: *const fn (*Transport, []const u8) WriteError!void,
     };
 
@@ -53,20 +47,20 @@ pub const Transport = struct {
 pub const MAX_RECV_BUF: usize = 4 * 1024 * 1024; // 4 MB
 
 pub const UnixSocketTransport = struct {
-    transport: Transport,
+    interface: Transport,
     stream: std.net.Stream,
     recv_buf: std.ArrayList(u8),
     out_queue: *queue_mod.OutQueue,
     gpa: Allocator,
 
     const vtable_impl: Transport.VTable = .{
-        .readMessage = readMessage,
-        .writeMessage = writeMessage,
+        .readMessage = vtableReadMessage,
+        .writeMessage = vtableWriteMessage,
     };
 
     pub fn init(gpa: Allocator, stream: std.net.Stream, out_queue: *queue_mod.OutQueue) UnixSocketTransport {
         return .{
-            .transport = .{ .vtable = &vtable_impl },
+            .interface = .{ .vtable = &vtable_impl },
             .stream = stream,
             .recv_buf = .{},
             .out_queue = out_queue,
@@ -79,7 +73,6 @@ pub const UnixSocketTransport = struct {
     }
 
     /// Feed raw bytes from socket read into the receive buffer.
-    /// Called by the poll loop after socket.read().
     pub fn feedInput(self: *UnixSocketTransport, data: []const u8) Allocator.Error!void {
         try self.recv_buf.appendSlice(self.gpa, data);
     }
@@ -89,9 +82,9 @@ pub const UnixSocketTransport = struct {
         return self.recv_buf.items.len + incoming > MAX_RECV_BUF;
     }
 
-    /// Get the Transport vtable interface.
+    /// Get the Transport vtable interface (for code that needs *Transport).
     pub fn asTransport(self: *UnixSocketTransport) *Transport {
-        return &self.transport;
+        return &self.interface;
     }
 
     /// Get the underlying stream handle (for poll fd construction).
@@ -99,11 +92,11 @@ pub const UnixSocketTransport = struct {
         return self.stream.handle;
     }
 
-    // ── vtable implementations ──
+    // ── Public methods (direct call, no vtable overhead) ──
 
-    fn readMessage(t: *Transport, alloc: Allocator) Transport.ReadError!?[]u8 {
-        const self: *UnixSocketTransport = @fieldParentPtr("transport", t);
-
+    /// Extract one complete \n-delimited message from the receive buffer.
+    /// Returns null if no complete message is available.
+    pub fn readMessage(self: *UnixSocketTransport, alloc: Allocator) Transport.ReadError!?[]u8 {
         const newline_pos = std.mem.indexOf(u8, self.recv_buf.items, "\n") orelse return null;
 
         const line = self.recv_buf.items[0..newline_pos];
@@ -120,10 +113,8 @@ pub const UnixSocketTransport = struct {
         return result;
     }
 
-    fn writeMessage(t: *Transport, json_bytes: []const u8) Transport.WriteError!void {
-        const self: *UnixSocketTransport = @fieldParentPtr("transport", t);
-
-        // GPA-allocate bytes + \n so they survive past the caller's arena.
+    /// Send a complete JSON message. Appends \n, GPA-allocates, pushes to OutQueue.
+    pub fn writeMessage(self: *UnixSocketTransport, json_bytes: []const u8) Transport.WriteError!void {
         const msg = try self.gpa.alloc(u8, json_bytes.len + 1);
         @memcpy(msg[0..json_bytes.len], json_bytes);
         msg[json_bytes.len] = '\n';
@@ -133,6 +124,16 @@ pub const UnixSocketTransport = struct {
             log.warn("Transport: out queue full, dropping message", .{});
         }
     }
+
+    // ── vtable trampolines ──
+
+    fn vtableReadMessage(t: *Transport, alloc: Allocator) Transport.ReadError!?[]u8 {
+        return @as(*UnixSocketTransport, @fieldParentPtr("interface", t)).readMessage(alloc);
+    }
+
+    fn vtableWriteMessage(t: *Transport, json_bytes: []const u8) Transport.WriteError!void {
+        return @as(*UnixSocketTransport, @fieldParentPtr("interface", t)).writeMessage(json_bytes);
+    }
 };
 
 // ============================================================================
@@ -141,104 +142,91 @@ pub const UnixSocketTransport = struct {
 
 test "UnixSocketTransport: readMessage extracts newline-delimited lines" {
     var out_queue: queue_mod.OutQueue = .{};
-    var t = UnixSocketTransport.init(
-        std.testing.allocator,
-        .{ .handle = -1 },
-        &out_queue,
-    );
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
     defer t.deinit();
 
-    // Feed partial data — no complete line yet
     try t.feedInput("hello");
-    const r1 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r1 == null);
+    try std.testing.expect(try t.readMessage(std.testing.allocator) == null);
 
-    // Feed rest of line
     try t.feedInput(" world\n");
-    const r2 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r2 != null);
-    defer std.testing.allocator.free(r2.?);
-    try std.testing.expectEqualStrings("hello world", r2.?);
+    const r = (try t.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r);
+    try std.testing.expectEqualStrings("hello world", r);
 
-    // Buffer should be empty now
-    const r3 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r3 == null);
+    try std.testing.expect(try t.readMessage(std.testing.allocator) == null);
 }
 
 test "UnixSocketTransport: readMessage handles multiple lines" {
     var out_queue: queue_mod.OutQueue = .{};
-    var t = UnixSocketTransport.init(
-        std.testing.allocator,
-        .{ .handle = -1 },
-        &out_queue,
-    );
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
     defer t.deinit();
 
     try t.feedInput("line1\nline2\nline3\n");
 
-    const r1 = try t.transport.readMessage(std.testing.allocator);
-    defer std.testing.allocator.free(r1.?);
-    try std.testing.expectEqualStrings("line1", r1.?);
+    const r1 = (try t.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r1);
+    try std.testing.expectEqualStrings("line1", r1);
 
-    const r2 = try t.transport.readMessage(std.testing.allocator);
-    defer std.testing.allocator.free(r2.?);
-    try std.testing.expectEqualStrings("line2", r2.?);
+    const r2 = (try t.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r2);
+    try std.testing.expectEqualStrings("line2", r2);
 
-    const r3 = try t.transport.readMessage(std.testing.allocator);
-    defer std.testing.allocator.free(r3.?);
-    try std.testing.expectEqualStrings("line3", r3.?);
+    const r3 = (try t.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r3);
+    try std.testing.expectEqualStrings("line3", r3);
 
-    const r4 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r4 == null);
+    try std.testing.expect(try t.readMessage(std.testing.allocator) == null);
 }
 
 test "UnixSocketTransport: readMessage skips empty lines" {
     var out_queue: queue_mod.OutQueue = .{};
-    var t = UnixSocketTransport.init(
-        std.testing.allocator,
-        .{ .handle = -1 },
-        &out_queue,
-    );
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
     defer t.deinit();
 
     try t.feedInput("\n\ndata\n\n");
 
-    // First two \n produce empty lines → readMessage returns null for those
-    // Actually, our implementation returns null for empty lines and removes them
-    const r1 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r1 == null); // empty line skipped
+    try std.testing.expect(try t.readMessage(std.testing.allocator) == null);
+    try std.testing.expect(try t.readMessage(std.testing.allocator) == null);
 
-    const r2 = try t.transport.readMessage(std.testing.allocator);
-    try std.testing.expect(r2 == null); // empty line skipped
-
-    const r3 = try t.transport.readMessage(std.testing.allocator);
-    defer std.testing.allocator.free(r3.?);
-    try std.testing.expectEqualStrings("data", r3.?);
+    const r = (try t.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r);
+    try std.testing.expectEqualStrings("data", r);
 }
 
 test "UnixSocketTransport: writeMessage pushes to OutQueue" {
     var out_queue: queue_mod.OutQueue = .{};
-    var t = UnixSocketTransport.init(
-        std.testing.allocator,
-        .{ .handle = -1 },
-        &out_queue,
-    );
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
     defer t.deinit();
 
-    try t.transport.writeMessage("[1,\"ok\"]");
+    try t.writeMessage("[1,\"ok\"]");
 
     const msg = out_queue.pop() orelse unreachable;
     defer msg.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("[1,\"ok\"]\n", msg.bytes);
 }
 
+test "UnixSocketTransport: vtable dispatch works" {
+    var out_queue: queue_mod.OutQueue = .{};
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
+    defer t.deinit();
+
+    // Write via vtable
+    try t.interface.writeMessage("[2,\"hi\"]");
+
+    const msg = out_queue.pop() orelse unreachable;
+    defer msg.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("[2,\"hi\"]\n", msg.bytes);
+
+    // Read via vtable
+    try t.feedInput("test\n");
+    const r = (try t.interface.readMessage(std.testing.allocator)).?;
+    defer std.testing.allocator.free(r);
+    try std.testing.expectEqualStrings("test", r);
+}
+
 test "UnixSocketTransport: wouldOverflow" {
     var out_queue: queue_mod.OutQueue = .{};
-    var t = UnixSocketTransport.init(
-        std.testing.allocator,
-        .{ .handle = -1 },
-        &out_queue,
-    );
+    var t = UnixSocketTransport.init(std.testing.allocator, .{ .handle = -1 }, &out_queue);
     defer t.deinit();
 
     try std.testing.expect(!t.wouldOverflow(100));

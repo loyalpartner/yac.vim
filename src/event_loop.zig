@@ -447,7 +447,7 @@ pub const EventLoop = struct {
             const client = self.clients.get(cid) orelse break;
 
             // Transport handles \n framing and buffer management.
-            const raw_line = client.transport.asTransport().readMessage(self.allocator) catch |e| {
+            const raw_line = client.transport.readMessage(self.allocator) catch |e| {
                 log.err("OOM routing work item: {any}", .{e});
                 break;
             } orelse break;
@@ -943,7 +943,7 @@ pub const EventLoop = struct {
             .args = .{ .array = arg_array },
         } }) catch return;
 
-        client_entry.transport.asTransport().writeMessage(encoded) catch {
+        client_entry.transport.writeMessage(encoded) catch {
             log.warn("DAP callback: transport write failed for client {d}", .{owner_id});
         };
     }
@@ -1091,21 +1091,13 @@ pub const EventLoop = struct {
     // All callers must hold state_lock when accessing clients map.
     // ====================================================================
 
-    /// Send an encoded JSON message through a client's transport.
-    fn sendViaTransport(transport: *transport_mod.Transport, alloc: Allocator, encoded: []const u8) void {
-        _ = alloc;
-        transport.writeMessage(encoded) catch |e| {
-            log.err("Transport write failed: {any}", .{e});
-        };
-    }
-
     /// Send a JSON-RPC response to a specific Vim client.
     fn sendVimResponseTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, result: Value) void {
         const id = vim_id orelse return;
         const client = self.clients.get(cid) orelse return;
         const encoded = vim.encodeJsonRpcResponse(alloc, @intCast(id), result) catch return;
         defer alloc.free(encoded);
-        sendViaTransport(&client.transport.transport, alloc, encoded);
+        client.transport.writeMessage(encoded) catch {};
     }
 
     /// Send a Vim ex command to a specific client.
@@ -1113,7 +1105,7 @@ pub const EventLoop = struct {
         const client = self.clients.get(cid) orelse return;
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
         defer alloc.free(encoded);
-        sendViaTransport(&client.transport.transport, alloc, encoded);
+        client.transport.writeMessage(encoded) catch {};
     }
 
     /// Send an expr request to a specific Vim client and register a pending entry.
@@ -1126,7 +1118,7 @@ pub const EventLoop = struct {
         };
         const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
         defer alloc.free(encoded);
-        sendViaTransport(&client.transport.transport, alloc, encoded);
+        client.transport.writeMessage(encoded) catch {};
     }
 
     /// Handle the result of a daemon->Vim expr request.
@@ -1165,7 +1157,7 @@ pub const EventLoop = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
-                client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
+                client_ptr.*.transport.writeMessage(encoded) catch {};
             }
         }
     }
@@ -1180,7 +1172,7 @@ pub const EventLoop = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.isSubscribedTo(workspace_uri.?)) {
-                client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
+                client_ptr.*.transport.writeMessage(encoded) catch {};
             }
         }
     }
@@ -1203,7 +1195,7 @@ pub const EventLoop = struct {
     fn broadcastRaw(self: *EventLoop, encoded: []const u8) void {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
-            client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
+            client_ptr.*.transport.writeMessage(encoded) catch {};
         }
     }
 
