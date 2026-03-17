@@ -4,6 +4,7 @@ const vim = @import("vim_protocol.zig");
 const lsp_registry_mod = @import("lsp/registry.zig");
 const handler_mod = @import("handler.zig");
 const vim_server_mod = @import("vim_server.zig");
+const transport_mod = @import("transport.zig");
 const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 const lsp_transform = @import("lsp/transform.zig");
@@ -25,17 +26,6 @@ const ClientId = clients_mod.ClientId;
 const PendingVimExpr = requests_mod.PendingVimExpr;
 
 const IDLE_TIMEOUT_NS: i128 = 60 * std.time.ns_per_s;
-
-/// Maximum bytes buffered per client before the connection is dropped.
-/// Guards against a malicious or buggy client causing OOM by sending
-/// data without newlines (the message framing delimiter).
-pub const MAX_CLIENT_BUF: usize = 4 * 1024 * 1024; // 4 MB
-
-/// Returns true if adding `incoming` bytes to a buffer of `current_len`
-/// would exceed MAX_CLIENT_BUF.
-pub fn clientBufWouldOverflow(current_len: usize, incoming: usize) bool {
-    return current_len + incoming > MAX_CLIENT_BUF;
-}
 
 pub const EventLoop = struct {
     allocator: Allocator,
@@ -125,7 +115,7 @@ pub const EventLoop = struct {
         var cit = self.clients.iterator();
         while (cit.next()) |entry| {
             try poll_fds.append(self.allocator, .{
-                .fd = entry.value_ptr.*.stream.handle,
+                .fd = entry.value_ptr.*.transport.getHandle(),
                 .events = std.posix.POLL.IN,
                 .revents = 0,
             });
@@ -201,7 +191,7 @@ pub const EventLoop = struct {
 
             if (pfd.revents & std.posix.POLL.IN != 0) {
                 const client = self.clients.get(cid) orelse continue;
-                const n = std.posix.read(client.stream.handle, buf) catch |e| {
+                const n = std.posix.read(client.transport.getHandle(), buf) catch |e| {
                     log.err("client {d} read failed: {any}", .{ cid, e });
                     self.removeClient(cid);
                     continue;
@@ -213,12 +203,12 @@ pub const EventLoop = struct {
                 }
                 // Guard against OOM: disconnect clients that send unbounded data
                 // without newline framing (e.g. malicious or buggy clients).
-                if (clientBufWouldOverflow(client.read_buf.items.len, n)) {
-                    log.err("client {d} read_buf overflow ({d} bytes), disconnecting", .{ cid, client.read_buf.items.len + n });
+                if (client.transport.wouldOverflow(n)) {
+                    log.err("client {d} recv_buf overflow ({d} bytes), disconnecting", .{ cid, client.transport.recv_buf.items.len + n });
                     self.removeClient(cid);
                     continue;
                 }
-                client.read_buf.appendSlice(self.allocator, buf[0..n]) catch |e| {
+                client.transport.feedInput(buf[0..n]) catch |e| {
                     log.err("client {d} buf append failed: {any}", .{ cid, e });
                     continue;
                 };
@@ -412,7 +402,7 @@ pub const EventLoop = struct {
 
     /// Accept a new Vim client connection.
     fn acceptClient(self: *EventLoop) void {
-        const cid = self.clients.accept(&self.listener) orelse return;
+        const cid = self.clients.accept(&self.listener, &self.out_queue) orelse return;
 
         // Clear idle deadline — we have a client now
         self.idle_deadline = null;
@@ -451,61 +441,44 @@ pub const EventLoop = struct {
         }
     }
 
-    /// Read completed lines from a client's buffer and route them to the work queues.
+    /// Read completed lines from a client's transport and route them to the work queues.
     fn processClientInput(self: *EventLoop, cid: ClientId) void {
         while (true) {
             const client = self.clients.get(cid) orelse break;
-            const newline_pos = std.mem.indexOf(u8, client.read_buf.items, "\n") orelse break;
 
-            const line = client.read_buf.items[0..newline_pos];
-            if (line.len > 0) {
-                // GPA-allocate a copy of the line; ownership passes to WorkItem.
-                const raw_line = self.allocator.dupe(u8, line) catch |e| {
-                    log.err("OOM routing work item: {any}", .{e});
-                    // Skip this line, continue processing remaining buffer.
-                    const c2 = self.clients.get(cid) orelse break;
-                    const rem2 = c2.read_buf.items.len - newline_pos - 1;
-                    if (rem2 > 0) std.mem.copyForwards(u8, c2.read_buf.items[0..rem2], c2.read_buf.items[newline_pos + 1 ..]);
-                    c2.read_buf.shrinkRetainingCapacity(rem2);
-                    continue;
+            // Transport handles \n framing and buffer management.
+            const raw_line = client.transport.asTransport().readMessage(self.allocator) catch |e| {
+                log.err("OOM routing work item: {any}", .{e});
+                break;
+            } orelse break;
+
+            // DAP step/continue: dispatch inline (skip work queue round trip)
+            if (queue_mod.isDapActionMethod(raw_line)) {
+                defer self.allocator.free(raw_line);
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+                const alloc = arena.allocator();
+                self.handleWorkItem(.{
+                    .client_id = cid,
+                    .client_stream = client.transport.stream,
+                    .raw_line = raw_line,
+                }, alloc);
+            } else {
+                const item = queue_mod.WorkItem{
+                    .client_id = cid,
+                    .client_stream = client.transport.stream,
+                    .raw_line = raw_line,
                 };
+                const routed = if (queue_mod.isTsMethod(raw_line))
+                    self.in_ts.push(item)
+                else
+                    self.in_general.push(item);
 
-                // DAP step/continue: dispatch inline (skip work queue round trip)
-                if (queue_mod.isDapActionMethod(line)) {
-                    defer self.allocator.free(raw_line);
-                    var arena = std.heap.ArenaAllocator.init(self.allocator);
-                    defer arena.deinit();
-                    const alloc = arena.allocator();
-                    self.handleWorkItem(.{
-                        .client_id = cid,
-                        .client_stream = client.stream,
-                        .raw_line = raw_line,
-                    }, alloc);
-                } else {
-                    const item = queue_mod.WorkItem{
-                        .client_id = cid,
-                        .client_stream = client.stream,
-                        .raw_line = raw_line,
-                    };
-                    const routed = if (queue_mod.isTsMethod(line))
-                        self.in_ts.push(item)
-                    else
-                        self.in_general.push(item);
-
-                    if (!routed) {
-                        item.deinit(self.allocator);
-                        log.warn("Work queue full, dropping line from client {d}", .{cid});
-                    }
+                if (!routed) {
+                    item.deinit(self.allocator);
+                    log.warn("Work queue full, dropping line from client {d}", .{cid});
                 }
             }
-
-            // Remove processed line from buffer.
-            const c = self.clients.get(cid) orelse break;
-            const remaining = c.read_buf.items.len - newline_pos - 1;
-            if (remaining > 0) {
-                std.mem.copyForwards(u8, c.read_buf.items[0..remaining], c.read_buf.items[newline_pos + 1 ..]);
-            }
-            c.read_buf.shrinkRetainingCapacity(remaining);
         }
     }
 
@@ -970,13 +943,9 @@ pub const EventLoop = struct {
             .args = .{ .array = arg_array },
         } }) catch return;
 
-        const msg = self.allocator.alloc(u8, encoded.len + 1) catch return;
-        @memcpy(msg[0..encoded.len], encoded);
-        msg[encoded.len] = '\n';
-        if (!self.out_queue.push(.{ .stream = client_entry.stream, .bytes = msg })) {
-            self.allocator.free(msg);
-            log.warn("DAP callback: out queue full for client {d}", .{owner_id});
-        }
+        client_entry.transport.asTransport().writeMessage(encoded) catch {
+            log.warn("DAP callback: transport write failed for client {d}", .{owner_id});
+        };
     }
 
     fn sendVimExToAll(self: *EventLoop, alloc: std.mem.Allocator, command: []const u8) void {
@@ -1102,7 +1071,7 @@ pub const EventLoop = struct {
             const raw_line_copy = self.allocator.dupe(u8, req.raw_line) catch continue;
             const item = queue_mod.WorkItem{
                 .client_id = req.client_id,
-                .client_stream = client.stream,
+                .client_stream = client.transport.stream,
                 .raw_line = raw_line_copy,
             };
             // Re-apply the same routing logic as processClientInput.
@@ -1122,19 +1091,12 @@ pub const EventLoop = struct {
     // All callers must hold state_lock when accessing clients map.
     // ====================================================================
 
-    /// GPA-allocate message bytes (encoded + newline) and push to out_queue.
-    /// Drops the message silently if the queue is full (back-pressure).
-    fn pushToOutQueue(self: *EventLoop, stream: std.net.Stream, encoded: []const u8) void {
-        const msg_bytes = self.allocator.alloc(u8, encoded.len + 1) catch {
-            log.err("OOM: failed to allocate out message", .{});
-            return;
+    /// Send an encoded JSON message through a client's transport.
+    fn sendViaTransport(transport: *transport_mod.Transport, alloc: Allocator, encoded: []const u8) void {
+        _ = alloc;
+        transport.writeMessage(encoded) catch |e| {
+            log.err("Transport write failed: {any}", .{e});
         };
-        @memcpy(msg_bytes[0..encoded.len], encoded);
-        msg_bytes[encoded.len] = '\n';
-        if (!self.out_queue.push(.{ .stream = stream, .bytes = msg_bytes })) {
-            self.allocator.free(msg_bytes);
-            log.warn("Out queue full, dropping message", .{});
-        }
     }
 
     /// Send a JSON-RPC response to a specific Vim client.
@@ -1143,7 +1105,7 @@ pub const EventLoop = struct {
         const client = self.clients.get(cid) orelse return;
         const encoded = vim.encodeJsonRpcResponse(alloc, @intCast(id), result) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        sendViaTransport(&client.transport.transport, alloc, encoded);
     }
 
     /// Send a Vim ex command to a specific client.
@@ -1151,21 +1113,20 @@ pub const EventLoop = struct {
         const client = self.clients.get(cid) orelse return;
         const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        sendViaTransport(&client.transport.transport, alloc, encoded);
     }
 
     /// Send an expr request to a specific Vim client and register a pending entry.
     fn sendVimExprTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, expr: []const u8, tag: PendingVimExpr.Tag) void {
         const client = self.clients.get(cid) orelse return;
         const id = self.requests.nextExprId();
-        // Register pending entry BEFORE sending, so we never send an expr we can't track
         self.requests.addExpr(id, .{ .cid = cid, .vim_id = vim_id, .tag = tag }) catch {
             log.err("Failed to register pending vim expr (OOM)", .{});
             return;
         };
         const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
         defer alloc.free(encoded);
-        self.pushToOutQueue(client.stream, encoded);
+        sendViaTransport(&client.transport.transport, alloc, encoded);
     }
 
     /// Handle the result of a daemon->Vim expr request.
@@ -1204,7 +1165,7 @@ pub const EventLoop = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.id != sender_cid and client_ptr.*.isSubscribedTo(workspace_uri)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
+                client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
             }
         }
     }
@@ -1219,7 +1180,7 @@ pub const EventLoop = struct {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
             if (client_ptr.*.isSubscribedTo(workspace_uri.?)) {
-                self.pushToOutQueue(client_ptr.*.stream, encoded);
+                client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
             }
         }
     }
@@ -1242,7 +1203,7 @@ pub const EventLoop = struct {
     fn broadcastRaw(self: *EventLoop, encoded: []const u8) void {
         var cit = self.clients.valueIterator();
         while (cit.next()) |client_ptr| {
-            self.pushToOutQueue(client_ptr.*.stream, encoded);
+            client_ptr.*.transport.asTransport().writeMessage(encoded) catch {};
         }
     }
 
@@ -1260,21 +1221,4 @@ pub const EventLoop = struct {
 // Tests
 // ============================================================================
 
-test "MAX_CLIENT_BUF is 4MB" {
-    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), MAX_CLIENT_BUF);
-}
-
-test "clientBufWouldOverflow: returns true when adding data exceeds limit" {
-    // Simulate a buffer already at the limit
-    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF, 1));
-    // One byte under the limit is fine
-    try std.testing.expect(!clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 1));
-    // Exactly at limit is an overflow
-    try std.testing.expect(clientBufWouldOverflow(MAX_CLIENT_BUF - 1, 2));
-    // Empty buffer with zero bytes is fine
-    try std.testing.expect(!clientBufWouldOverflow(0, 0));
-    // Empty buffer with max bytes is fine (at boundary)
-    try std.testing.expect(!clientBufWouldOverflow(0, MAX_CLIENT_BUF));
-    // Empty buffer with max+1 bytes overflows
-    try std.testing.expect(clientBufWouldOverflow(0, MAX_CLIENT_BUF + 1));
-}
+// Buffer overflow tests moved to transport.zig (MAX_RECV_BUF + wouldOverflow).

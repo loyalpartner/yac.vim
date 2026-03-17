@@ -1,5 +1,7 @@
 const std = @import("std");
 const log = @import("log.zig");
+const transport_mod = @import("transport.zig");
+const queue_mod = @import("queue.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -7,15 +9,13 @@ pub const ClientId = u32;
 
 pub const VimClient = struct {
     id: ClientId,
-    stream: std.net.Stream,
-    read_buf: std.ArrayList(u8),
+    transport: transport_mod.UnixSocketTransport,
     subscribed_workspaces: std.StringHashMap(void),
 
-    fn init(allocator: Allocator, id: ClientId, stream: std.net.Stream) VimClient {
+    fn init(allocator: Allocator, id: ClientId, stream: std.net.Stream, out_queue: *queue_mod.OutQueue) VimClient {
         return .{
             .id = id,
-            .stream = stream,
-            .read_buf = .{},
+            .transport = transport_mod.UnixSocketTransport.init(allocator, stream, out_queue),
             .subscribed_workspaces = std.StringHashMap(void).init(allocator),
         };
     }
@@ -26,8 +26,8 @@ pub const VimClient = struct {
             allocator.free(key_ptr.*);
         }
         self.subscribed_workspaces.deinit();
-        self.read_buf.deinit(allocator);
-        self.stream.close();
+        self.transport.deinit();
+        self.transport.stream.close();
     }
 
     pub fn subscribeWorkspace(self: *VimClient, allocator: Allocator, workspace_uri: []const u8) void {
@@ -65,7 +65,7 @@ pub const Clients = struct {
         self.clients.deinit();
     }
 
-    pub fn accept(self: *Clients, listener: *std.net.Server) ?ClientId {
+    pub fn accept(self: *Clients, listener: *std.net.Server, out_queue: *queue_mod.OutQueue) ?ClientId {
         const conn = listener.accept() catch |e| {
             log.err("accept failed: {any}", .{e});
             return null;
@@ -79,7 +79,7 @@ pub const Clients = struct {
             conn.stream.close();
             return null;
         };
-        client.* = VimClient.init(self.allocator, cid, conn.stream);
+        client.* = VimClient.init(self.allocator, cid, conn.stream, out_queue);
 
         self.clients.put(cid, client) catch |e| {
             log.err("failed to register client: {any}", .{e});
