@@ -45,14 +45,13 @@ const LspContextResult = union(enum) {
 };
 
 // ============================================================================
-// Tree-sitter context (migrated from handlers/treesitter.zig)
+// Tree-sitter context
 // ============================================================================
 
 const TsContext = struct {
     ts: *ts_mod.TreeSitter,
     file: []const u8,
     lang_state: *const ts_mod.LangState,
-    obj: ObjectMap,
 };
 
 // ============================================================================
@@ -94,23 +93,17 @@ fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
     });
 }
 
-/// Build LSP FormattingOptions from Vim params (tab_size, insert_spaces).
-fn buildFormattingOptions(allocator: Allocator, obj: ObjectMap) !Value {
-    const tab_size: i64 = json.getInteger(obj, "tab_size") orelse 4;
-    const insert_spaces = if (obj.get("insert_spaces")) |v| switch (v) {
-        .bool => |b| b,
-        else => true,
-    } else true;
-
+/// Build LSP FormattingOptions from typed params.
+fn buildFormattingOptionsTyped(allocator: Allocator, tab_size: i64, insert_spaces: bool) !Value {
     return json.buildObject(allocator, .{
         .{ "tabSize", json.jsonInteger(tab_size) },
         .{ "insertSpaces", json.jsonBool(insert_spaces) },
     });
 }
 
-/// Parse a path array [0, 2, 1] from DAP params.
-fn parsePath(alloc: Allocator, obj: ObjectMap) !?[]const u32 {
-    const path_arr = switch (obj.get("path") orelse return null) {
+/// Parse a path array [0, 2, 1] from a Value.
+fn parsePathFromValue(alloc: Allocator, path_val: ?Value) !?[]const u32 {
+    const path_arr = switch (path_val orelse return null) {
         .array => |a| a,
         else => return null,
     };
@@ -160,17 +153,11 @@ pub const Handler = struct {
     // Private helper methods
     // ========================================================================
 
-    fn getLspContext(self: *Handler, alloc: Allocator, params: Value) !LspContextResult {
-        return self.getLspContextEx(alloc, params, true);
+    fn getLspCtx(self: *Handler, alloc: Allocator, file: []const u8) !LspContextResult {
+        return self.getLspCtxEx(alloc, file, true);
     }
 
-    fn getLspContextEx(self: *Handler, alloc: Allocator, params: Value, require_ready: bool) !LspContextResult {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .not_available = {} },
-        };
-
-        const file = json.getString(obj, "file") orelse return .{ .not_available = {} };
+    fn getLspCtxEx(self: *Handler, alloc: Allocator, file: []const u8, require_ready: bool) !LspContextResult {
         const real_path = lsp_registry_mod.extractRealPath(file);
         const ssh_host = lsp_registry_mod.extractSshHost(file);
 
@@ -214,20 +201,12 @@ pub const Handler = struct {
         } };
     }
 
-    fn sendPositionRequest(self: *Handler, alloc: Allocator, params: Value, lsp_method: []const u8) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
-
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
         const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
         const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
@@ -235,22 +214,14 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    fn sendCapabilityCheckedPositionRequest(self: *Handler, alloc: Allocator, params: Value, lsp_method: []const u8, capability: []const u8, feature_name: []const u8) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    fn sendCapabilityCheckedPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8, capability: []const u8, feature_name: []const u8) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
         if (self.checkUnsupported(alloc, lsp_ctx.client_key, capability, feature_name)) return .{ .empty = {} };
-
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
 
         const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
         const request_id = try lsp_ctx.client.sendRequest(lsp_method, lsp_params);
@@ -296,37 +267,32 @@ pub const Handler = struct {
 
     // ── Tree-sitter helpers ──
 
-    fn getTsContext(self: *Handler, params: Value) ?TsContext {
+    fn getTsCtx(self: *Handler, file: []const u8, text: ?[]const u8) ?TsContext {
         const ts_state = self.ts;
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return null,
-        };
-        const file = json.getString(obj, "file") orelse return null;
         const lang_state = ts_state.fromExtension(file) orelse return null;
 
         // Auto-parse if buffer not yet tracked
         if (ts_state.getTree(file) == null) {
-            if (json.getString(obj, "text")) |text| {
-                ts_state.parseBuffer(file, text) catch |e| {
+            if (text) |t| {
+                ts_state.parseBuffer(file, t) catch |e| {
                     log.debug("TreeSitter auto-parse failed for {s}: {any}", .{ file, e });
                 };
             }
         }
 
-        return .{ .ts = ts_state, .file = file, .lang_state = lang_state, .obj = obj };
+        return .{ .ts = ts_state, .file = file, .lang_state = lang_state };
     }
 
-    fn parseIfSupported(self: *Handler, params: Value) void {
-        const tc = self.getTsContext(params) orelse return;
-        const text = json.getString(tc.obj, "text") orelse return;
-        tc.ts.parseBuffer(tc.file, text) catch |e| {
+    fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
+        const tc = self.getTsCtx(file, text) orelse return;
+        const t = text orelse return;
+        tc.ts.parseBuffer(tc.file, t) catch |e| {
             log.debug("TreeSitter parse failed for {s}: {any}", .{ tc.file, e });
         };
     }
 
-    fn removeIfSupported(self: *Handler, params: Value) void {
-        const tc = self.getTsContext(params) orelse return;
+    fn removeIfSupported(self: *Handler, file: []const u8) void {
+        const tc = self.getTsCtx(file, null) orelse return;
         tc.ts.removeBuffer(tc.file);
     }
 
@@ -383,14 +349,10 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    fn handleThreadControl(self: *Handler, alloc: Allocator, params: Value, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !ProcessResult {
+    fn handleThreadControl(self: *Handler, alloc: Allocator, thread_id_param: ?u32, comptime sendFn: fn (*DapClient, u32) anyerror!u32) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+        const thread_id = thread_id_param orelse session.client.active_thread_id orelse 1;
         _ = try sendFn(session.client, thread_id);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
@@ -405,13 +367,12 @@ pub const Handler = struct {
 
     // ── Copilot forwarding helpers (for file_open / did_change) ──
 
-    fn forwardDidOpenToCopilot(self: *Handler, alloc: Allocator, obj: ObjectMap) void {
+    fn forwardDidOpenToCopilot(self: *Handler, alloc: Allocator, file: []const u8, text: ?[]const u8) void {
         if (self.registry.copilot_client == null) return;
 
-        const file = json.getString(obj, "file") orelse return;
         const real_path = lsp_registry_mod.extractRealPath(file);
         const uri = lsp_registry_mod.filePathToUri(alloc, real_path) catch return;
-        const content = json.getString(obj, "text") orelse
+        const content = text orelse
             (std.fs.cwd().readFileAlloc(alloc, real_path, 10 * 1024 * 1024) catch return);
         const lang = LspRegistry.detectLanguage(real_path) orelse "plaintext";
 
@@ -440,14 +401,12 @@ pub const Handler = struct {
         log.info("Forwarded didOpen to Copilot for {s}", .{uri});
     }
 
-    fn forwardDidChangeToCopilot(self: *Handler, alloc: Allocator, obj: ObjectMap) void {
+    fn forwardDidChangeToCopilot(self: *Handler, alloc: Allocator, file: []const u8, version: i64, changes: ?Value, text: ?[]const u8) void {
         const copilot_client = self.registry.copilot_client orelse return;
         if (self.registry.isInitializing(LspRegistry.copilot_key)) return;
 
-        const file = json.getString(obj, "file") orelse return;
         const real_path = lsp_registry_mod.extractRealPath(file);
         const uri = lsp_registry_mod.filePathToUri(alloc, real_path) catch return;
-        const version = json.getInteger(obj, "version") orelse 1;
 
         var td = ObjectMap.init(alloc);
         td.put("uri", json.jsonString(uri)) catch return;
@@ -456,11 +415,11 @@ pub const Handler = struct {
         var lsp_params = ObjectMap.init(alloc);
         lsp_params.put("textDocument", .{ .object = td }) catch return;
 
-        if (obj.get("changes")) |changes| {
-            lsp_params.put("contentChanges", changes) catch return;
-        } else if (json.getString(obj, "text")) |text| {
+        if (changes) |c| {
+            lsp_params.put("contentChanges", c) catch return;
+        } else if (text) |t| {
             var change = ObjectMap.init(alloc);
-            change.put("text", json.jsonString(text)) catch return;
+            change.put("text", json.jsonString(t)) catch return;
             var changes_arr = std.json.Array.init(alloc);
             changes_arr.append(.{ .object = change }) catch return;
             lsp_params.put("contentChanges", .{ .array = changes_arr }) catch return;
@@ -489,13 +448,10 @@ pub const Handler = struct {
     // LSP status/lifecycle
     // ========================================================================
 
-    pub fn lsp_status(self: *Handler, alloc: Allocator, params: Value) !Value {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .null,
-        };
-        const file = json.getString(obj, "file") orelse return .null;
-        const real_path = lsp_registry_mod.extractRealPath(file);
+    pub fn lsp_status(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !Value {
+        const real_path = lsp_registry_mod.extractRealPath(p.file);
         const language = LspRegistry.detectLanguage(real_path) orelse {
             return try json.buildObject(alloc, .{
                 .{ "ready", .{ .bool = false } },
@@ -526,15 +482,14 @@ pub const Handler = struct {
         }
     }
 
-    pub fn file_open(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        self.parseIfSupported(params);
+    // file_open kept as raw Value — complex flow with copilot forwarding and raw Value access
+    pub fn file_open(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+    }) !ProcessResult {
+        self.parseIfSupported(p.file, p.text);
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const lsp_ctx_result = try self.getLspContextEx(alloc, params, false);
+        const lsp_ctx_result = try self.getLspCtxEx(alloc, p.file, false);
 
         var workspace_uri: ?[]const u8 = null;
 
@@ -542,7 +497,7 @@ pub const Handler = struct {
             .ready => |lsp_ctx| {
                 workspace_uri = lsp_mod.extractWorkspaceFromKey(lsp_ctx.client_key);
 
-                const content_to_use = json.getString(obj, "text") orelse
+                const content_to_use = p.text orelse
                     (std.fs.cwd().readFileAlloc(alloc, lsp_ctx.real_path, 10 * 1024 * 1024) catch |e| {
                         log.err("Failed to read file {s}: {any}", .{ lsp_ctx.real_path, e });
                         return .{ .empty = {} };
@@ -570,7 +525,7 @@ pub const Handler = struct {
             .initializing, .not_available => {},
         }
 
-        self.forwardDidOpenToCopilot(alloc, obj);
+        self.forwardDidOpenToCopilot(alloc, p.file, p.text);
 
         const result_data = try json.buildObject(alloc, .{
             .{ "action", json.jsonString("none") },
@@ -582,14 +537,10 @@ pub const Handler = struct {
         return .{ .data = result_data };
     }
 
-    pub fn lsp_reset_failed(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const language = json.getString(obj, "language") orelse return .{ .empty = {} };
-
-        self.registry.resetSpawnFailed(language);
+    pub fn lsp_reset_failed(self: *Handler, alloc: Allocator, p: struct {
+        language: []const u8,
+    }) !ProcessResult {
+        self.registry.resetSpawnFailed(p.language);
 
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
@@ -600,38 +551,50 @@ pub const Handler = struct {
     // LSP navigation
     // ========================================================================
 
-    pub fn goto_definition(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/definition");
+    pub fn goto_definition(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/definition");
     }
 
-    pub fn goto_declaration(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/declaration");
+    pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/declaration");
     }
 
-    pub fn goto_type_definition(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/typeDefinition");
+    pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/typeDefinition");
     }
 
-    pub fn goto_implementation(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/implementation");
+    pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/implementation");
     }
 
-    pub fn references(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn references(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
-
-        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column)) {
+        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, p.line, p.column)) {
             .object => |o| o,
             else => unreachable,
         };
@@ -645,45 +608,55 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn call_hierarchy(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/prepareCallHierarchy");
+    pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareCallHierarchy");
     }
 
-    pub fn type_hierarchy(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendCapabilityCheckedPositionRequest(alloc, params, "textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy");
+    pub fn type_hierarchy(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendCapabilityCheckedPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareTypeHierarchy", "typeHierarchyProvider", "type hierarchy");
     }
 
     // ========================================================================
     // LSP info
     // ========================================================================
 
-    pub fn hover(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendPositionRequest(alloc, params, "textDocument/hover");
+    pub fn hover(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/hover");
     }
 
-    pub fn completion(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn completion(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
-
-        const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
+        const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, p.line, p.column);
         const request_id = try lsp_ctx.client.sendRequest("textDocument/completion", lsp_params);
 
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = lsp_ctx.client_key } };
     }
 
-    pub fn document_symbols(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
@@ -695,24 +668,20 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn inlay_hints(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn inlay_hints(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        start_line: u32 = 0,
+        end_line: u32 = 100,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const start_line: u32 = json.getU32(obj, "start_line") orelse 0;
-        const end_line: u32 = json.getU32(obj, "end_line") orelse 100;
-
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try buildTextDocumentValue(alloc, lsp_ctx.uri) },
-            .{ "range", try buildRange(alloc, start_line, 0, end_line, 0) },
+            .{ "range", try buildRange(alloc, p.start_line, 0, p.end_line, 0) },
         });
 
         const request_id = try lsp_ctx.client.sendRequest("textDocument/inlayHint", lsp_params);
@@ -720,8 +689,10 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn folding_range(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
@@ -733,12 +704,18 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn signature_help(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.sendCapabilityCheckedPositionRequest(alloc, params, "textDocument/signatureHelp", "signatureHelpProvider", "signature help");
+    pub fn signature_help(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        return self.sendCapabilityCheckedPositionRequest(alloc, p.file, p.line, p.column, "textDocument/signatureHelp", "signatureHelpProvider", "signature help");
     }
 
-    pub fn semantic_tokens(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn semantic_tokens(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
@@ -756,51 +733,43 @@ pub const Handler = struct {
     // LSP editing
     // ========================================================================
 
-    pub fn rename(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn rename(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+        new_name: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
-        const new_name = json.getString(obj, "new_name") orelse return .{ .empty = {} };
-
-        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column)) {
+        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, p.line, p.column)) {
             .object => |o| o,
             else => unreachable,
         };
-        try lsp_params_obj.put("newName", json.jsonString(new_name));
+        try lsp_params_obj.put("newName", json.jsonString(p.new_name));
 
         const request_id = try lsp_ctx.client.sendRequest("textDocument/rename", .{ .object = lsp_params_obj });
 
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn code_action(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn code_action(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
-
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try buildTextDocumentValue(alloc, lsp_ctx.uri) },
-            .{ "range", try buildRange(alloc, line, column, line, column) },
+            .{ "range", try buildRange(alloc, p.line, p.column, p.line, p.column) },
             .{ "context", try json.buildObject(alloc, .{
                 .{ "diagnostics", .{ .array = std.json.Array.init(alloc) } },
             }) },
@@ -811,8 +780,12 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn formatting(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn formatting(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
@@ -820,14 +793,9 @@ pub const Handler = struct {
 
         if (self.checkUnsupported(alloc, lsp_ctx.client_key, "documentFormattingProvider", "formatting")) return .{ .empty = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try buildTextDocumentValue(alloc, lsp_ctx.uri) },
-            .{ "options", try buildFormattingOptions(alloc, obj) },
+            .{ "options", try buildFormattingOptionsTyped(alloc, p.tab_size, p.insert_spaces) },
         });
 
         const request_id = try lsp_ctx.client.sendRequest("textDocument/formatting", lsp_params);
@@ -835,8 +803,16 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn range_formatting(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn range_formatting(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        start_line: u32 = 0,
+        start_column: u32 = 0,
+        end_line: u32 = 0,
+        end_column: u32 = 0,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
@@ -844,20 +820,10 @@ pub const Handler = struct {
 
         if (self.checkUnsupported(alloc, lsp_ctx.client_key, "documentRangeFormattingProvider", "range formatting")) return .{ .empty = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const start_line: u32 = json.getU32(obj, "start_line") orelse 0;
-        const start_col: u32 = json.getU32(obj, "start_column") orelse 0;
-        const end_line: u32 = json.getU32(obj, "end_line") orelse 0;
-        const end_col: u32 = json.getU32(obj, "end_column") orelse 0;
-
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try buildTextDocumentValue(alloc, lsp_ctx.uri) },
-            .{ "options", try buildFormattingOptions(alloc, obj) },
-            .{ "range", try buildRange(alloc, start_line, start_col, end_line, end_col) },
+            .{ "options", try buildFormattingOptionsTyped(alloc, p.tab_size, p.insert_spaces) },
+            .{ "range", try buildRange(alloc, p.start_line, p.start_column, p.end_line, p.end_column) },
         });
 
         const request_id = try lsp_ctx.client.sendRequest("textDocument/rangeFormatting", lsp_params);
@@ -865,24 +831,21 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
     }
 
-    pub fn execute_command(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        lsp_command: []const u8,
+        arguments: ?Value = null,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing => return .{ .initializing = {} },
             .not_available => return .{ .empty = {} },
         };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const command = json.getString(obj, "lsp_command") orelse return .{ .empty = {} };
-
         var lsp_params = try json.buildObjectMap(alloc, .{
-            .{ "command", json.jsonString(command) },
+            .{ "command", json.jsonString(p.lsp_command) },
         });
-        if (obj.get("arguments")) |args| {
+        if (p.arguments) |args| {
             try lsp_params.put("arguments", args);
         }
 
@@ -895,34 +858,33 @@ pub const Handler = struct {
     // LSP notifications
     // ========================================================================
 
-    pub fn diagnostics(_: *Handler, _: Allocator, _: Value) !ProcessResult {
+    pub fn diagnostics(_: *Handler) !ProcessResult {
         return .{ .empty = {} };
     }
 
-    pub fn did_change(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        self.parseIfSupported(params);
+    pub fn did_change(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        version: i64 = 1,
+        text: ?[]const u8 = null,
+        changes: ?Value = null,
+    }) !ProcessResult {
+        self.parseIfSupported(p.file, p.text);
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const lsp_ctx_result = try self.getLspContext(alloc, params);
+        const lsp_ctx_result = try self.getLspCtx(alloc, p.file);
         switch (lsp_ctx_result) {
             .ready => |lsp_ctx| {
-                const version = json.getInteger(obj, "version") orelse 1;
                 var lsp_params = try json.buildObjectMap(alloc, .{
                     .{ "textDocument", try json.buildObject(alloc, .{
                         .{ "uri", json.jsonString(lsp_ctx.uri) },
-                        .{ "version", json.jsonInteger(version) },
+                        .{ "version", json.jsonInteger(p.version) },
                     }) },
                 });
 
-                if (obj.get("changes")) |changes| {
+                if (p.changes) |changes| {
                     try lsp_params.put("contentChanges", changes);
-                } else if (json.getString(obj, "text")) |text| {
+                } else if (p.text) |t| {
                     var change = ObjectMap.init(alloc);
-                    try change.put("text", json.jsonString(text));
+                    try change.put("text", json.jsonString(t));
                     var changes_arr = std.json.Array.init(alloc);
                     try changes_arr.append(.{ .object = change });
                     try lsp_params.put("contentChanges", .{ .array = changes_arr });
@@ -935,13 +897,15 @@ pub const Handler = struct {
             .initializing, .not_available => {},
         }
 
-        self.forwardDidChangeToCopilot(alloc, obj);
+        self.forwardDidChangeToCopilot(alloc, p.file, p.version, p.changes, p.text);
 
         return .{ .empty = {} };
     }
 
-    pub fn did_save(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn did_save(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing, .not_available => return .{ .empty = {} },
         };
@@ -955,10 +919,12 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    pub fn did_close(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        self.removeIfSupported(params);
+    pub fn did_close(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        self.removeIfSupported(p.file);
 
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing, .not_available => return .{ .empty = {} },
         };
@@ -972,8 +938,10 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    pub fn will_save(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn will_save(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
+        const lsp_ctx = switch (try self.getLspCtx(alloc, p.file)) {
             .ready => |c| c,
             .initializing, .not_available => return .{ .empty = {} },
         };
@@ -992,9 +960,14 @@ pub const Handler = struct {
     // Document highlight (LSP + tree-sitter fallback)
     // ========================================================================
 
-    pub fn document_highlight(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+        text: ?[]const u8 = null,
+    }) !ProcessResult {
         // Try LSP first — it provides semantic scope awareness
-        const lsp_result = try self.sendPositionRequest(alloc, params, "textDocument/documentHighlight");
+        const lsp_result = try self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/documentHighlight");
         switch (lsp_result) {
             .pending_lsp => return lsp_result,
             .initializing => {},
@@ -1003,19 +976,16 @@ pub const Handler = struct {
         }
 
         // Fallback: tree-sitter based (textual match within scope)
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
-
-        const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(tc.obj, "column") orelse return .{ .empty = {} };
 
         const result = try ts_mod.document_highlight.extractDocumentHighlights(
             alloc,
             tree,
             source,
-            line,
-            column,
+            p.line,
+            p.column,
         );
         return .{ .data = result };
     }
@@ -1024,23 +994,23 @@ pub const Handler = struct {
     // Tree-sitter
     // ========================================================================
 
-    pub fn load_language(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn load_language(self: *Handler, alloc: Allocator, p: struct {
+        lang_dir: []const u8,
+    }) !ProcessResult {
         const ts_state = self.ts;
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const lang_dir = json.getString(obj, "lang_dir") orelse return .{ .empty = {} };
 
-        ts_state.loadFromDir(lang_dir);
+        ts_state.loadFromDir(p.lang_dir);
 
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
         }) };
     }
 
-    pub fn ts_symbols(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+    pub fn ts_symbols(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+    }) !ProcessResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
         const sym_query = tc.lang_state.symbols orelse return .{ .empty = {} };
@@ -1055,8 +1025,11 @@ pub const Handler = struct {
         return .{ .data = result };
     }
 
-    pub fn ts_folding(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+    pub fn ts_folding(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+    }) !ProcessResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const folds_query = tc.lang_state.folds orelse return .{ .empty = {} };
 
@@ -1068,61 +1041,68 @@ pub const Handler = struct {
         return .{ .data = result };
     }
 
-    pub fn ts_navigate(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+    pub fn ts_navigate(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        target: []const u8 = "function",
+        direction: []const u8 = "next",
+        line: u32,
+    }) !ProcessResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const sym_query = tc.lang_state.symbols orelse return .{ .empty = {} };
-
-        const target = json.getString(tc.obj, "target") orelse "function";
-        const direction = json.getString(tc.obj, "direction") orelse "next";
-        const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
 
         const result = try ts_mod.navigate.navigate(
             alloc,
             sym_query,
             tree,
-            target,
-            direction,
-            line,
+            p.target,
+            p.direction,
+            p.line,
         );
         return .{ .data = result };
     }
 
-    pub fn ts_textobjects(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+    pub fn ts_textobjects(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        target: []const u8,
+        line: u32,
+        column: u32,
+    }) !ProcessResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const to_query = tc.lang_state.textobjects orelse return .{ .empty = {} };
-
-        const target = json.getString(tc.obj, "target") orelse return .{ .empty = {} };
-        const line: u32 = json.getU32(tc.obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(tc.obj, "column") orelse return .{ .empty = {} };
 
         const result = try ts_mod.textobjects.findTextObject(
             alloc,
             to_query,
             tree,
-            target,
-            line,
-            column,
+            p.target,
+            p.line,
+            p.column,
         );
         return .{ .data = result };
     }
 
-    pub fn ts_highlights(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const tc = self.getTsContext(params) orelse return .{ .empty = {} };
+    pub fn ts_highlights(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        start_line: u32 = 0,
+        end_line: u32 = 100,
+    }) !ProcessResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .{ .empty = {} };
         const tree = tc.ts.getTree(tc.file) orelse return .{ .empty = {} };
         const source = tc.ts.getSource(tc.file) orelse return .{ .empty = {} };
         const hl_query = tc.lang_state.highlights orelse return .{ .empty = {} };
-        const start_line: u32 = json.getU32(tc.obj, "start_line") orelse 0;
-        const end_line: u32 = json.getU32(tc.obj, "end_line") orelse 100;
 
         var result = try ts_mod.highlights.extractHighlights(
             alloc,
             hl_query,
             tree,
             source,
-            start_line,
-            end_line,
+            p.start_line,
+            p.end_line,
         );
 
         if (tc.lang_state.injections) |inj_query| {
@@ -1131,8 +1111,8 @@ pub const Handler = struct {
                 inj_query,
                 tree,
                 source,
-                start_line,
-                end_line,
+                p.start_line,
+                p.end_line,
                 tc.ts,
                 &result,
             );
@@ -1141,20 +1121,17 @@ pub const Handler = struct {
         return .{ .data = result };
     }
 
-    pub fn ts_hover_highlight(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn ts_hover_highlight(self: *Handler, alloc: Allocator, p: struct {
+        markdown: []const u8,
+        filetype: []const u8 = "",
+    }) !ProcessResult {
         const ts_state = self.ts;
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const markdown = json.getString(obj, "markdown") orelse return .{ .empty = {} };
-        const filetype = json.getString(obj, "filetype") orelse "";
 
         const result = try ts_mod.hover_highlight.extractHoverHighlights(
             alloc,
             ts_state,
-            markdown,
-            filetype,
+            p.markdown,
+            p.filetype,
         );
         return .{ .data = result };
     }
@@ -1163,57 +1140,52 @@ pub const Handler = struct {
     // Picker
     // ========================================================================
 
-    pub fn picker_open(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        _ = self;
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const cwd = json.getString(obj, "cwd") orelse return .{ .empty = {} };
-
+    pub fn picker_open(_: *Handler, alloc: Allocator, p: struct {
+        cwd: []const u8,
+        recent_files: ?Value = null,
+    }) !ProcessResult {
         var result = try json.buildObjectMap(alloc, .{
             .{ "action", json.jsonString("picker_init") },
-            .{ "cwd", json.jsonString(cwd) },
+            .{ "cwd", json.jsonString(p.cwd) },
         });
-        if (obj.get("recent_files")) |rf| {
+        if (p.recent_files) |rf| {
             try result.put("recent_files", rf);
         }
 
         return .{ .data = .{ .object = result } };
     }
 
-    pub fn picker_query(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-        const query = json.getString(obj, "query") orelse "";
-        const mode = json.getString(obj, "mode") orelse "file";
-
-        if (std.mem.eql(u8, mode, "workspace_symbol")) {
-            const lsp_ctx = switch (try self.getLspContext(alloc, params)) {
+    pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
+        query: []const u8 = "",
+        mode: []const u8 = "file",
+        file: ?[]const u8 = null,
+        text: ?[]const u8 = null,
+    }) !ProcessResult {
+        if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
+            const file = p.file orelse return .{ .empty = {} };
+            const lsp_ctx = switch (try self.getLspCtx(alloc, file)) {
                 .ready => |c| c,
                 .initializing => return .{ .initializing = {} },
                 .not_available => return .{ .empty = {} },
             };
 
             const ws_params = try json.buildObject(alloc, .{
-                .{ "query", json.jsonString(query) },
+                .{ "query", json.jsonString(p.query) },
             });
             const request_id = try lsp_ctx.client.sendRequest("workspace/symbol", ws_params);
             return .{ .pending_lsp = .{ .lsp_request_id = request_id } };
-        } else if (std.mem.eql(u8, mode, "grep")) {
+        } else if (std.mem.eql(u8, p.mode, "grep")) {
             return .{ .data = try json.buildObject(alloc, .{
                 .{ "action", json.jsonString("picker_grep_query") },
-                .{ "query", json.jsonString(query) },
+                .{ "query", json.jsonString(p.query) },
             }) };
-        } else if (std.mem.eql(u8, mode, "document_symbol")) {
+        } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
             const ts_state = self.ts;
-            const file = json.getString(obj, "file") orelse return .{ .empty = {} };
+            const file = p.file orelse return .{ .empty = {} };
             const lang_state = ts_state.fromExtension(file) orelse return .{ .empty = {} };
 
             if (ts_state.getTree(file) == null) {
-                if (json.getString(obj, "text")) |text| {
+                if (p.text) |text| {
                     ts_state.parseBuffer(file, text) catch {};
                 }
             }
@@ -1232,12 +1204,12 @@ pub const Handler = struct {
         } else {
             return .{ .data = try json.buildObject(alloc, .{
                 .{ "action", json.jsonString("picker_file_query") },
-                .{ "query", json.jsonString(query) },
+                .{ "query", json.jsonString(p.query) },
             }) };
         }
     }
 
-    pub fn picker_close(_: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn picker_close(_: *Handler, alloc: Allocator) !ProcessResult {
         return .{ .data = try json.buildObject(alloc, .{
             .{ "action", json.jsonString("picker_close") },
         }) };
@@ -1247,7 +1219,7 @@ pub const Handler = struct {
     // Copilot
     // ========================================================================
 
-    pub fn copilot_sign_in(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !ProcessResult {
         self.registry.resetCopilotSpawnFailed();
         const client = self.getCopilotClient(alloc) orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .initializing = {} };
@@ -1256,7 +1228,7 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
     }
 
-    pub fn copilot_sign_out(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !ProcessResult {
         const client = self.getCopilotClient(alloc) orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .initializing = {} };
 
@@ -1264,7 +1236,7 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
     }
 
-    pub fn copilot_check_status(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn copilot_check_status(self: *Handler, alloc: Allocator) !ProcessResult {
         const client = self.getCopilotClient(alloc) orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .initializing = {} };
 
@@ -1272,17 +1244,14 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
     }
 
-    pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, p: struct {
+        userCode: ?[]const u8 = null,
+    }) !ProcessResult {
         const client = self.getCopilotClient(alloc) orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .initializing = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
         var confirm_params = ObjectMap.init(alloc);
-        if (json.getString(obj, "userCode")) |code| {
+        if (p.userCode) |code| {
             try confirm_params.put("userCode", json.jsonString(code));
         }
 
@@ -1290,43 +1259,34 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
     }
 
-    pub fn copilot_complete(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn copilot_complete(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !ProcessResult {
         const client = self.getCopilotClient(alloc) orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .initializing = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
+        self.ensureCopilotDidOpen(alloc, client, p.file);
 
-        const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-        const line: u32 = json.getU32(obj, "line") orelse return .{ .empty = {} };
-        const column: u32 = json.getU32(obj, "column") orelse return .{ .empty = {} };
-
-        self.ensureCopilotDidOpen(alloc, client, file);
-
-        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(file));
-
-        const tab_size = json.getInteger(obj, "tab_size") orelse 4;
-        const insert_spaces = if (obj.get("insert_spaces")) |v| switch (v) {
-            .bool => |b| b,
-            else => true,
-        } else true;
+        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
 
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try json.buildObject(alloc, .{
                 .{ "uri", json.jsonString(uri) },
             }) },
             .{ "position", try json.buildObject(alloc, .{
-                .{ "line", json.jsonInteger(@intCast(line)) },
-                .{ "character", json.jsonInteger(@intCast(column)) },
+                .{ "line", json.jsonInteger(@intCast(p.line)) },
+                .{ "character", json.jsonInteger(@intCast(p.column)) },
             }) },
             .{ "context", try json.buildObject(alloc, .{
                 .{ "triggerKind", json.jsonInteger(1) },
             }) },
             .{ "formattingOptions", try json.buildObject(alloc, .{
-                .{ "tabSize", json.jsonInteger(tab_size) },
-                .{ "insertSpaces", json.jsonBool(insert_spaces) },
+                .{ "tabSize", json.jsonInteger(p.tab_size) },
+                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
             }) },
         });
 
@@ -1334,17 +1294,13 @@ pub const Handler = struct {
         return .{ .pending_lsp = .{ .lsp_request_id = request_id, .client_key = LspRegistry.copilot_key } };
     }
 
-    pub fn copilot_did_focus(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !ProcessResult {
         const client = self.registry.copilot_client orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .empty = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(file));
+        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
 
         const notify_params = try json.buildObject(alloc, .{
             .{ "textDocument", try json.buildObject(alloc, .{
@@ -1359,17 +1315,14 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    pub fn copilot_accept(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn copilot_accept(self: *Handler, alloc: Allocator, p: struct {
+        uuid: ?Value = null,
+    }) !ProcessResult {
         const client = self.registry.copilot_client orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .empty = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
         var args = std.json.Array.init(alloc);
-        if (obj.get("uuid")) |uuid| {
+        if (p.uuid) |uuid| {
             try args.append(uuid);
         }
 
@@ -1385,20 +1338,18 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    pub fn copilot_partial_accept(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn copilot_partial_accept(self: *Handler, alloc: Allocator, p: struct {
+        item_id: ?[]const u8 = null,
+        accepted_text: ?[]const u8 = null,
+    }) !ProcessResult {
         const client = self.registry.copilot_client orelse return .{ .empty = {} };
         if (!self.copilotReady()) return .{ .empty = {} };
 
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
         var notify_params = ObjectMap.init(alloc);
-        if (json.getString(obj, "item_id")) |id| {
+        if (p.item_id) |id| {
             try notify_params.put("itemId", json.jsonString(id));
         }
-        if (json.getString(obj, "accepted_text")) |text| {
+        if (p.accepted_text) |text| {
             try notify_params.put("acceptedLength", json.jsonInteger(@intCast(text.len)));
         }
 
@@ -1413,23 +1364,12 @@ pub const Handler = struct {
     // DAP
     // ========================================================================
 
-    pub fn dap_load_config(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        const obj = switch (params) {
-            .object => |o| o,
-            else => {
-                log.err("handleDapLoadConfig: params is not object", .{});
-                return .{ .empty = {} };
-            },
-        };
-
-        const project_root = json.getString(obj, "project_root") orelse {
-            log.err("handleDapLoadConfig: no 'project_root' in params", .{});
-            return .{ .empty = {} };
-        };
-        const file = json.getString(obj, "file") orelse "";
-        const dirname = json.getString(obj, "dirname") orelse "";
-
-        const result = dap_config.loadDebugConfig(alloc, project_root, file, dirname) catch |e| {
+    pub fn dap_load_config(self: *Handler, alloc: Allocator, p: struct {
+        project_root: []const u8,
+        file: []const u8 = "",
+        dirname: []const u8 = "",
+    }) !ProcessResult {
+        const result = dap_config.loadDebugConfig(alloc, p.project_root, p.file, p.dirname) catch |e| {
             log.err("handleDapLoadConfig: loadDebugConfig failed: {any}", .{e});
             try self.sendEmptyConfigs(alloc);
             return .{ .empty = {} };
@@ -1446,32 +1386,34 @@ pub const Handler = struct {
         return .{ .empty = {} };
     }
 
-    pub fn dap_start(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_start(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        program: ?[]const u8 = null,
+        adapter_command: ?[]const u8 = null,
+        adapter_args: ?Value = null,
+        breakpoints: ?Value = null,
+        args: ?Value = null,
+        stop_on_entry: ?Value = null,
+        module: ?[]const u8 = null,
+        cwd: ?[]const u8 = null,
+        env: ?Value = null,
+        extra: ?Value = null,
+        request: ?[]const u8 = null,
+        pid: ?u32 = null,
+    }) !ProcessResult {
         log.debug("handleDapStart: entered", .{});
-        const obj = switch (params) {
-            .object => |o| o,
-            else => {
-                log.err("handleDapStart: params is not object", .{});
-                return .{ .empty = {} };
-            },
-        };
-
-        const file = json.getString(obj, "file") orelse {
-            log.err("handleDapStart: no 'file' in params", .{});
-            return .{ .empty = {} };
-        };
-        const ext = std.fs.path.extension(file);
+        const ext = std.fs.path.extension(p.file);
         const config = dap_config.findByExtension(ext) orelse {
             const msg = std.fmt.allocPrint(alloc, "call yac#toast('[yac] No debug adapter for {s} files')", .{ext}) catch return .{ .empty = {} };
             try self.vimEx(alloc, msg);
             return .{ .empty = {} };
         };
 
-        const command = json.getString(obj, "adapter_command") orelse config.command;
+        const command = p.adapter_command orelse config.command;
 
         var user_args: std.ArrayList([]const u8) = .{};
         defer user_args.deinit(alloc);
-        if (obj.get("adapter_args")) |aa| {
+        if (p.adapter_args) |aa| {
             if (aa == .array) {
                 for (aa.array.items) |item| {
                     if (item == .string) {
@@ -1482,7 +1424,7 @@ pub const Handler = struct {
         }
         const args: []const []const u8 = if (user_args.items.len > 0) user_args.items else config.args;
 
-        const workspace_dir = std.fs.path.dirname(file);
+        const workspace_dir = std.fs.path.dirname(p.file);
 
         if (self.dap_session.*) |old| {
             _ = old.client.sendDisconnect(true) catch 0;
@@ -1508,16 +1450,16 @@ pub const Handler = struct {
         session.owner_client_id = self.client_id;
         self.dap_session.* = session;
 
-        const program_raw = json.getString(obj, "program") orelse file;
+        const program_raw = p.program orelse p.file;
         const program = self.gpa.dupe(u8, program_raw) catch return .{ .empty = {} };
-        const stop_on_entry = if (obj.get("stop_on_entry")) |v| switch (v) {
+        const stop_on_entry = if (p.stop_on_entry) |v| switch (v) {
             .bool => |b| b,
             .integer => |i| i != 0,
             else => false,
         } else false;
 
         var bp_files = std.StringArrayHashMap(std.ArrayList(u32)).init(self.gpa);
-        if (obj.get("breakpoints")) |bp_val| {
+        if (p.breakpoints) |bp_val| {
             if (bp_val == .array) {
                 for (bp_val.array.items) |item| {
                     const bp_obj = switch (item) {
@@ -1543,7 +1485,7 @@ pub const Handler = struct {
         }
 
         var launch_args: std.ArrayList([]const u8) = .{};
-        if (obj.get("args")) |args_val| {
+        if (p.args) |args_val| {
             if (args_val == .array) {
                 for (args_val.array.items) |item| {
                     const s = switch (item) {
@@ -1559,35 +1501,30 @@ pub const Handler = struct {
             }
         }
 
-        const module: ?[]const u8 = if (json.getString(obj, "module")) |m|
+        const module: ?[]const u8 = if (p.module) |m|
             self.gpa.dupe(u8, m) catch null
         else
             null;
 
-        const cwd: ?[]const u8 = if (json.getString(obj, "cwd")) |c|
+        const cwd: ?[]const u8 = if (p.cwd) |c|
             self.gpa.dupe(u8, c) catch null
         else
             null;
 
-        const env_json: ?[]const u8 = env_blk: {
-            const env_val = obj.get("env") orelse break :env_blk null;
-            if (env_val != .object) break :env_blk null;
-            break :env_blk json.stringifyAlloc(self.gpa, env_val) catch null;
-        };
+        const env_json: ?[]const u8 = if (p.env) |env_val|
+            (if (env_val == .object) json.stringifyAlloc(self.gpa, env_val) catch null else null)
+        else
+            null;
 
-        const extra_json: ?[]const u8 = extra_blk: {
-            const extra_val = obj.get("extra") orelse break :extra_blk null;
-            if (extra_val != .object) break :extra_blk null;
-            break :extra_blk json.stringifyAlloc(self.gpa, extra_val) catch null;
-        };
+        const extra_json: ?[]const u8 = if (p.extra) |extra_val|
+            (if (extra_val == .object) json.stringifyAlloc(self.gpa, extra_val) catch null else null)
+        else
+            null;
 
-        const request_type: dap_client_mod.RequestType = req_blk: {
-            const req_str = json.getString(obj, "request") orelse break :req_blk .launch;
-            if (std.mem.eql(u8, req_str, "attach")) break :req_blk .attach;
-            break :req_blk .launch;
-        };
-
-        const pid: ?u32 = json.getU32(obj, "pid");
+        const request_type: dap_client_mod.RequestType = if (p.request) |req_str|
+            (if (std.mem.eql(u8, req_str, "attach")) .attach else .launch)
+        else
+            .launch;
 
         client.launch_params = .{
             .program = program,
@@ -1599,7 +1536,7 @@ pub const Handler = struct {
             .env_json = env_json,
             .extra_json = extra_json,
             .request_type = request_type,
-            .pid = pid,
+            .pid = p.pid,
         };
 
         _ = client.initialize() catch |e| {
@@ -1607,7 +1544,7 @@ pub const Handler = struct {
             return .{ .empty = {} };
         };
 
-        log.info("DAP session starting for {s} ({s})", .{ file, config.language_id });
+        log.info("DAP session starting for {s} ({s})", .{ p.file, config.language_id });
 
         return .{ .data = try json.buildObject(alloc, .{
             .{ "status", json.jsonString("initializing") },
@@ -1615,18 +1552,16 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_breakpoint(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_breakpoint(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        breakpoints: ?Value = null,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const file = json.getString(obj, "file") orelse return .{ .empty = {} };
-        const bp_array = switch (obj.get("breakpoints") orelse return .{ .empty = {} }) {
+        const bp_array = if (p.breakpoints) |bp_val| switch (bp_val) {
             .array => |a| a,
             else => return .{ .empty = {} },
-        };
+        } else return .{ .empty = {} };
 
         var breakpoints: std.ArrayList(dap_client_mod.BreakpointInfo) = .{};
         defer breakpoints.deinit(alloc);
@@ -1645,23 +1580,21 @@ pub const Handler = struct {
             }
         }
 
-        _ = try session.client.sendSetBreakpoints(alloc, file, breakpoints.items);
+        _ = try session.client.sendSetBreakpoints(alloc, p.file, breakpoints.items);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_exception_breakpoints(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_exception_breakpoints(self: *Handler, alloc: Allocator, p: struct {
+        filters: ?Value = null,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const filters_val = switch (obj.get("filters") orelse return .{ .empty = {} }) {
+        const filters_val = if (p.filters) |f| switch (f) {
             .array => |a| a,
             else => return .{ .empty = {} },
-        };
+        } else return .{ .empty = {} };
 
         var filters: std.ArrayList([]const u8) = .{};
         defer filters.deinit(alloc);
@@ -1678,7 +1611,7 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_threads(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn dap_threads(self: *Handler, alloc: Allocator) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
         _ = try session.client.sendThreads();
         return .{ .data = try json.buildObject(alloc, .{
@@ -1686,81 +1619,78 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_continue(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.handleThreadControl(alloc, params, DapClient.sendContinue);
+    pub fn dap_continue(self: *Handler, alloc: Allocator, p: struct {
+        thread_id: ?u32 = null,
+    }) !ProcessResult {
+        return self.handleThreadControl(alloc, p.thread_id, DapClient.sendContinue);
     }
 
-    pub fn dap_next(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.handleThreadControl(alloc, params, DapClient.sendNext);
+    pub fn dap_next(self: *Handler, alloc: Allocator, p: struct {
+        thread_id: ?u32 = null,
+    }) !ProcessResult {
+        return self.handleThreadControl(alloc, p.thread_id, DapClient.sendNext);
     }
 
-    pub fn dap_step_in(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.handleThreadControl(alloc, params, DapClient.sendStepIn);
+    pub fn dap_step_in(self: *Handler, alloc: Allocator, p: struct {
+        thread_id: ?u32 = null,
+    }) !ProcessResult {
+        return self.handleThreadControl(alloc, p.thread_id, DapClient.sendStepIn);
     }
 
-    pub fn dap_step_out(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
-        return self.handleThreadControl(alloc, params, DapClient.sendStepOut);
+    pub fn dap_step_out(self: *Handler, alloc: Allocator, p: struct {
+        thread_id: ?u32 = null,
+    }) !ProcessResult {
+        return self.handleThreadControl(alloc, p.thread_id, DapClient.sendStepOut);
     }
 
-    pub fn dap_stack_trace(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_stack_trace(self: *Handler, alloc: Allocator, p: struct {
+        thread_id: ?u32 = null,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const thread_id = json.getU32(obj, "thread_id") orelse session.client.active_thread_id orelse 1;
+        const thread_id = p.thread_id orelse session.client.active_thread_id orelse 1;
         _ = try session.client.sendStackTrace(thread_id);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "pending", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_scopes(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_scopes(self: *Handler, alloc: Allocator, p: struct {
+        frame_id: u32,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const frame_id = json.getU32(obj, "frame_id") orelse return .{ .empty = {} };
-        _ = try session.client.sendScopes(frame_id);
+        _ = try session.client.sendScopes(p.frame_id);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "pending", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_variables(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_variables(self: *Handler, alloc: Allocator, p: struct {
+        variables_ref: u32,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const variables_ref = json.getU32(obj, "variables_ref") orelse return .{ .empty = {} };
-        _ = try session.client.sendVariables(variables_ref);
+        _ = try session.client.sendVariables(p.variables_ref);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "pending", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_evaluate(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_evaluate(self: *Handler, alloc: Allocator, p: struct {
+        expression: []const u8,
+        frame_id: ?u32 = null,
+        context: []const u8 = "repl",
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
-        const frame_id = json.getU32(obj, "frame_id");
-        const eval_context = json.getString(obj, "context") orelse "repl";
-        _ = try session.client.sendEvaluate(expression, frame_id, eval_context);
+        _ = try session.client.sendEvaluate(p.expression, p.frame_id, p.context);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "pending", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_terminate(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn dap_terminate(self: *Handler, alloc: Allocator) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
         _ = session.client.sendTerminate() catch {};
         _ = session.client.sendDisconnect(true) catch {};
@@ -1769,7 +1699,7 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_status(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn dap_status(self: *Handler, alloc: Allocator) !ProcessResult {
         const session = self.dap_session.* orelse {
             return .{ .data = try json.buildObject(alloc, .{
                 .{ "active", .{ .bool = false } },
@@ -1779,20 +1709,17 @@ pub const Handler = struct {
         return .{ .data = try session.buildPanelData(alloc) };
     }
 
-    pub fn dap_get_panel(self: *Handler, alloc: Allocator, _: Value) !ProcessResult {
+    pub fn dap_get_panel(self: *Handler, alloc: Allocator) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
         return .{ .data = try session.buildPanelData(alloc) };
     }
 
-    pub fn dap_switch_frame(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_switch_frame(self: *Handler, alloc: Allocator, p: struct {
+        frame_index: u32,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const frame_idx = json.getU32(obj, "frame_index") orelse return .{ .empty = {} };
-        session.switchFrame(frame_idx) catch |e| {
+        session.switchFrame(p.frame_index) catch |e| {
             log.err("DAP switchFrame failed: {any}", .{e});
             return .{ .empty = {} };
         };
@@ -1801,14 +1728,11 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_expand_variable(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_expand_variable(self: *Handler, alloc: Allocator, p: struct {
+        path: ?Value = null,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const path = try parsePath(alloc, obj) orelse return .{ .empty = {} };
+        const path = try parsePathFromValue(alloc, p.path) orelse return .{ .empty = {} };
         defer alloc.free(path);
 
         session.expandVariable(path) catch |e| {
@@ -1820,14 +1744,11 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_collapse_variable(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_collapse_variable(self: *Handler, alloc: Allocator, p: struct {
+        path: ?Value = null,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
-
-        const path = try parsePath(alloc, obj) orelse return .{ .empty = {} };
+        const path = try parsePathFromValue(alloc, p.path) orelse return .{ .empty = {} };
         defer alloc.free(path);
 
         session.collapseVariable(path);
@@ -1836,29 +1757,23 @@ pub const Handler = struct {
         }) };
     }
 
-    pub fn dap_add_watch(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_add_watch(self: *Handler, alloc: Allocator, p: struct {
+        expression: []const u8,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const expression = json.getString(obj, "expression") orelse return .{ .empty = {} };
-        try session.addWatch(expression);
+        try session.addWatch(p.expression);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
         }) };
     }
 
-    pub fn dap_remove_watch(self: *Handler, alloc: Allocator, params: Value) !ProcessResult {
+    pub fn dap_remove_watch(self: *Handler, alloc: Allocator, p: struct {
+        index: u32,
+    }) !ProcessResult {
         const session = self.dap_session.* orelse return self.notRunning(alloc);
-        const obj = switch (params) {
-            .object => |o| o,
-            else => return .{ .empty = {} },
-        };
 
-        const index = json.getU32(obj, "index") orelse return .{ .empty = {} };
-        session.removeWatch(index);
+        session.removeWatch(p.index);
         return .{ .data = try json.buildObject(alloc, .{
             .{ "ok", .{ .bool = true } },
         }) };
