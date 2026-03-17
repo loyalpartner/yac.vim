@@ -64,14 +64,14 @@ pub fn getArray(obj: ObjectMap, key: []const u8) ?[]Value {
     };
 }
 
-/// Stringify a JSON value to a std.io.Writer.
-pub fn stringifyToWriter(value: Value, w: *std.io.Writer) !void {
+/// Stringify a JSON value to a std.Io.Writer.
+pub fn stringifyToWriter(value: Value, w: *std.Io.Writer) !void {
     try std.json.Stringify.value(value, .{}, w);
 }
 
 /// Stringify a JSON value to an allocated string.
 pub fn stringifyAlloc(allocator: Allocator, value: Value) ![]const u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     try stringifyToWriter(value, &aw.writer);
     return aw.toOwnedSlice();

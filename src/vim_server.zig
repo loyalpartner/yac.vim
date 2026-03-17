@@ -10,23 +10,13 @@ const Value = json.Value;
 // ============================================================================
 
 /// Result of dispatching a handler method.
+/// In the coroutine model, LSP handlers block internally (via Io.Event)
+/// and return the result directly — no pending_lsp/initializing variants needed.
 pub const ProcessResult = union(enum) {
     /// Handler produced a direct response value.
     data: Value,
-    /// Handler produced nothing.
+    /// Handler produced nothing (notification handlers).
     empty: void,
-    /// Handler sent an LSP request and is waiting for a response.
-    pending_lsp: struct {
-        lsp_request_id: u32,
-        client_key: ?[]const u8 = null,
-    },
-    /// LSP client is still initializing; caller should defer and retry.
-    initializing: void,
-    /// Handler produced a response AND requests workspace subscription.
-    data_with_subscribe: struct {
-        data: Value,
-        workspace_uri: []const u8,
-    },
 };
 
 // ============================================================================
@@ -301,7 +291,7 @@ test "VimServer: ProcessResult passthrough" {
         pub fn check(self: *@This(), alloc: Allocator) !ProcessResult {
             _ = self;
             _ = alloc;
-            return .{ .pending_lsp = .{ .lsp_request_id = 42, .client_key = "zig" } };
+            return .{ .data = json.jsonString("done") };
         }
     };
 
@@ -310,9 +300,7 @@ test "VimServer: ProcessResult passthrough" {
     const result = try server.processMethod(std.testing.allocator, "check", .null);
 
     try std.testing.expect(result != null);
-    const pending = result.?.pending_lsp;
-    try std.testing.expectEqual(@as(u32, 42), pending.lsp_request_id);
-    try std.testing.expectEqualStrings("zig", pending.client_key.?);
+    try std.testing.expectEqualStrings("done", result.?.data.string);
 }
 
 test "VimServer: handlerMethodNames filters correctly" {
