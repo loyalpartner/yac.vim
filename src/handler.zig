@@ -103,7 +103,8 @@ pub const Handler = struct {
     }
 
     /// Send a position-based LSP request, block for response, transform result.
-    fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8) !Value {
+    /// handler_method is the yac handler name (e.g. "hover"), lsp_method is the LSP protocol name.
+    fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8, handler_method: []const u8) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
         const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
 
@@ -113,7 +114,7 @@ pub const Handler = struct {
         };
         defer result.deinit();
 
-        return lsp_transform.transformLspResult(alloc, lsp_method, result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, handler_method, result.result, lsp_ctx.ssh_host);
     }
 
     // ========================================================================
@@ -261,31 +262,31 @@ pub const Handler = struct {
     pub fn goto_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/definition");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/definition", "goto_definition");
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/declaration");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/declaration", "goto_declaration");
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/typeDefinition");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/typeDefinition", "goto_type_definition");
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/implementation");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/implementation", "goto_implementation");
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/hover");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/hover", "hover");
     }
 
     pub fn references(self: *Handler, alloc: Allocator, p: struct {
@@ -305,25 +306,25 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "textDocument/references", result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, "references", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareCallHierarchy");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareCallHierarchy", "call_hierarchy");
     }
 
     pub fn type_hierarchy(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareTypeHierarchy");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareTypeHierarchy", "type_hierarchy");
     }
 
     pub fn completion(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/completion");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/completion", "completion");
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -336,13 +337,13 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "textDocument/documentSymbol", result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, "document_symbols", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn signature_help(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/signatureHelp");
+        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/signatureHelp", "signature_help");
     }
 
     // ========================================================================
@@ -430,7 +431,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "textDocument/rename", result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, "rename", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn code_action(self: *Handler, alloc: Allocator, p: struct {
@@ -458,7 +459,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "textDocument/codeAction", result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, "code_action", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn formatting(self: *Handler, alloc: Allocator, p: struct {
@@ -477,7 +478,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "textDocument/formatting", result.result, lsp_ctx.ssh_host);
+        return lsp_transform.transformLspResult(alloc, "formatting", result.result, lsp_ctx.ssh_host);
     }
 
     // ========================================================================
