@@ -1,8 +1,11 @@
 const std = @import("std");
 const queue_mod = @import("queue.zig");
+const vim = @import("vim_protocol.zig");
+const json = @import("json_utils.zig");
 const log = @import("log.zig");
 
 const Allocator = std.mem.Allocator;
+const Value = json.Value;
 
 // ============================================================================
 // Transport — vtable interface for Vim channel communication.
@@ -33,6 +36,36 @@ pub const Transport = struct {
 
     pub fn writeMessage(self: *Transport, json_bytes: []const u8) WriteError!void {
         return self.vtable.writeMessage(self, json_bytes);
+    }
+
+    // ── Convenience methods (serialize Vim channel protocol, then call writeMessage) ──
+
+    /// Send a JSON-RPC response: [vim_id, result]
+    pub fn writeResponse(self: *Transport, alloc: Allocator, vim_id: u64, result: Value) void {
+        const encoded = vim.encodeJsonRpcResponse(alloc, @as(i64, @intCast(vim_id)), result) catch return;
+        defer alloc.free(encoded);
+        self.writeMessage(encoded) catch {};
+    }
+
+    /// Send a Vim ex command: ["ex", command]
+    pub fn writeEx(self: *Transport, alloc: Allocator, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        defer alloc.free(encoded);
+        self.writeMessage(encoded) catch {};
+    }
+
+    /// Send a Vim call (fire-and-forget): ["call", func, args]
+    pub fn writeCallAsync(self: *Transport, alloc: Allocator, func: []const u8, args: Value) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{ .func = func, .args = args } }) catch return;
+        defer alloc.free(encoded);
+        self.writeMessage(encoded) catch {};
+    }
+
+    /// Send a Vim expr request: ["expr", expr, id]
+    pub fn writeExpr(self: *Transport, alloc: Allocator, expr: []const u8, id: i64) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
+        defer alloc.free(encoded);
+        self.writeMessage(encoded) catch {};
     }
 };
 

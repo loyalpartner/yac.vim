@@ -938,14 +938,7 @@ pub const EventLoop = struct {
         var arg_array = std.json.Array.init(alloc);
         arg_array.append(args) catch return;
 
-        const encoded = vim.encodeChannelCommand(alloc, .{ .call_async = .{
-            .func = func,
-            .args = .{ .array = arg_array },
-        } }) catch return;
-
-        client_entry.transport.asTransport().writeMessage(encoded) catch {
-            log.warn("DAP callback: transport write failed for client {d}", .{owner_id});
-        };
+        client_entry.transport.asTransport().writeCallAsync(alloc, func, .{ .array = arg_array });
     }
 
     fn sendVimExToAll(self: *EventLoop, alloc: std.mem.Allocator, command: []const u8) void {
@@ -1095,17 +1088,13 @@ pub const EventLoop = struct {
     fn sendVimResponseTo(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, result: Value) void {
         const id = vim_id orelse return;
         const client = self.clients.get(cid) orelse return;
-        const encoded = vim.encodeJsonRpcResponse(alloc, @intCast(id), result) catch return;
-        defer alloc.free(encoded);
-        client.transport.asTransport().writeMessage(encoded) catch {};
+        client.transport.asTransport().writeResponse(alloc, id, result);
     }
 
     /// Send a Vim ex command to a specific client.
     fn sendVimExTo(self: *EventLoop, cid: ClientId, alloc: Allocator, command: []const u8) void {
         const client = self.clients.get(cid) orelse return;
-        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
-        defer alloc.free(encoded);
-        client.transport.asTransport().writeMessage(encoded) catch {};
+        client.transport.asTransport().writeEx(alloc, command);
     }
 
     /// Send an expr request to a specific Vim client and register a pending entry.
@@ -1116,9 +1105,7 @@ pub const EventLoop = struct {
             log.err("Failed to register pending vim expr (OOM)", .{});
             return;
         };
-        const encoded = vim.encodeChannelCommand(alloc, .{ .expr = .{ .expr = expr, .id = id } }) catch return;
-        defer alloc.free(encoded);
-        client.transport.asTransport().writeMessage(encoded) catch {};
+        client.transport.asTransport().writeExpr(alloc, expr, id);
     }
 
     /// Handle the result of a daemon->Vim expr request.
