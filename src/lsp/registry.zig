@@ -231,7 +231,7 @@ pub const LspRegistry = struct {
         const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
         defer if (workspace_uri) |uri| self.allocator.free(uri);
 
-        var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+        var key_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
         const lookup_key = if (workspace_uri) |uri|
             std.fmt.bufPrint(&key_buf, "{s}\x00{s}", .{ language, uri }) catch return null
         else
@@ -265,7 +265,7 @@ pub const LspRegistry = struct {
         defer if (workspace_uri) |uri| self.allocator.free(uri);
 
         // Build lookup key on stack
-        var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+        var key_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
         const lookup_key = if (workspace_uri) |uri|
             std.fmt.bufPrint(&key_buf, "{s}\x00{s}", .{ language, uri }) catch return error.KeyTooLong
         else
@@ -390,7 +390,7 @@ pub const LspRegistry = struct {
         if (self.pending_opens.getPtr(client_key)) |list| {
             try list.append(self.allocator, open);
         } else {
-            var list: std.ArrayList(PendingOpen) = .{};
+            var list: std.ArrayList(PendingOpen) = .empty;
             try list.append(self.allocator, open);
             errdefer list.deinit(self.allocator);
             try self.pending_opens.put(client_key, list);
@@ -497,22 +497,21 @@ pub const LspRegistry = struct {
 
 /// Check if a command exists in PATH (no allocation).
 fn commandExistsInPath(command: []const u8) bool {
+    const compat = @import("../compat.zig");
     // Absolute/relative path: check directly
     if (std.mem.indexOfScalar(u8, command, '/') != null) {
-        std.fs.accessAbsolute(command, .{}) catch return false;
-        return true;
+        return compat.fileExists(command);
     }
-    const path_env = @import("../compat.zig").getenv("PATH") orelse return false;
+    const path_env = compat.getenv("PATH") orelse return false;
     var it = std.mem.splitScalar(u8, path_env, ':');
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     while (it.next()) |dir| {
         if (dir.len + 1 + command.len >= buf.len) continue;
         @memcpy(buf[0..dir.len], dir);
         buf[dir.len] = '/';
         @memcpy(buf[dir.len + 1 ..][0..command.len], command);
         const full = buf[0 .. dir.len + 1 + command.len];
-        std.fs.accessAbsolute(full, .{}) catch continue;
-        return true;
+        if (compat.fileExists(full)) return true;
     }
     return false;
 }
@@ -525,10 +524,10 @@ fn getManagedBinaryPath(allocator: Allocator, command: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, command, "..") != null) return null;
     const home = @import("../compat.zig").getenv("HOME") orelse return null;
     const path = std.fmt.allocPrint(allocator, "{s}/.local/share/yac/bin/{s}", .{ home, command }) catch return null;
-    std.fs.accessAbsolute(path, .{}) catch {
+    if (!@import("../compat.zig").fileExists(path)) {
         allocator.free(path);
         return null;
-    };
+    }
     return path;
 }
 

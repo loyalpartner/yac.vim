@@ -9,6 +9,15 @@ pub fn getenv(key: [*:0]const u8) ?[:0]const u8 {
     return std.mem.sliceTo(val, 0);
 }
 
+/// Check if a file exists at the given path. Uses C access() to avoid Io dependency.
+pub fn fileExists(path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len >= buf.len) return false;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    return std.c.access(@ptrCast(buf[0..path.len :0]), std.c.F_OK) == 0;
+}
+
 /// Delete a file by absolute path. Uses C unlink to avoid Io dependency.
 pub fn deleteFileAbsolute(path: []const u8) void {
     var buf: [std.fs.max_path_bytes + 1]u8 = undefined;

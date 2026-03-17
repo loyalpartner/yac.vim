@@ -130,7 +130,7 @@ pub const Lsp = struct {
         log.info("Flushing {d} deferred requests", .{count});
 
         const now = std.time.nanoTimestamp();
-        var result: std.ArrayList(DeferredRequest) = .{};
+        var result: std.ArrayList(DeferredRequest) = .empty;
         var dropped: usize = 0;
 
         for (self.deferred_requests.items) |req| {

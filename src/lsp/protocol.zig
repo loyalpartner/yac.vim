@@ -23,7 +23,7 @@ pub const MessageFramer = struct {
     pub fn init(allocator: Allocator) MessageFramer {
         return .{
             .allocator = allocator,
-            .buffer = .{},
+            .buffer = .empty,
         };
     }
 
@@ -54,7 +54,7 @@ pub const MessageFramer = struct {
 
         try self.buffer.appendSlice(self.allocator, data);
 
-        var messages: std.ArrayList([]const u8) = .{};
+        var messages: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (messages.items) |msg| allocator.free(msg);
             messages.deinit(allocator);
