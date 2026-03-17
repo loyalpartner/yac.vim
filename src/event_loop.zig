@@ -4,6 +4,7 @@ const json_utils = @import("json_utils.zig");
 const vim = @import("vim_protocol.zig");
 const vim_server_mod = @import("vim_server.zig");
 const handler_mod = @import("handler.zig");
+const lsp_mod = @import("lsp/lsp.zig");
 const log = @import("log.zig");
 const compat = @import("compat.zig");
 
@@ -26,6 +27,7 @@ pub const EventLoop = struct {
     io: Io,
     server: *Io.net.Server,
     shutdown_event: Io.Event,
+    lsp: lsp_mod.Lsp,
 
     // Shared subsystem state (initialized in run())
     handler: handler_mod.Handler = undefined,
@@ -37,20 +39,23 @@ pub const EventLoop = struct {
             .io = io,
             .server = server,
             .shutdown_event = .unset,
+            .lsp = lsp_mod.Lsp.init(allocator, io),
         };
     }
 
     pub fn deinit(self: *EventLoop) void {
-        _ = self;
+        self.lsp.deinit();
     }
 
     /// Main event loop: accept connections, spawn per-client coroutines.
     pub fn run(self: *EventLoop) !void {
-        // Initialize handler
+        // Initialize handler with subsystem references
         self.handler = .{
             .gpa = self.allocator,
             .shutdown_flag = &self.shutdown_event,
             .io = self.io,
+            .lsp = &self.lsp,
+            .registry = &self.lsp.registry,
         };
         self.vim_server = .{ .handler = &self.handler };
 
@@ -156,6 +161,8 @@ pub const EventLoop = struct {
 
     /// Process a single JSON-RPC line from a Vim client.
     fn processLine(self: *EventLoop, alloc: Allocator, line: []const u8, fd: std.posix.fd_t) void {
+        // Set per-request context
+        self.handler.client_fd = fd;
         // Parse JSON
         const parsed = json_utils.parse(alloc, line) catch |e| {
             log.err("JSON parse error: {any}", .{e});

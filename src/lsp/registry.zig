@@ -304,12 +304,49 @@ pub const LspRegistry = struct {
         const key = try self.allocator.dupe(u8, lookup_key);
         errdefer self.allocator.free(key);
 
-        const init_id = try client.initialize(workspace_uri);
-        try self.pending_init.put(key, init_id);
-        errdefer _ = self.pending_init.remove(key);
-        try self.clients.put(key, client);
+        // Synchronous initialization — blocks until LSP server responds
+        log.info("Sending initialize to {s}...", .{language});
+        var init_result = client.initializeSync(workspace_uri) catch |e| {
+            log.err("LSP initialize failed for {s}: {any}", .{ language, e });
+            return error.InitializeFailed;
+        };
+        defer init_result.deinit();
 
-        log.info("LSP client created for {s}, init request id={d}", .{ language, init_id });
+        client.state = .initialized;
+        try client.sendInitialized();
+
+        // Store capabilities JSON for feature detection
+        if (init_result.result != .null) {
+            if (init_result.result == .object) {
+                if (init_result.result.object.get("capabilities")) |caps| {
+                    // Re-parse capabilities for long-term storage
+                    const caps_str = json.stringifyAlloc(self.allocator, caps) catch null;
+                    if (caps_str) |s| {
+                        defer self.allocator.free(s);
+                        const parsed = std.json.parseFromSlice(Value, self.allocator, s, .{
+                            .ignore_unknown_fields = true,
+                        }) catch null;
+                        if (parsed) |p| {
+                            self.server_capabilities.put(key, p) catch {};
+                        }
+                    }
+                }
+            }
+        }
+
+        try self.clients.put(key, client);
+        log.info("LSP client ready for {s}", .{language});
+
+        // Replay any queued didOpens
+        if (self.pending_opens.fetchRemove(key)) |po_entry| {
+            for (po_entry.value.items) |open| {
+                self.sendDidOpen(client, open) catch {};
+                open.deinit(self.allocator);
+            }
+            var list = po_entry.value;
+            list.deinit(self.allocator);
+        }
+
         return .{ .client = client, .client_key = key };
     }
 

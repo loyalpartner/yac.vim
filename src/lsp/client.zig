@@ -64,8 +64,10 @@ pub const LspClient = struct {
         self.framer.deinit();
         for (self.queued_notifications.items) |*msg| msg.deinit();
         self.queued_notifications.deinit(self.allocator);
-        self.child.kill(self.io);
-        _ = self.child.wait(self.io) catch {};
+        if (self.child.id != null) {
+            self.child.kill(self.io);
+            _ = self.child.wait(self.io) catch {};
+        }
         self.allocator.destroy(self);
     }
 
@@ -111,35 +113,40 @@ pub const LspClient = struct {
         // Read responses until we get the one matching our ID
         while (true) {
             var messages = try self.readMessages();
-            defer {
-                for (messages.items) |*msg| msg.deinit();
-                messages.deinit(self.allocator);
-            }
+            var found_result: ?SendResult = null;
 
             for (messages.items) |*msg| {
+                if (found_result != null) {
+                    // Already found our response — deinit remaining
+                    msg.deinit();
+                    continue;
+                }
                 switch (msg.kind) {
                     .response => |resp| {
                         if (resp.id == id) {
                             log.debug("LSP response [{d}]: {s}", .{ id, method });
-                            // Take ownership of parsed data
-                            const result = SendResult{
+                            found_result = .{
                                 .result = resp.result,
                                 .err = resp.err,
                                 .parsed = msg.parsed,
                             };
-                            msg.parsed = undefined; // prevent deinit
-                            return result;
+                            // Don't deinit — ownership transferred to found_result
+                        } else {
+                            msg.deinit();
                         }
-                        // Not our response — drop it (shouldn't happen in sync mode)
                     },
                     .notification, .server_request => {
-                        // Queue for later processing
-                        const queued = msg.*;
-                        msg.parsed = undefined; // transfer ownership
-                        self.queued_notifications.append(self.allocator, queued) catch {};
+                        // Queue for later processing (ownership transferred)
+                        self.queued_notifications.append(self.allocator, msg.*) catch {
+                            msg.deinit();
+                        };
                     },
                 }
             }
+            // Only free the list container, items already handled individually
+            messages.deinit(self.allocator);
+
+            if (found_result) |result| return result;
         }
     }
 
@@ -263,10 +270,13 @@ pub const LspClient = struct {
         return messages;
     }
 
-    /// Initialize the LSP server with the given workspace root.
-    pub fn initialize(self: *LspClient, workspace_uri: ?[]const u8) !u32 {
+    /// Initialize the LSP server synchronously. Blocks until response.
+    pub fn initializeSync(self: *LspClient, workspace_uri: ?[]const u8) !SendResult {
         self.state = .initializing;
+        return self.sendRequest("initialize", try self.buildInitParams(workspace_uri));
+    }
 
+    fn buildInitParams(self: *LspClient, workspace_uri: ?[]const u8) !Value {
         var params = ObjectMap.init(self.allocator);
         try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
 
@@ -342,7 +352,13 @@ pub const LspClient = struct {
         try client_info.put("version", json.jsonString("0.1.0"));
         try params.put("clientInfo", .{ .object = client_info });
 
-        return try self.sendRequestAsync("initialize", .{ .object = params });
+        return .{ .object = params };
+    }
+
+    /// Initialize the LSP server (async — returns request ID).
+    pub fn initialize(self: *LspClient, workspace_uri: ?[]const u8) !u32 {
+        self.state = .initializing;
+        return try self.sendRequestAsync("initialize", try self.buildInitParams(workspace_uri));
     }
 
     /// Initialize a Copilot language server.

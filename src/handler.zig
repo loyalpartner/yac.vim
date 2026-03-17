@@ -64,6 +64,9 @@ pub const Handler = struct {
     lsp: ?*lsp_mod.Lsp = null,
     registry: ?*LspRegistry = null,
 
+    /// Per-request: fd of the current Vim client (for async notifications)
+    client_fd: std.posix.fd_t = -1,
+
     // ========================================================================
     // Private helpers
     // ========================================================================
@@ -165,11 +168,76 @@ pub const Handler = struct {
         }
     }
 
-    pub fn file_open(_: *Handler, alloc: Allocator, _: struct {
+    pub fn file_open(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         text: ?[]const u8 = null,
     }) !Value {
-        // TODO: restore didOpen to LSP + copilot forwarding + tree-sitter parse
+        const registry = self.registry orelse {
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("none") },
+            });
+        };
+
+        const real_path = lsp_registry_mod.extractRealPath(p.file);
+        const language = LspRegistry.detectLanguage(real_path) orelse {
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("none") },
+            });
+        };
+
+        if (registry.hasSpawnFailed(language)) {
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("none") },
+            });
+        }
+
+        const result = registry.getOrCreateClient(language, real_path) catch |e| {
+            log.err("LSP server not available for {s}: {any}", .{ language, e });
+            registry.markSpawnFailed(language);
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("none") },
+            });
+        };
+
+        const uri = try lsp_registry_mod.filePathToUri(alloc, real_path);
+
+        // Send didOpen
+        const content = p.text orelse blk: {
+            // Read file content
+            var path_z_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+            if (real_path.len < path_z_buf.len) {
+                @memcpy(path_z_buf[0..real_path.len], real_path);
+                path_z_buf[real_path.len] = 0;
+                // Use C fopen to read without Io dependency
+                const f = std.c.fopen(@ptrCast(path_z_buf[0..real_path.len :0]), "r") orelse break :blk @as(?[]const u8, null);
+                defer _ = std.c.fclose(f);
+                var file_buf: std.ArrayList(u8) = .empty;
+                var chunk: [4096]u8 = undefined;
+                while (true) {
+                    const n = std.c.fread(&chunk, 1, chunk.len, f);
+                    if (n == 0) break;
+                    file_buf.appendSlice(alloc, chunk[0..n]) catch break;
+                }
+                break :blk if (file_buf.items.len > 0) file_buf.items else null;
+            }
+            break :blk null;
+        };
+
+        if (content) |text| {
+            var td_item = ObjectMap.init(alloc);
+            try td_item.put("uri", json.jsonString(uri));
+            try td_item.put("languageId", json.jsonString(language));
+            try td_item.put("version", json.jsonInteger(1));
+            try td_item.put("text", json.jsonString(text));
+
+            var did_open_params = ObjectMap.init(alloc);
+            try did_open_params.put("textDocument", .{ .object = td_item });
+
+            result.client.sendNotification("textDocument/didOpen", .{ .object = did_open_params }) catch |e| {
+                log.err("Failed to send didOpen: {any}", .{e});
+            };
+        }
+
         return try json.buildObject(alloc, .{
             .{ "action", json.jsonString("none") },
         });
