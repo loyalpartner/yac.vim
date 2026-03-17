@@ -94,6 +94,8 @@ test {
     _ = @import("dap/config.zig");
     _ = @import("dap/client.zig");
     _ = @import("dap/session.zig");
+    _ = @import("vim_server.zig");
+    _ = @import("handler.zig");
 }
 
 test "restrictSocketPermissions: socket file is set to 0o600" {

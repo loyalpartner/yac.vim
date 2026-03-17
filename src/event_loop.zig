@@ -2,7 +2,8 @@ const std = @import("std");
 const json_utils = @import("json_utils.zig");
 const vim = @import("vim_protocol.zig");
 const lsp_registry_mod = @import("lsp/registry.zig");
-const handlers_mod = @import("handlers.zig");
+const handler_mod = @import("handler.zig");
+const vim_server_mod = @import("vim_server.zig");
 const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 const lsp_transform = @import("lsp/transform.zig");
@@ -63,6 +64,11 @@ pub const EventLoop = struct {
     in_ts: queue_mod.InQueue = .{},
     /// Outgoing message queue: worker/main threads → writer thread.
     out_queue: queue_mod.OutQueue = .{},
+
+    /// New-style handler (VimServer dispatch). Initialized in run().
+    handler: handler_mod.Handler = undefined,
+    /// VimServer comptime dispatch. Initialized in run().
+    vim_server: vim_server_mod.VimServer(handler_mod.Handler) = undefined,
 
     const DeferredRequest = lsp_mod.Lsp.DeferredRequest;
 
@@ -324,6 +330,18 @@ pub const EventLoop = struct {
     pub fn run(self: *EventLoop) !void {
         var buf: [8192]u8 = undefined;
 
+        // Initialize VimServer handler (must be after EventLoop is at its final address).
+        self.handler = .{
+            .registry = &self.lsp.registry,
+            .lsp = &self.lsp,
+            .ts = &self.ts,
+            .dap_session = &self.dap_session,
+            .out_queue = &self.out_queue,
+            .gpa = self.allocator,
+            .shutdown_flag = &self.shutdown_requested,
+        };
+        self.vim_server = .{ .handler = &self.handler };
+
         log.info("Entering event loop (daemon mode)", .{});
         // Set idle deadline since we start with no clients
         self.idle_deadline = std.time.nanoTimestamp() + IDLE_TIMEOUT_NS;
@@ -566,25 +584,30 @@ pub const EventLoop = struct {
             }
         }
 
-        var ctx = handlers_mod.HandlerContext{
-            .allocator = alloc,
-            .gpa_allocator = self.allocator,
-            .registry = &self.lsp.registry,
-            .lsp = &self.lsp,
-            .client_stream = client_stream,
-            .client_id = cid,
-            .ts = &self.ts,
-            .dap_session = &self.dap_session,
-            .out_queue = &self.out_queue,
-            .shutdown_flag = &self.shutdown_requested,
-        };
-
-        const result = handlers_mod.dispatch(&ctx, method, params) catch |e| {
+        self.handler.client_id = cid;
+        self.handler.client_stream = client_stream;
+        if (self.vim_server.processMethod(alloc, method, params)) |maybe_result| {
+            if (maybe_result) |result| {
+                self.processDispatchResult(cid, alloc, vim_id, method, params, raw_line, result);
+                return;
+            }
+        } else |e| {
             log.err("Handler error for {s}: {any}", .{ method, e });
             self.sendVimErrorTo(cid, alloc, vim_id, "Handler error");
             return;
-        };
+        }
 
+        // Unknown method — respond with null
+        log.warn("Unknown method: {s}", .{method});
+        if (vim_id != null) {
+            self.sendVimResponseTo(cid, alloc, vim_id, .null);
+        }
+    }
+
+    const ProcessResult = vim_server_mod.ProcessResult;
+
+    /// Handle ProcessResult from VimServer dispatch.
+    fn processDispatchResult(self: *EventLoop, cid: ClientId, alloc: Allocator, vim_id: ?u64, method: []const u8, params: Value, raw_line: []const u8, result: ProcessResult) void {
         switch (result) {
             .data => |data| {
                 switch (self.picker.processAction(alloc, data)) {
