@@ -3,15 +3,15 @@
     .version = "0.1.0",
     .dependencies = .{
         .tree_sitter = .{
-            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#5373b8395bcf6cf17e6a02be1a9996bedb34abf6",
-            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+            .path = "vendor/zig-tree-sitter",
         },
     },
     .fingerprint = 0x7a690c38e21ca7b4,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "vendor",
     },
 }

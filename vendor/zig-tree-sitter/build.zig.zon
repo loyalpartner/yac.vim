@@ -1,0 +1,22 @@
+.{
+    .name = .tree_sitter,
+    .fingerprint = 0x841224b47f8817f2,
+    .version = "0.25.0",
+    .dependencies = .{
+        .@"tree-sitter-c" = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-c#586dd62ad4d3532895ea80a8382d21307b4733bd",
+            .hash = "tree_sitter_c-0.24.1-ns1YLwdjQACIi5BEwewiqu6a6Zcl91RWoSWbz0KmxUOj",
+            .lazy = true,
+        },
+        .tree_sitter = .{
+            .path = "../tree-sitter-core",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
