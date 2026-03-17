@@ -1,10 +1,10 @@
 const std = @import("std");
+const Io = std.Io;
 const lsp_registry_mod = @import("registry.zig");
-const clients_mod = @import("../clients.zig");
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
-const ClientId = clients_mod.ClientId;
+pub const ClientId = u32;
 
 pub const Lsp = struct {
     allocator: Allocator,
@@ -21,12 +21,12 @@ pub const Lsp = struct {
     pub const max_deferred_requests = 50;
     pub const deferred_ttl_ns: i128 = 10 * std.time.ns_per_s;
 
-    pub fn init(allocator: Allocator) Lsp {
+    pub fn init(allocator: Allocator, io: Io) Lsp {
         return .{
             .allocator = allocator,
-            .registry = lsp_registry_mod.LspRegistry.init(allocator),
+            .registry = lsp_registry_mod.LspRegistry.init(allocator, io),
             .indexing_counts = std.StringHashMap(u32).init(allocator),
-            .deferred_requests = .{},
+            .deferred_requests = .empty,
         };
     }
 

@@ -3,7 +3,7 @@ const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
-const Writer = std.io.Writer;
+const Writer = std.Io.Writer;
 
 const CONTENT_LENGTH_HEADER = "Content-Length: ";
 const HEADER_DELIMITER = "\r\n\r\n";

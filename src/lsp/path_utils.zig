@@ -116,9 +116,9 @@ pub fn uriToFilePath(uri: []const u8) ?[]const u8 {
 /// Check if a file is in a Rust library path (toolchains, registry, git checkouts).
 /// These files should reuse an existing client rather than spawning a new LSP instance.
 fn isLibraryPath(path: []const u8) bool {
-    const home = std.posix.getenv("HOME");
-    const rustup = std.posix.getenv("RUSTUP_HOME");
-    const cargo = std.posix.getenv("CARGO_HOME");
+    const home = @import("../compat.zig").getenv("HOME");
+    const rustup = @import("../compat.zig").getenv("RUSTUP_HOME");
+    const cargo = @import("../compat.zig").getenv("CARGO_HOME");
 
     // $RUSTUP_HOME/toolchains (defaults to ~/.rustup/toolchains)
     if (isDescendantOf(path, rustup orelse home, .{if (rustup != null) "" else "/.rustup/toolchains"}))
@@ -234,34 +234,14 @@ fn cargoWorkspaceRoot(allocator: Allocator, manifest_path: []const u8) ?[]const 
         return allocator.dupe(u8, cached_uri) catch null;
     }
 
-    const argv = &[_][]const u8{
-        "cargo", "metadata", "--no-deps", "--format-version", "1", "--manifest-path", manifest_path,
-    };
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Close;
-    child.spawn() catch {
-        log.warn("Failed to spawn cargo metadata", .{});
-        return null;
-    };
+    // TODO: Zig 0.16 — std.process.Child.init removed, needs io parameter
+    // Temporarily disabled until cargoWorkspaceRoot is migrated to use Io-based spawn
+    _ = manifest_path;
+    _ = allocator;
+    return null;
 
-    // Read all stdout before wait() (wait cleans up streams)
-    const stdout_fd = (child.stdout orelse return null).handle;
-    var output_buf: std.ArrayList(u8) = .{};
-    defer output_buf.deinit(allocator);
-    while (true) {
-        var buf: [4096]u8 = undefined;
-        const n = std.posix.read(stdout_fd, &buf) catch break;
-        if (n == 0) break;
-        output_buf.appendSlice(allocator, buf[0..n]) catch break;
-    }
-
-    const term = child.wait() catch return null;
-    switch (term) {
-        .Exited => |code| if (code != 0) return null,
-        else => return null,
-    }
+    // Below code disabled pending 0.16 migration:
+    if (false) {
 
     // Parse JSON and extract workspace_root
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, output_buf.items, .{
@@ -283,6 +263,7 @@ fn cargoWorkspaceRoot(allocator: Allocator, manifest_path: []const u8) ?[]const 
     cargo_cache.put(allocator, manifest_path, uri);
 
     return uri;
+    }
 }
 
 // ============================================================================

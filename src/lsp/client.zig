@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const json = @import("../json_utils.zig");
 const lsp = @import("protocol.zig");
 const log = @import("../log.zig");
@@ -8,10 +9,10 @@ const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 
 // ============================================================================
-// LSP Client - manages a single language server process
+// LSP Client - manages a single language server process (Zig 0.16)
 //
 // Spawns a child process, communicates via Content-Length framed JSON-RPC.
-// Each client owns its child process and framer state.
+// In the coroutine model, sendRequest() blocks until the response arrives.
 // ============================================================================
 
 pub const LspState = enum {
@@ -22,40 +23,38 @@ pub const LspState = enum {
     shutdown,
 };
 
-pub const PendingRequest = struct {};
-
 pub const LspClient = struct {
     allocator: Allocator,
+    io: Io,
     child: std.process.Child,
     framer: lsp.MessageFramer,
     state: LspState,
     next_id: *std.atomic.Value(u32),
-    pending_requests: std.AutoHashMap(u32, PendingRequest),
-    /// Buffer for reading from child stdout
-    read_buf: [4096]u8,
+    /// Queued notifications received while waiting for a response
+    queued_notifications: std.ArrayList(LspMessage),
 
-    pub fn spawn(allocator: Allocator, command: []const u8, args: []const []const u8, next_id: *std.atomic.Value(u32)) !*LspClient {
-        var argv: std.ArrayList([]const u8) = .{};
+    pub fn spawn(allocator: Allocator, io: Io, command: []const u8, args: []const []const u8, next_id: *std.atomic.Value(u32)) !*LspClient {
+        var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(allocator);
         try argv.append(allocator, command);
         try argv.appendSlice(allocator, args);
 
-        var child = std.process.Child.init(argv.items, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
+        const child = try std.process.spawn(io, .{
+            .argv = argv.items,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        });
 
         const client = try allocator.create(LspClient);
         client.* = .{
             .allocator = allocator,
+            .io = io,
             .child = child,
             .framer = lsp.MessageFramer.init(allocator),
             .state = .uninitialized,
             .next_id = next_id,
-            .pending_requests = std.AutoHashMap(u32, PendingRequest).init(allocator),
-            .read_buf = undefined,
+            .queued_notifications = .empty,
         };
 
         return client;
@@ -63,34 +62,105 @@ pub const LspClient = struct {
 
     pub fn deinit(self: *LspClient) void {
         self.framer.deinit();
-        self.pending_requests.deinit();
-        _ = self.child.kill() catch {};
-        _ = self.child.wait() catch {};
+        for (self.queued_notifications.items) |*msg| msg.deinit();
+        self.queued_notifications.deinit(self.allocator);
+        self.child.kill(self.io);
+        _ = self.child.wait(self.io) catch {};
         self.allocator.destroy(self);
     }
 
-    /// Get the stdout fd for polling.
+    /// Get the stdout fd for external use.
     pub fn stdoutFd(self: *LspClient) std.posix.fd_t {
-        return self.child.stdout.?.handle;
+        const stdout = self.child.stdout orelse return -1;
+        return stdout.handle;
     }
 
-    /// Send a JSON-RPC request and return the request ID.
-    pub fn sendRequest(self: *LspClient, method: []const u8, params: Value) !u32 {
-        // fetchAdd returns the old value; skip 0 (reserved as "no id")
+    fn nextId(self: *LspClient) u32 {
         var id = self.next_id.fetchAdd(1, .monotonic);
         if (id == 0) id = self.next_id.fetchAdd(1, .monotonic);
+        return id;
+    }
 
+    /// Write framed data to the child's stdin.
+    fn writeToStdin(self: *LspClient, data: []const u8) !void {
+        const stdin = self.child.stdin orelse return error.StdinClosed;
+        var written: usize = 0;
+        while (written < data.len) {
+            const n_signed = std.c.write(stdin.handle, data[written..].ptr, data.len - written);
+            if (n_signed < 0) return error.WriteFailed;
+            const n: usize = @intCast(n_signed);
+            if (n == 0) return error.WriteFailed;
+            written += n;
+        }
+    }
+
+    /// Send a JSON-RPC request and block until the response arrives.
+    /// Returns the result value. Caller owns the returned parsed memory.
+    pub fn sendRequest(self: *LspClient, method: []const u8, params: Value) !SendResult {
+        const id = self.nextId();
+
+        // Build and send the request
         const content = try lsp.buildLspRequest(self.allocator, id, method, params);
         defer self.allocator.free(content);
-
         const framed = try self.framer.frameMessage(self.allocator, content);
         defer self.allocator.free(framed);
+        try self.writeToStdin(framed);
 
-        const stdin = self.child.stdin orelse return error.StdinClosed;
-        try stdin.writeAll(framed);
+        log.debug("LSP request [{d}]: {s}", .{ id, method });
 
-        try self.pending_requests.put(id, .{});
+        // Read responses until we get the one matching our ID
+        while (true) {
+            var messages = try self.readMessages();
+            defer {
+                for (messages.items) |*msg| msg.deinit();
+                messages.deinit(self.allocator);
+            }
 
+            for (messages.items) |*msg| {
+                switch (msg.kind) {
+                    .response => |resp| {
+                        if (resp.id == id) {
+                            log.debug("LSP response [{d}]: {s}", .{ id, method });
+                            // Take ownership of parsed data
+                            const result = SendResult{
+                                .result = resp.result,
+                                .err = resp.err,
+                                .parsed = msg.parsed,
+                            };
+                            msg.parsed = undefined; // prevent deinit
+                            return result;
+                        }
+                        // Not our response — drop it (shouldn't happen in sync mode)
+                    },
+                    .notification, .server_request => {
+                        // Queue for later processing
+                        const queued = msg.*;
+                        msg.parsed = undefined; // transfer ownership
+                        self.queued_notifications.append(self.allocator, queued) catch {};
+                    },
+                }
+            }
+        }
+    }
+
+    pub const SendResult = struct {
+        result: Value,
+        err: ?Value,
+        parsed: std.json.Parsed(Value),
+
+        pub fn deinit(self: *SendResult) void {
+            self.parsed.deinit();
+        }
+    };
+
+    /// Send a non-blocking request (returns ID, response handled separately).
+    pub fn sendRequestAsync(self: *LspClient, method: []const u8, params: Value) !u32 {
+        const id = self.nextId();
+        const content = try lsp.buildLspRequest(self.allocator, id, method, params);
+        defer self.allocator.free(content);
+        const framed = try self.framer.frameMessage(self.allocator, content);
+        defer self.allocator.free(framed);
+        try self.writeToStdin(framed);
         log.debug("LSP request [{d}]: {s}", .{ id, method });
         return id;
     }
@@ -99,57 +169,46 @@ pub const LspClient = struct {
     pub fn sendResponse(self: *LspClient, id: i64, result: Value) !void {
         const content = try lsp.buildLspResponse(self.allocator, id, result);
         defer self.allocator.free(content);
-
         const framed = try self.framer.frameMessage(self.allocator, content);
         defer self.allocator.free(framed);
-
-        const stdin = self.child.stdin orelse return error.StdinClosed;
-        try stdin.writeAll(framed);
-
+        try self.writeToStdin(framed);
         log.debug("LSP response [{d}]", .{id});
     }
 
-    /// Send $/cancelRequest notification for a pending request.
+    /// Send $/cancelRequest notification.
     pub fn sendCancelNotification(self: *LspClient, request_id: u32) !void {
         var params = ObjectMap.init(self.allocator);
         try params.put("id", json.jsonInteger(@intCast(request_id)));
         try self.sendNotification("$/cancelRequest", .{ .object = params });
     }
 
-    /// Send a JSON-RPC notification (no response expected).
+    /// Send a JSON-RPC notification.
     pub fn sendNotification(self: *LspClient, method: []const u8, params: Value) !void {
         const content = try lsp.buildLspNotification(self.allocator, method, params);
         defer self.allocator.free(content);
-
         const framed = try self.framer.frameMessage(self.allocator, content);
         defer self.allocator.free(framed);
-
-        const stdin = self.child.stdin orelse return error.StdinClosed;
-        try stdin.writeAll(framed);
-
+        try self.writeToStdin(framed);
         log.debug("LSP notification: {s}", .{method});
     }
 
-    /// Read and parse any available messages from stdout.
-    /// Returns parsed JSON responses. Caller must deinit each parsed value.
+    /// Read and parse available messages from stdout.
     pub fn readMessages(self: *LspClient) !std.ArrayList(LspMessage) {
         const stdout = self.child.stdout orelse return error.StdoutClosed;
-        const n = stdout.read(&self.read_buf) catch |err| {
-            if (err == error.WouldBlock) {
-                return .{};
-            }
+        var read_buf: [4096]u8 = undefined;
+        const n = std.posix.read(stdout.handle, &read_buf) catch |err| {
+            if (err == error.WouldBlock) return .empty;
             return err;
         };
-
         if (n == 0) return error.ConnectionReset;
 
-        var raw_messages = try self.framer.feedData(self.allocator, self.read_buf[0..n]);
+        var raw_messages = try self.framer.feedData(self.allocator, read_buf[0..n]);
         defer {
             for (raw_messages.items) |msg| self.allocator.free(msg);
             raw_messages.deinit(self.allocator);
         }
 
-        var messages: std.ArrayList(LspMessage) = .{};
+        var messages: std.ArrayList(LspMessage) = .empty;
         errdefer {
             for (messages.items) |*msg| msg.deinit();
             messages.deinit(self.allocator);
@@ -165,11 +224,8 @@ pub const LspClient = struct {
                 },
             };
 
-            // Classify: method + id → server request, method only → notification, id only → response
             if (json.getString(obj, "method")) |method| {
                 const params = obj.get("params") orelse .null;
-
-                // Server-to-client request (has both method and id)
                 if (obj.get("id")) |id_val| {
                     const id: i64 = switch (id_val) {
                         .integer => |i| i,
@@ -177,24 +233,15 @@ pub const LspClient = struct {
                     };
                     try messages.append(self.allocator, .{
                         .parsed = parsed,
-                        .kind = .{ .server_request = .{
-                            .id = id,
-                            .method = method,
-                            .params = params,
-                        } },
+                        .kind = .{ .server_request = .{ .id = id, .method = method, .params = params } },
                     });
                 } else {
-                    // Pure notification (no id)
                     try messages.append(self.allocator, .{
                         .parsed = parsed,
-                        .kind = .{ .notification = .{
-                            .method = method,
-                            .params = params,
-                        } },
+                        .kind = .{ .notification = .{ .method = method, .params = params } },
                     });
                 }
             } else if (obj.get("id")) |id_val| {
-                // Response
                 const id: u32 = switch (id_val) {
                     .integer => |i| @intCast(i),
                     else => {
@@ -202,19 +249,11 @@ pub const LspClient = struct {
                         continue;
                     },
                 };
-
                 const result = obj.get("result") orelse .null;
                 const err_val = obj.get("error");
-
-                _ = self.pending_requests.remove(id);
-
                 try messages.append(self.allocator, .{
                     .parsed = parsed,
-                    .kind = .{ .response = .{
-                        .id = id,
-                        .result = result,
-                        .err = err_val,
-                    } },
+                    .kind = .{ .response = .{ .id = id, .result = result, .err = err_val } },
                 });
             } else {
                 parsed.deinit();
@@ -228,11 +267,9 @@ pub const LspClient = struct {
     pub fn initialize(self: *LspClient, workspace_uri: ?[]const u8) !u32 {
         self.state = .initializing;
 
-        // Build initialize params
         var params = ObjectMap.init(self.allocator);
         try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
 
-        // capabilities
         var capabilities = ObjectMap.init(self.allocator);
         var text_doc = ObjectMap.init(self.allocator);
 
@@ -244,9 +281,6 @@ pub const LspClient = struct {
         // signatureHelp
         var sig_help = ObjectMap.init(self.allocator);
         try sig_help.put("dynamicRegistration", json.jsonBool(false));
-        var sig_trigger = std.json.Array.init(self.allocator);
-        try sig_trigger.append(json.jsonString("("));
-        try sig_trigger.append(json.jsonString(","));
         var sig_info = ObjectMap.init(self.allocator);
         try sig_info.put("documentationFormat", .{ .array = std.json.Array.init(self.allocator) });
         var sig_param = ObjectMap.init(self.allocator);
@@ -256,35 +290,12 @@ pub const LspClient = struct {
         try sig_help.put("signatureInformation", .{ .object = sig_info });
         try text_doc.put("signatureHelp", .{ .object = sig_help });
 
-        // hover
-        var hover = ObjectMap.init(self.allocator);
-        try hover.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("hover", .{ .object = hover });
-
-        // definition
-        var definition = ObjectMap.init(self.allocator);
-        try definition.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("definition", .{ .object = definition });
-
-        // declaration
-        var declaration = ObjectMap.init(self.allocator);
-        try declaration.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("declaration", .{ .object = declaration });
-
-        // typeDefinition
-        var type_def = ObjectMap.init(self.allocator);
-        try type_def.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("typeDefinition", .{ .object = type_def });
-
-        // implementation
-        var impl_ = ObjectMap.init(self.allocator);
-        try impl_.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("implementation", .{ .object = impl_ });
-
-        // references
-        var refs = ObjectMap.init(self.allocator);
-        try refs.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("references", .{ .object = refs });
+        // hover, definition, declaration, typeDefinition, implementation, references
+        inline for ([_][]const u8{ "hover", "definition", "declaration", "typeDefinition", "implementation", "references" }) |cap| {
+            var obj = ObjectMap.init(self.allocator);
+            try obj.put("dynamicRegistration", json.jsonBool(false));
+            try text_doc.put(cap, .{ .object = obj });
+        }
 
         // synchronization
         var sync = ObjectMap.init(self.allocator);
@@ -299,26 +310,23 @@ pub const LspClient = struct {
 
         try capabilities.put("textDocument", .{ .object = text_doc });
 
-        // workspace capabilities
+        // workspace
         var workspace = ObjectMap.init(self.allocator);
         try workspace.put("applyEdit", json.jsonBool(true));
-        // workspace/symbol support
         var ws_symbol = ObjectMap.init(self.allocator);
         try ws_symbol.put("dynamicRegistration", json.jsonBool(false));
         try workspace.put("symbol", .{ .object = ws_symbol });
         try capabilities.put("workspace", .{ .object = workspace });
 
-        // window capabilities — advertise progress support
+        // window
         var window = ObjectMap.init(self.allocator);
         try window.put("workDoneProgress", json.jsonBool(true));
         try capabilities.put("window", .{ .object = window });
 
         try params.put("capabilities", .{ .object = capabilities });
 
-        // workspace root
         if (workspace_uri) |uri| {
             try params.put("rootUri", json.jsonString(uri));
-
             var folders = std.json.Array.init(self.allocator);
             var folder = ObjectMap.init(self.allocator);
             try folder.put("uri", json.jsonString(uri));
@@ -329,65 +337,53 @@ pub const LspClient = struct {
             try params.put("rootUri", .null);
         }
 
-        // client info
         var client_info = ObjectMap.init(self.allocator);
         try client_info.put("name", json.jsonString("yac.vim"));
         try client_info.put("version", json.jsonString("0.1.0"));
         try params.put("clientInfo", .{ .object = client_info });
 
-        return try self.sendRequest("initialize", .{ .object = params });
+        return try self.sendRequestAsync("initialize", .{ .object = params });
     }
 
-    /// Initialize a Copilot language server with Copilot-specific capabilities.
+    /// Initialize a Copilot language server.
     pub fn initializeCopilot(self: *LspClient) !u32 {
         self.state = .initializing;
 
         var params = ObjectMap.init(self.allocator);
         try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
 
-        // capabilities — minimal, with inlineCompletion support
         var capabilities = ObjectMap.init(self.allocator);
         var text_doc = ObjectMap.init(self.allocator);
-
         var inline_completion = ObjectMap.init(self.allocator);
         try inline_completion.put("dynamicRegistration", json.jsonBool(true));
         try text_doc.put("inlineCompletion", .{ .object = inline_completion });
-
         var sync = ObjectMap.init(self.allocator);
         try sync.put("didSave", json.jsonBool(true));
         try text_doc.put("synchronization", .{ .object = sync });
-
         try capabilities.put("textDocument", .{ .object = text_doc });
         try params.put("capabilities", .{ .object = capabilities });
-
-        // rootUri = null (global, no workspace)
         try params.put("rootUri", .null);
 
-        // clientInfo
         var client_info = ObjectMap.init(self.allocator);
         try client_info.put("name", json.jsonString("yac.vim"));
         try client_info.put("version", json.jsonString("0.1.0"));
         try params.put("clientInfo", .{ .object = client_info });
 
-        // initializationOptions — required by Copilot
         var init_options = ObjectMap.init(self.allocator);
-
         var editor_info = ObjectMap.init(self.allocator);
         try editor_info.put("name", json.jsonString("yac.vim"));
         try editor_info.put("version", json.jsonString("0.1.0"));
         try init_options.put("editorInfo", .{ .object = editor_info });
-
         var plugin_info = ObjectMap.init(self.allocator);
         try plugin_info.put("name", json.jsonString("yac-copilot"));
         try plugin_info.put("version", json.jsonString("0.1.0"));
         try init_options.put("editorPluginInfo", .{ .object = plugin_info });
-
         try params.put("initializationOptions", .{ .object = init_options });
 
-        return try self.sendRequest("initialize", .{ .object = params });
+        return try self.sendRequestAsync("initialize", .{ .object = params });
     }
 
-    /// Send initialized notification after receiving initialize response.
+    /// Send initialized notification.
     pub fn sendInitialized(self: *LspClient) !void {
         self.state = .initialized;
         try self.sendNotification("initialized", .{ .object = ObjectMap.init(self.allocator) });
@@ -396,7 +392,7 @@ pub const LspClient = struct {
     /// Send shutdown request.
     pub fn sendShutdown(self: *LspClient) !u32 {
         self.state = .shutting_down;
-        return try self.sendRequest("shutdown", .null);
+        return try self.sendRequestAsync("shutdown", .null);
     }
 
     /// Send exit notification.

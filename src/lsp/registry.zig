@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const json = @import("../json_utils.zig");
 const LspClient = @import("client.zig").LspClient;
 const log = @import("../log.zig");
@@ -42,6 +43,7 @@ pub const PendingOpen = struct {
 
 pub const LspRegistry = struct {
     allocator: Allocator,
+    io: Io,
     /// client_key -> LspClient (key = "language\x00workspace_uri")
     clients: std.StringHashMap(*LspClient),
     /// Requests waiting for initialization to complete: client_key -> init request ID
@@ -61,9 +63,10 @@ pub const LspRegistry = struct {
 
     pub const copilot_key = "copilot";
 
-    pub fn init(allocator: Allocator) LspRegistry {
+    pub fn init(allocator: Allocator, io: Io) LspRegistry {
         return .{
             .allocator = allocator,
+            .io = io,
             .clients = std.StringHashMap(*LspClient).init(allocator),
             .pending_init = std.StringHashMap(u32).init(allocator),
             .next_id = std.atomic.Value(u32).init(1),
@@ -162,6 +165,7 @@ pub const LspRegistry = struct {
         log.info("Starting copilot-language-server --stdio", .{});
         const client = LspClient.spawn(
             self.allocator,
+            self.io,
             "copilot-language-server",
             &[_][]const u8{"--stdio"},
             &self.next_id,
@@ -295,7 +299,7 @@ pub const LspRegistry = struct {
         defer if (managed_path) |mp| self.allocator.free(mp);
 
         log.info("Starting {s} for {s} (workspace: {s})", .{ command_to_use, language, workspace_uri orelse "(none)" });
-        const client = try LspClient.spawn(self.allocator, command_to_use, config.args, &self.next_id);
+        const client = try LspClient.spawn(self.allocator, self.io, command_to_use, config.args, &self.next_id);
         errdefer client.deinit();
         const key = try self.allocator.dupe(u8, lookup_key);
         errdefer self.allocator.free(key);
@@ -498,7 +502,7 @@ fn commandExistsInPath(command: []const u8) bool {
         std.fs.accessAbsolute(command, .{}) catch return false;
         return true;
     }
-    const path_env = std.posix.getenv("PATH") orelse return false;
+    const path_env = @import("../compat.zig").getenv("PATH") orelse return false;
     var it = std.mem.splitScalar(u8, path_env, ':');
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     while (it.next()) |dir| {
@@ -519,7 +523,7 @@ fn getManagedBinaryPath(allocator: Allocator, command: []const u8) ?[]const u8 {
     // Reject path traversal characters
     if (std.mem.indexOfScalar(u8, command, '/') != null) return null;
     if (std.mem.indexOf(u8, command, "..") != null) return null;
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = @import("../compat.zig").getenv("HOME") orelse return null;
     const path = std.fmt.allocPrint(allocator, "{s}/.local/share/yac/bin/{s}", .{ home, command }) catch return null;
     std.fs.accessAbsolute(path, .{}) catch {
         allocator.free(path);
