@@ -4,6 +4,7 @@ const queries_mod = @import("queries.zig");
 const lang_config = @import("lang_config.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
 const log = @import("../log.zig");
+const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -150,7 +151,7 @@ pub const TreeSitter = struct {
             .dynamic_langs = std.StringHashMap(DynamicLang).init(allocator),
             .buffers = std.StringHashMap(BufferTree).init(allocator),
             .wasm_loader = wasm_loader,
-            .lang_dirs = .{},
+            .lang_dirs = .empty,
         };
 
         // Load languages from user config (~/.config/yac/languages.json)
@@ -216,10 +217,9 @@ pub const TreeSitter = struct {
     /// that contain a languages.json, and add them to `lang_dirs`.
     fn discoverSiblingLangDirs(self: *TreeSitter, lang_dir: []const u8) void {
         const parent = std.fs.path.dirname(lang_dir) orelse return;
-        var dir = std.fs.cwd().openDir(parent, .{ .iterate = true }) catch return;
-        defer dir.close();
-        var it = dir.iterate();
-        while (it.next() catch null) |entry| {
+        var dir_iter = compat.DirIterator.open(parent) catch return;
+        defer dir_iter.close();
+        while (dir_iter.next()) |entry| {
             if (entry.kind != .directory) continue;
             // Build full path: parent/entry.name
             const sibling = std.fs.path.join(self.allocator, &.{ parent, entry.name }) catch continue;
@@ -229,10 +229,10 @@ pub const TreeSitter = struct {
                 continue;
             };
             defer self.allocator.free(check_path);
-            std.fs.cwd().access(check_path, .{}) catch {
+            if (!compat.fileExists(check_path)) {
                 self.allocator.free(sibling);
                 continue;
-            };
+            }
             // addLangDir takes ownership of sibling
             self.addLangDir(sibling);
         }
@@ -456,7 +456,7 @@ test "TreeSitter.isWasmAvailable reflects wasm_loader state" {
         .dynamic_langs = std.StringHashMap(DynamicLang).init(std.testing.allocator),
         .buffers = std.StringHashMap(BufferTree).init(std.testing.allocator),
         .wasm_loader = null,
-        .lang_dirs = .{},
+        .lang_dirs = .empty,
     };
     defer {
         ts_state.dynamic_langs.deinit();

@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("../log.zig");
+const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -24,7 +25,7 @@ pub const LangConfig = struct {
 /// Reads {lang_dir}/languages.json and resolves paths relative to lang_dir.
 /// Query dir is set to {lang_dir}/queries.
 pub fn loadFromDir(allocator: Allocator, lang_dir: []const u8) ?[]LangConfig {
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
 
     const config_path = std.fmt.allocPrint(allocator, "{s}/languages.json", .{lang_dir}) catch return null;
     defer allocator.free(config_path);
@@ -50,7 +51,7 @@ pub fn loadUserConfigs(allocator: Allocator) ?[]LangConfig {
     const user_path = resolveUserConfigPath(allocator) orelse return null;
     defer allocator.free(user_path);
 
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
     loadFromFile(allocator, user_path, null, &configs);
 
     if (configs.items.len == 0) {
@@ -63,10 +64,10 @@ pub fn loadUserConfigs(allocator: Allocator) ?[]LangConfig {
 
 /// Return the user config directory (e.g. ~/.config/yac). Caller owns the memory.
 pub fn getUserConfigDir(allocator: Allocator) ?[]const u8 {
-    if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg| {
+    if (compat.getenv("XDG_CONFIG_HOME")) |xdg| {
         return std.fmt.allocPrint(allocator, "{s}/yac", .{xdg}) catch null;
     }
-    if (std.posix.getenv("HOME")) |home| {
+    if (compat.getenv("HOME")) |home| {
         return std.fmt.allocPrint(allocator, "{s}/.config/yac", .{home}) catch null;
     }
     return null;
@@ -85,13 +86,10 @@ fn loadFromFile(allocator: Allocator, path: []const u8, override_query_dir: ?[]c
     const abs_path = if (std.fs.path.isAbsolute(path))
         allocator.dupe(u8, path) catch return
     else
-        std.fs.cwd().realpathAlloc(allocator, path) catch return;
+        compat.realpathAlloc(allocator, path) catch return;
     defer allocator.free(abs_path);
 
-    const file = std.fs.openFileAbsolute(abs_path, .{}) catch return;
-    defer file.close();
-
-    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
+    const content = compat.readFileAlloc(allocator, abs_path) catch return;
     defer allocator.free(content);
 
     // Directory containing languages.json — used to resolve relative grammar paths
@@ -198,7 +196,7 @@ test "parseConfigs basic" {
         \\}
     ;
 
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
     defer {
         for (configs.items) |c| c.deinit(std.testing.allocator);
         configs.deinit(std.testing.allocator);
@@ -239,7 +237,7 @@ test "parseConfigs without override_query_dir" {
         \\}
     ;
 
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
     defer {
         for (configs.items) |c| c.deinit(std.testing.allocator);
         configs.deinit(std.testing.allocator);
@@ -261,7 +259,7 @@ test "parseConfigs empty extensions (injection-only language)" {
         \\}
     ;
 
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
     defer {
         for (configs.items) |c| c.deinit(std.testing.allocator);
         configs.deinit(std.testing.allocator);
@@ -274,7 +272,7 @@ test "parseConfigs empty extensions (injection-only language)" {
 }
 
 test "parseConfigs empty/invalid" {
-    var configs: std.ArrayList(LangConfig) = .{};
+    var configs: std.ArrayList(LangConfig) = .empty;
     defer configs.deinit(std.testing.allocator);
 
     // Empty object

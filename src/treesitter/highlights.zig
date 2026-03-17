@@ -44,7 +44,7 @@ pub fn extractHighlights(
     cursor.exec(query, tree.rootNode());
 
     // Collect entries; dedup by (row, col) — last capture wins (higher priority).
-    var entries = std.ArrayListUnmanaged(HlEntry){};
+    var entries = std.ArrayListUnmanaged(HlEntry).empty;
     var best = std.AutoHashMap(u64, usize).init(allocator);
     defer best.deinit();
 

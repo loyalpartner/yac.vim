@@ -5,6 +5,7 @@ const vim = @import("vim_protocol.zig");
 const vim_server_mod = @import("vim_server.zig");
 const handler_mod = @import("handler.zig");
 const lsp_mod = @import("lsp/lsp.zig");
+const treesitter_mod = @import("treesitter/treesitter.zig");
 const log = @import("log.zig");
 const compat = @import("compat.zig");
 
@@ -28,6 +29,7 @@ pub const EventLoop = struct {
     server: *Io.net.Server,
     shutdown_event: Io.Event,
     lsp: lsp_mod.Lsp,
+    ts: treesitter_mod.TreeSitter,
 
     // Shared subsystem state (initialized in run())
     handler: handler_mod.Handler = undefined,
@@ -40,11 +42,13 @@ pub const EventLoop = struct {
             .server = server,
             .shutdown_event = .unset,
             .lsp = lsp_mod.Lsp.init(allocator, io),
+            .ts = treesitter_mod.TreeSitter.init(allocator),
         };
     }
 
     pub fn deinit(self: *EventLoop) void {
         self.lsp.deinit();
+        self.ts.deinit();
     }
 
     /// Main event loop: accept connections, spawn per-client coroutines.
@@ -56,6 +60,7 @@ pub const EventLoop = struct {
             .io = self.io,
             .lsp = &self.lsp,
             .registry = &self.lsp.registry,
+            .ts = &self.ts,
         };
         self.vim_server = .{ .handler = &self.handler };
 

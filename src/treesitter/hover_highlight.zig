@@ -64,7 +64,7 @@ const Md4cState = struct {
             };
         }
         // Don't deinit - lines reference the buffer. Start a fresh buffer.
-        self.text_buf = .{};
+        self.text_buf = .empty;
     }
 
     fn flushCodeBlock(self: *Md4cState) void {
@@ -96,7 +96,7 @@ const Md4cState = struct {
             self.err = true;
             return;
         };
-        self.code_content = .{};
+        self.code_content = .empty;
     }
 };
 
@@ -204,13 +204,13 @@ fn parseMarkdown(
 } {
     var state = Md4cState{
         .allocator = allocator,
-        .lines = .{},
-        .blocks = .{},
+        .lines = .empty,
+        .blocks = .empty,
         .in_code_block = false,
         .code_lang = "",
         .code_start_line = 0,
-        .code_content = .{},
-        .text_buf = .{},
+        .code_content = .empty,
+        .text_buf = .empty,
         .err = false,
     };
 
@@ -265,7 +265,7 @@ pub noinline fn extractHoverHighlights(
     // Collapse consecutive blank lines and build output lines array.
     // Track the mapping from output index -> original index for highlights.
     var lines_arr = std.json.Array.init(allocator);
-    var out_map: std.ArrayListUnmanaged(u32) = .{}; // out_idx -> orig_idx
+    var out_map: std.ArrayListUnmanaged(u32) = .empty; // out_idx -> orig_idx
     var prev_blank = false;
     for (parsed.lines.items, 0..) |line, orig_i| {
         const is_blank = std.mem.trim(u8, line, " \t").len == 0;

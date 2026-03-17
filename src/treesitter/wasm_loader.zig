@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ts = @import("tree_sitter");
 const log = @import("../log.zig");
+const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -57,14 +58,7 @@ pub const WasmLoader = struct {
 
     /// Load a grammar from a .wasm file on disk.
     pub fn loadGrammar(self: *WasmLoader, allocator: Allocator, name: []const u8, wasm_path: []const u8) !*const ts.Language {
-        const wasm_bytes = blk: {
-            const file = if (std.fs.path.isAbsolute(wasm_path))
-                try std.fs.openFileAbsolute(wasm_path, .{})
-            else
-                try std.fs.cwd().openFile(wasm_path, .{});
-            defer file.close();
-            break :blk try file.readToEndAlloc(allocator, max_wasm_size);
-        };
+        const wasm_bytes = try compat.readFileAlloc(allocator, wasm_path);
         defer allocator.free(wasm_bytes);
 
         // loadLanguage requires a sentinel-terminated name

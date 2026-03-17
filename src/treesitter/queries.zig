@@ -1,6 +1,7 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
 const log = @import("../log.zig");
+const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -24,26 +25,15 @@ fn loadQueryFromDir(allocator: Allocator, query_dir: []const u8, query_name: []c
     const path = try std.fmt.allocPrint(allocator, "{s}/{s}.scm", .{ query_dir, query_name });
     defer allocator.free(path);
 
-    const file = openFile(path) catch |e| {
+    const contents = compat.readFileAlloc(allocator, path) catch |e| {
         if (e == error.FileNotFound) {
             log.debug("Query file not found: {s}", .{path});
             return null;
         }
-        return e;
-    };
-    defer file.close();
-
-    const contents = file.readToEndAlloc(allocator, 1024 * 1024) catch |e| {
         log.warn("Failed to read query file {s}: {any}", .{ path, e });
         return null;
     };
 
     log.info("Loaded query file: {s} ({d} bytes)", .{ path, contents.len });
     return contents;
-}
-
-fn openFile(path: []const u8) !std.fs.File {
-    if (std.fs.path.isAbsolute(path))
-        return std.fs.openFileAbsolute(path, .{});
-    return std.fs.cwd().openFile(path, .{});
 }

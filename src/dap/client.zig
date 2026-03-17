@@ -81,7 +81,7 @@ pub const DapClient = struct {
         // Resolve command: check venv, ~/.local/share/yac/bin/, then PATH
         const resolved = resolveCommand(allocator, command, workspace_dir) orelse command;
 
-        var child_args: std.ArrayList([]const u8) = .{};
+        var child_args: std.ArrayList([]const u8) = .empty;
         defer child_args.deinit(allocator);
         try child_args.append(allocator, resolved);
         for (args) |a| try child_args.append(allocator, a);
@@ -482,7 +482,7 @@ pub const DapClient = struct {
         var it = lp.breakpoint_files.iterator();
         while (it.next()) |entry| {
             // Build BreakpointInfo array from line numbers
-            var bp_infos: std.ArrayList(BreakpointInfo) = .{};
+            var bp_infos: std.ArrayList(BreakpointInfo) = .empty;
             for (entry.value_ptr.items) |line| {
                 bp_infos.append(alloc, .{ .line = line }) catch continue;
             }
@@ -526,7 +526,7 @@ pub const DapClient = struct {
 
         log.debug("DAP framer produced {d} message(s)", .{raw_messages.items.len});
 
-        var messages: std.ArrayList(protocol.DapMessage) = .{};
+        var messages: std.ArrayList(protocol.DapMessage) = .empty;
         for (raw_messages.items) |raw| {
             // Log first 200 chars of each raw message
             const preview_len = @min(raw.len, 200);

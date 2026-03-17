@@ -93,9 +93,9 @@ pub const Requests = struct {
     /// Cancel pending requests with the same method and LSP client key.
     /// Returns cancelled LSP IDs and Vim client info for sending responses.
     pub fn cancelByMethodAndClientKey(self: *Requests, method: []const u8, client_key: []const u8) CancelResult {
-        var lsp_ids: std.ArrayList(u32) = .{};
-        var vim_info: std.ArrayList(CancelledVimInfo) = .{};
-        var to_remove: std.ArrayList(u32) = .{};
+        var lsp_ids: std.ArrayList(u32) = .empty;
+        var vim_info: std.ArrayList(CancelledVimInfo) = .empty;
+        var to_remove: std.ArrayList(u32) = .empty;
         defer to_remove.deinit(self.allocator);
 
         var it = self.pending_requests.iterator();

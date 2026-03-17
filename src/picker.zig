@@ -65,7 +65,7 @@ pub fn filterAndSort(
     pattern: []const u8,
     boost_files: []const []const u8,
 ) ![]const usize {
-    var scored: std.ArrayList(ScoredEntry) = .{};
+    var scored: std.ArrayList(ScoredEntry) = .empty;
     defer scored.deinit(allocator);
     for (items, 0..) |item, i| {
         const score = fuzzyScore(item, pattern);
@@ -293,7 +293,7 @@ pub const Picker = struct {
             if (!self.start(cwd)) return .respond_null;
             // Pre-seed MRU from Vim
             if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
-                var names: std.ArrayList([]const u8) = .{};
+                var names: std.ArrayList([]const u8) = .empty;
                 defer names.deinit(alloc);
                 for (rf_arr) |v| {
                     if (v == .string) names.append(alloc, v.string) catch {};
@@ -311,7 +311,7 @@ pub const Picker = struct {
             const file_list = self.files();
             const recent = self.recentFiles();
             const indices = filterAndSort(alloc, file_list, query, recent) catch return .respond_null;
-            var items: std.ArrayList([]const u8) = .{};
+            var items: std.ArrayList([]const u8) = .empty;
             for (indices) |idx| {
                 items.append(alloc, file_list[idx]) catch {};
             }
@@ -363,7 +363,7 @@ fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
 
     const stdout_fd = (child.stdout orelse return error.NoStdout).handle;
     const max_output = 256 * 1024;
-    var output_buf: std.ArrayList(u8) = .{};
+    var output_buf: std.ArrayList(u8) = .empty;
     // NOTE: do NOT deinit output_buf — parseGrepLine returns slices into it,
     // and the arena allocator will free everything when the request completes.
     while (true) {

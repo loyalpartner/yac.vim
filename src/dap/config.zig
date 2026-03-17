@@ -104,7 +104,7 @@ pub const VarMap = struct {
 /// Tracks whether we're inside a JSON string (respecting `\"` escapes).
 /// Returns a new allocation with comments removed.
 pub fn stripJsonComments(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var in_string = false;
@@ -198,7 +198,7 @@ fn replaceVars(allocator: std.mem.Allocator, input: []const u8, vars: VarMap) ![
 fn replaceAll(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]u8 {
     if (needle.len == 0) return allocator.dupe(u8, haystack);
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var i: usize = 0;

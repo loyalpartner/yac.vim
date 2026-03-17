@@ -6,6 +6,7 @@ const lsp_registry_mod = @import("lsp/registry.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const lsp_client_mod = @import("lsp/client.zig");
 const lsp_transform = @import("lsp/transform.zig");
+const treesitter_mod = @import("treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -63,6 +64,7 @@ pub const Handler = struct {
     io: Io,
     lsp: ?*lsp_mod.Lsp = null,
     registry: ?*LspRegistry = null,
+    ts: ?*treesitter_mod.TreeSitter = null,
 
     /// Per-request: fd of the current Vim client (for async notifications)
     client_fd: std.posix.fd_t = -1,
@@ -488,13 +490,111 @@ pub const Handler = struct {
     pub fn range_formatting(_: *Handler) !void {}
     pub fn execute_command(_: *Handler) !void {}
     pub fn document_highlight(_: *Handler) !void {}
-    pub fn load_language(_: *Handler) !void {}
-    pub fn ts_symbols(_: *Handler) !void {}
-    pub fn ts_folding(_: *Handler) !void {}
-    pub fn ts_navigate(_: *Handler) !void {}
-    pub fn ts_textobjects(_: *Handler) !void {}
-    pub fn ts_highlights(_: *Handler) !void {}
-    pub fn ts_hover_highlight(_: *Handler) !void {}
+
+    // ========================================================================
+    // Tree-sitter handlers
+    // ========================================================================
+
+    fn getTsCtx(self: *Handler, file: []const u8, text: ?[]const u8) ?struct {
+        ts: *treesitter_mod.TreeSitter,
+        file: []const u8,
+        lang_state: *const treesitter_mod.LangState,
+    } {
+        const ts_state = self.ts orelse return null;
+        const lang_state = ts_state.fromExtension(file) orelse return null;
+        if (ts_state.getTree(file) == null) {
+            if (text) |t| {
+                ts_state.parseBuffer(file, t) catch return null;
+            }
+        }
+        return .{ .ts = ts_state, .file = file, .lang_state = lang_state };
+    }
+
+    pub fn load_language(self: *Handler, alloc: Allocator, p: struct {
+        lang_dir: []const u8,
+    }) !Value {
+        const ts_state = self.ts orelse return .null;
+        ts_state.loadFromDir(p.lang_dir);
+        return try json.buildObject(alloc, .{
+            .{ "ok", .{ .bool = true } },
+        });
+    }
+
+    pub fn ts_symbols(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+    }) !Value {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const source = tc.ts.getSource(tc.file) orelse return .null;
+        const sym_query = tc.lang_state.symbols orelse return .null;
+        return try treesitter_mod.symbols.extractSymbols(alloc, sym_query, tree, source, tc.file);
+    }
+
+    pub fn ts_folding(self: *Handler, _: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+    }) !Value {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const folds_query = tc.lang_state.folds orelse return .null;
+        return try treesitter_mod.folds.extractFolds(self.gpa, folds_query, tree);
+    }
+
+    pub fn ts_navigate(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        line: u32 = 0,
+        column: u32 = 0,
+        direction: []const u8 = "next",
+        scope: []const u8 = "function",
+    }) !Value {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const nav_query = tc.lang_state.textobjects orelse return .null;
+        return try treesitter_mod.navigate.navigate(alloc, nav_query, tree, p.scope, p.direction, p.line);
+    }
+
+    pub fn ts_textobjects(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        line: u32 = 0,
+        column: u32 = 0,
+        scope: []const u8 = "function",
+        around: bool = true,
+    }) !Value {
+        _ = p.around; // TODO: pass around to findTextObject if API supports it
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const tobj_query = tc.lang_state.textobjects orelse return .null;
+        return try treesitter_mod.textobjects.findTextObject(alloc, tobj_query, tree, p.scope, p.line, p.column);
+    }
+
+    pub fn ts_highlights(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        text: ?[]const u8 = null,
+        start_line: u32 = 0,
+        end_line: u32 = 100,
+    }) !Value {
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const source = tc.ts.getSource(tc.file) orelse return .null;
+        const hl_query = tc.lang_state.highlights orelse return .null;
+
+        var result = try treesitter_mod.highlights.extractHighlights(alloc, hl_query, tree, source, p.start_line, p.end_line);
+        if (tc.lang_state.injections) |inj_query| {
+            try treesitter_mod.highlights.processInjections(alloc, inj_query, tree, source, p.start_line, p.end_line, tc.ts, &result);
+        }
+        return result;
+    }
+
+    pub fn ts_hover_highlight(self: *Handler, alloc: Allocator, p: struct {
+        markdown: []const u8,
+        filetype: []const u8 = "",
+    }) !Value {
+        const ts_state = self.ts orelse return .null;
+        return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, ts_state, p.markdown, p.filetype);
+    }
     pub fn picker_open(_: *Handler) !void {}
     pub fn picker_query(_: *Handler) !void {}
     pub fn picker_close(_: *Handler) !void {}
