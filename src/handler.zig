@@ -1034,37 +1034,42 @@ pub const Handler = struct {
         query: []const u8,
     };
 
+    const PickerQueryResult = union(enum) {
+        action: PickerAction,
+        workspace_symbols: PickerSymbolResult,
+        document_symbols: treesitter_mod.symbols.PickerResult,
+
+        pub fn jsonStringify(self: PickerQueryResult, jw: anytype) @TypeOf(jw.*).Error!void {
+            switch (self) {
+                inline else => |v| try jw.write(v),
+            }
+        }
+    };
+
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
         query: []const u8 = "",
         mode: []const u8 = "file",
         file: ?[]const u8 = null,
         text: ?[]const u8 = null,
-    }) !Value {
+    }) !?PickerQueryResult {
         if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
-            const file = p.file orelse return .null;
-            const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
+            const file = p.file orelse return null;
+            const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
             const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
                 .query = p.query,
-            }) catch return .null;
-            const typed = buildPickerSymbolsFromWorkspace(alloc, result) orelse return .null;
-            return LspClient.typedToValue(alloc, typed) catch .null;
+            }) catch return null;
+            const typed = buildPickerSymbolsFromWorkspace(alloc, result) orelse return null;
+            return .{ .workspace_symbols = typed };
         } else if (std.mem.eql(u8, p.mode, "grep")) {
-            return LspClient.typedToValue(alloc, PickerAction{
-                .action = "picker_grep_query",
-                .query = p.query,
-            }) catch .null;
+            return .{ .action = .{ .action = "picker_grep_query", .query = p.query } };
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
-            const tc = self.getTsCtx(p.file orelse return .null, p.text) orelse return .null;
-            const tree = tc.ts.getTree(tc.file) orelse return .null;
-            const source = tc.ts.getSource(tc.file) orelse return .null;
-            const sym_query = tc.lang_state.symbols orelse return .null;
-            const picker_result = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
-            return LspClient.typedToValue(alloc, picker_result) catch .null;
+            const tc = self.getTsCtx(p.file orelse return null, p.text) orelse return null;
+            const tree = tc.ts.getTree(tc.file) orelse return null;
+            const source = tc.ts.getSource(tc.file) orelse return null;
+            const sym_query = tc.lang_state.symbols orelse return null;
+            return .{ .document_symbols = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source) };
         } else {
-            return LspClient.typedToValue(alloc, PickerAction{
-                .action = "picker_file_query",
-                .query = p.query,
-            }) catch .null;
+            return .{ .action = .{ .action = "picker_file_query", .query = p.query } };
         }
     }
 
