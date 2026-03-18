@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = @import("json_utils.zig");
+const lsp_client = @import("lsp/client.zig");
 const log = @import("log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -116,12 +117,27 @@ pub fn VimServer(comptime Handler: type) type {
         }
 
         /// Convert a handler return value to ProcessResult.
+        /// Supports Value, void, scalars (via toValue), and complex typed structs
+        /// (via typedToValue — JSON stringify round-trip for lsp-kit types etc.)
         fn wrapResult(alloc: Allocator, result: anytype) !ProcessResult {
             const T = @TypeOf(result);
             if (T == ProcessResult) return result;
             if (T == Value) return .{ .data = result };
             if (T == void) return .{ .empty = {} };
-            return .{ .data = try toValue(alloc, result) };
+            // Simple scalars/strings via toValue; complex structs via typedToValue
+            if (comptime isSimpleType(T)) {
+                return .{ .data = try toValue(alloc, result) };
+            }
+            return .{ .data = try lsp_client.LspClient.typedToValue(alloc, result) };
+        }
+
+        fn isSimpleType(comptime T: type) bool {
+            return switch (@typeInfo(T)) {
+                .bool, .int, .comptime_int, .float, .comptime_float, .@"enum" => true,
+                .pointer => |p| p.size == .slice and p.child == u8,
+                .optional => |o| isSimpleType(o.child),
+                else => false,
+            };
         }
     };
 }

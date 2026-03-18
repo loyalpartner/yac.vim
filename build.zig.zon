@@ -5,6 +5,10 @@
         .tree_sitter = .{
             .path = "vendor/zig-tree-sitter",
         },
+        .lsp_kit = .{
+            .url = "https://github.com/zigtools/lsp-kit/archive/refs/heads/main.tar.gz",
+            .hash = "lsp_kit-0.1.0-bi_PLwozDAApVpvVJHz80NPklig5biWlZCkyxjFbOtiD",
+        },
     },
     .fingerprint = 0x7a690c38e21ca7b4,
     .minimum_zig_version = "0.16.0",

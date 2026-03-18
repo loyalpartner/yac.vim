@@ -5,7 +5,7 @@ const Io = std.Io;
 const lsp_registry_mod = @import("lsp/registry.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const lsp_client_mod = @import("lsp/client.zig");
-const lsp_transform = @import("lsp/transform.zig");
+const lsp_types = @import("lsp/types.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
@@ -13,6 +13,7 @@ const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 const LspRegistry = lsp_registry_mod.LspRegistry;
 const LspClient = lsp_client_mod.LspClient;
+
 
 // ============================================================================
 // LSP context types
@@ -23,39 +24,14 @@ const LspContext = struct {
     client_key: []const u8,
     uri: []const u8,
     client: *LspClient,
-    ssh_host: ?[]const u8,
     real_path: []const u8,
 };
-
-// ============================================================================
-// Pure helper functions
-// ============================================================================
-
-fn buildTextDocumentPosition(allocator: Allocator, uri: []const u8, line: u32, column: u32) !Value {
-    return json.buildObject(allocator, .{
-        .{ "textDocument", try json.buildObject(allocator, .{
-            .{ "uri", json.jsonString(uri) },
-        }) },
-        .{ "position", try json.buildObject(allocator, .{
-            .{ "line", json.jsonInteger(@intCast(line)) },
-            .{ "character", json.jsonInteger(@intCast(column)) },
-        }) },
-    });
-}
-
-fn buildTextDocumentIdentifier(allocator: Allocator, uri: []const u8) !Value {
-    return json.buildObject(allocator, .{
-        .{ "textDocument", try json.buildObject(allocator, .{
-            .{ "uri", json.jsonString(uri) },
-        }) },
-    });
-}
 
 // ============================================================================
 // Handler — Vim method handlers for VimServer dispatch (Zig 0.16)
 //
 // In the coroutine model, LSP handlers block internally via
-// LspClient.sendRequest() and return Value/void directly.
+// LspClient.request()/requestTyped() and return typed results directly.
 // ============================================================================
 
 pub const Handler = struct {
@@ -77,7 +53,6 @@ pub const Handler = struct {
         const registry = self.registry orelse return null;
 
         const real_path = lsp_registry_mod.extractRealPath(file);
-        const ssh_host = lsp_registry_mod.extractSshHost(file);
         const language = LspRegistry.detectLanguage(real_path) orelse return null;
 
         if (registry.hasSpawnFailed(language)) return null;
@@ -97,7 +72,6 @@ pub const Handler = struct {
             .client_key = result.client_key,
             .uri = uri,
             .client = result.client,
-            .ssh_host = ssh_host,
             .real_path = real_path,
         };
     }
@@ -108,40 +82,503 @@ pub const Handler = struct {
         return !registry.serverSupports(client_key, capability);
     }
 
-    /// Send a position-based LSP request, block for response, transform result.
-    /// handler_method is the yac handler name (e.g. "hover"), lsp_method is the LSP protocol name.
-    fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8, handler_method: []const u8) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
-        log.debug("{s}: uri={s} line={d} col={d}", .{ handler_method, lsp_ctx.uri, line, column });
-        const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
-
-        var result = lsp_ctx.client.sendRequest(lsp_method, lsp_params) catch |e| {
-            log.err("LSP request failed for {s}: {any}", .{ lsp_method, e });
-            return .null;
-        };
-        defer result.deinit();
-
-        return cloneLspResult(alloc, handler_method, result.result, lsp_ctx.ssh_host);
+    /// Type-safe position request → typed lsp-kit result.
+    fn sendTypedPositionRequest(
+        self: *Handler,
+        comptime lsp_method: []const u8,
+        alloc: Allocator,
+        file: []const u8,
+        line: u32,
+        column: u32,
+    ) !lsp_types.ResultType(lsp_method) {
+        const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
+        return lsp_ctx.client.request(lsp_method, alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .position = .{ .line = @intCast(line), .character = @intCast(column) },
+        }) catch return null;
     }
 
-    /// Transform + deep-clone LSP result into arena so it survives after SendResult.deinit().
-    /// Transforms may reference strings from the original parsed response; the clone
-    /// serializes everything into `alloc` so no dangling pointers remain.
-    fn cloneLspResult(alloc: Allocator, handler_method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
-        const transformed = lsp_transform.transformLspResult(alloc, handler_method, result, ssh_host);
-        if (transformed == .null) {
-            log.debug("cloneLspResult({s}): transform returned null", .{handler_method});
+    // ========================================================================
+    // Inlined transform helpers (Value-based, to be typed later)
+    // ========================================================================
+
+    const TransformPos = struct { line: i64, column: i64 };
+
+    /// Extract start position {line, character} from a range object.
+    fn extractStartPosition(range_val: Value) ?TransformPos {
+        const range_obj = switch (range_val) {
+            .object => |o| o,
+            else => return null,
+        };
+        const start_obj = switch (range_obj.get("start") orelse return null) {
+            .object => |o| o,
+            else => return null,
+        };
+        const line = json.getInteger(start_obj, "line") orelse return null;
+        const column = json.getInteger(start_obj, "character") orelse return null;
+        return .{ .line = line, .column = column };
+    }
+
+    /// Build a {file, line, column} JSON object from a file path and position.
+    fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, column: i64) !Value {
+        return json.buildObject(alloc, .{
+            .{ "file", json.jsonString(file_path) },
+            .{ "line", json.jsonInteger(line) },
+            .{ "column", json.jsonInteger(column) },
+        });
+    }
+
+    /// Transform a goto LSP response (Location | Location[] | LocationLink) into {file, line, column}.
+    fn transformGoto(alloc: Allocator, result: Value) Value {
+        const location = switch (result) {
+            .object => result,
+            .array => |arr| blk: {
+                if (arr.items.len == 0) break :blk Value.null;
+                break :blk arr.items[0];
+            },
+            else => return .null,
+        };
+
+        if (location == .null) return .null;
+
+        const loc_obj = switch (location) {
+            .object => |o| o,
+            else => return .null,
+        };
+
+        const uri = json.getString(loc_obj, "uri") orelse
+            json.getString(loc_obj, "targetUri") orelse
             return .null;
+
+        const file_path = lsp_types.uriToFilePath(alloc, uri) orelse return .null;
+
+        const range_val = loc_obj.get("range") orelse loc_obj.get("targetSelectionRange") orelse return .null;
+        const pos = extractStartPosition(range_val) orelse return .null;
+
+        return makeLocationObject(alloc, file_path, pos.line, pos.column) catch .null;
+    }
+
+    /// Transform Location[] → {locations: [{file, line, column}]}.
+    fn transformReferences(alloc: Allocator, result: Value) Value {
+        const items = switch (result) {
+            .array => |a| a.items,
+            else => &[_]Value{},
+        };
+
+        var locations = std.json.Array.init(alloc);
+        for (items) |item| {
+            const loc = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const uri = json.getString(loc, "uri") orelse continue;
+            const file_path = lsp_types.uriToFilePath(alloc, uri) orelse continue;
+            const pos = extractStartPosition(loc.get("range") orelse continue) orelse continue;
+            const loc_val = makeLocationObject(alloc, file_path, pos.line, pos.column) catch continue;
+            locations.append(loc_val) catch continue;
         }
-        const serialized = json.stringifyAlloc(alloc, transformed) catch |e| {
-            log.err("cloneLspResult({s}): stringify failed: {any}", .{ handler_method, e });
-            return .null;
+
+        return json.buildObject(alloc, .{
+            .{ "locations", .{ .array = locations } },
+        }) catch .null;
+    }
+
+    /// Transform TextEdit[] → {edits: [{start_line, start_column, end_line, end_column, new_text}]}.
+    fn transformFormatting(alloc: Allocator, result: Value) Value {
+        const items = switch (result) {
+            .array => |a| a.items,
+            else => return .null,
         };
-        const reparsed = std.json.parseFromSlice(Value, alloc, serialized, .{}) catch |e| {
-            log.err("cloneLspResult({s}): reparse failed: {any}", .{ handler_method, e });
-            return .null;
+
+        var edits = std.json.Array.init(alloc);
+        for (items) |item| {
+            const edit = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const range_val = edit.get("range") orelse continue;
+            const range_obj = switch (range_val) {
+                .object => |o| o,
+                else => continue,
+            };
+            const start_obj = switch (range_obj.get("start") orelse continue) {
+                .object => |o| o,
+                else => continue,
+            };
+            const end_obj = switch (range_obj.get("end") orelse continue) {
+                .object => |o| o,
+                else => continue,
+            };
+            const new_text = json.getString(edit, "newText") orelse "";
+
+            edits.append(json.buildObject(alloc, .{
+                .{ "start_line", json.jsonInteger(json.getInteger(start_obj, "line") orelse 0) },
+                .{ "start_column", json.jsonInteger(json.getInteger(start_obj, "character") orelse 0) },
+                .{ "end_line", json.jsonInteger(json.getInteger(end_obj, "line") orelse 0) },
+                .{ "end_column", json.jsonInteger(json.getInteger(end_obj, "character") orelse 0) },
+                .{ "new_text", json.jsonString(new_text) },
+            }) catch continue) catch continue;
+        }
+
+        return json.buildObject(alloc, .{
+            .{ "edits", .{ .array = edits } },
+        }) catch .null;
+    }
+
+    /// Transform InlayHint[] → {hints: [{line, column, label, kind}]}.
+    fn transformInlayHints(alloc: Allocator, result: Value) Value {
+        const items = switch (result) {
+            .array => |a| a.items,
+            else => return .null,
         };
-        return reparsed.value;
+
+        var hints = std.json.Array.init(alloc);
+        for (items) |item| {
+            const hint = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+
+            // position: {line, character}
+            const pos_obj = switch (hint.get("position") orelse continue) {
+                .object => |o| o,
+                else => continue,
+            };
+            const line = json.getInteger(pos_obj, "line") orelse continue;
+            const character = json.getInteger(pos_obj, "character") orelse continue;
+
+            // label: string | InlayHintLabelPart[]
+            const label_val = hint.get("label") orelse continue;
+            const label: []const u8 = switch (label_val) {
+                .string => |s| s,
+                .array => |parts| blk: {
+                    var buf: std.ArrayList(u8) = .empty;
+                    for (parts.items) |part| {
+                        const part_obj = switch (part) {
+                            .object => |o| o,
+                            else => continue,
+                        };
+                        if (json.getString(part_obj, "value")) |v| {
+                            buf.appendSlice(alloc, v) catch continue;
+                        }
+                    }
+                    break :blk buf.items;
+                },
+                else => continue,
+            };
+            if (label.len == 0) continue;
+
+            // kind: 1=Type, 2=Parameter (optional)
+            const kind_int = json.getInteger(hint, "kind");
+            const kind_str: []const u8 = if (kind_int) |k| switch (k) {
+                1 => "type",
+                2 => "parameter",
+                else => "other",
+            } else "other";
+
+            // paddingLeft / paddingRight
+            const padding_left = if (hint.get("paddingLeft")) |v| switch (v) {
+                .bool => |b| b,
+                else => false,
+            } else false;
+            const padding_right = if (hint.get("paddingRight")) |v| switch (v) {
+                .bool => |b| b,
+                else => false,
+            } else false;
+
+            const display = if (padding_left and padding_right)
+                std.fmt.allocPrint(alloc, " {s} ", .{label}) catch label
+            else if (padding_left)
+                std.fmt.allocPrint(alloc, " {s}", .{label}) catch label
+            else if (padding_right)
+                std.fmt.allocPrint(alloc, "{s} ", .{label}) catch label
+            else
+                label;
+
+            hints.append(json.buildObject(alloc, .{
+                .{ "line", json.jsonInteger(line) },
+                .{ "column", json.jsonInteger(character) },
+                .{ "label", json.jsonString(display) },
+                .{ "kind", json.jsonString(kind_str) },
+            }) catch continue) catch continue;
+        }
+
+        return json.buildObject(alloc, .{
+            .{ "hints", .{ .array = hints } },
+        }) catch .null;
+    }
+
+    /// Transform DocumentHighlight[] → {highlights: [{line, col, end_line, end_col, kind}]}.
+    fn transformDocumentHighlight(alloc: Allocator, result: Value) Value {
+        const items = switch (result) {
+            .array => |a| a.items,
+            else => return .null,
+        };
+
+        var highlights = std.json.Array.init(alloc);
+        for (items) |item| {
+            const obj = switch (item) {
+                .object => |o| o,
+                else => continue,
+            };
+            const range_val = obj.get("range") orelse continue;
+            const range_obj = switch (range_val) {
+                .object => |o| o,
+                else => continue,
+            };
+            const start_obj = switch (range_obj.get("start") orelse continue) {
+                .object => |o| o,
+                else => continue,
+            };
+            const end_obj = switch (range_obj.get("end") orelse continue) {
+                .object => |o| o,
+                else => continue,
+            };
+            const kind = json.getInteger(obj, "kind") orelse 1;
+            const sl = json.getInteger(start_obj, "line") orelse continue;
+            const sc = json.getInteger(start_obj, "character") orelse continue;
+            const el = json.getInteger(end_obj, "line") orelse continue;
+            const ec = json.getInteger(end_obj, "character") orelse continue;
+
+            highlights.append(json.buildObject(alloc, .{
+                .{ "line", json.jsonInteger(sl) },
+                .{ "col", json.jsonInteger(sc) },
+                .{ "end_line", json.jsonInteger(el) },
+                .{ "end_col", json.jsonInteger(ec) },
+                .{ "kind", json.jsonInteger(kind) },
+            }) catch continue) catch continue;
+        }
+
+        return json.buildObject(alloc, .{
+            .{ "highlights", .{ .array = highlights } },
+        }) catch .null;
+    }
+
+    /// Transform CompletionList or CompletionItem[] → {items: [...]}.
+    fn transformCompletion(alloc: Allocator, result: Value) Value {
+        const max_doc_bytes: usize = 500;
+        const max_items: usize = 100;
+
+        const items_slice: []const Value = switch (result) {
+            .array => |a| a.items,
+            .object => |o| blk: {
+                if (json.getArray(o, "items")) |arr| break :blk arr;
+                break :blk &[_]Value{};
+            },
+            else => &[_]Value{},
+        };
+
+        const capped = if (items_slice.len > max_items) items_slice[0..max_items] else items_slice;
+
+        var items = std.json.Array.init(alloc);
+
+        for (capped) |item_val| {
+            const ci = switch (item_val) {
+                .object => |o| o,
+                else => continue,
+            };
+
+            const label = json.getString(ci, "label") orelse continue;
+
+            var item = ObjectMap.init(alloc);
+            item.put("label", json.jsonString(label)) catch continue;
+
+            if (json.getInteger(ci, "kind")) |kind| {
+                item.put("kind", json.jsonInteger(kind)) catch {};
+            }
+            if (json.getString(ci, "detail")) |detail| {
+                item.put("detail", json.jsonString(detail)) catch {};
+            }
+            if (json.getString(ci, "insertText")) |insert_text| {
+                item.put("insertText", json.jsonString(insert_text)) catch {};
+            }
+            if (json.getString(ci, "filterText")) |filter_text| {
+                item.put("filterText", json.jsonString(filter_text)) catch {};
+            }
+            if (json.getString(ci, "sortText")) |sort_text| {
+                item.put("sortText", json.jsonString(sort_text)) catch {};
+            }
+
+            if (ci.get("documentation")) |doc_val| {
+                switch (doc_val) {
+                    .string => |s| {
+                        item.put("documentation", json.jsonString(lsp_types.truncateUtf8(s, max_doc_bytes))) catch {};
+                    },
+                    .object => |doc_obj| {
+                        const kind_str = json.getString(doc_obj, "kind") orelse "plaintext";
+                        const value = json.getString(doc_obj, "value") orelse "";
+                        var new_doc = ObjectMap.init(alloc);
+                        new_doc.put("kind", json.jsonString(kind_str)) catch {};
+                        new_doc.put("value", json.jsonString(lsp_types.truncateUtf8(value, max_doc_bytes))) catch {};
+                        item.put("documentation", .{ .object = new_doc }) catch {};
+                    },
+                    else => {},
+                }
+            }
+
+            items.append(.{ .object = item }) catch continue;
+        }
+
+        var result_obj = ObjectMap.init(alloc);
+        result_obj.put("items", .{ .array = items }) catch return .null;
+        return .{ .object = result_obj };
+    }
+
+    /// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, ...}]}.
+    fn transformInlineCompletion(alloc: Allocator, result: Value) Value {
+        const items_arr: []Value = switch (result) {
+            .object => |obj| json.getArray(obj, "items") orelse return .null,
+            .array => |a| a.items,
+            .null => return .null,
+            else => return .null,
+        };
+
+        var out_items = std.json.Array.init(alloc);
+        for (items_arr) |item_val| {
+            const item = switch (item_val) {
+                .object => |o| o,
+                else => continue,
+            };
+
+            var out = ObjectMap.init(alloc);
+
+            if (item.get("insertText")) |insert_text| {
+                switch (insert_text) {
+                    .string => out.put("insertText", insert_text) catch continue,
+                    .object => |obj| {
+                        if (json.getString(obj, "value")) |v| {
+                            out.put("insertText", json.jsonString(v)) catch continue;
+                        }
+                    },
+                    else => continue,
+                }
+            } else continue;
+
+            if (json.getString(item, "filterText")) |ft| {
+                out.put("filterText", json.jsonString(ft)) catch {};
+            }
+            if (item.get("range")) |range| {
+                out.put("range", range) catch {};
+            }
+            if (item.get("command")) |cmd| {
+                out.put("command", cmd) catch {};
+            }
+
+            out_items.append(.{ .object = out }) catch continue;
+        }
+
+        var result_obj = ObjectMap.init(alloc);
+        result_obj.put("items", .{ .array = out_items }) catch return .null;
+        return .{ .object = result_obj };
+    }
+
+    /// Recursively collect DocumentSymbol entries into items, expanding children.
+    fn collectDocumentSymbols(
+        alloc: Allocator,
+        arr: []const Value,
+        items: *std.json.Array,
+        file: []const u8,
+        depth: i64,
+    ) void {
+        for (arr) |sym_val| {
+            const sym = switch (sym_val) {
+                .object => |o| o,
+                else => continue,
+            };
+            const name = json.getString(sym, "name") orelse continue;
+            const kind_int = json.getInteger(sym, "kind");
+            const kind_name = lsp_types.symbolKindName(kind_int);
+            const lsp_detail = json.getString(sym, "detail");
+
+            var pos: TransformPos = .{ .line = 0, .column = 0 };
+            const range_val = sym.get("selectionRange") orelse sym.get("range");
+            if (range_val) |rv| {
+                if (extractStartPosition(rv)) |p| pos = p;
+            }
+
+            items.append(json.buildObject(alloc, .{
+                .{ "label", json.jsonString(name) },
+                .{ "detail", json.jsonString(lsp_detail orelse "") },
+                .{ "file", json.jsonString(file) },
+                .{ "line", json.jsonInteger(pos.line) },
+                .{ "column", json.jsonInteger(pos.column) },
+                .{ "depth", json.jsonInteger(depth) },
+                .{ "kind", json.jsonString(kind_name) },
+            }) catch continue) catch continue;
+
+            if (sym.get("children")) |children_val| {
+                switch (children_val) {
+                    .array => |ca| collectDocumentSymbols(alloc, ca.items, items, file, depth + 1),
+                    else => {},
+                }
+            }
+        }
+    }
+
+    /// Transform workspace/symbol or documentSymbol results into picker format.
+    fn transformPickerSymbol(alloc: Allocator, result: Value) Value {
+        const arr: []const Value = switch (result) {
+            .array => |a| a.items,
+            else => &.{},
+        };
+
+        // Detect format: DocumentSymbol has no "location" field.
+        const is_doc_symbol = blk: {
+            for (arr) |sym_val| {
+                switch (sym_val) {
+                    .object => |o| break :blk o.get("location") == null,
+                    else => {},
+                }
+            }
+            break :blk false;
+        };
+
+        var items = std.json.Array.init(alloc);
+
+        if (is_doc_symbol) {
+            collectDocumentSymbols(alloc, arr, &items, "", 0);
+        } else {
+            for (arr) |sym_val| {
+                const sym = switch (sym_val) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const name = json.getString(sym, "name") orelse continue;
+                const kind_int = json.getInteger(sym, "kind");
+                const kind_name = lsp_types.symbolKindName(kind_int);
+                const container = json.getString(sym, "containerName");
+                const detail = if (container) |c|
+                    std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
+                else
+                    kind_name;
+
+                var file: []const u8 = "";
+                var pos: TransformPos = .{ .line = 0, .column = 0 };
+                if (json.getObject(sym, "location")) |loc| {
+                    if (json.getString(loc, "uri")) |uri| {
+                        file = lsp_types.uriToFilePath(alloc, uri) orelse "";
+                    }
+                    if (loc.get("range")) |range_val| {
+                        if (extractStartPosition(range_val)) |p| pos = p;
+                    }
+                }
+
+                items.append(json.buildObject(alloc, .{
+                    .{ "label", json.jsonString(name) },
+                    .{ "detail", json.jsonString(detail) },
+                    .{ "file", json.jsonString(file) },
+                    .{ "line", json.jsonInteger(pos.line) },
+                    .{ "column", json.jsonInteger(pos.column) },
+                    .{ "depth", json.jsonInteger(0) },
+                    .{ "kind", json.jsonString(kind_name) },
+                }) catch continue) catch continue;
+            }
+        }
+
+        return json.buildObject(alloc, .{
+            .{ "items", .{ .array = items } },
+            .{ "mode", json.jsonString("symbol") },
+        }) catch .null;
     }
 
     // ========================================================================
@@ -254,16 +691,14 @@ pub const Handler = struct {
         };
 
         if (content) |text| {
-            var td_item = ObjectMap.init(alloc);
-            try td_item.put("uri", json.jsonString(uri));
-            try td_item.put("languageId", json.jsonString(language));
-            try td_item.put("version", json.jsonInteger(1));
-            try td_item.put("text", json.jsonString(text));
-
-            var did_open_params = ObjectMap.init(alloc);
-            try did_open_params.put("textDocument", .{ .object = td_item });
-
-            result.client.sendNotification("textDocument/didOpen", .{ .object = did_open_params }) catch |e| {
+            result.client.notify("textDocument/didOpen", alloc, .{
+                .textDocument = .{
+                    .uri = uri,
+                    .languageId = .{ .custom_value = language },
+                    .version = 1,
+                    .text = text,
+                },
+            }) catch |e| {
                 log.err("Failed to send didOpen: {any}", .{e});
             };
         }
@@ -289,88 +724,91 @@ pub const Handler = struct {
     pub fn goto_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/definition", "goto_definition");
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/declaration", "goto_declaration");
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/typeDefinition", "goto_type_definition");
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/implementation", "goto_implementation");
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
-    }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/hover", "hover");
+    }) !lsp_types.HoverResult {
+        return self.sendTypedPositionRequest("textDocument/hover", alloc, p.file, p.line, p.column);
     }
 
     pub fn references(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, p.line, p.column)) {
-            .object => |o| o,
-            else => unreachable,
-        };
-        try lsp_params_obj.put("context", try json.buildObject(alloc, .{
-            .{ "includeDeclaration", json.jsonBool(true) },
-        }));
-
-        var result = lsp_ctx.client.sendRequest("textDocument/references", .{ .object = lsp_params_obj }) catch |e| {
-            log.err("LSP references failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "references", result.result, lsp_ctx.ssh_host);
+        const result = lsp_ctx.client.request("textDocument/references", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
+            .context = .{ .includeDeclaration = true },
+        }) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformReferencesResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
-    }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareCallHierarchy", "call_hierarchy");
+    }) !lsp_types.CallHierarchyResult {
+        return self.sendTypedPositionRequest("textDocument/prepareCallHierarchy", alloc, p.file, p.line, p.column);
     }
 
     pub fn type_hierarchy(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
-    }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/prepareTypeHierarchy", "type_hierarchy");
+    }) !lsp_types.TypeHierarchyResult {
+        return self.sendTypedPositionRequest("textDocument/prepareTypeHierarchy", alloc, p.file, p.line, p.column);
     }
 
     pub fn completion(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/completion", "completion");
+        const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_completion.transformCompletionResult(alloc, v) catch .null;
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
-        var result = lsp_ctx.client.sendRequest("textDocument/documentSymbol", lsp_params) catch |e| {
-            log.err("LSP documentSymbol failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "document_symbols", result.result, lsp_ctx.ssh_host);
+    }) !lsp_types.DocumentSymbolResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        return lsp_ctx.client.request("textDocument/documentSymbol", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+        }) catch return null;
     }
 
     pub fn signature_help(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
-    }) !Value {
-        return self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/signatureHelp", "signature_help");
+    }) !lsp_types.SignatureHelpResult {
+        return self.sendTypedPositionRequest("textDocument/signatureHelp", alloc, p.file, p.line, p.column);
     }
 
     // ========================================================================
@@ -384,15 +822,11 @@ pub const Handler = struct {
         query: []const u8 = "",
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const ws_params = try json.buildObject(alloc, .{
-            .{ "query", json.jsonString(p.query) },
-        });
-        var result = lsp_ctx.client.sendRequest("workspace/symbol", ws_params) catch |e| {
-            log.err("LSP workspace/symbol failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+        const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
+            .query = p.query,
+        }) catch return .null;
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_symbols.transformPickerSymbolResult(alloc, v, lsp_ctx.ssh_host) catch .null;
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
@@ -419,34 +853,38 @@ pub const Handler = struct {
 
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
 
-        var lsp_params = try json.buildObjectMap(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{
-                .{ "uri", json.jsonString(lsp_ctx.uri) },
-                .{ "version", json.jsonInteger(p.version) },
-            }) },
-        });
-
         if (p.changes) |changes| {
+            // Incremental changes from Vim — raw JSON, keep raw API
+            var lsp_params = try json.buildObjectMap(alloc, .{
+                .{ "textDocument", try json.buildObject(alloc, .{
+                    .{ "uri", json.jsonString(lsp_ctx.uri) },
+                    .{ "version", json.jsonInteger(p.version) },
+                }) },
+            });
             try lsp_params.put("contentChanges", changes);
+            lsp_ctx.client.sendNotification("textDocument/didChange", .{ .object = lsp_params }) catch |e| {
+                log.err("Failed to send didChange: {any}", .{e});
+            };
         } else if (p.text) |t| {
-            var change = ObjectMap.init(alloc);
-            try change.put("text", json.jsonString(t));
-            var changes_arr = std.json.Array.init(alloc);
-            try changes_arr.append(.{ .object = change });
-            try lsp_params.put("contentChanges", .{ .array = changes_arr });
+            // Full document text — typed API
+            lsp_ctx.client.notify("textDocument/didChange", alloc, .{
+                .textDocument = .{ .uri = lsp_ctx.uri, .version = @intCast(p.version) },
+                .contentChanges = &.{
+                    .{ .text_document_content_change_whole_document = .{ .text = t } },
+                },
+            }) catch |e| {
+                log.err("Failed to send didChange: {any}", .{e});
+            };
         }
-
-        lsp_ctx.client.sendNotification("textDocument/didChange", .{ .object = lsp_params }) catch |e| {
-            log.err("Failed to send didChange: {any}", .{e});
-        };
     }
 
     pub fn did_save(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
     }) !void {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
-        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
-        lsp_ctx.client.sendNotification("textDocument/didSave", lsp_params) catch |e| {
+        lsp_ctx.client.notify("textDocument/didSave", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+        }) catch |e| {
             log.err("Failed to send didSave: {any}", .{e});
         };
     }
@@ -457,8 +895,9 @@ pub const Handler = struct {
         self.removeIfSupported(p.file);
 
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
-        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
-        lsp_ctx.client.sendNotification("textDocument/didClose", lsp_params) catch |e| {
+        lsp_ctx.client.notify("textDocument/didClose", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+        }) catch |e| {
             log.err("Failed to send didClose: {any}", .{e});
         };
     }
@@ -467,9 +906,10 @@ pub const Handler = struct {
         file: []const u8,
     }) !void {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
-        var lsp_params = (try buildTextDocumentIdentifier(alloc, lsp_ctx.uri)).object;
-        try lsp_params.put("reason", json.jsonInteger(1));
-        lsp_ctx.client.sendNotification("textDocument/willSave", .{ .object = lsp_params }) catch |e| {
+        lsp_ctx.client.notify("textDocument/willSave", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .reason = .Manual,
+        }) catch |e| {
             log.err("Failed to send willSave: {any}", .{e});
         };
     }
@@ -480,66 +920,43 @@ pub const Handler = struct {
 
     pub fn rename(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32, new_name: []const u8,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        var lsp_params_obj = switch (try buildTextDocumentPosition(alloc, lsp_ctx.uri, p.line, p.column)) {
-            .object => |o| o,
-            else => unreachable,
-        };
-        try lsp_params_obj.put("newName", json.jsonString(p.new_name));
-        var result = lsp_ctx.client.sendRequest("textDocument/rename", .{ .object = lsp_params_obj }) catch |e| {
-            log.err("LSP rename failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "rename", result.result, lsp_ctx.ssh_host);
+    }) !lsp_types.RenameResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        return lsp_ctx.client.request("textDocument/rename", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
+            .newName = p.new_name,
+        }) catch return null;
     }
 
     pub fn code_action(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const lsp_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{ .{ "uri", json.jsonString(lsp_ctx.uri) } }) },
-            .{ "range", try json.buildObject(alloc, .{
-                .{ "start", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.line)) },
-                    .{ "character", json.jsonInteger(@intCast(p.column)) },
-                }) },
-                .{ "end", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.line)) },
-                    .{ "character", json.jsonInteger(@intCast(p.column)) },
-                }) },
-            }) },
-            .{ "context", try json.buildObject(alloc, .{
-                .{ "diagnostics", .{ .array = std.json.Array.init(alloc) } },
-            }) },
-        });
-        var result = lsp_ctx.client.sendRequest("textDocument/codeAction", lsp_params) catch |e| {
-            log.err("LSP codeAction failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "code_action", result.result, lsp_ctx.ssh_host);
+    }) !lsp_types.CodeActionResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        const pos: lsp_types.Position = .{ .line = @intCast(p.line), .character = @intCast(p.column) };
+        return lsp_ctx.client.request("textDocument/codeAction", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .range = .{ .start = pos, .end = pos },
+            .context = .{ .diagnostics = &.{} },
+        }) catch return null;
     }
 
     pub fn formatting(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, tab_size: i64 = 4, insert_spaces: bool = true,
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const lsp_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{ .{ "uri", json.jsonString(lsp_ctx.uri) } }) },
-            .{ "options", try json.buildObject(alloc, .{
-                .{ "tabSize", json.jsonInteger(p.tab_size) },
-                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
-            }) },
-        });
-        var result = lsp_ctx.client.sendRequest("textDocument/formatting", lsp_params) catch |e| {
+        const result = lsp_ctx.client.request("textDocument/formatting", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .options = .{
+                .tabSize = @intCast(p.tab_size),
+                .insertSpaces = p.insert_spaces,
+            },
+        }) catch |e| {
             log.err("LSP formatting failed: {any}", .{e});
             return .null;
         };
-        defer result.deinit();
-        return cloneLspResult(alloc, "formatting", result.result, lsp_ctx.ssh_host);
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformFormattingResult(alloc, v) catch .null;
     }
 
     // ========================================================================
@@ -552,54 +969,37 @@ pub const Handler = struct {
         end_line: u32 = 100,
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const lsp_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{
-                .{ "uri", json.jsonString(lsp_ctx.uri) },
-            }) },
-            .{ "range", try json.buildObject(alloc, .{
-                .{ "start", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.start_line)) },
-                    .{ "character", json.jsonInteger(0) },
-                }) },
-                .{ "end", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.end_line)) },
-                    .{ "character", json.jsonInteger(0) },
-                }) },
-            }) },
-        });
-        var result = lsp_ctx.client.sendRequest("textDocument/inlayHint", lsp_params) catch |e| {
+        const result = lsp_ctx.client.request("textDocument/inlayHint", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .range = .{
+                .start = .{ .line = @intCast(p.start_line), .character = 0 },
+                .end = .{ .line = @intCast(p.end_line), .character = 0 },
+            },
+        }) catch |e| {
             log.err("LSP inlayHint failed: {any}", .{e});
             return .null;
         };
-        defer result.deinit();
-        return cloneLspResult(alloc, "inlay_hints", result.result, lsp_ctx.ssh_host);
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformInlayHintsResult(alloc, v) catch .null;
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
-        var result = lsp_ctx.client.sendRequest("textDocument/foldingRange", lsp_params) catch |e| {
-            log.err("LSP foldingRange failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "folding_range", result.result, lsp_ctx.ssh_host);
+    }) !lsp_types.FoldingRangeResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        return lsp_ctx.client.request("textDocument/foldingRange", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+        }) catch return null;
     }
 
     pub fn semantic_tokens(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        if (self.serverUnsupported(lsp_ctx.client_key, "semanticTokensProvider")) return .null;
-        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
-        var result = lsp_ctx.client.sendRequest("textDocument/semanticTokens/full", lsp_params) catch |e| {
-            log.err("LSP semanticTokens failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "semantic_tokens", result.result, lsp_ctx.ssh_host);
+    }) !lsp_types.SemanticTokensResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        if (self.serverUnsupported(lsp_ctx.client_key, "semanticTokensProvider")) return null;
+        return lsp_ctx.client.request("textDocument/semanticTokens/full", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+        }) catch return null;
     }
 
     pub fn range_formatting(self: *Handler, alloc: Allocator, p: struct {
@@ -613,51 +1013,39 @@ pub const Handler = struct {
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
         if (self.serverUnsupported(lsp_ctx.client_key, "documentRangeFormattingProvider")) return .null;
-        const lsp_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{
-                .{ "uri", json.jsonString(lsp_ctx.uri) },
-            }) },
-            .{ "options", try json.buildObject(alloc, .{
-                .{ "tabSize", json.jsonInteger(p.tab_size) },
-                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
-            }) },
-            .{ "range", try json.buildObject(alloc, .{
-                .{ "start", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.start_line)) },
-                    .{ "character", json.jsonInteger(@intCast(p.start_column)) },
-                }) },
-                .{ "end", try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(p.end_line)) },
-                    .{ "character", json.jsonInteger(@intCast(p.end_column)) },
-                }) },
-            }) },
-        });
-        var result = lsp_ctx.client.sendRequest("textDocument/rangeFormatting", lsp_params) catch |e| {
+        const result = lsp_ctx.client.request("textDocument/rangeFormatting", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri },
+            .options = .{
+                .tabSize = @intCast(p.tab_size),
+                .insertSpaces = p.insert_spaces,
+            },
+            .range = .{
+                .start = .{ .line = @intCast(p.start_line), .character = @intCast(p.start_column) },
+                .end = .{ .line = @intCast(p.end_line), .character = @intCast(p.end_column) },
+            },
+        }) catch |e| {
             log.err("LSP rangeFormatting failed: {any}", .{e});
             return .null;
         };
-        defer result.deinit();
-        return cloneLspResult(alloc, "range_formatting", result.result, lsp_ctx.ssh_host);
+        const v = LspClient.typedToValue(alloc, result) catch return .null;
+        return transform_nav.transformFormattingResult(alloc, v) catch .null;
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         lsp_command: []const u8,
         arguments: ?Value = null,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        var lsp_params = try json.buildObjectMap(alloc, .{
-            .{ "command", json.jsonString(p.lsp_command) },
-        });
-        if (p.arguments) |args| {
-            try lsp_params.put("arguments", args);
-        }
-        var result = lsp_ctx.client.sendRequest("workspace/executeCommand", .{ .object = lsp_params }) catch |e| {
-            log.err("LSP executeCommand failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "execute_command", result.result, null);
+    }) !lsp_types.ResultType("workspace/executeCommand") {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
+        // arguments: ?Value → ?[]const Value for lsp-kit's typed params
+        const args_slice: ?[]const Value = if (p.arguments) |a| switch (a) {
+            .array => |arr| arr.items,
+            else => @as(?[]const Value, &.{a}),
+        } else null;
+        return lsp_ctx.client.request("workspace/executeCommand", alloc, .{
+            .command = p.lsp_command,
+            .arguments = args_slice,
+        }) catch return null;
     }
     pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
@@ -666,7 +1054,9 @@ pub const Handler = struct {
         text: ?[]const u8 = null,
     }) !Value {
         // Try LSP first
-        const lsp_result = self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/documentHighlight", "document_highlight") catch .null;
+        const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch return .null;
+        const raw = LspClient.typedToValue(alloc, typed) catch return .null;
+        const lsp_result = transform_nav.transformDocumentHighlightResult(alloc, raw) catch .null;
         if (lsp_result != .null) return lsp_result;
 
         // Fallback: tree-sitter based
@@ -803,15 +1193,11 @@ pub const Handler = struct {
         if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
             const file = p.file orelse return .null;
             const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
-            const ws_params = try json.buildObject(alloc, .{
-                .{ "query", json.jsonString(p.query) },
-            });
-            var result = lsp_ctx.client.sendRequest("workspace/symbol", ws_params) catch |e| {
-                log.err("LSP workspace/symbol failed: {any}", .{e});
-                return .null;
-            };
-            defer result.deinit();
-            return cloneLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+            const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
+                .query = p.query,
+            }) catch return .null;
+            const v = LspClient.typedToValue(alloc, result) catch return .null;
+            return transform_symbols.transformPickerSymbolResult(alloc, v, lsp_ctx.ssh_host) catch .null;
         } else if (std.mem.eql(u8, p.mode, "grep")) {
             return try json.buildObject(alloc, .{
                 .{ "action", json.jsonString("picker_grep_query") },
@@ -889,61 +1275,32 @@ pub const Handler = struct {
     // Copilot handlers
     // ========================================================================
 
-    pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !Value {
-        const registry = self.registry orelse return .null;
+    pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !?lsp_types.copilot.SignInResult {
+        const registry = self.registry orelse return null;
         registry.resetCopilotSpawnFailed();
-        const client = self.getCopilotClient() orelse return .null;
-        if (!self.copilotReady()) return .null;
-
-        var result = client.sendRequest("signIn", .{ .object = ObjectMap.init(alloc) }) catch |e| {
-            log.err("Copilot signIn failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "copilot_sign_in", result.result, null);
+        const client = self.getCopilotClient() orelse return null;
+        if (!self.copilotReady()) return null;
+        return client.requestTyped(?lsp_types.copilot.SignInResult, "signIn", alloc, lsp_types.copilot.SignInParams{});
     }
 
-    pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !Value {
-        const client = self.getCopilotClient() orelse return .null;
-        if (!self.copilotReady()) return .null;
-
-        var result = client.sendRequest("signOut", .{ .object = ObjectMap.init(alloc) }) catch |e| {
-            log.err("Copilot signOut failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "copilot_sign_out", result.result, null);
+    pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !?lsp_types.copilot.SignOutResult {
+        const client = self.getCopilotClient() orelse return null;
+        if (!self.copilotReady()) return null;
+        return client.requestTyped(?lsp_types.copilot.SignOutResult, "signOut", alloc, lsp_types.copilot.SignOutParams{});
     }
 
-    pub fn copilot_check_status(self: *Handler, alloc: Allocator) !Value {
-        const client = self.getCopilotClient() orelse return .null;
-        if (!self.copilotReady()) return .null;
-
-        var result = client.sendRequest("checkStatus", .{ .object = ObjectMap.init(alloc) }) catch |e| {
-            log.err("Copilot checkStatus failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "copilot_check_status", result.result, null);
+    pub fn copilot_check_status(self: *Handler, alloc: Allocator) !?lsp_types.copilot.CheckStatusResult {
+        const client = self.getCopilotClient() orelse return null;
+        if (!self.copilotReady()) return null;
+        return client.requestTyped(?lsp_types.copilot.CheckStatusResult, "checkStatus", alloc, lsp_types.copilot.CheckStatusParams{});
     }
 
     pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, p: struct {
         userCode: ?[]const u8 = null,
-    }) !Value {
-        const client = self.getCopilotClient() orelse return .null;
-        if (!self.copilotReady()) return .null;
-
-        var confirm_params = ObjectMap.init(alloc);
-        if (p.userCode) |code| {
-            try confirm_params.put("userCode", json.jsonString(code));
-        }
-
-        var result = client.sendRequest("signInConfirm", .{ .object = confirm_params }) catch |e| {
-            log.err("Copilot signInConfirm failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "copilot_sign_in_confirm", result.result, null);
+    }) !?lsp_types.copilot.SignInConfirmResult {
+        const client = self.getCopilotClient() orelse return null;
+        if (!self.copilotReady()) return null;
+        return client.requestTyped(?lsp_types.copilot.SignInConfirmResult, "signInConfirm", alloc, lsp_types.copilot.SignInConfirmParams{ .userCode = p.userCode });
     }
 
     pub fn copilot_complete(self: *Handler, alloc: Allocator, p: struct {
@@ -959,31 +1316,19 @@ pub const Handler = struct {
         self.ensureCopilotDidOpen(alloc, client, p.file);
 
         const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
-
-        const lsp_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{
-                .{ "uri", json.jsonString(uri) },
-            }) },
-            .{ "position", try json.buildObject(alloc, .{
-                .{ "line", json.jsonInteger(@intCast(p.line)) },
-                .{ "character", json.jsonInteger(@intCast(p.column)) },
-            }) },
-            .{ "context", try json.buildObject(alloc, .{
-                .{ "triggerKind", json.jsonInteger(1) },
-            }) },
-            .{ "formattingOptions", try json.buildObject(alloc, .{
-                .{ "tabSize", json.jsonInteger(p.tab_size) },
-                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
-            }) },
-        });
-
-        var result = client.sendRequest("textDocument/inlineCompletion", lsp_params) catch |e| {
-            log.err("Copilot complete failed: {any}", .{e});
-            return .null;
-        };
-        defer result.deinit();
-        return cloneLspResult(alloc, "copilot_complete", result.result, null);
+        // requestTyped returns ?Value (LSPAny); transform needs Value
+        const result = client.requestTyped(?Value, "textDocument/inlineCompletion", alloc, lsp_types.copilot.InlineCompletionParams{
+            .textDocument = .{ .uri = uri },
+            .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
+            .context = .{},
+            .formattingOptions = .{
+                .tabSize = @intCast(p.tab_size),
+                .insertSpaces = p.insert_spaces,
+            },
+        }) catch return .null;
+        return transform_completion.transformInlineCompletionResult(alloc, result orelse .null) catch .null;
     }
+
 
     pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,

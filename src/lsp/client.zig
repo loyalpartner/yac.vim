@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const json = @import("../json_utils.zig");
 const lsp = @import("protocol.zig");
+const lsp_kit = @import("lsp");
 const vim = @import("../vim_protocol.zig");
 const lsp_transform = @import("transform.zig");
 const log = @import("../log.zig");
@@ -347,106 +348,59 @@ pub const LspClient = struct {
         log.debug("LSP notification: {s}", .{method});
     }
 
-    fn buildInitParams(self: *LspClient, workspace_uri: ?[]const u8) !Value {
-        var params = ObjectMap.init(self.allocator);
-        try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
+    const lsp_types = lsp_kit.types;
 
-        var capabilities = ObjectMap.init(self.allocator);
-        var text_doc = ObjectMap.init(self.allocator);
-
-        var completion = ObjectMap.init(self.allocator);
-        try completion.put("dynamicRegistration", json.jsonBool(false));
-        try text_doc.put("completion", .{ .object = completion });
-
-        var sig_help = ObjectMap.init(self.allocator);
-        try sig_help.put("dynamicRegistration", json.jsonBool(false));
-        var sig_info = ObjectMap.init(self.allocator);
-        try sig_info.put("documentationFormat", .{ .array = std.json.Array.init(self.allocator) });
-        var sig_param = ObjectMap.init(self.allocator);
-        try sig_param.put("labelOffsetSupport", json.jsonBool(true));
-        try sig_info.put("parameterInformation", .{ .object = sig_param });
-        try sig_info.put("activeParameterSupport", json.jsonBool(true));
-        try sig_help.put("signatureInformation", .{ .object = sig_info });
-        try text_doc.put("signatureHelp", .{ .object = sig_help });
-
-        inline for ([_][]const u8{ "hover", "definition", "declaration", "typeDefinition", "implementation", "references" }) |cap| {
-            var obj = ObjectMap.init(self.allocator);
-            try obj.put("dynamicRegistration", json.jsonBool(false));
-            try text_doc.put(cap, .{ .object = obj });
-        }
-
-        var sync = ObjectMap.init(self.allocator);
-        try sync.put("didSave", json.jsonBool(true));
-        try sync.put("willSave", json.jsonBool(true));
-        try text_doc.put("synchronization", .{ .object = sync });
-
-        var diag = ObjectMap.init(self.allocator);
-        try diag.put("relatedInformation", json.jsonBool(true));
-        try text_doc.put("publishDiagnostics", .{ .object = diag });
-        try capabilities.put("textDocument", .{ .object = text_doc });
-
-        var workspace = ObjectMap.init(self.allocator);
-        try workspace.put("applyEdit", json.jsonBool(true));
-        var ws_symbol = ObjectMap.init(self.allocator);
-        try ws_symbol.put("dynamicRegistration", json.jsonBool(false));
-        try workspace.put("symbol", .{ .object = ws_symbol });
-        try capabilities.put("workspace", .{ .object = workspace });
-
-        var window = ObjectMap.init(self.allocator);
-        try window.put("workDoneProgress", json.jsonBool(true));
-        try capabilities.put("window", .{ .object = window });
-        try params.put("capabilities", .{ .object = capabilities });
-
+    fn buildInitParamsValue(alloc: Allocator, workspace_uri: ?[]const u8) !Value {
+        // Build typed struct with heap-allocated slices (stack temporaries would dangle)
+        var folders_buf: [1]lsp_types.workspace.Folder = undefined;
+        var params: lsp_types.InitializeParams = .{
+            .processId = @intCast(std.c.getpid()),
+            .clientInfo = .{ .name = "yac.vim", .version = "0.1.0" },
+            .rootUri = workspace_uri,
+            .workspaceFolders = null,
+            .capabilities = .{
+                .textDocument = .{
+                    .completion = .{ .dynamicRegistration = false },
+                    .signatureHelp = .{
+                        .dynamicRegistration = false,
+                        .signatureInformation = .{
+                            .documentationFormat = &.{},
+                            .parameterInformation = .{ .labelOffsetSupport = true },
+                            .activeParameterSupport = true,
+                        },
+                    },
+                    .hover = .{ .dynamicRegistration = false },
+                    .definition = .{ .dynamicRegistration = false },
+                    .declaration = .{ .dynamicRegistration = false },
+                    .typeDefinition = .{ .dynamicRegistration = false },
+                    .implementation = .{ .dynamicRegistration = false },
+                    .references = .{ .dynamicRegistration = false },
+                    .synchronization = .{ .didSave = true, .willSave = true },
+                    .publishDiagnostics = .{ .relatedInformation = true },
+                },
+                .workspace = .{
+                    .applyEdit = true,
+                    .symbol = .{ .dynamicRegistration = false },
+                },
+                .window = .{ .workDoneProgress = true },
+            },
+        };
         if (workspace_uri) |uri| {
-            try params.put("rootUri", json.jsonString(uri));
-            var folders = std.json.Array.init(self.allocator);
-            var folder = ObjectMap.init(self.allocator);
-            try folder.put("uri", json.jsonString(uri));
-            try folder.put("name", json.jsonString("workspace"));
-            try folders.append(.{ .object = folder });
-            try params.put("workspaceFolders", .{ .array = folders });
-        } else {
-            try params.put("rootUri", .null);
+            folders_buf[0] = .{ .uri = uri, .name = "workspace" };
+            params.workspaceFolders = &folders_buf;
         }
-
-        var client_info = ObjectMap.init(self.allocator);
-        try client_info.put("name", json.jsonString("yac.vim"));
-        try client_info.put("version", json.jsonString("0.1.0"));
-        try params.put("clientInfo", .{ .object = client_info });
-
-        return .{ .object = params };
+        // Serialize while stack locals are still alive
+        return typedToValue(alloc, params);
     }
 
     pub fn initializeSync(self: *LspClient, workspace_uri: ?[]const u8) !SendResult {
         self.state = .initializing;
-        return self.sendRequest("initialize", try self.buildInitParams(workspace_uri));
-    }
-
-    pub fn initialize(self: *LspClient, workspace_uri: ?[]const u8) !u32 {
-        self.state = .initializing;
-        return try self.sendRequestAsync("initialize", try self.buildInitParams(workspace_uri));
+        const params_value = try buildInitParamsValue(self.allocator, workspace_uri);
+        return self.sendRequest("initialize", params_value);
     }
 
     pub fn initializeCopilot(self: *LspClient) !u32 {
         self.state = .initializing;
-        // Copilot init params (simplified)
-        var params = ObjectMap.init(self.allocator);
-        try params.put("processId", json.jsonInteger(@intCast(std.c.getpid())));
-        var capabilities = ObjectMap.init(self.allocator);
-        var text_doc = ObjectMap.init(self.allocator);
-        var inline_completion = ObjectMap.init(self.allocator);
-        try inline_completion.put("dynamicRegistration", json.jsonBool(true));
-        try text_doc.put("inlineCompletion", .{ .object = inline_completion });
-        var sync = ObjectMap.init(self.allocator);
-        try sync.put("didSave", json.jsonBool(true));
-        try text_doc.put("synchronization", .{ .object = sync });
-        try capabilities.put("textDocument", .{ .object = text_doc });
-        try params.put("capabilities", .{ .object = capabilities });
-        try params.put("rootUri", .null);
-        var client_info = ObjectMap.init(self.allocator);
-        try client_info.put("name", json.jsonString("yac.vim"));
-        try client_info.put("version", json.jsonString("0.1.0"));
-        try params.put("clientInfo", .{ .object = client_info });
         var init_options = ObjectMap.init(self.allocator);
         var editor_info = ObjectMap.init(self.allocator);
         try editor_info.put("name", json.jsonString("yac.vim"));
@@ -456,13 +410,23 @@ pub const LspClient = struct {
         try plugin_info.put("name", json.jsonString("yac-copilot"));
         try plugin_info.put("version", json.jsonString("0.1.0"));
         try init_options.put("editorPluginInfo", .{ .object = plugin_info });
-        try params.put("initializationOptions", .{ .object = init_options });
-        return try self.sendRequestAsync("initialize", .{ .object = params });
+
+        const params_value = try typedToValue(self.allocator, lsp_types.InitializeParams{
+            .processId = @intCast(std.c.getpid()),
+            .clientInfo = .{ .name = "yac.vim", .version = "0.1.0" },
+            .capabilities = .{
+                .textDocument = .{
+                    .synchronization = .{ .didSave = true },
+                },
+            },
+            .initializationOptions = .{ .object = init_options },
+        });
+        return try self.sendRequestAsync("initialize", params_value);
     }
 
     pub fn sendInitialized(self: *LspClient) !void {
         self.state = .initialized;
-        try self.sendNotification("initialized", .{ .object = ObjectMap.init(self.allocator) });
+        try self.notify("initialized", self.allocator, .{});
     }
 
     pub fn sendShutdown(self: *LspClient) !u32 {
@@ -472,7 +436,127 @@ pub const LspClient = struct {
 
     pub fn sendExit(self: *LspClient) !void {
         self.state = .shutdown;
-        try self.sendNotification("exit", .null);
+        try self.notify("exit", self.allocator, {});
+    }
+
+    // ====================================================================
+    // Type-safe LSP API (via lsp-kit)
+    // ====================================================================
+
+    /// Type-safe LSP request.
+    /// Serializes typed params, sends request, blocks for response,
+    /// deserializes typed result. Result memory is owned by `arena`.
+    pub fn request(
+        self: *LspClient,
+        comptime method: []const u8,
+        arena: Allocator,
+        params: lsp_kit.ParamsType(method),
+    ) !lsp_kit.ResultType(method) {
+        const Result = lsp_kit.ResultType(method);
+
+        // 1. Serialize typed params → json.Value
+        const params_value = try typedToValue(arena, params);
+
+        // 2. Send request and block for response
+        var send_result = self.sendRequest(method, params_value) catch |e| {
+            log.err("LSP request failed for {s}: {any}", .{ method, e });
+            if (@typeInfo(Result) == .optional) return null;
+            return e;
+        };
+        defer send_result.deinit();
+
+        if (send_result.err != null) {
+            log.err("LSP error response for {s}", .{method});
+            if (@typeInfo(Result) == .optional) return null;
+            return error.LspError;
+        }
+
+        const raw = send_result.result;
+        if (raw == .null) {
+            if (@typeInfo(Result) == .optional) return null;
+            return error.NullResponse;
+        }
+
+        // 3. Deserialize Value → typed Result (strings copied to arena)
+        if (@typeInfo(Result) == .optional) {
+            return std.json.parseFromValueLeaky(
+                @typeInfo(Result).optional.child,
+                arena,
+                raw,
+                .{ .ignore_unknown_fields = true },
+            ) catch |e| {
+                log.err("Parse {s} result failed: {any}", .{ method, e });
+                return null;
+            };
+        }
+        return try std.json.parseFromValueLeaky(Result, arena, raw, .{ .ignore_unknown_fields = true });
+    }
+
+    /// Type-safe LSP notification.
+    pub fn notify(
+        self: *LspClient,
+        comptime method: []const u8,
+        arena: Allocator,
+        params: lsp_kit.ParamsType(method),
+    ) !void {
+        const Params = lsp_kit.ParamsType(method);
+        const params_value = if (Params == void) Value.null else try typedToValue(arena, params);
+        try self.sendNotification(method, params_value);
+    }
+
+    /// Typed request for non-standard methods (e.g. Copilot).
+    /// Unlike request(), the method string is runtime and types are explicit.
+    pub fn requestTyped(
+        self: *LspClient,
+        comptime Result: type,
+        method: []const u8,
+        arena: Allocator,
+        params: anytype,
+    ) !Result {
+        const params_value = try typedToValue(arena, params);
+
+        var send_result = self.sendRequest(method, params_value) catch |e| {
+            log.err("LSP request failed for {s}: {any}", .{ method, e });
+            if (@typeInfo(Result) == .optional) return null;
+            return e;
+        };
+        defer send_result.deinit();
+
+        if (send_result.err != null) {
+            log.err("LSP error response for {s}", .{method});
+            if (@typeInfo(Result) == .optional) return null;
+            return error.LspError;
+        }
+
+        const raw = send_result.result;
+        if (raw == .null) {
+            if (@typeInfo(Result) == .optional) return null;
+            return error.NullResponse;
+        }
+
+        if (@typeInfo(Result) == .optional) {
+            return std.json.parseFromValueLeaky(
+                @typeInfo(Result).optional.child,
+                arena,
+                raw,
+                .{ .ignore_unknown_fields = true },
+            ) catch |e| {
+                log.err("Parse {s} result failed: {any}", .{ method, e });
+                return null;
+            };
+        }
+        return try std.json.parseFromValueLeaky(Result, arena, raw, .{ .ignore_unknown_fields = true });
+    }
+
+    /// Convert a typed struct to json.Value via JSON string round-trip.
+    pub fn typedToValue(arena: Allocator, v: anytype) !Value {
+        const T = @TypeOf(v);
+        if (T == Value) return v;
+        var aw: std.Io.Writer.Allocating = .init(arena);
+        try std.json.Stringify.value(v, .{ .emit_null_optional_fields = false }, &aw.writer);
+        const json_str = aw.toOwnedSlice() catch return error.OutOfMemory;
+        const parsed = try std.json.parseFromSlice(Value, arena, json_str, .{});
+        return parsed.value;
     }
 };
 
