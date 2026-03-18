@@ -119,8 +119,9 @@ pub const FileIndex = struct {
         self.recent_files.deinit(self.allocator);
         self.stdout_buf.deinit(self.allocator);
         if (self.child) |*c| {
+            // kill() already waits and sets id=null in Zig 0.16
             c.kill(self.io);
-            _ = c.wait(self.io) catch {};
+            self.child = null;
         }
     }
 
@@ -149,7 +150,9 @@ pub const FileIndex = struct {
         if (n_signed <= 0) {
             self.processBuffer();
             self.ready = true;
-            _ = child.wait(self.io) catch {};
+            if (child.id != null) {
+                _ = child.wait(self.io) catch {};
+            }
             self.child = null;
             return true;
         }
@@ -373,8 +376,8 @@ fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !Valu
         output_buf.appendSlice(alloc, buf[0..n]) catch break;
         if (output_buf.items.len >= max_output) break;
     }
+    // kill() already waits and cleans up in Zig 0.16
     child.kill(io);
-    _ = child.wait(io) catch {};
 
     var items = std.json.Array.init(alloc);
     var line_iter = std.mem.splitScalar(u8, output_buf.items, '\n');
