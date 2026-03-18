@@ -97,7 +97,7 @@ yac.vim 系统内部的容器（可独立部署/运行的单元）。
 | Container | 技术 | 职责 |
 |-----------|------|------|
 | **VimScript Plugin** | VimScript, Vim channel API | UI 渲染、用户交互、popup 管理、自动补全、诊断显示、DAP 调试 UI |
-| **Zig Daemon (yacd)** | Zig, 多线程, epoll | LSP 客户端管理、DAP 客户端管理、Tree-sitter 解析、请求分派、文件搜索 |
+| **Zig Daemon (yacd)** | Zig 0.16, Io.Threaded 协程 | LSP 客户端管理、DAP 客户端管理、Tree-sitter 解析、请求分派、文件搜索 |
 | **Language Plugins** | Tree-sitter .scm + WASM | 语言特定的语法高亮、符号、折叠、文本对象 |
 | **LSP Servers** | 各语言实现 | 代码智能（补全、跳转、重构等） |
 | **Copilot Server** | Node.js | AI 内联补全 |
@@ -120,55 +120,71 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 
 ## Level 3: Component Diagram — Zig Daemon
 
-守护进程内部的组件。
+守护进程内部的组件。使用 Zig 0.16 `Io.Threaded` 协程模型。
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
 │                          Zig Daemon (yacd)                            │
 │                                                                       │
-│  ┌─────────┐    ┌──────────────┐    ┌──────────────────────────────┐  │
-│  │ Clients │───►│  Event Loop  │───►│         Handlers             │  │
-│  │         │    │              │    │                              │  │
-│  │ accept  │    │ poll() 主循环│    │ ┌────────┐ ┌──────────────┐ │  │
-│  │ read    │    │ 请求解析     │    │ │  LSP   │ │ Tree-sitter  │ │  │
-│  │ write   │    │ 响应路由     │    │ │Nav/Edit│ │ Highlights   │ │  │
-│  │         │    │ LSP 事件     │    │ │Info/   │ │ Symbols      │ │  │
-│  │ workspace    │ 超时清理     │    │ │Notif   │ │ Folds        │ │  │
-│  │ subscribe    │              │    │ └────────┘ │ TextObjects  │ │  │
-│  └─────────┘    └──────┬───────┘    │            │ Navigate     │ │  │
-│                        │            │ ┌────────┐ │ DocHighlight │ │  │
-│                        │            │ │ Picker │ └──────────────┘ │  │
-│                        │            │ │File/   │                  │  │
-│                        ▼            │ │Grep    │ ┌──────────────┐ │  │
-│              ┌──────────────────┐   │ └────────┘ │   Copilot    │ │  │
-│              │   Async Queue    │   │            │  (singleton) │ │  │
-│              │                  │   │            └──────────────┘ │  │
-│              │ InQueue→Workers  │   │                             │  │
-│              │ InQueue→TS线程   │   │ ┌────────┐                  │  │
-│              │ OutQueue→Writer  │   │ │  DAP   │                  │  │
-│              └──────────────────┘   │ │Start/  │                  │  │
-│                                     │ │Step/BP │                  │  │
-│                                     │ │Panel   │                  │  │
-│                                     │ └────────┘                  │  │
-│                                     └──────────────────────────────┘  │
+│  main.zig                                                             │
+│  ├── Io.Threaded.init(environ)    ← 必须传 init.environ               │
+│  ├── Io.net.Server.accept(io)     ← 监听 Unix socket                 │
+│  └── EventLoop.run()                                                  │
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ Event Loop (event_loop.zig) — Io 协程模型                        │ │
+│  │                                                                   │ │
+│  │  Accept Loop (协程)                                               │ │
+│  │  └── 每个 Vim 连接 → 派生 Client Coroutine                       │ │
+│  │                                                                   │ │
+│  │  Client Coroutine (每连接一个)                                    │ │
+│  │  ├── Io.net.Stream.Reader  ← 读 Vim 请求                        │ │
+│  │  ├── Io.net.Stream.Writer  ← 写 Vim 响应 (Io.Mutex 保护)        │ │
+│  │  ├── 非阻塞请求 → dispatch_lock → 同步处理                      │ │
+│  │  │   (ts_highlights, did_change, load_language, picker_*)         │ │
+│  │  └── 阻塞 LSP 请求 → Group.concurrent → 独立协程处理            │ │
+│  │      (hover, completion, goto_*, rename, formatting, ...)         │ │
+│  │                                                                   │ │
+│  │  Picker (picker.zig)                                              │ │
+│  │  ├── 拦截 handler 返回的 action (picker_init/file_query/grep)     │ │
+│  │  ├── FileIndex: spawn fd/rg/find → 异步文件扫描                  │ │
+│  │  └── fuzzyScore + filterAndSort → 模糊匹配                       │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ Handler (handler.zig) — comptime 分派 (VimServer)                │ │
+│  │                                                                   │ │
+│  │  LSP: hover, goto_*, completion, references, rename, ...          │ │
+│  │  ├── getLspCtx() → Registry.getOrCreateClient()                   │ │
+│  │  ├── client.sendRequest() ← 阻塞协程，等待 Io.Event             │ │
+│  │  └── cloneLspResult() ← stringify+reparse 防止 UAF               │ │
+│  │                                                                   │ │
+│  │  Tree-sitter: ts_highlights, ts_symbols, ts_folding, ...         │ │
+│  │  ├── getTsCtx() → parseBuffer() / getTree()                      │ │
+│  │  └── 直接返回，不阻塞                                            │ │
+│  │                                                                   │ │
+│  │  Copilot: copilot_complete, sign_in, check_status, ...           │ │
+│  │  DAP: stub (待迁移到 Io 协程模型)                                │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
 │                                                                       │
 │  ┌──────────────────────┐    ┌──────────────────────────────────────┐ │
 │  │    LSP Module        │    │       Tree-sitter Module             │ │
 │  │                      │    │                                      │ │
 │  │ Registry  ─ 服务器池 │    │ WASM Loader ─ 语法库加载             │ │
-│  │ Client    ─ 单个连接 │    │ Lang Config ─ 语言配置               │ │
-│  │ Protocol  ─ 编解码   │    │ Queries     ─ .scm 查询文件          │ │
-│  │ Config    ─ 服务器配置│   │ Predicates  ─ 查询 predicate 评估   │ │
-│  │ Transform ─ 响应转换 │    │ Highlights  ─ capture→组 映射        │ │
+│  │ Client    ─ 协程读写 │    │ Lang Config ─ 语言配置               │ │
+│  │  readLoop ─ 独立协程 │    │ Queries     ─ .scm 查询文件          │ │
+│  │  sendReq  ─ Event等待│    │ Predicates  ─ 查询 predicate 评估   │ │
+│  │ Protocol  ─ 编解码   │    │ Highlights  ─ capture→组 映射        │ │
+│  │ Transform ─ 响应转换 │    │                                      │ │
 │  │ PathUtils ─ URI 处理 │    │                                      │ │
 │  └──────────────────────┘    └──────────────────────────────────────┘ │
 │                                                                       │
 │  ┌──────────────────────┐    ┌──────────────────────────────────────┐ │
 │  │    DAP Module        │    │       Other Core                     │ │
-│  │                      │    │                                      │ │
-│  │ Client   ─ DAP 连接  │    │ Vim Protocol ─ JSON 编解码           │ │
-│  │ Session  ─ 状态机    │    │ Picker       ─ 文件扫描/模糊匹配    │ │
-│  │ Protocol ─ DAP 编解码│    │ Progress     ─ 进度跟踪             │ │
+│  │   (待 Io 迁移)       │    │                                      │ │
+│  │ Client   ─ 同步 I/O  │    │ Vim Protocol ─ JSON 编解码           │ │
+│  │ Session  ─ 状态机    │    │ VimServer    ─ comptime 方法分派      │ │
+│  │ Protocol ─ DAP 编解码│    │ json_utils   ─ JSON 工具             │ │
 │  │ Config   ─ 配置解析  │    │                                      │ │
 │  └──────────────────────┘    └──────────────────────────────────────┘ │
 └───────────────────────────────────────────────────────────────────────┘
@@ -178,15 +194,14 @@ yacd      ──── LSP JSON-RPC over stdio ──── LSP Server
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| **Event Loop** | `event_loop.zig` | 核心主循环：epoll 监听、请求分派、LSP/DAP 事件处理、workspace 订阅路由 |
-| **Clients** | `clients.zig` | Vim 客户端连接管理、workspace 订阅 (`subscribed_workspaces`) |
-| **Handlers** | `handlers.zig` + `handlers/*.zig` | 69 个 handler，编译时 inline 分派表 |
-| **Async Queue** | `queue.zig` | InQueue/OutQueue 异步管道，Worker 线程池 + 专用 TS 线程 |
-| **LSP Module** | `lsp/*.zig` | LSP 客户端生命周期、协议编解码、响应格式转换 |
-| **DAP Module** | `dap/*.zig` | DAP 客户端连接、会话状态机、配置解析、协议编解码 |
+| **Event Loop** | `event_loop.zig` | 协程事件循环：accept → per-client coroutine → dispatch（阻塞 LSP 请求派发到独立协程） |
+| **Handler** | `handler.zig` | 所有 Vim 方法处理（LSP、tree-sitter、picker、copilot），comptime 分派 |
+| **VimServer** | `vim_server.zig` | 编译期从 Handler struct 生成方法分派表 |
+| **LSP Module** | `lsp/*.zig` | LSP 客户端：readLoop 协程 + Io.Event waiter 模式，同步 initializeSync |
+| **DAP Module** | `dap/*.zig` | DAP 客户端（待迁移，当前用同步 I/O） |
 | **Tree-sitter Module** | `treesitter/*.zig` | WASM 语法加载、查询执行、高亮/符号/折叠提取 |
-| **Picker** | `picker.zig` | 文件扫描、模糊匹配算法、grep 子进程管理 |
-| **Vim Protocol** | `vim_protocol.zig` | Vim channel JSON 协议编解码 |
+| **Picker** | `picker.zig` | 文件扫描（spawn fd/rg/find）、模糊匹配、grep |
+| **Vim Protocol** | `vim_protocol.zig` | Vim channel JSON-RPC 编解码 |
 
 ---
 
@@ -255,20 +270,19 @@ yac.vim                s:request('goto_definition', {file, line, col, text})
 ── Unix Socket ──────────────────────────────────►
   │
   ▼
-event_loop.zig         handleVimRequest() → dispatch
+event_loop.zig         clientCoroutine → isBlockingLspMethod → Group.concurrent
   │
   ▼
-handlers/              handleGotoDefinition()
-lsp_navigation.zig       → getLspContext() → 查找/启动 LSP
-  │                       → sendRequest("textDocument/definition")
+handler.zig            goto_definition() [独立协程]
+(async coroutine)        → getLspCtx() → 查找/启动 LSP
+  │                       → client.sendRequest() ← 阻塞协程，等待 Io.Event
   ▼
 ── stdio ──────────────────────────────────────►
   │                    LSP Server 处理
   ◄────────────────────────────────────────────
-  │
+  │                    readLoop 协程收到响应 → Event.set()
   ▼
-event_loop.zig         handleLspResponse()
-  │                      → transformLspResult() 格式转换
+handler.zig            cloneLspResult() → transformLspResult() + 深拷贝到 arena
   ▼
 ── Unix Socket ──────────────────────────────────►
   │
@@ -337,32 +351,38 @@ Vim A (workspace /proj1)          yacd daemon          Vim B (workspace /proj2)
 
 ---
 
-## Threading Model
+## Concurrency Model (Io.Threaded 协程)
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    yacd Process                      │
 │                                                      │
-│  Main Thread (Event Loop)                            │
-│  ├── epoll: socket accept + client read              │
-│  ├── epoll: LSP server stdout                        │
-│  ├── 请求解析 → InQueue                              │
-│  ├── LSP 通知/响应处理                               │
-│  └── OutQueue drain → client write                   │
+│  Io.Threaded 运行时 (纤程/协程调度)                  │
+│  ├── main: 启动 Io.Threaded → EventLoop.run()       │
+│  │         shutdown_event.waitUncancelable()          │
+│  │                                                    │
+│  ├── Accept Loop 协程 (1)                             │
+│  │   └── server.accept(io) → 派生 Client 协程        │
+│  │                                                    │
+│  ├── Client 协程 (每连接 1 个)                        │
+│  │   ├── Stream.Reader 读请求                         │
+│  │   ├── 非阻塞方法 → dispatch_lock → 同步处理       │
+│  │   └── 阻塞 LSP 方法 → Group.concurrent 派发       │
+│  │                                                    │
+│  ├── Async LSP 请求协程 (按需派发)                    │
+│  │   ├── dispatch_lock → handler → sendRequest        │
+│  │   ├── Io.Event.wait() ← 等待 readLoop 信号        │
+│  │   └── write_lock → Stream.Writer 写响应            │
+│  │                                                    │
+│  └── LSP readLoop 协程 (每 LSP client 1 个)           │
+│      ├── File.Reader 读 LSP stdout                    │
+│      ├── 响应 → 匹配 waiter → Event.set()            │
+│      └── 通知 → queued_notifications                  │
 │                                                      │
-│  Worker Thread Pool (N)                              │
-│  ├── InQueue.pop() → handler dispatch                │
-│  ├── state_lock: 整个 dispatch 持锁 (粗粒度)        │
-│  └── 结果 → OutQueue                                 │
-│                                                      │
-│  Tree-sitter Thread (1)                              │
-│  ├── in_ts queue → TS handler dispatch               │
-│  ├── 独占 TS 状态 (无需 state_lock)                  │
-│  └── 结果 → OutQueue                                 │
-│                                                      │
-│  Writer Thread (1)                                   │
-│  ├── OutQueue.pop() → socket write                   │
-│  └── 非阻塞，背压控制                               │
+│  锁:                                                  │
+│  ├── dispatch_lock (Io.Mutex) ─ handler 共享状态     │
+│  ├── write_lock (Io.Mutex) ─ Vim 响应序列化          │
+│  └── waiters_lock (Io.Mutex) ─ LSP 请求 ID 映射     │
 │                                                      │
 └─────────────────────────────────────────────────────┘
 ```
@@ -374,23 +394,11 @@ Vim A (workspace /proj1)          yacd daemon          Vim B (workspace /proj2)
 ```
 yac.vim/
 ├── src/                          # Zig daemon 源码
-│   ├── main.zig                  # 入口点
-│   ├── event_loop.zig            # 事件循环 (核心)
-│   ├── queue.zig                 # 异步管道
-│   ├── clients.zig               # 客户端连接
-│   ├── requests.zig              # 待处理请求跟踪
-│   ├── handlers.zig              # 分派表
-│   ├── handlers/                 # 请求处理器
-│   │   ├── common.zig            #   上下文 + 工具
-│   │   ├── lsp_requests.zig      #   file_open, status
-│   │   ├── lsp_navigation.zig    #   goto_*, references
-│   │   ├── lsp_editing.zig       #   rename, code_action, format
-│   │   ├── lsp_info.zig          #   hover, completion, inlay_hints
-│   │   ├── lsp_notifications.zig #   did_change, did_save, did_close
-│   │   ├── picker.zig            #   picker_open, picker_query
-│   │   ├── treesitter.zig        #   ts_highlights, ts_symbols, ...
-│   │   ├── copilot.zig           #   Copilot LSP
-│   │   └── dap.zig               #   DAP 调试 (21 handlers)
+│   ├── main.zig                  # 入口点 (main(init) 传递 environ)
+│   ├── event_loop.zig            # Io 协程事件循环 (accept + client coroutines)
+│   ├── handler.zig               # 所有 Vim 方法 handler (LSP/TS/Picker/Copilot/DAP)
+│   ├── vim_server.zig            # comptime 方法分派 (Handler struct → 分派表)
+│   ├── vim_protocol.zig          # Vim channel JSON-RPC 编解码
 │   ├── dap/                      # DAP 调试适配器客户端
 │   │   ├── client.zig            #   DAP 连接管理、请求/响应
 │   │   ├── session.zig           #   会话状态机 (stopped→stackTrace→scopes→variables→idle)
@@ -495,7 +503,7 @@ yac.vim/
 ### 为什么用 Zig？
 
 1. **性能** — 零开销抽象，适合 Tree-sitter WASM 运行时
-2. **简单的并发** — 原生线程 + `std.Thread.Mutex`，无 GC 暂停
+2. **简单的并发** — Zig 0.16 Io.Threaded 协程模型，无 GC 暂停
 3. **C 互操作** — 直接调用 tree-sitter C API，无 FFI 开销
 4. **单二进制** — 编译产物是一个无依赖的可执行文件
 
