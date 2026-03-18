@@ -120,7 +120,19 @@ pub const Handler = struct {
         };
         defer result.deinit();
 
-        return lsp_transform.transformLspResult(alloc, handler_method, result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, handler_method, result.result, lsp_ctx.ssh_host);
+    }
+
+    /// Transform + deep-clone LSP result into arena so it survives after SendResult.deinit().
+    /// Transforms may reference strings from the original parsed response; the clone
+    /// serializes everything into `alloc` so no dangling pointers remain.
+    fn cloneLspResult(alloc: Allocator, handler_method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
+        const transformed = lsp_transform.transformLspResult(alloc, handler_method, result, ssh_host);
+        if (transformed == .null) return .null;
+        // Serialize + reparse to deep-copy all strings into alloc
+        const serialized = json.stringifyAlloc(alloc, transformed) catch return .null;
+        const reparsed = std.json.parseFromSlice(Value, alloc, serialized, .{}) catch return .null;
+        return reparsed.value;
     }
 
     // ========================================================================
@@ -312,7 +324,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "references", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "references", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
@@ -343,7 +355,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "document_symbols", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "document_symbols", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn signature_help(self: *Handler, alloc: Allocator, p: struct {
@@ -371,7 +383,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
@@ -471,7 +483,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "rename", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "rename", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn code_action(self: *Handler, alloc: Allocator, p: struct {
@@ -499,7 +511,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "code_action", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "code_action", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn formatting(self: *Handler, alloc: Allocator, p: struct {
@@ -518,7 +530,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "formatting", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "formatting", result.result, lsp_ctx.ssh_host);
     }
 
     // ========================================================================
@@ -551,7 +563,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "inlay_hints", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "inlay_hints", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
@@ -564,7 +576,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "folding_range", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "folding_range", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn semantic_tokens(self: *Handler, alloc: Allocator, p: struct {
@@ -578,7 +590,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "semantic_tokens", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "semantic_tokens", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn range_formatting(self: *Handler, alloc: Allocator, p: struct {
@@ -616,7 +628,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "range_formatting", result.result, lsp_ctx.ssh_host);
+        return cloneLspResult(alloc, "range_formatting", result.result, lsp_ctx.ssh_host);
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
@@ -636,7 +648,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "execute_command", result.result, null);
+        return cloneLspResult(alloc, "execute_command", result.result, null);
     }
     pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
@@ -790,7 +802,7 @@ pub const Handler = struct {
                 return .null;
             };
             defer result.deinit();
-            return lsp_transform.transformLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+            return cloneLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
         } else if (std.mem.eql(u8, p.mode, "grep")) {
             return try json.buildObject(alloc, .{
                 .{ "action", json.jsonString("picker_grep_query") },
@@ -879,7 +891,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "copilot_sign_in", result.result, null);
+        return cloneLspResult(alloc, "copilot_sign_in", result.result, null);
     }
 
     pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !Value {
@@ -891,7 +903,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "copilot_sign_out", result.result, null);
+        return cloneLspResult(alloc, "copilot_sign_out", result.result, null);
     }
 
     pub fn copilot_check_status(self: *Handler, alloc: Allocator) !Value {
@@ -903,7 +915,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "copilot_check_status", result.result, null);
+        return cloneLspResult(alloc, "copilot_check_status", result.result, null);
     }
 
     pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, p: struct {
@@ -922,7 +934,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "copilot_sign_in_confirm", result.result, null);
+        return cloneLspResult(alloc, "copilot_sign_in_confirm", result.result, null);
     }
 
     pub fn copilot_complete(self: *Handler, alloc: Allocator, p: struct {
@@ -961,7 +973,7 @@ pub const Handler = struct {
             return .null;
         };
         defer result.deinit();
-        return lsp_transform.transformLspResult(alloc, "copilot_complete", result.result, null);
+        return cloneLspResult(alloc, "copilot_complete", result.result, null);
     }
 
     pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
