@@ -200,8 +200,21 @@ pub const LspClient = struct {
     }
 
     /// Read and parse available messages from stdout.
+    /// Uses poll with 5s timeout to avoid blocking forever.
     pub fn readMessages(self: *LspClient) !std.ArrayList(LspMessage) {
         const stdout = self.child.stdout orelse return error.StdoutClosed;
+
+        // Wait for data with timeout (5 seconds)
+        var poll_fds = [_]std.posix.pollfd{.{
+            .fd = stdout.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = std.posix.poll(&poll_fds, 5000) catch return error.PollFailed;
+        if (ready == 0) return error.Timeout;
+        if (poll_fds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0)
+            return error.ConnectionReset;
+
         var read_buf: [4096]u8 = undefined;
         const n = std.posix.read(stdout.handle, &read_buf) catch |err| {
             if (err == error.WouldBlock) return .empty;
