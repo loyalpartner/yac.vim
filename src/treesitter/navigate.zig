@@ -1,19 +1,19 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 
-const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+pub const NavResult = struct {
+    line: i32,
+    column: i32,
+};
 
 pub fn navigate(
-    allocator: Allocator,
+    _: std.mem.Allocator,
     query: *const ts.Query,
     tree: *const ts.Tree,
     target: []const u8,
     direction: []const u8,
     line: u32,
-) !Value {
+) !?NavResult {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
@@ -45,11 +45,7 @@ pub fn navigate(
     }
 
     if (best_line) |l| {
-        return json.buildObject(allocator, .{
-            .{ "line", json.jsonInteger(@intCast(l)) },
-            .{ "column", json.jsonInteger(@intCast(best_col)) },
-        });
+        return .{ .line = @intCast(l), .column = @intCast(best_col) };
     }
-
-    return .null;
+    return null;
 }

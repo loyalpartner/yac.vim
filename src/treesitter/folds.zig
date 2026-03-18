@@ -1,22 +1,28 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+
+pub const FoldRange = struct {
+    start_line: i32,
+    end_line: i32,
+};
+
+pub const FoldsResult = struct {
+    ranges: []const FoldRange,
+};
 
 pub fn extractFolds(
     allocator: Allocator,
     query: *const ts.Query,
     tree: *const ts.Tree,
-) !Value {
+) !FoldsResult {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
     cursor.exec(query, tree.rootNode());
 
-    var ranges = std.json.Array.init(allocator);
+    var ranges: std.ArrayList(FoldRange) = .empty;
 
     while (cursor.nextMatch()) |match| {
         for (match.captures) |cap| {
@@ -26,17 +32,14 @@ pub fn extractFolds(
             const start_row = cap.node.startPoint().row;
             const end_row = cap.node.endPoint().row;
 
-            // Only create fold if it spans multiple lines
             if (end_row <= start_row) continue;
 
-            try ranges.append(try json.buildObject(allocator, .{
-                .{ "start_line", json.jsonInteger(@intCast(start_row)) },
-                .{ "end_line", json.jsonInteger(@intCast(end_row)) },
-            }));
+            try ranges.append(allocator, .{
+                .start_line = @intCast(start_row),
+                .end_line = @intCast(end_row),
+            });
         }
     }
 
-    return json.buildObject(allocator, .{
-        .{ "ranges", .{ .array = ranges } },
-    });
+    return .{ .ranges = ranges.items };
 }

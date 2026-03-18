@@ -104,6 +104,16 @@ pub const copilot = struct {
     pub const InlineCompletionContext = struct {
         triggerKind: i32 = 1,
     };
+
+    // -- textDocument/inlineCompletion result --
+    pub const InlineCompletionItem = struct {
+        insertText: []const u8,
+        filterText: ?[]const u8 = null,
+    };
+
+    pub const InlineCompletionResult = struct {
+        items: []const InlineCompletionItem,
+    };
 };
 
 // ============================================================================

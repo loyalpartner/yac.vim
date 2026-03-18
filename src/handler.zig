@@ -384,54 +384,6 @@ pub const Handler = struct {
         return .{ .items = items.items };
     }
 
-    /// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, ...}]}.
-    fn transformInlineCompletion(alloc: Allocator, result: Value) Value {
-        const items_arr: []Value = switch (result) {
-            .object => |obj| json.getArray(obj, "items") orelse return .null,
-            .array => |a| a.items,
-            .null => return .null,
-            else => return .null,
-        };
-
-        var out_items = std.json.Array.init(alloc);
-        for (items_arr) |item_val| {
-            const item = switch (item_val) {
-                .object => |o| o,
-                else => continue,
-            };
-
-            var out = ObjectMap.init(alloc);
-
-            if (item.get("insertText")) |insert_text| {
-                switch (insert_text) {
-                    .string => out.put("insertText", insert_text) catch continue,
-                    .object => |obj| {
-                        if (json.getString(obj, "value")) |v| {
-                            out.put("insertText", json.jsonString(v)) catch continue;
-                        }
-                    },
-                    else => continue,
-                }
-            } else continue;
-
-            if (json.getString(item, "filterText")) |ft| {
-                out.put("filterText", json.jsonString(ft)) catch {};
-            }
-            if (item.get("range")) |range| {
-                out.put("range", range) catch {};
-            }
-            if (item.get("command")) |cmd| {
-                out.put("command", cmd) catch {};
-            }
-
-            out_items.append(.{ .object = out }) catch continue;
-        }
-
-        var result_obj = ObjectMap.init(alloc);
-        result_obj.put("items", .{ .array = out_items }) catch return .null;
-        return .{ .object = result_obj };
-    }
-
     // ========================================================================
     // System handlers
     // ========================================================================
@@ -1003,10 +955,10 @@ pub const Handler = struct {
     pub fn ts_folding(self: *Handler, _: Allocator, p: struct {
         file: []const u8,
         text: ?[]const u8 = null,
-    }) !Value {
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const folds_query = tc.lang_state.folds orelse return .null;
+    }) !?treesitter_mod.folds.FoldsResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const folds_query = tc.lang_state.folds orelse return null;
         return try treesitter_mod.folds.extractFolds(self.gpa, folds_query, tree);
     }
 
@@ -1017,10 +969,10 @@ pub const Handler = struct {
         column: u32 = 0,
         direction: []const u8 = "next",
         scope: []const u8 = "function",
-    }) !Value {
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const nav_query = tc.lang_state.textobjects orelse return .null;
+    }) !?treesitter_mod.navigate.NavResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const nav_query = tc.lang_state.textobjects orelse return null;
         return try treesitter_mod.navigate.navigate(alloc, nav_query, tree, p.scope, p.direction, p.line);
     }
 
@@ -1206,15 +1158,14 @@ pub const Handler = struct {
         column: u32,
         tab_size: i64 = 4,
         insert_spaces: bool = true,
-    }) !Value {
-        const client = self.getCopilotClient() orelse return .null;
-        if (!self.copilotReady()) return .null;
+    }) !?lsp_types.copilot.InlineCompletionResult {
+        const client = self.getCopilotClient() orelse return null;
+        if (!self.copilotReady()) return null;
 
         self.ensureCopilotDidOpen(alloc, client, p.file);
 
         const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
-        // requestTyped returns ?Value (LSPAny); transform needs Value
-        const result = client.requestTyped(?Value, "textDocument/inlineCompletion", alloc, lsp_types.copilot.InlineCompletionParams{
+        return client.requestTyped(?lsp_types.copilot.InlineCompletionResult, "textDocument/inlineCompletion", alloc, lsp_types.copilot.InlineCompletionParams{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
             .context = .{},
@@ -1222,8 +1173,7 @@ pub const Handler = struct {
                 .tabSize = @intCast(p.tab_size),
                 .insertSpaces = p.insert_spaces,
             },
-        }) catch return .null;
-        return transformInlineCompletion(alloc, result orelse .null);
+        }) catch return null;
     }
 
     pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
