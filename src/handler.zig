@@ -112,6 +112,7 @@ pub const Handler = struct {
     /// handler_method is the yac handler name (e.g. "hover"), lsp_method is the LSP protocol name.
     fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8, handler_method: []const u8) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
+        log.debug("{s}: uri={s} line={d} col={d}", .{ handler_method, lsp_ctx.uri, line, column });
         const lsp_params = try buildTextDocumentPosition(alloc, lsp_ctx.uri, line, column);
 
         var result = lsp_ctx.client.sendRequest(lsp_method, lsp_params) catch |e| {
