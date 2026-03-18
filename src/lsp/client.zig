@@ -52,6 +52,8 @@ pub const LspClient = struct {
     vim_write_lock: ?*Io.Mutex = null,
     /// Whether readLoop is running
     read_loop_started: bool = false,
+    /// Last progress title (for "report" events that don't include title)
+    progress_title: ?[]const u8 = null,
 
     pub fn spawn(allocator: Allocator, io: Io, command: []const u8, args: []const []const u8, next_id: *std.atomic.Value(u32)) !*LspClient {
         var argv: std.ArrayList([]const u8) = .empty;
@@ -208,7 +210,6 @@ pub const LspClient = struct {
         const alloc = arena.allocator();
 
         if (std.mem.eql(u8, method, "$/progress")) {
-            // Forward progress as toast ex command
             const params_obj = switch (params) {
                 .object => |o| o,
                 else => return,
@@ -216,14 +217,25 @@ pub const LspClient = struct {
             const value_obj = json.getObject(params_obj, "value") orelse return;
             const kind = json.getString(value_obj, "kind") orelse return;
             const message = json.getString(value_obj, "message");
-            const title = json.getString(value_obj, "title");
             const percentage = json.getInteger(value_obj, "percentage");
 
-            if (lsp_transform.formatProgressToast(alloc, if (std.mem.eql(u8, kind, "begin")) title else null, message, percentage)) |echo_cmd| {
-                self.writeVimEx(alloc, writer, lock, echo_cmd);
-            }
-            if (std.mem.eql(u8, kind, "end")) {
-                if (lsp_transform.formatProgressToast(alloc, null, @as(?[]const u8, "Indexing complete"), null)) |cmd| {
+            if (std.mem.eql(u8, kind, "begin")) {
+                const title = json.getString(value_obj, "title");
+                // Cache title for subsequent "report" events
+                if (self.progress_title) |old| self.allocator.free(old);
+                self.progress_title = if (title) |t| self.allocator.dupe(u8, t) catch null else null;
+                if (lsp_transform.formatProgressToast(alloc, title, message, percentage)) |cmd| {
+                    self.writeVimEx(alloc, writer, lock, cmd);
+                }
+            } else if (std.mem.eql(u8, kind, "report")) {
+                if (lsp_transform.formatProgressToast(alloc, self.progress_title, message, percentage)) |cmd| {
+                    self.writeVimEx(alloc, writer, lock, cmd);
+                }
+            } else if (std.mem.eql(u8, kind, "end")) {
+                if (self.progress_title) |old| self.allocator.free(old);
+                self.progress_title = null;
+                const end_msg: ?[]const u8 = "Indexing complete";
+                if (lsp_transform.formatProgressToast(alloc, end_msg, message, null)) |cmd| {
                     self.writeVimEx(alloc, writer, lock, cmd);
                 }
             }
