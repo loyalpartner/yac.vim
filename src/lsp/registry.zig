@@ -44,6 +44,8 @@ pub const PendingOpen = struct {
 pub const LspRegistry = struct {
     allocator: Allocator,
     io: Io,
+    /// Group for LSP readLoop coroutines
+    lsp_group: Io.Group = .init,
     /// client_key -> LspClient (key = "language\x00workspace_uri")
     clients: std.StringHashMap(*LspClient),
     /// Requests waiting for initialization to complete: client_key -> init request ID
@@ -304,7 +306,10 @@ pub const LspRegistry = struct {
         const key = try self.allocator.dupe(u8, lookup_key);
         errdefer self.allocator.free(key);
 
-        // Synchronous initialization — blocks until LSP server responds
+        // Start readLoop BEFORE sending initialize (readLoop handles the response)
+        client.startReadLoop(&self.lsp_group);
+
+        // Synchronous initialization — blocks until LSP server responds (via readLoop + Event)
         log.info("Sending initialize to {s}...", .{language});
         var init_result = client.initializeSync(workspace_uri) catch |e| {
             log.err("LSP initialize failed for {s}: {any}", .{ language, e });
