@@ -91,7 +91,7 @@ pub const LspClient = struct {
         self.queued_notifications.deinit(self.allocator);
         if (self.child.id != null) {
             self.child.kill(self.io);
-            _ = self.child.wait(self.io) catch {};
+            // Note: kill() already waits internally in Zig 0.16 — do NOT call wait() again
         }
         self.allocator.destroy(self);
     }

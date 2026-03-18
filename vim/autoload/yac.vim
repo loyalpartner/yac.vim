@@ -158,6 +158,10 @@ function! s:ensure_connection() abort
   endif
   if has_key(s:channel_pool, l:key)
     unlet s:channel_pool[l:key]
+    " Reconnecting to a (possibly new) daemon — languages must be re-loaded
+    if exists('s:loaded_langs')
+      let s:loaded_langs = {}
+    endif
   endif
 
   " 开启 channel 日志（仅第一次）
