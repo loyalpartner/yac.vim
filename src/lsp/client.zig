@@ -42,7 +42,7 @@ pub const LspClient = struct {
     next_id: *std.atomic.Value(u32),
     /// Pending response waiters: request_id → *ResponseWaiter
     waiters: std.AutoHashMap(u32, *ResponseWaiter),
-    waiters_lock: std.atomic.Mutex = .unlocked,
+    waiters_lock: Io.Mutex = .init,
     /// Queued notifications for external processing
     queued_notifications: std.ArrayList(LspMessage),
     /// Whether readLoop is running
@@ -170,9 +170,9 @@ pub const LspClient = struct {
                         },
                     };
 
-                    while (!self.waiters_lock.tryLock()) std.atomic.spinLoopHint();
+                    self.waiters_lock.lockUncancelable(self.io);
                     const waiter = self.waiters.get(id);
-                    self.waiters_lock.unlock();
+                    self.waiters_lock.unlock(self.io);
 
                     if (waiter) |w| {
                         w.result = obj.get("result") orelse .null;
@@ -205,13 +205,13 @@ pub const LspClient = struct {
         // Register waiter BEFORE writing (readLoop might respond instantly)
         var waiter: ResponseWaiter = .{};
         {
-            while (!self.waiters_lock.tryLock()) std.atomic.spinLoopHint();
-            defer self.waiters_lock.unlock();
+            self.waiters_lock.lockUncancelable(self.io);
+            defer self.waiters_lock.unlock(self.io);
             try self.waiters.put(id, &waiter);
         }
         defer {
-            while (!self.waiters_lock.tryLock()) std.atomic.spinLoopHint();
-            defer self.waiters_lock.unlock();
+            self.waiters_lock.lockUncancelable(self.io);
+            defer self.waiters_lock.unlock(self.io);
             _ = self.waiters.remove(id);
         }
 

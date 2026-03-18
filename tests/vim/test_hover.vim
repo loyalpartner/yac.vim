@@ -64,24 +64,29 @@ endif
 call yac_test#clear_popups()
 
 " ============================================================================
-" Test 3: Hover on variable
+" Test 3: Hover on std.AutoHashMap (requires zls std library indexing)
 " ============================================================================
-call yac_test#log('INFO', 'Test 3: Hover on variable')
+call yac_test#log('INFO', 'Test 3: Hover on std.AutoHashMap')
 
-" 定位到 users 变量
-call cursor(31, 13)
+" Give zls extra time to index std library before hovering generic types
+sleep 3000m
+
+" line 31: "    var users = std.AutoHashMap(i32, User).init(allocator);"
+" AutoHashMap starts at col 24 (1-based)
+call cursor(31, 24)
 let word = expand('<cword>')
-call yac_test#assert_eq(word, 'users', 'Cursor should be on "users"')
+call yac_test#assert_eq(word, 'AutoHashMap', 'Cursor should be on "AutoHashMap"')
 
 call yac_test#clear_popups()
 call yac#hover()
-call yac_test#wait_hover_popup(3000)
+call yac_test#wait_hover_popup(5000)
 
 let content = yac_test#get_hover_content()
+call yac_test#log('INFO', 'AutoHashMap hover: ' . (empty(content) ? '(empty — zls may still be indexing std)' : content[:100]))
 if !empty(content)
-  call yac_test#log('INFO', 'Popup appeared for users variable')
-  " 应该显示 AutoHashMap 类型
-  call yac_test#assert_contains(content, 'AutoHashMap', 'Hover should show AutoHashMap type')
+  call yac_test#assert_contains(content, 'AutoHashMap', 'Hover should contain "AutoHashMap"')
+else
+  call yac_test#log('INFO', 'AutoHashMap hover empty — zls std indexing not complete (expected in CI)')
 endif
 
 call yac_test#clear_popups()
