@@ -1,13 +1,54 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 const predicates = @import("predicates.zig");
 const TreeSitter = @import("treesitter.zig").TreeSitter;
 const log = std.log.scoped(.ts_highlights);
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+
+pub const Span = struct {
+    lnum: i32,
+    col: i32,
+    end_lnum: i32,
+    end_col: i32,
+};
+
+pub const GroupHighlights = struct {
+    group: []const u8,
+    spans: []const Span,
+};
+
+pub const HighlightsResult = struct {
+    groups: []const GroupHighlights,
+    start_line: i32,
+    end_line: i32,
+
+    pub fn jsonStringify(self: HighlightsResult, jw: anytype) @TypeOf(jw.*).Error!void {
+        try jw.beginObject();
+        try jw.objectField("highlights");
+        try jw.beginObject();
+        for (self.groups) |g| {
+            try jw.objectField(g.group);
+            try jw.beginArray();
+            for (g.spans) |s| {
+                try jw.beginArray();
+                try jw.write(s.lnum);
+                try jw.write(s.col);
+                try jw.write(s.end_lnum);
+                try jw.write(s.end_col);
+                try jw.endArray();
+            }
+            try jw.endArray();
+        }
+        try jw.endObject();
+        try jw.objectField("range");
+        try jw.beginArray();
+        try jw.write(self.start_line);
+        try jw.write(self.end_line);
+        try jw.endArray();
+        try jw.endObject();
+    }
+};
 
 /// A collected highlight entry.
 const HlEntry = struct {
@@ -32,7 +73,7 @@ pub fn extractHighlights(
     source: []const u8,
     start_line: u32,
     end_line: u32,
-) !Value {
+) !HighlightsResult {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
@@ -117,43 +158,41 @@ pub fn extractHighlights(
     // exposing them as child nodes, making them invisible to queries.
     try fillErrorGaps(allocator, tree, source, start_line, end_line, &entries, &best);
 
-    // Build JSON from deduplicated entries
-    var groups = std.StringHashMap(std.json.Array).init(allocator);
+    // Build typed result from deduplicated entries
+    var groups = std.StringHashMap(std.ArrayList(Span)).init(allocator);
 
     for (entries.items) |entry| {
-        // Output [lnum, col, end_lnum, end_col] — ready for Vim prop_add_list
-        const lnum = @as(i64, @intCast(entry.row)) + 1;
-        const col_1 = @as(i64, @intCast(entry.col)) + 1;
-        var pos = std.json.Array.init(allocator);
-        try pos.ensureTotalCapacity(4);
-        pos.appendAssumeCapacity(json.jsonInteger(lnum));
-        pos.appendAssumeCapacity(json.jsonInteger(col_1));
-        pos.appendAssumeCapacity(json.jsonInteger(lnum));
-        pos.appendAssumeCapacity(json.jsonInteger(col_1 + @as(i64, @intCast(entry.length))));
+        // Output [lnum, col, end_lnum, end_col] — ready for Vim prop_add_list (1-based)
+        const lnum: i32 = @as(i32, @intCast(entry.row)) + 1;
+        const col_1: i32 = @as(i32, @intCast(entry.col)) + 1;
 
         const gop = try groups.getOrPut(entry.group_name);
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.json.Array.init(allocator);
+            gop.value_ptr.* = .empty;
         }
-        try gop.value_ptr.append(.{ .array = pos });
+        try gop.value_ptr.append(allocator, .{
+            .lnum = lnum,
+            .col = col_1,
+            .end_lnum = lnum,
+            .end_col = col_1 + @as(i32, @intCast(entry.length)),
+        });
     }
 
-    // Build result: {"highlights": {"GroupName": [[l,c,l,end_c], ...], ...}}
-    var hl_obj = ObjectMap.init(allocator);
+    // Build result groups slice
+    var group_list: std.ArrayList(GroupHighlights) = .empty;
     var it = groups.iterator();
     while (it.next()) |entry| {
-        try hl_obj.put(entry.key_ptr.*, .{ .array = entry.value_ptr.* });
+        try group_list.append(allocator, .{
+            .group = entry.key_ptr.*,
+            .spans = entry.value_ptr.items,
+        });
     }
 
-    // Build range array [start_line, end_line] so Vim can track covered area
-    var range_arr = std.json.Array.init(allocator);
-    try range_arr.append(json.jsonInteger(@intCast(start_line)));
-    try range_arr.append(json.jsonInteger(@intCast(end_line)));
-
-    return json.buildObject(allocator, .{
-        .{ "highlights", .{ .object = hl_obj } },
-        .{ "range", .{ .array = range_arr } },
-    });
+    return .{
+        .groups = group_list.items,
+        .start_line = @intCast(start_line),
+        .end_line = @intCast(end_line),
+    };
 }
 
 /// Walk the tree to find ERROR nodes and scan their byte ranges for identifier-like
@@ -289,10 +328,8 @@ pub fn processInjections(
     start_line: u32,
     end_line: u32,
     ts_state: *TreeSitter,
-    result: *Value,
+    result: *HighlightsResult,
 ) !void {
-    const hl_obj_ptr = getHighlightsObj(result) orelse return;
-
     // Find capture indices
     const content_idx = findCaptureIndex(inj_query, "injection.content") orelse return;
     const lang_cap_idx = findCaptureIndex(inj_query, "injection.language");
@@ -373,24 +410,10 @@ pub fn processInjections(
 
         inj_count += 1;
         // Merge injection highlights into the main result, shifting positions
-        mergeInjectionHighlights(allocator, hl_obj_ptr, inj_result, node_start) catch continue;
+        mergeInjectionHighlights(allocator, result, inj_result, node_start) catch continue;
     }
     if (inj_count > 0) {
         log.debug("processInjections: merged {d} injection regions", .{inj_count});
-    }
-}
-
-/// Extract the "highlights" ObjectMap from a result Value.
-fn getHighlightsObj(result: *Value) ?*ObjectMap {
-    switch (result.*) {
-        .object => |*o| {
-            const val = o.getPtr("highlights") orelse return null;
-            switch (val.*) {
-                .object => |*ho| return ho,
-                else => return null,
-            }
-        },
-        else => return null,
     }
 }
 
@@ -421,66 +444,58 @@ fn getSetPredicate(query: *const ts.Query, pattern_index: u32, property: []const
     return null;
 }
 
-/// Merge injection highlights into the main highlights object, shifting by the injection's
+/// Merge injection highlights into the main result, shifting by the injection's
 /// start position in the document.
 fn mergeInjectionHighlights(
     allocator: Allocator,
-    hl_obj: *ObjectMap,
-    inj_result: Value,
+    result: *HighlightsResult,
+    inj_result: HighlightsResult,
     offset: ts.Point,
 ) !void {
-    const inj_obj = switch (inj_result) {
-        .object => |o| o,
-        else => return,
-    };
-    const inj_groups_val = inj_obj.get("highlights") orelse return;
-    const inj_groups = switch (inj_groups_val) {
-        .object => |o| o,
-        else => return,
-    };
-
-    var it = inj_groups.iterator();
-    while (it.next()) |entry| {
-        const positions = switch (entry.value_ptr.*) {
-            .array => |a| a,
-            else => continue,
-        };
-
-        const gop = try hl_obj.getOrPut(entry.key_ptr.*);
+    // Build a mutable copy of the groups list for merging
+    var groups_map = std.StringHashMap(std.ArrayList(Span)).init(allocator);
+    // Populate from existing groups
+    for (result.groups) |g| {
+        const gop = try groups_map.getOrPut(g.group);
         if (!gop.found_existing) {
-            gop.value_ptr.* = .{ .array = std.json.Array.init(allocator) };
+            gop.value_ptr.* = .empty;
         }
-        var target = &gop.value_ptr.array;
+        try gop.value_ptr.appendSlice(allocator, g.spans);
+    }
 
-        for (positions.items) |pos_val| {
-            const pos = switch (pos_val) {
-                .array => |a| a,
-                else => continue,
-            };
-            if (pos.items.len < 4) continue;
+    for (inj_result.groups) |g| {
+        const gop = try groups_map.getOrPut(g.group);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
 
-            // pos = [lnum(1-based), col(1-based), end_lnum(1-based), end_col(1-based)]
-            const lnum = pos.items[0].integer;
-            const col = pos.items[1].integer;
-            const end_lnum = pos.items[2].integer;
-            const end_col = pos.items[3].integer;
-
+        for (g.spans) |span| {
             // Shift by injection offset
-            const shifted_lnum = lnum + @as(i64, offset.row);
-            const shifted_end_lnum = end_lnum + @as(i64, offset.row);
+            const shifted_lnum = span.lnum + @as(i32, @intCast(offset.row));
+            const shifted_end_lnum = span.end_lnum + @as(i32, @intCast(offset.row));
             // First line: add column offset; subsequent lines start at column 1
-            const shifted_col = if (lnum == 1) col + @as(i64, offset.column) else col;
-            const shifted_end_col = if (end_lnum == 1) end_col + @as(i64, offset.column) else end_col;
+            const shifted_col = if (span.lnum == 1) span.col + @as(i32, @intCast(offset.column)) else span.col;
+            const shifted_end_col = if (span.end_lnum == 1) span.end_col + @as(i32, @intCast(offset.column)) else span.end_col;
 
-            var shifted = std.json.Array.init(allocator);
-            try shifted.ensureTotalCapacity(4);
-            shifted.appendAssumeCapacity(json.jsonInteger(shifted_lnum));
-            shifted.appendAssumeCapacity(json.jsonInteger(shifted_col));
-            shifted.appendAssumeCapacity(json.jsonInteger(shifted_end_lnum));
-            shifted.appendAssumeCapacity(json.jsonInteger(shifted_end_col));
-            try target.append(.{ .array = shifted });
+            try gop.value_ptr.append(allocator, .{
+                .lnum = shifted_lnum,
+                .col = shifted_col,
+                .end_lnum = shifted_end_lnum,
+                .end_col = shifted_end_col,
+            });
         }
     }
+
+    // Rebuild the groups slice
+    var group_list: std.ArrayList(GroupHighlights) = .empty;
+    var it = groups_map.iterator();
+    while (it.next()) |entry| {
+        try group_list.append(allocator, .{
+            .group = entry.key_ptr.*,
+            .spans = entry.value_ptr.items,
+        });
+    }
+    result.groups = group_list.items;
 }
 
 /// Calculate the length (in columns) from the start of a given row to the end of the line,
@@ -648,6 +663,14 @@ test "captureToGroup markup captures" {
     try std.testing.expectEqualStrings("YacTsMarkupLink", captureToGroup("markup.link").?);
 }
 
+/// Helper to check if a group name exists in a HighlightsResult.
+fn hasGroup(result: HighlightsResult, name: []const u8) bool {
+    for (result.groups) |g| {
+        if (std.mem.eql(u8, g.group, name)) return true;
+    }
+    return false;
+}
+
 test "extractHighlights markdown" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -666,23 +689,14 @@ test "extractHighlights markdown" {
     defer tree.destroy();
 
     const result = try extractHighlights(allocator, hl_query, tree, source, 0, 10);
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return error.UnexpectedResult,
-    };
-    const groups_val = obj.get("highlights") orelse return error.NoHighlights;
-    const groups = switch (groups_val) {
-        .object => |o| o,
-        else => return error.UnexpectedResult,
-    };
 
     // Should have at least heading and list marker highlights
-    try std.testing.expect(groups.count() > 0);
+    try std.testing.expect(result.groups.len > 0);
 
     // Verify specific groups exist
-    try std.testing.expect(groups.get("YacTsMarkupHeading") != null or
-        groups.get("YacTsMarkupHeadingMarker") != null);
-    try std.testing.expect(groups.get("YacTsMarkupListMarker") != null);
+    try std.testing.expect(hasGroup(result, "YacTsMarkupHeading") or
+        hasGroup(result, "YacTsMarkupHeadingMarker"));
+    try std.testing.expect(hasGroup(result, "YacTsMarkupListMarker"));
 }
 
 test "extractHighlights bash: arguments and inline comments" {
@@ -704,24 +718,15 @@ test "extractHighlights bash: arguments and inline comments" {
     defer tree.destroy();
 
     const result = try extractHighlights(allocator, hl_query, tree, source, 0, 1);
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return error.UnexpectedResult,
-    };
-    const groups_val = obj.get("highlights") orelse return error.NoHighlights;
-    const groups = switch (groups_val) {
-        .object => |o| o,
-        else => return error.UnexpectedResult,
-    };
 
     // "zig" should be YacTsFunction
-    try std.testing.expect(groups.get("YacTsFunction") != null);
+    try std.testing.expect(hasGroup(result, "YacTsFunction"));
     // "build" should be YacTsVariableParameter
-    try std.testing.expect(groups.get("YacTsVariableParameter") != null);
+    try std.testing.expect(hasGroup(result, "YacTsVariableParameter"));
     // "-Doptimize=ReleaseFast" should be YacTsConstant (^- flag pattern)
-    try std.testing.expect(groups.get("YacTsConstant") != null);
+    try std.testing.expect(hasGroup(result, "YacTsConstant"));
     // Comment should be YacTsComment
-    try std.testing.expect(groups.get("YacTsComment") != null);
+    try std.testing.expect(hasGroup(result, "YacTsComment"));
 }
 
 test "captureToGroup fallback to parent" {

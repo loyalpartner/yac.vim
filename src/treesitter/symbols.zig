@@ -1,10 +1,42 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+
+pub const Symbol = struct {
+    name: []const u8,
+    kind: []const u8,
+    file: []const u8,
+    selection_line: i32,
+    selection_column: i32,
+    end_line: i32,
+};
+
+pub const SymbolsResult = struct {
+    symbols: []const Symbol,
+};
+
+pub const PickerHighlight = struct {
+    col: i32,
+    len: i32,
+    hl: []const u8,
+};
+
+pub const PickerSymbol = struct {
+    label: []const u8,
+    prefix: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
+    kind: []const u8,
+    depth: i32,
+    line: i32,
+    column: i32,
+    highlights: []const PickerHighlight,
+};
+
+pub const PickerResult = struct {
+    items: []const PickerSymbol,
+    mode: []const u8 = "symbol",
+};
 
 pub fn extractSymbols(
     allocator: Allocator,
@@ -12,13 +44,13 @@ pub fn extractSymbols(
     tree: *const ts.Tree,
     source: []const u8,
     file_path: []const u8,
-) !Value {
+) !SymbolsResult {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
     cursor.exec(query, tree.rootNode());
 
-    var symbols = std.json.Array.init(allocator);
+    var symbols: std.ArrayList(Symbol) = .empty;
 
     // Deduplicate by name node position — e.g. template_declaration and inner
     // class_specifier both match, producing duplicate entries for the same @name node.
@@ -57,19 +89,17 @@ pub fn extractSymbols(
         if (seen.contains(key)) continue;
         try seen.put(key, {});
 
-        try symbols.append(try json.buildObject(allocator, .{
-            .{ "name", json.jsonString(name) },
-            .{ "kind", json.jsonString(k) },
-            .{ "file", json.jsonString(file_path) },
-            .{ "selection_line", json.jsonInteger(@intCast(start.row)) },
-            .{ "selection_column", json.jsonInteger(@intCast(start.column)) },
-            .{ "end_line", json.jsonInteger(@intCast(node.endPoint().row)) },
-        }));
+        try symbols.append(allocator, .{
+            .name = name,
+            .kind = k,
+            .file = file_path,
+            .selection_line = @intCast(start.row),
+            .selection_column = @intCast(start.column),
+            .end_line = @intCast(node.endPoint().row),
+        });
     }
 
-    return json.buildObject(allocator, .{
-        .{ "symbols", .{ .array = symbols } },
-    });
+    return .{ .symbols = symbols.items };
 }
 
 /// Map tree-sitter capture name to LSP-style symbol kind.
@@ -101,7 +131,6 @@ fn captureToKind(cap_name: []const u8) ?[]const u8 {
 }
 
 /// Extract document symbols for the picker outline view.
-/// Returns `{items: [{label, detail, kind, depth, line, column}], mode: "symbol"}`.
 /// Unlike `extractSymbols`, this function:
 ///   - Includes `@variable` captures (import declarations, type aliases) with detail text
 ///   - Expands struct/enum/union body as depth-1 container fields
@@ -110,13 +139,13 @@ pub fn extractPickerSymbols(
     query: *const ts.Query,
     tree: *const ts.Tree,
     source: []const u8,
-) !Value {
+) !PickerResult {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
     cursor.exec(query, tree.rootNode());
 
-    var items = std.json.Array.init(allocator);
+    var items: std.ArrayList(PickerSymbol) = .empty;
     // Track which impl blocks (by start row) have already been emitted as headers.
     var seen_impl_rows = std.AutoHashMap(u32, void).init(allocator);
     defer seen_impl_rows.deinit();
@@ -151,7 +180,7 @@ pub fn extractPickerSymbols(
         const node = outer_node orelse continue;
 
         // For methods: emit a container header on first encounter, then indent at depth=1.
-        var depth: i64 = 0;
+        var depth: i32 = 0;
         if (std.mem.eql(u8, k, "Method")) {
             if (impl_type_node) |inode| {
                 const impl_node = inode.parent() orelse inode;
@@ -162,16 +191,16 @@ pub fn extractPickerSymbols(
                     const prefix = containerPrefix(impl_node.kind());
                     const impl_hl = try buildItemHighlights(allocator, "Interface", prefix, itype_name, "");
                     const impl_start = impl_node.startPoint();
-                    try items.append(try json.buildObject(allocator, .{
-                        .{ "label", json.jsonString(itype_name) },
-                        .{ "prefix", json.jsonString(prefix) },
-                        .{ "detail", json.jsonString("") },
-                        .{ "kind", json.jsonString("Interface") },
-                        .{ "depth", json.jsonInteger(0) },
-                        .{ "line", json.jsonInteger(@intCast(impl_start.row)) },
-                        .{ "column", json.jsonInteger(@intCast(impl_start.column)) },
-                        .{ "highlights", .{ .array = impl_hl } },
-                    }));
+                    try items.append(allocator, .{
+                        .label = itype_name,
+                        .prefix = prefix,
+                        .detail = "",
+                        .kind = "Interface",
+                        .depth = 0,
+                        .line = @intCast(impl_start.row),
+                        .column = @intCast(impl_start.column),
+                        .highlights = impl_hl,
+                    });
                 }
             }
             depth = 1;
@@ -223,18 +252,18 @@ pub fn extractPickerSymbols(
             effective_detail = detail_text orelse "";
         }
 
-        const highlights = try buildItemHighlights(allocator, k, prefix_str, name, effective_detail);
+        const hl_items = try buildItemHighlights(allocator, k, prefix_str, name, effective_detail);
 
-        try items.append(try json.buildObject(allocator, .{
-            .{ "label", json.jsonString(name) },
-            .{ "prefix", json.jsonString(prefix_str) },
-            .{ "detail", json.jsonString(effective_detail) },
-            .{ "kind", json.jsonString(k) },
-            .{ "depth", json.jsonInteger(depth) },
-            .{ "line", json.jsonInteger(@intCast(start.row)) },
-            .{ "column", json.jsonInteger(@intCast(start.column)) },
-            .{ "highlights", .{ .array = highlights } },
-        }));
+        try items.append(allocator, .{
+            .label = name,
+            .prefix = if (prefix_str.len > 0) prefix_str else null,
+            .detail = if (effective_detail.len > 0) effective_detail else null,
+            .kind = k,
+            .depth = depth,
+            .line = @intCast(start.row),
+            .column = @intCast(start.column),
+            .highlights = hl_items,
+        });
 
         // Expand container fields (depth=1) for struct/enum/union.
         if (std.mem.eql(u8, k, "Struct") or
@@ -245,10 +274,7 @@ pub fn extractPickerSymbols(
         }
     }
 
-    return json.buildObject(allocator, .{
-        .{ "items", .{ .array = items } },
-        .{ "mode", json.jsonString("symbol") },
-    });
+    return .{ .items = items.items };
 }
 
 /// Build the detail string for a function declaration.
@@ -299,7 +325,7 @@ fn appendContainerFields(
     allocator: Allocator,
     decl_node: ts.Node,
     source: []const u8,
-    items: *std.json.Array,
+    items: *std.ArrayList(PickerSymbol),
 ) !void {
     // Find the struct/enum/union_declaration child of variable_declaration.
     var ci: u32 = 0;
@@ -325,16 +351,16 @@ fn appendContainerFields(
             const fstart = fname_node.startPoint();
 
             const field_highlights = try buildItemHighlights(allocator, "Field", "", fname, "");
-            try items.append(try json.buildObject(allocator, .{
-                .{ "label", json.jsonString(fname) },
-                .{ "prefix", json.jsonString("") },
-                .{ "detail", json.jsonString("") },
-                .{ "kind", json.jsonString("Field") },
-                .{ "depth", json.jsonInteger(1) },
-                .{ "line", json.jsonInteger(@intCast(fstart.row)) },
-                .{ "column", json.jsonInteger(@intCast(fstart.column)) },
-                .{ "highlights", .{ .array = field_highlights } },
-            }));
+            try items.append(allocator, .{
+                .label = fname,
+                .prefix = null,
+                .detail = null,
+                .kind = "Field",
+                .depth = 1,
+                .line = @intCast(fstart.row),
+                .column = @intCast(fstart.column),
+                .highlights = field_highlights,
+            });
         }
         break; // Only one body declaration expected per variable_declaration.
     }
@@ -391,48 +417,46 @@ fn buildItemHighlights(
     prefix: []const u8,
     name: []const u8,
     detail: []const u8,
-) !std.json.Array {
-    var highlights = std.json.Array.init(alloc);
+) ![]const PickerHighlight {
+    var highlights: std.ArrayList(PickerHighlight) = .empty;
 
     if (prefix.len > 0) {
         // Prefix (fn / pub fn / …) gets keyword-function color.
-        try highlights.append(try json.buildObject(alloc, .{
-            .{ "col", json.jsonInteger(0) },
-            .{ "len", json.jsonInteger(@intCast(prefix.len)) },
-            .{ "hl", json.jsonString("YacTsKeywordFunction") },
-        }));
+        try highlights.append(alloc, .{
+            .col = 0,
+            .len = @intCast(prefix.len),
+            .hl = "YacTsKeywordFunction",
+        });
 
         // Name comes after prefix + space.
         const name_hl = kindToNameHlGroup(k);
         if (name_hl.len > 0) {
-            const name_col: i64 = @intCast(prefix.len + 1);
-            try highlights.append(try json.buildObject(alloc, .{
-                .{ "col", json.jsonInteger(name_col) },
-                .{ "len", json.jsonInteger(@intCast(name.len)) },
-                .{ "hl", json.jsonString(name_hl) },
-            }));
+            try highlights.append(alloc, .{
+                .col = @intCast(prefix.len + 1),
+                .len = @intCast(name.len),
+                .hl = name_hl,
+            });
         }
     } else {
         // Name at position 0.
         const name_hl = kindToNameHlGroup(k);
         if (name_hl.len > 0) {
-            try highlights.append(try json.buildObject(alloc, .{
-                .{ "col", json.jsonInteger(0) },
-                .{ "len", json.jsonInteger(@intCast(name.len)) },
-                .{ "hl", json.jsonString(name_hl) },
-            }));
+            try highlights.append(alloc, .{
+                .col = 0,
+                .len = @intCast(name.len),
+                .hl = name_hl,
+            });
         }
 
         // Detail (e.g. "struct {", "@import(…)") comes after name + space, dimmed.
         if (detail.len > 0) {
-            const detail_col: i64 = @intCast(name.len + 1);
-            try highlights.append(try json.buildObject(alloc, .{
-                .{ "col", json.jsonInteger(detail_col) },
-                .{ "len", json.jsonInteger(@intCast(detail.len)) },
-                .{ "hl", json.jsonString("YacPickerDetail") },
-            }));
+            try highlights.append(alloc, .{
+                .col = @intCast(name.len + 1),
+                .len = @intCast(detail.len),
+                .hl = "YacPickerDetail",
+            });
         }
     }
 
-    return highlights;
+    return highlights.items;
 }

@@ -1,34 +1,42 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+
+pub const Highlight = struct {
+    line: i32,
+    col: i32,
+    end_line: i32,
+    end_col: i32,
+    kind: i32,
+};
+
+pub const Result = struct {
+    highlights: []const Highlight,
+};
 
 /// Find all occurrences of the identifier under the cursor within the
 /// enclosing scope (function/test/class). Falls back to file scope for
 /// top-level symbols.
-/// Returns {highlights: [{line, col, end_line, end_col, kind}]}
 pub fn extractDocumentHighlights(
     alloc: Allocator,
     tree: *const ts.Tree,
     source: []const u8,
     line: u32,
     column: u32,
-) !Value {
+) !?Result {
     const root = tree.rootNode();
     const point = ts.Point{ .row = line, .column = column };
 
     // Find the smallest named node at cursor position
     const target_node = root.namedDescendantForPointRange(point, point) orelse
-        return .null;
+        return null;
 
     // Get the text of the target node — this is what we'll search for
-    const target_text = nodeText(target_node, source) orelse return .null;
+    const target_text = nodeText(target_node, source) orelse return null;
 
     // Skip nodes that are too large (not identifiers) or empty
-    if (target_text.len == 0 or target_text.len > 200) return .null;
+    if (target_text.len == 0 or target_text.len > 200) return null;
 
     // Skip multi-line nodes — identifiers never span lines.
     // When the cursor lands on an anonymous node (e.g. VimScript `endfunction`
@@ -36,20 +44,18 @@ pub fn extractDocumentHighlights(
     // (e.g. `function_definition`), which spans the entire function body.
     const target_start = target_node.startPoint();
     const target_end = target_node.endPoint();
-    if (target_start.row != target_end.row) return .null;
+    if (target_start.row != target_end.row) return null;
 
     // Find the enclosing scope — search only within it
     const scope = findEnclosingScope(target_node, root);
 
     // Collect all matching nodes via DFS traversal within scope
-    var highlights = std.json.Array.init(alloc);
+    var highlights: std.ArrayList(Highlight) = .empty;
     try collectMatches(alloc, scope, source, target_text, target_node.kindId(), &highlights);
 
-    if (highlights.items.len == 0) return .null;
+    if (highlights.items.len == 0) return null;
 
-    return json.buildObject(alloc, .{
-        .{ "highlights", .{ .array = highlights } },
-    });
+    return .{ .highlights = highlights.items };
 }
 
 /// Walk up from node to find the nearest scope-defining ancestor.
@@ -98,7 +104,7 @@ fn collectMatches(
     source: []const u8,
     target_text: []const u8,
     target_kind_id: u16,
-    out: *std.json.Array,
+    out: *std.ArrayList(Highlight),
 ) !void {
     // If this node is smaller than target text, skip subtree
     const node_len = node.endByte() - node.startByte();
@@ -110,13 +116,13 @@ fn collectMatches(
             if (std.mem.eql(u8, text, target_text)) {
                 const start = node.startPoint();
                 const end = node.endPoint();
-                try out.append(try json.buildObject(alloc, .{
-                    .{ "line", json.jsonInteger(@intCast(start.row)) },
-                    .{ "col", json.jsonInteger(@intCast(start.column)) },
-                    .{ "end_line", json.jsonInteger(@intCast(end.row)) },
-                    .{ "end_col", json.jsonInteger(@intCast(end.column)) },
-                    .{ "kind", json.jsonInteger(1) },
-                }));
+                try out.append(alloc, .{
+                    .line = @intCast(start.row),
+                    .col = @intCast(start.column),
+                    .end_line = @intCast(end.row),
+                    .end_col = @intCast(end.column),
+                    .kind = 1,
+                });
                 return; // Don't recurse into matched node's children
             }
         }
@@ -159,16 +165,9 @@ test "document highlight: cursor on identifier returns matches" {
 
     // Cursor on 'a' parameter (line 0, col 7) — should find 2 occurrences
     const result = try extractDocumentHighlights(alloc, tree, source, 0, 7);
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return error.ExpectedHighlights,
-    };
-    const hls = switch (obj.get("highlights") orelse return error.NoKey) {
-        .array => |a| a,
-        else => return error.NotArray,
-    };
+    const r = result orelse return error.ExpectedHighlights;
     // 'a' appears in parameter and return expression
-    try std.testing.expect(hls.items.len >= 2);
+    try std.testing.expect(r.highlights.len >= 2);
 }
 
 test "document highlight: multi-line node should NOT produce highlights" {
@@ -191,7 +190,7 @@ test "document highlight: multi-line node should NOT produce highlights" {
     // Cursor on '}' (line 2, col 0) — namedDescendant returns a multi-line node
     // Should return null, NOT highlight the entire function body
     const result = try extractDocumentHighlights(alloc, tree, source, 2, 0);
-    try std.testing.expect(result == .null);
+    try std.testing.expect(result == null);
 }
 
 test "document highlight: VimScript function should NOT highlight entire body" {
@@ -214,47 +213,19 @@ test "document highlight: VimScript function should NOT highlight entire body" {
     // Cursor on 'endfunction' keyword (line 3, col 0)
     // namedDescendant should NOT produce a highlight spanning the entire function
     const result = try extractDocumentHighlights(alloc, tree, source, 3, 0);
-    if (result != .null) {
-        const obj = switch (result) {
-            .object => |o| o,
-            else => return error.ExpectedObject,
-        };
-        const hls = switch (obj.get("highlights") orelse return error.NoKey) {
-            .array => |a| a,
-            else => return error.NotArray,
-        };
+    if (result) |r| {
         // No highlight should span from line 0 to line 3 (entire function)
-        for (hls.items) |item| {
-            const hl_obj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const hl_line = json.getInteger(hl_obj, "line") orelse continue;
-            const hl_end_line = json.getInteger(hl_obj, "end_line") orelse continue;
+        for (r.highlights) |hl| {
             // Each highlight must be single-line (identifiers don't span lines)
-            try std.testing.expectEqual(hl_line, hl_end_line);
+            try std.testing.expectEqual(hl.line, hl.end_line);
         }
     }
 
     // Also test cursor on 'function' keyword (line 0, col 0)
     const result2 = try extractDocumentHighlights(alloc, tree, source, 0, 0);
-    if (result2 != .null) {
-        const obj2 = switch (result2) {
-            .object => |o| o,
-            else => return error.ExpectedObject,
-        };
-        const hls2 = switch (obj2.get("highlights") orelse return error.NoKey) {
-            .array => |a| a,
-            else => return error.NotArray,
-        };
-        for (hls2.items) |item| {
-            const hl_obj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const hl_line = json.getInteger(hl_obj, "line") orelse continue;
-            const hl_end_line = json.getInteger(hl_obj, "end_line") orelse continue;
-            try std.testing.expectEqual(hl_line, hl_end_line);
+    if (result2) |r2| {
+        for (r2.highlights) |hl| {
+            try std.testing.expectEqual(hl.line, hl.end_line);
         }
     }
 }
@@ -280,24 +251,10 @@ test "document highlight: scope node as target should NOT produce highlights" {
     // Even if they don't, this test documents the expected behavior
     const result = try extractDocumentHighlights(alloc, tree, source, 0, 0);
     // Should either return null (fn keyword) or only single-line identifier matches
-    if (result != .null) {
-        const obj = switch (result) {
-            .object => |o| o,
-            else => return error.ExpectedObject,
-        };
-        const hls = switch (obj.get("highlights") orelse return error.NoKey) {
-            .array => |a| a,
-            else => return error.NotArray,
-        };
+    if (result) |r| {
         // Every highlight must be single-line
-        for (hls.items) |item| {
-            const hl_obj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const hl_line = json.getInteger(hl_obj, "line") orelse continue;
-            const hl_end = json.getInteger(hl_obj, "end_line") orelse continue;
-            try std.testing.expectEqual(hl_line, hl_end);
+        for (r.highlights) |hl| {
+            try std.testing.expectEqual(hl.line, hl.end_line);
         }
     }
 }

@@ -1,19 +1,23 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
+
+pub const TextObjectRange = struct {
+    start_line: i32,
+    start_col: i32,
+    end_line: i32,
+    end_col: i32,
+};
 
 pub fn findTextObject(
-    allocator: Allocator,
+    _: Allocator,
     query: *const ts.Query,
     tree: *const ts.Tree,
     target: []const u8,
     line: u32,
     column: u32,
-) !Value {
+) !?TextObjectRange {
     const cursor = ts.QueryCursor.create();
     defer cursor.destroy();
 
@@ -45,15 +49,15 @@ pub fn findTextObject(
     if (best_node) |node| {
         const start = node.startPoint();
         const end = node.endPoint();
-        return json.buildObject(allocator, .{
-            .{ "start_line", json.jsonInteger(@intCast(start.row)) },
-            .{ "start_col", json.jsonInteger(@intCast(start.column)) },
-            .{ "end_line", json.jsonInteger(@intCast(end.row)) },
-            .{ "end_col", json.jsonInteger(@intCast(end.column)) },
-        });
+        return .{
+            .start_line = @intCast(start.row),
+            .start_col = @intCast(start.column),
+            .end_line = @intCast(end.row),
+            .end_col = @intCast(end.column),
+        };
     }
 
-    return .null;
+    return null;
 }
 
 fn containsPoint(start: ts.Point, end: ts.Point, line: u32, col: u32) bool {

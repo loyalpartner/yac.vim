@@ -432,7 +432,6 @@ pub const Handler = struct {
         return .{ .object = result_obj };
     }
 
-
     // ========================================================================
     // System handlers
     // ========================================================================
@@ -933,19 +932,34 @@ pub const Handler = struct {
         line: u32,
         column: u32,
         text: ?[]const u8 = null,
-    }) !Value {
-        // Try LSP first — typed transform, then convert to Value for mixed return
+    }) !?DocumentHighlightResult {
+        // Try LSP first
         const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch null;
         const dh_result = transformDocumentHighlight(alloc, typed);
         if (dh_result.highlights.len > 0) {
-            return LspClient.typedToValue(alloc, dh_result) catch .null;
+            return dh_result;
         }
 
         // Fallback: tree-sitter based
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const source = tc.ts.getSource(tc.file) orelse return .null;
-        return try treesitter_mod.document_highlight.extractDocumentHighlights(alloc, tree, source, p.line, p.column);
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const source = tc.ts.getSource(tc.file) orelse return null;
+        const ts_result = try treesitter_mod.document_highlight.extractDocumentHighlights(alloc, tree, source, p.line, p.column);
+        if (ts_result) |r| {
+            // Convert TS Highlight[] to handler HighlightItem[]
+            var items: std.ArrayList(HighlightItem) = .empty;
+            for (r.highlights) |hl| {
+                try items.append(alloc, .{
+                    .line = hl.line,
+                    .col = hl.col,
+                    .end_line = hl.end_line,
+                    .end_col = hl.end_col,
+                    .kind = hl.kind,
+                });
+            }
+            return .{ .highlights = items.items };
+        }
+        return null;
     }
 
     // ========================================================================
@@ -978,11 +992,11 @@ pub const Handler = struct {
     pub fn ts_symbols(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         text: ?[]const u8 = null,
-    }) !Value {
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const source = tc.ts.getSource(tc.file) orelse return .null;
-        const sym_query = tc.lang_state.symbols orelse return .null;
+    }) !?treesitter_mod.symbols.SymbolsResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const source = tc.ts.getSource(tc.file) orelse return null;
+        const sym_query = tc.lang_state.symbols orelse return null;
         return try treesitter_mod.symbols.extractSymbols(alloc, sym_query, tree, source, tc.file);
     }
 
@@ -1017,11 +1031,11 @@ pub const Handler = struct {
         column: u32 = 0,
         scope: []const u8 = "function",
         around: bool = true,
-    }) !Value {
+    }) !?treesitter_mod.textobjects.TextObjectRange {
         _ = p.around; // TODO: pass around to findTextObject if API supports it
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const tobj_query = tc.lang_state.textobjects orelse return .null;
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const tobj_query = tc.lang_state.textobjects orelse return null;
         return try treesitter_mod.textobjects.findTextObject(alloc, tobj_query, tree, p.scope, p.line, p.column);
     }
 
@@ -1030,11 +1044,11 @@ pub const Handler = struct {
         text: ?[]const u8 = null,
         start_line: u32 = 0,
         end_line: u32 = 100,
-    }) !Value {
-        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
-        const tree = tc.ts.getTree(tc.file) orelse return .null;
-        const source = tc.ts.getSource(tc.file) orelse return .null;
-        const hl_query = tc.lang_state.highlights orelse return .null;
+    }) !?treesitter_mod.highlights.HighlightsResult {
+        const tc = self.getTsCtx(p.file, p.text) orelse return null;
+        const tree = tc.ts.getTree(tc.file) orelse return null;
+        const source = tc.ts.getSource(tc.file) orelse return null;
+        const hl_query = tc.lang_state.highlights orelse return null;
 
         var result = try treesitter_mod.highlights.extractHighlights(alloc, hl_query, tree, source, p.start_line, p.end_line);
         if (tc.lang_state.injections) |inj_query| {
@@ -1046,8 +1060,8 @@ pub const Handler = struct {
     pub fn ts_hover_highlight(self: *Handler, alloc: Allocator, p: struct {
         markdown: []const u8,
         filetype: []const u8 = "",
-    }) !Value {
-        const ts_state = self.ts orelse return .null;
+    }) !?treesitter_mod.hover_highlight.HoverResult {
+        const ts_state = self.ts orelse return null;
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, ts_state, p.markdown, p.filetype);
     }
     const PickerOpenResult = struct {
@@ -1088,12 +1102,12 @@ pub const Handler = struct {
                 .query = p.query,
             }) catch .null;
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
-            // Tree-sitter returns Value — TS module API boundary
             const tc = self.getTsCtx(p.file orelse return .null, p.text) orelse return .null;
             const tree = tc.ts.getTree(tc.file) orelse return .null;
             const source = tc.ts.getSource(tc.file) orelse return .null;
             const sym_query = tc.lang_state.symbols orelse return .null;
-            return try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
+            const picker_result = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
+            return LspClient.typedToValue(alloc, picker_result) catch .null;
         } else {
             return LspClient.typedToValue(alloc, PickerAction{
                 .action = "picker_file_query",

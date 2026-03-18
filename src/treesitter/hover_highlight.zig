@@ -1,14 +1,41 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
-const json = @import("../json_utils.zig");
 const highlights_mod = @import("highlights.zig");
 const treesitter_mod = @import("treesitter.zig");
 const md4c = @cImport(@cInclude("md4c.h"));
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const TreeSitter = treesitter_mod.TreeSitter;
+
+pub const HoverResult = struct {
+    lines: []const []const u8,
+    groups: []const highlights_mod.GroupHighlights,
+
+    pub fn jsonStringify(self: HoverResult, jw: anytype) @TypeOf(jw.*).Error!void {
+        try jw.beginObject();
+        try jw.objectField("lines");
+        try jw.beginArray();
+        for (self.lines) |line| try jw.write(line);
+        try jw.endArray();
+        try jw.objectField("highlights");
+        try jw.beginObject();
+        for (self.groups) |g| {
+            try jw.objectField(g.group);
+            try jw.beginArray();
+            for (g.spans) |s| {
+                try jw.beginArray();
+                try jw.write(s.lnum);
+                try jw.write(s.col);
+                try jw.write(s.end_lnum);
+                try jw.write(s.end_col);
+                try jw.endArray();
+            }
+            try jw.endArray();
+        }
+        try jw.endObject();
+        try jw.endObject();
+    }
+};
 
 /// Language alias mapping: markdown fence name -> yac language name.
 const lang_aliases = std.StaticStringMap([]const u8).initComptime(.{
@@ -239,17 +266,12 @@ fn parseMarkdown(
 
 /// Main entry: process markdown text and produce highlighted hover content.
 /// Called on the TS thread with access to TreeSitter state.
-///
-/// Returns JSON: {
-///   "lines": ["display line 1", "display line 2", ...],
-///   "highlights": {"YacTsKeyword": [[lnum,col,lnum,end_col], ...], ...}
-/// }
 pub noinline fn extractHoverHighlights(
     allocator: Allocator,
     ts_state: *TreeSitter,
     markdown: []const u8,
     fallback_lang: []const u8,
-) !Value {
+) !HoverResult {
     const parsed = try parseMarkdown(allocator, markdown);
 
     // Build a set of line indices that belong to code blocks
@@ -264,7 +286,7 @@ pub noinline fn extractHoverHighlights(
 
     // Collapse consecutive blank lines and build output lines array.
     // Track the mapping from output index -> original index for highlights.
-    var lines_arr = std.json.Array.init(allocator);
+    var lines_list: std.ArrayList([]const u8) = .empty;
     var out_map: std.ArrayList(u32) = .empty; // out_idx -> orig_idx
     var prev_blank = false;
     for (parsed.lines.items, 0..) |line, orig_i| {
@@ -273,7 +295,7 @@ pub noinline fn extractHoverHighlights(
         // Collapse consecutive blank lines outside code blocks
         if (is_blank and prev_blank and !is_code) continue;
         prev_blank = is_blank;
-        try lines_arr.append(json.jsonString(line));
+        try lines_list.append(allocator, line);
         try out_map.append(allocator, @intCast(orig_i));
     }
 
@@ -287,7 +309,7 @@ pub noinline fn extractHoverHighlights(
     }
 
     // Merge all code block highlights into a single dict
-    var merged_groups = std.StringHashMap(std.json.Array).init(allocator);
+    var merged_groups = std.StringHashMap(std.ArrayList(highlights_mod.Span)).init(allocator);
 
     // Build orig->out line index mapping for shifting code block highlights
     var orig_to_out = std.AutoHashMap(u32, u32).init(allocator);
@@ -307,7 +329,7 @@ pub noinline fn extractHoverHighlights(
         const tree = lang_state.parser.parseString(blk.content, null) orelse continue;
         defer tree.destroy();
 
-        const hl_val = highlights_mod.extractHighlights(
+        const hl_result = highlights_mod.extractHighlights(
             allocator,
             hl_query,
             tree,
@@ -316,51 +338,27 @@ pub noinline fn extractHoverHighlights(
             blk.line_count + 1,
         ) catch continue;
 
-        // Extract the highlights object and shift line numbers
-        const hl_obj = switch (hl_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const groups_val = hl_obj.get("highlights") orelse continue;
-        const groups = switch (groups_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
         // Merge into merged_groups with line offset mapped to output indices
-        var git = groups.iterator();
-        while (git.next()) |entry| {
-            const positions = switch (entry.value_ptr.*) {
-                .array => |a| a,
-                else => continue,
-            };
-
-            const gop = try merged_groups.getOrPut(entry.key_ptr.*);
+        for (hl_result.groups) |g| {
+            const gop = try merged_groups.getOrPut(g.group);
             if (!gop.found_existing) {
-                gop.value_ptr.* = std.json.Array.init(allocator);
+                gop.value_ptr.* = .empty;
             }
 
-            for (positions.items) |pos_val| {
-                const pos = switch (pos_val) {
-                    .array => |a| a,
-                    else => continue,
-                };
-                if (pos.items.len < 4) continue;
-
+            for (g.spans) |span| {
                 // lnum/end_lnum are 1-based from extractHighlights.
                 // Convert: (1-based hl lnum) -> (0-based orig) -> (0-based out) -> (1-based out)
-                const orig_lnum: u32 = @intCast(pos.items[0].integer - 1 + @as(i64, blk.start_line));
-                const orig_end: u32 = @intCast(pos.items[2].integer - 1 + @as(i64, blk.start_line));
+                const orig_lnum: u32 = @intCast(span.lnum - 1 + @as(i32, @intCast(blk.start_line)));
+                const orig_end: u32 = @intCast(span.end_lnum - 1 + @as(i32, @intCast(blk.start_line)));
                 const out_lnum = orig_to_out.get(orig_lnum) orelse continue;
                 const out_end = orig_to_out.get(orig_end) orelse continue;
 
-                var shifted = std.json.Array.init(allocator);
-                try shifted.ensureTotalCapacity(4);
-                shifted.appendAssumeCapacity(json.jsonInteger(@as(i64, out_lnum) + 1));
-                shifted.appendAssumeCapacity(pos.items[1]);
-                shifted.appendAssumeCapacity(json.jsonInteger(@as(i64, out_end) + 1));
-                shifted.appendAssumeCapacity(pos.items[3]);
-                try gop.value_ptr.append(.{ .array = shifted });
+                try gop.value_ptr.append(allocator, .{
+                    .lnum = @as(i32, @intCast(out_lnum)) + 1,
+                    .col = span.col,
+                    .end_lnum = @as(i32, @intCast(out_end)) + 1,
+                    .end_col = span.end_col,
+                });
             }
         }
     }
@@ -368,38 +366,37 @@ pub noinline fn extractHoverHighlights(
     // Add YacTsComment highlights for non-code-block, non-empty lines (doc text)
     for (out_map.items, 0..) |_, out_i| {
         if (code_out_lines.contains(@intCast(out_i))) continue;
-        const line_str = switch (lines_arr.items[out_i]) {
-            .string => |s| s,
-            else => continue,
-        };
+        const line_str = lines_list.items[out_i];
         if (std.mem.trim(u8, line_str, " \t").len == 0) continue;
 
-        const lnum_1: i64 = @as(i64, @intCast(out_i)) + 1;
-        var pos = std.json.Array.init(allocator);
-        try pos.ensureTotalCapacity(4);
-        pos.appendAssumeCapacity(json.jsonInteger(lnum_1));
-        pos.appendAssumeCapacity(json.jsonInteger(1));
-        pos.appendAssumeCapacity(json.jsonInteger(lnum_1));
-        pos.appendAssumeCapacity(json.jsonInteger(@as(i64, @intCast(line_str.len)) + 1));
+        const lnum_1: i32 = @as(i32, @intCast(out_i)) + 1;
 
         const gop = try merged_groups.getOrPut("YacTsComment");
         if (!gop.found_existing) {
-            gop.value_ptr.* = std.json.Array.init(allocator);
+            gop.value_ptr.* = .empty;
         }
-        try gop.value_ptr.append(.{ .array = pos });
+        try gop.value_ptr.append(allocator, .{
+            .lnum = lnum_1,
+            .col = 1,
+            .end_lnum = lnum_1,
+            .end_col = @as(i32, @intCast(line_str.len)) + 1,
+        });
     }
 
-    // Build highlights JSON object
-    var hl_obj = ObjectMap.init(allocator);
+    // Build highlights groups slice
+    var group_list: std.ArrayList(highlights_mod.GroupHighlights) = .empty;
     var mit = merged_groups.iterator();
     while (mit.next()) |entry| {
-        try hl_obj.put(entry.key_ptr.*, .{ .array = entry.value_ptr.* });
+        try group_list.append(allocator, .{
+            .group = entry.key_ptr.*,
+            .spans = entry.value_ptr.items,
+        });
     }
 
-    return json.buildObject(allocator, .{
-        .{ "lines", .{ .array = lines_arr } },
-        .{ "highlights", .{ .object = hl_obj } },
-    });
+    return .{
+        .lines = lines_list.items,
+        .groups = group_list.items,
+    };
 }
 
 // ============================================================================
@@ -810,25 +807,11 @@ test "extractHoverHighlights zig code blocks" {
     try std.testing.expect(c4 > 0);
 }
 
-/// Count total highlight entries across all groups in an extractHighlights result.
-fn countHighlights(val: Value) usize {
-    const obj = switch (val) {
-        .object => |o| o,
-        else => return 0,
-    };
-    const groups_val = obj.get("highlights") orelse return 0;
-    const groups = switch (groups_val) {
-        .object => |o| o,
-        else => return 0,
-    };
+/// Count total highlight entries across all groups in a HoverResult.
+fn countHighlights(result: HoverResult) usize {
     var total: usize = 0;
-    var it = groups.iterator();
-    while (it.next()) |entry| {
-        const arr = switch (entry.value_ptr.*) {
-            .array => |a| a,
-            else => continue,
-        };
-        total += arr.items.len;
+    for (result.groups) |g| {
+        total += g.spans.len;
     }
     return total;
 }
