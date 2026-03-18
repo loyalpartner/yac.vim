@@ -30,7 +30,7 @@ pub fn restrictSocketPermissions(socket_path: []const u8) void {
     _ = std.c.chmod(path_z, 0o600);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -38,8 +38,8 @@ pub fn main() !void {
     log.init();
     defer log.deinit();
 
-    // Setup I/O subsystem
-    var threaded: Io.Threaded = .init(allocator, .{});
+    // Setup I/O subsystem — pass environ so child processes inherit env vars
+    var threaded: Io.Threaded = .init(allocator, .{ .environ = init.environ });
     defer threaded.deinit();
     const io = threaded.io();
 
