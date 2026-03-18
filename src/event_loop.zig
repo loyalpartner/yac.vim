@@ -34,6 +34,8 @@ pub const EventLoop = struct {
     picker: picker_mod.Picker,
     /// Protects tree-sitter state (not thread-safe) from concurrent access
     ts_lock: std.atomic.Mutex = .unlocked,
+    /// Protects handler/registry shared state from concurrent coroutine access
+    dispatch_lock: std.atomic.Mutex = .unlocked,
 
     // Shared subsystem state (initialized in run())
     handler: handler_mod.Handler = undefined,
@@ -215,7 +217,7 @@ pub const EventLoop = struct {
             .request => |r| {
                 log.debug("Request [{d}]: {s}", .{ r.id, r.method });
                 if (isBlockingLspMethod(r.method)) {
-                    // Spawn in separate coroutine to avoid blocking the client
+                    // Spawn in separate coroutine to avoid blocking the client read loop
                     const line_copy = self.allocator.dupe(u8, raw_line) catch return;
                     group.concurrent(self.io, asyncLspRequest, .{
                         self, line_copy, writer, write_lock,
@@ -224,12 +226,16 @@ pub const EventLoop = struct {
                         self.allocator.free(line_copy);
                     };
                 } else {
+                    while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
+                    defer self.dispatch_lock.unlock();
                     const result = self.dispatch(alloc, r.method, r.params);
                     self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
                 }
             },
             .notification => |n| {
                 log.debug("Notification: {s}", .{n.method});
+                while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
+                defer self.dispatch_lock.unlock();
                 _ = self.dispatch(alloc, n.method, n.params);
             },
             .response => {
@@ -257,8 +263,10 @@ pub const EventLoop = struct {
 
         switch (msg) {
             .request => |r| {
+                while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
                 self.handler.client_writer = writer;
                 const result = self.dispatch(alloc, r.method, r.params);
+                self.dispatch_lock.unlock();
                 self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
             },
             else => {},
