@@ -30,6 +30,8 @@ pub const EventLoop = struct {
     shutdown_event: Io.Event,
     lsp: lsp_mod.Lsp,
     ts: treesitter_mod.TreeSitter,
+    /// Protects shared state (handler, lsp, ts) from concurrent access by client coroutines
+    dispatch_lock: Io.Mutex = .init,
 
     // Shared subsystem state (initialized in run())
     handler: handler_mod.Handler = undefined,
@@ -166,6 +168,10 @@ pub const EventLoop = struct {
 
     /// Process a single JSON-RPC line from a Vim client.
     fn processLine(self: *EventLoop, alloc: Allocator, line: []const u8, fd: std.posix.fd_t) void {
+        // Lock shared state — multiple client coroutines may run concurrently
+        self.dispatch_lock.lockUncancelable(self.io);
+        defer self.dispatch_lock.unlock(self.io);
+
         // Set per-request context
         self.handler.client_fd = fd;
         // Parse JSON
