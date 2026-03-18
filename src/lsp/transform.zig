@@ -142,7 +142,19 @@ pub fn transformLspResult(alloc: Allocator, method: []const u8, result: Value, s
         return transformInlineCompletionResult(alloc, result) catch .null;
     }
 
-    return result;
+    // Unknown method: clone result into alloc so it survives after SendResult.deinit().
+    // Without this, the returned Value points into freed parsed memory (use-after-free).
+    return cloneValue(alloc, result);
+}
+
+/// Deep-clone a Value into a different allocator via serialize + reparse.
+/// The cloned Value is fully owned by `alloc` and independent of the source.
+fn cloneValue(alloc: Allocator, value: Value) Value {
+    if (value == .null) return .null;
+    const serialized = json_utils.stringifyAlloc(alloc, value) catch return .null;
+    const reparsed = std.json.parseFromSlice(Value, alloc, serialized, .{}) catch return .null;
+    // Don't deinit reparsed — alloc (arena) owns everything, freed when arena is freed.
+    return reparsed.value;
 }
 
 // ============================================================================
@@ -188,8 +200,10 @@ test "escapeVimString — truncation at 200 chars" {
 }
 
 test "transformLspResult — dispatches by method" {
-    const alloc = std.testing.allocator;
-    // Unknown method returns result as-is
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    // Unknown method clones result into alloc
     const result = transformLspResult(alloc, "unknown_method", json_utils.jsonString("test"), null);
     try std.testing.expectEqualStrings("test", result.string);
 }
@@ -298,11 +312,10 @@ test "transformLspResult — unknown method passes through" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    _ = alloc;
 
     const input = json_utils.jsonString("some_data");
-    const result = transformLspResult(std.testing.allocator, "unknown_method", input, null);
-    try std.testing.expect(std.meta.eql(result, input));
+    const result = transformLspResult(alloc, "unknown_method", input, null);
+    try std.testing.expectEqualStrings("some_data", result.string);
 }
 
 test "formatToastCmd — without highlight" {
