@@ -28,6 +28,42 @@ const LspContext = struct {
 };
 
 // ============================================================================
+// Vim response types (used by handler return values)
+// ============================================================================
+
+/// A single item in the picker symbol list.
+const PickerSymbolItem = struct {
+    label: []const u8,
+    detail: []const u8,
+    file: []const u8,
+    line: i32,
+    column: i32,
+    depth: i32,
+    kind: []const u8,
+};
+
+/// Result of a picker symbol query.
+const PickerSymbolResult = struct {
+    items: []const PickerSymbolItem,
+    mode: []const u8 = "symbol",
+};
+
+const LspStatusResult = struct {
+    ready: bool,
+    state: ?[]const u8 = null,
+    initializing: ?bool = null,
+    reason: ?[]const u8 = null,
+};
+
+const ActionResult = struct {
+    action: []const u8,
+};
+
+const OkResult = struct {
+    ok: bool,
+};
+
+// ============================================================================
 // Handler — Vim method handlers for VimServer dispatch (Zig 0.16)
 //
 // In the coroutine model, LSP handlers block internally via
@@ -599,71 +635,44 @@ pub const Handler = struct {
     // LSP status/lifecycle
     // ========================================================================
 
-    pub fn lsp_status(self: *Handler, alloc: Allocator, p: struct {
+    pub fn lsp_status(self: *Handler, _: Allocator, p: struct {
         file: []const u8,
-    }) !Value {
-        const registry = self.registry orelse {
-            return try json.buildObject(alloc, .{
-                .{ "ready", .{ .bool = false } },
-                .{ "reason", json.jsonString("not_initialized") },
-            });
-        };
+    }) !LspStatusResult {
+        const registry = self.registry orelse
+            return .{ .ready = false, .reason = "not_initialized" };
 
         const real_path = lsp_registry_mod.extractRealPath(p.file);
-        const language = LspRegistry.detectLanguage(real_path) orelse {
-            return try json.buildObject(alloc, .{
-                .{ "ready", .{ .bool = false } },
-                .{ "reason", json.jsonString("unsupported_language") },
-            });
-        };
+        const language = LspRegistry.detectLanguage(real_path) orelse
+            return .{ .ready = false, .reason = "unsupported_language" };
 
         if (registry.findClient(language, real_path)) |cr| {
             const initializing = registry.isInitializing(cr.client_key);
             const state = cr.client.state;
-            const ready = state == .initialized and !initializing;
-
-            return try json.buildObject(alloc, .{
-                .{ "ready", json.jsonBool(ready) },
-                .{ "state", json.jsonString(@tagName(state)) },
-                .{ "initializing", json.jsonBool(initializing) },
-            });
-        } else {
-            return try json.buildObject(alloc, .{
-                .{ "ready", .{ .bool = false } },
-                .{ "reason", json.jsonString("no_client") },
-            });
+            return .{
+                .ready = state == .initialized and !initializing,
+                .state = @tagName(state),
+                .initializing = initializing,
+            };
         }
+        return .{ .ready = false, .reason = "no_client" };
     }
 
     pub fn file_open(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         text: ?[]const u8 = null,
-    }) !Value {
-        const registry = self.registry orelse {
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("none") },
-            });
-        };
+    }) !ActionResult {
+        const none: ActionResult = .{ .action = "none" };
+        const registry = self.registry orelse return none;
 
         const real_path = lsp_registry_mod.extractRealPath(p.file);
-        const language = LspRegistry.detectLanguage(real_path) orelse {
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("none") },
-            });
-        };
+        const language = LspRegistry.detectLanguage(real_path) orelse return none;
 
-        if (registry.hasSpawnFailed(language)) {
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("none") },
-            });
-        }
+        if (registry.hasSpawnFailed(language)) return none;
 
         const result = registry.getOrCreateClient(language, real_path) catch |e| {
             log.err("LSP server not available for {s}: {any}", .{ language, e });
             registry.markSpawnFailed(language);
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("none") },
-            });
+            return none;
         };
 
         const uri = try lsp_registry_mod.filePathToUri(alloc, real_path);
@@ -703,18 +712,14 @@ pub const Handler = struct {
             };
         }
 
-        return try json.buildObject(alloc, .{
-            .{ "action", json.jsonString("none") },
-        });
+        return none;
     }
 
-    pub fn lsp_reset_failed(self: *Handler, alloc: Allocator, p: struct {
+    pub fn lsp_reset_failed(self: *Handler, _: Allocator, p: struct {
         language: []const u8,
-    }) !Value {
+    }) !OkResult {
         if (self.registry) |r| r.resetSpawnFailed(p.language);
-        return try json.buildObject(alloc, .{
-            .{ "ok", .{ .bool = true } },
-        });
+        return .{ .ok = true };
     }
 
     // ========================================================================
@@ -816,13 +821,74 @@ pub const Handler = struct {
     pub fn workspace_symbol(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         query: []const u8 = "",
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+    }) !?PickerSymbolResult {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
         const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
             .query = p.query,
-        }) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformPickerSymbol(alloc, v);
+        }) catch return null;
+        return buildPickerSymbolsFromWorkspace(alloc, result);
+    }
+
+    fn buildPickerSymbolsFromWorkspace(alloc: Allocator, result: lsp_types.WorkspaceSymbolResult) ?PickerSymbolResult {
+        // workspace/symbol returns ?union { symbol_informations, workspace_symbols }
+        const syms = result orelse return null;
+
+        var items: std.ArrayList(PickerSymbolItem) = .empty;
+
+        switch (syms) {
+            .symbol_informations => |sis| {
+                for (sis) |si| {
+                    const kind_name = lsp_types.symbolKindStr(si.kind);
+                    const detail = if (si.containerName) |c|
+                        std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
+                    else
+                        kind_name;
+                    const file = lsp_types.uriToFilePath(alloc, si.location.uri) orelse "";
+                    items.append(alloc, .{
+                        .label = si.name,
+                        .detail = detail,
+                        .file = file,
+                        .line = @intCast(si.location.range.start.line),
+                        .column = @intCast(si.location.range.start.character),
+                        .depth = 0,
+                        .kind = kind_name,
+                    }) catch continue;
+                }
+            },
+            .workspace_symbols => |wss| {
+                for (wss) |ws| {
+                    const kind_name = lsp_types.symbolKindStr(ws.kind);
+                    const detail = if (ws.containerName) |c|
+                        std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
+                    else
+                        kind_name;
+                    // workspace.Symbol.location can be uri-only or full Location
+                    const file = switch (ws.location) {
+                        .location => |loc| lsp_types.uriToFilePath(alloc, loc.uri) orelse "",
+                        .location_uri_only => |u| lsp_types.uriToFilePath(alloc, u.uri) orelse "",
+                    };
+                    const line: i32 = switch (ws.location) {
+                        .location => |loc| @intCast(loc.range.start.line),
+                        .location_uri_only => 0,
+                    };
+                    const col: i32 = switch (ws.location) {
+                        .location => |loc| @intCast(loc.range.start.character),
+                        .location_uri_only => 0,
+                    };
+                    items.append(alloc, .{
+                        .label = ws.name,
+                        .detail = detail,
+                        .file = file,
+                        .line = line,
+                        .column = col,
+                        .depth = 0,
+                        .kind = kind_name,
+                    }) catch continue;
+                }
+            },
+        }
+
+        return .{ .items = items.items };
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
@@ -1081,14 +1147,12 @@ pub const Handler = struct {
         return .{ .ts = ts_state, .file = file, .lang_state = lang_state };
     }
 
-    pub fn load_language(self: *Handler, alloc: Allocator, p: struct {
+    pub fn load_language(self: *Handler, _: Allocator, p: struct {
         lang_dir: []const u8,
-    }) !Value {
-        const ts_state = self.ts orelse return .null;
+    }) !OkResult {
+        const ts_state = self.ts orelse return .{ .ok = false };
         ts_state.loadFromDir(p.lang_dir);
-        return try json.buildObject(alloc, .{
-            .{ "ok", .{ .bool = true } },
-        });
+        return .{ .ok = true };
     }
 
     pub fn ts_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -1213,10 +1277,8 @@ pub const Handler = struct {
         }
     }
 
-    pub fn picker_close(_: *Handler, alloc: Allocator) !Value {
-        return try json.buildObject(alloc, .{
-            .{ "action", json.jsonString("picker_close") },
-        });
+    pub fn picker_close(_: *Handler) !struct { action: []const u8 } {
+        return .{ .action = "picker_close" };
     }
     // ========================================================================
     // Copilot helpers
@@ -1384,21 +1446,18 @@ pub const Handler = struct {
     // Logging handlers
     // ========================================================================
 
-    pub fn set_log_level(_: *Handler, _: Allocator, p: struct { level: []const u8 }) !Value {
+    pub fn set_log_level(_: *Handler, _: Allocator, p: struct { level: []const u8 }) !?[]const u8 {
         const log_m = @import("log.zig");
         if (log_m.parseLevel(p.level)) |level| {
             log_m.setLevel(level);
-            return json.jsonString(@tagName(level));
+            return @tagName(level);
         }
-        return .null;
+        return null;
     }
 
-    pub fn get_log_file(_: *Handler, _: Allocator) !Value {
+    pub fn get_log_file(_: *Handler) !?[]const u8 {
         const log_m = @import("log.zig");
-        if (log_m.getLogFilePath()) |path| {
-            return json.jsonString(path);
-        }
-        return .null;
+        return log_m.getLogFilePath();
     }
 
     // DAP handlers — stub until DapClient is migrated to Io coroutine model

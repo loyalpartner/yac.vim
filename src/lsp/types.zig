@@ -115,6 +115,11 @@ pub fn uriToFilePath(alloc: std.mem.Allocator, uri: []const u8) ?[]const u8 {
     return lsp_registry_mod.uriToFilePathAlloc(alloc, uri);
 }
 
+/// LSP SymbolKind enum → display name.
+pub fn symbolKindStr(kind: lsp.SymbolKind) []const u8 {
+    return symbolKindName(@intFromEnum(kind));
+}
+
 /// LSP SymbolKind integer → display name.
 pub fn symbolKindName(kind: ?i64) []const u8 {
     const k = kind orelse return "Symbol";
