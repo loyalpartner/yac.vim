@@ -124,6 +124,10 @@ pub const EventLoop = struct {
         var writer = stream.writer(self.io, &write_buf);
         var write_lock: Io.Mutex = .init;
 
+        // Set Vim writer on LSP registry so readLoop can forward notifications
+        self.lsp.registry.setVimWriter(&writer.interface, &write_lock);
+        defer self.lsp.registry.clearVimWriter();
+
         // Group for spawned async LSP request coroutines
         var request_group: Io.Group = .init;
         defer request_group.cancel(self.io);

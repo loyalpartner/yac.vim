@@ -48,6 +48,9 @@ pub const LspRegistry = struct {
     copilot_client: ?*LspClient = null,
     /// Whether Copilot client spawn has been attempted and failed
     copilot_spawn_failed: bool = false,
+    /// Vim writer for notification forwarding (set by clientCoroutine)
+    vim_writer: ?*Io.Writer = null,
+    vim_write_lock: ?*Io.Mutex = null,
 
     pub const copilot_key = "copilot";
 
@@ -160,7 +163,9 @@ pub const LspRegistry = struct {
             return null;
         };
 
-        // Start readLoop BEFORE sending initialize (readLoop handles the response)
+        // Set Vim writer for notification forwarding + start readLoop
+        client.vim_writer = self.vim_writer;
+        client.vim_write_lock = self.vim_write_lock;
         client.startReadLoop(&self.lsp_group);
 
         const init_id = client.initializeCopilot() catch {
@@ -280,6 +285,10 @@ pub const LspRegistry = struct {
         const key = try self.allocator.dupe(u8, lookup_key);
         errdefer self.allocator.free(key);
 
+        // Set Vim writer for notification forwarding
+        client.vim_writer = self.vim_writer;
+        client.vim_write_lock = self.vim_write_lock;
+
         // Start readLoop BEFORE sending initialize (readLoop handles the response)
         client.startReadLoop(&self.lsp_group);
 
@@ -394,6 +403,37 @@ pub const LspRegistry = struct {
             .null => false,
             else => true,
         };
+    }
+
+    /// Set Vim writer on all existing and future LSP clients for notification forwarding.
+    pub fn setVimWriter(self: *LspRegistry, writer: *Io.Writer, lock: *Io.Mutex) void {
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.vim_writer = writer;
+            entry.value_ptr.*.vim_write_lock = lock;
+        }
+        if (self.copilot_client) |c| {
+            c.vim_writer = writer;
+            c.vim_write_lock = lock;
+        }
+        // Store for future clients
+        self.vim_writer = writer;
+        self.vim_write_lock = lock;
+    }
+
+    /// Clear Vim writer (client disconnecting).
+    pub fn clearVimWriter(self: *LspRegistry) void {
+        var it = self.clients.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.*.vim_writer = null;
+            entry.value_ptr.*.vim_write_lock = null;
+        }
+        if (self.copilot_client) |c| {
+            c.vim_writer = null;
+            c.vim_write_lock = null;
+        }
+        self.vim_writer = null;
+        self.vim_write_lock = null;
     }
 
     /// Shutdown all clients (including copilot).

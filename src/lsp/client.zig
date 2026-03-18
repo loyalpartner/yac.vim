@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const json = @import("../json_utils.zig");
 const lsp = @import("protocol.zig");
+const vim = @import("../vim_protocol.zig");
+const lsp_transform = @import("transform.zig");
 const log = @import("../log.zig");
 
 const Allocator = std.mem.Allocator;
@@ -45,6 +47,9 @@ pub const LspClient = struct {
     waiters_lock: Io.Mutex = .init,
     /// Queued notifications for external processing
     queued_notifications: std.ArrayList(LspMessage),
+    /// Vim client writer for forwarding LSP notifications (progress, diagnostics)
+    vim_writer: ?*Io.Writer = null,
+    vim_write_lock: ?*Io.Mutex = null,
     /// Whether readLoop is running
     read_loop_started: bool = false,
 
@@ -96,10 +101,15 @@ pub const LspClient = struct {
 
     fn writeToStdin(self: *LspClient, data: []const u8) !void {
         const stdin = self.child.stdin orelse return error.StdinClosed;
-        var buf: [4096]u8 = undefined;
-        var file_writer = stdin.writerStreaming(self.io, &buf);
-        file_writer.interface.writeAll(data) catch return error.WriteFailed;
-        file_writer.interface.flush() catch return error.WriteFailed;
+        // Use raw C write to bypass Io runtime — ensures immediate pipe delivery.
+        // Io.File.Writer may buffer/batch writes in Io.Threaded context.
+        var written: usize = 0;
+        while (written < data.len) {
+            const n = std.c.write(stdin.handle, data[written..].ptr, data.len - written);
+            if (n < 0) return error.WriteFailed;
+            if (n == 0) return error.WriteFailed;
+            written += @intCast(n);
+        }
     }
 
     /// Start the readLoop coroutine. Must be called after spawn.
@@ -152,13 +162,9 @@ pub const LspClient = struct {
                         self.sendResponse(id, .null) catch {};
                         parsed.deinit();
                     } else {
-                        // Notification — queue for external processing
-                        self.queued_notifications.append(self.allocator, .{
-                            .parsed = parsed,
-                            .kind = .{ .notification = .{ .method = method, .params = params } },
-                        }) catch {
-                            parsed.deinit();
-                        };
+                        // Notification — forward to Vim if we have a writer
+                        self.forwardNotification(method, params);
+                        parsed.deinit();
                     }
                 } else if (obj.get("id")) |id_val| {
                     // Response — find and signal waiter
@@ -190,6 +196,57 @@ pub const LspClient = struct {
         }
 
         log.debug("LSP readLoop exiting", .{});
+    }
+
+    /// Forward an LSP notification to the Vim client (progress, diagnostics).
+    fn forwardNotification(self: *LspClient, method: []const u8, params: Value) void {
+        const writer = self.vim_writer orelse return;
+        const lock = self.vim_write_lock orelse return;
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        if (std.mem.eql(u8, method, "$/progress")) {
+            // Forward progress as toast ex command
+            const params_obj = switch (params) {
+                .object => |o| o,
+                else => return,
+            };
+            const value_obj = json.getObject(params_obj, "value") orelse return;
+            const kind = json.getString(value_obj, "kind") orelse return;
+            const message = json.getString(value_obj, "message");
+            const title = json.getString(value_obj, "title");
+            const percentage = json.getInteger(value_obj, "percentage");
+
+            if (lsp_transform.formatProgressToast(alloc, if (std.mem.eql(u8, kind, "begin")) title else null, message, percentage)) |echo_cmd| {
+                self.writeVimEx(alloc, writer, lock, echo_cmd);
+            }
+            if (std.mem.eql(u8, kind, "end")) {
+                if (lsp_transform.formatProgressToast(alloc, null, @as(?[]const u8, "Indexing complete"), null)) |cmd| {
+                    self.writeVimEx(alloc, writer, lock, cmd);
+                }
+            }
+        } else if (std.mem.eql(u8, method, "textDocument/publishDiagnostics")) {
+            // Forward diagnostics as JSON-RPC notification
+            const encoded = vim.encodeJsonRpcNotification(alloc, "diagnostics", params) catch return;
+            lock.lockUncancelable(self.io);
+            defer lock.unlock(self.io);
+            writer.writeAll(encoded) catch return;
+            writer.writeAll("\n") catch return;
+            writer.flush() catch return;
+        } else {
+            log.debug("LSP notification: {s}", .{method});
+        }
+    }
+
+    fn writeVimEx(self: *LspClient, alloc: Allocator, writer: *Io.Writer, lock: *Io.Mutex, command: []const u8) void {
+        const encoded = vim.encodeChannelCommand(alloc, .{ .ex = .{ .command = command } }) catch return;
+        lock.lockUncancelable(self.io);
+        defer lock.unlock(self.io);
+        writer.writeAll(encoded) catch return;
+        writer.writeAll("\n") catch return;
+        writer.flush() catch return;
     }
 
     /// Send a JSON-RPC request and block until the response arrives (via readLoop + Event).
