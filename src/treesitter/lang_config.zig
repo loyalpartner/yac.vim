@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = @import("../log.zig");
+const log = std.log.scoped(.lang_config);
 const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;

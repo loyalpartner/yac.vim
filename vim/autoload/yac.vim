@@ -136,6 +136,12 @@ endfunction
 " 启动 daemon 进程（fire-and-forget）
 function! s:start_daemon() abort
   let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/zig-out/bin/yacd'])
+  if exists('g:yac_log_level')
+    let l:cmd += ['--log-level', g:yac_log_level]
+  endif
+  if exists('g:yac_log_file')
+    let l:cmd += ['--log-file', g:yac_log_file]
+  endif
   " stoponexit='' means don't kill on VimLeave
   call job_start(l:cmd, {'stoponexit': ''})
   call s:debug_log('Started yacd daemon')

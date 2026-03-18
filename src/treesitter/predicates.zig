@@ -1,5 +1,6 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
+const log = std.log.scoped(.ts_predicates);
 
 /// Evaluate all predicates for a match. Returns true if all predicates pass.
 /// `#set!` predicates are skipped (metadata only, don't affect filtering).
@@ -189,7 +190,7 @@ pub fn simplePatternMatch(pattern: []const u8, text: []const u8) bool {
     // Unknown pattern — conservative: reject to prevent silent priority override.
     // A permissive `return true` here caused @constant.builtin to override @function
     // for ALL identifiers in C++, breaking highlighting for entire languages.
-    std.log.warn("simplePatternMatch: unknown regex pattern, rejecting: {s}", .{pattern});
+    log.warn("simplePatternMatch: unknown regex pattern, rejecting: {s}", .{pattern});
     return false;
 }
 

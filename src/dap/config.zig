@@ -91,7 +91,7 @@ pub fn findByLanguage(lang: []const u8) ?*const DapAdapterConfig {
 
 const json = @import("../json_utils.zig");
 const Value = json.Value;
-const log = @import("../log.zig");
+const log = std.log.scoped(.dap_config);
 
 /// Variable mapping for substitution in debug config strings.
 pub const VarMap = struct {

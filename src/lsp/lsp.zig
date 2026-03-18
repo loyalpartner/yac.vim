@@ -1,7 +1,7 @@
 const std = @import("std");
 const Io = std.Io;
 const lsp_registry_mod = @import("registry.zig");
-const log = @import("../log.zig");
+const log = std.log.scoped(.lsp);
 
 const Allocator = std.mem.Allocator;
 pub const ClientId = u32;

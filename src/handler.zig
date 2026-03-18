@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = @import("json_utils.zig");
-const log = @import("log.zig");
+const log = std.log.scoped(.handler);
 const Io = std.Io;
 const lsp_registry_mod = @import("lsp/registry.zig");
 const lsp_mod = @import("lsp/lsp.zig");
@@ -1384,6 +1384,27 @@ pub const Handler = struct {
             log.err("Failed to send Copilot partial accept: {any}", .{e});
         };
     }
+    // ========================================================================
+    // Logging handlers
+    // ========================================================================
+
+    pub fn set_log_level(_: *Handler, _: Allocator, p: struct { level: []const u8 }) !Value {
+        const log_m = @import("log.zig");
+        if (log_m.parseLevel(p.level)) |level| {
+            log_m.setLevel(level);
+            return json.jsonString(@tagName(level));
+        }
+        return .null;
+    }
+
+    pub fn get_log_file(_: *Handler, _: Allocator) !Value {
+        const log_m = @import("log.zig");
+        if (log_m.getLogFilePath()) |path| {
+            return json.jsonString(path);
+        }
+        return .null;
+    }
+
     // DAP handlers — stub until DapClient is migrated to Io coroutine model
     // (DapClient currently uses sync std.process.Child, needs Io-based spawn + readLoop)
     pub fn dap_load_config(_: *Handler) !void {}

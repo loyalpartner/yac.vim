@@ -2,7 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const json = @import("../json_utils.zig");
 const LspClient = @import("client.zig").LspClient;
-const log = @import("../log.zig");
+const log = std.log.scoped(.lsp_registry);
 const lsp_config = @import("config.zig");
 const path_utils = @import("path_utils.zig");
 

@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
-const log = @import("../log.zig");
+const log = std.log.scoped(.dap_session);
 const dap_client_mod = @import("client.zig");
 const dap_protocol = @import("protocol.zig");
 

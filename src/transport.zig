@@ -2,7 +2,7 @@ const std = @import("std");
 const queue_mod = @import("queue.zig");
 const vim = @import("vim_protocol.zig");
 const json = @import("json_utils.zig");
-const log = @import("log.zig");
+const log = std.log.scoped(.transport);
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;

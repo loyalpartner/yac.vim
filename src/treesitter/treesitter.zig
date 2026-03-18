@@ -3,7 +3,7 @@ const ts = @import("tree_sitter");
 const queries_mod = @import("queries.zig");
 const lang_config = @import("lang_config.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
-const log = @import("../log.zig");
+const log = std.log.scoped(.treesitter);
 const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;

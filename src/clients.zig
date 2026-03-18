@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = @import("log.zig");
+const log = std.log.scoped(.clients);
 const transport_mod = @import("transport.zig");
 const queue_mod = @import("queue.zig");
 

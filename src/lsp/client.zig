@@ -5,7 +5,7 @@ const lsp = @import("protocol.zig");
 const lsp_kit = @import("lsp");
 const vim = @import("../vim_protocol.zig");
 const lsp_transform = @import("transform.zig");
-const log = @import("../log.zig");
+const log = std.log.scoped(.lsp_client);
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;

@@ -1,8 +1,14 @@
 const std = @import("std");
 const Io = std.Io;
-const log = @import("log.zig");
+const log_mod = @import("log.zig");
+const log = std.log.scoped(.main);
 const compat = @import("compat.zig");
 const EventLoop = @import("event_loop.zig").EventLoop;
+
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .logFn = log_mod.stdLogBridge,
+};
 
 // ============================================================================
 // Socket path helper
@@ -21,7 +27,6 @@ fn getSocketPath(buf: []u8) []const u8 {
 /// Restrict a Unix socket file to owner-only access (0o600).
 /// Uses POSIX fchmod via std.c since Zig 0.16 fs API requires Io.
 pub fn restrictSocketPermissions(socket_path: []const u8) void {
-    // Use posix.chmod directly (no Io needed for C-level call)
     var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (socket_path.len >= path_buf.len) return;
     @memcpy(path_buf[0..socket_path.len], socket_path);
@@ -35,8 +40,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    log.init();
-    defer log.deinit();
+    // Parse CLI arguments: --log-level <level> --log-file <path>
+    var args_iter: std.process.Args.Iterator = .init(init.args);
+    _ = args_iter.skip(); // skip argv[0]
+    var cli_log_level: ?log_mod.Level = null;
+    var cli_log_file: ?[]const u8 = null;
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--log-level")) {
+            if (args_iter.next()) |val| cli_log_level = log_mod.parseLevel(val);
+        } else if (std.mem.eql(u8, arg, "--log-file")) {
+            if (args_iter.next()) |val| cli_log_file = val;
+        }
+    }
+
+    log_mod.initWithArgs(cli_log_level, cli_log_file);
+    defer log_mod.deinit();
 
     // Setup I/O subsystem — pass environ so child processes inherit env vars
     var threaded: Io.Threaded = .init(allocator, .{ .environ = init.environ });
@@ -85,6 +103,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 // ============================================================================
 
 test {
+    _ = @import("log.zig");
     _ = @import("compat.zig");
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
@@ -92,6 +111,3 @@ test {
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/transform.zig");
 }
-
-// test "restrictSocketPermissions" removed — std.c.stat unavailable on Linux in 0.16
-// The function is still tested implicitly by E2E tests.

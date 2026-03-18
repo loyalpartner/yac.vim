@@ -1,5 +1,4 @@
 const std = @import("std");
-const log = @import("../log.zig");
 const lsp_config = @import("config.zig");
 
 const Allocator = std.mem.Allocator;

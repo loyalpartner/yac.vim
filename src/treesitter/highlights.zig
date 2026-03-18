@@ -3,7 +3,7 @@ const ts = @import("tree_sitter");
 const json = @import("../json_utils.zig");
 const predicates = @import("predicates.zig");
 const TreeSitter = @import("treesitter.zig").TreeSitter;
-const log = @import("../log.zig");
+const log = std.log.scoped(.ts_highlights);
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;

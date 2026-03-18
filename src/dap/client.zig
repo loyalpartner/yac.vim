@@ -1,6 +1,6 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
-const log = @import("../log.zig");
+const log = std.log.scoped(.dap_client);
 const protocol = @import("protocol.zig");
 
 const Allocator = std.mem.Allocator;

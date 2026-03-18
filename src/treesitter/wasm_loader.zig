@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ts = @import("tree_sitter");
-const log = @import("../log.zig");
+const log = std.log.scoped(.wasm_loader);
 const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;

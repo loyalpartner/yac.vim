@@ -7,7 +7,7 @@ const handler_mod = @import("handler.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const picker_mod = @import("picker.zig");
-const log = @import("log.zig");
+const log = std.log.scoped(.event_loop);
 const compat = @import("compat.zig");
 
 const Allocator = std.mem.Allocator;
