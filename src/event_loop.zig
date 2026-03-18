@@ -48,7 +48,7 @@ pub const EventLoop = struct {
             .server = server,
             .shutdown_event = .unset,
             .lsp = lsp_mod.Lsp.init(allocator, io),
-            .ts = treesitter_mod.TreeSitter.init(allocator),
+            .ts = treesitter_mod.TreeSitter.init(allocator, io),
             .picker = picker_mod.Picker.init(allocator, io),
         };
     }

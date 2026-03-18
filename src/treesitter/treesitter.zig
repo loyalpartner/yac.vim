@@ -139,8 +139,11 @@ pub const TreeSitter = struct {
     wasm_loader: ?WasmLoader,
     /// Known language directories for lazy loading.
     lang_dirs: std.ArrayList([]const u8),
+    /// Protects all mutable state from concurrent coroutine access.
+    mutex: std.Io.Mutex = .init,
+    io: std.Io,
 
-    pub fn init(allocator: Allocator) TreeSitter {
+    pub fn init(allocator: Allocator, io: std.Io) TreeSitter {
         const wasm_loader: ?WasmLoader = WasmLoader.init(allocator) catch |e| blk: {
             log.err("TreeSitter: WASM loader init failed, running without tree-sitter: {any}", .{e});
             break :blk null;
@@ -152,6 +155,7 @@ pub const TreeSitter = struct {
             .buffers = std.StringHashMap(BufferTree).init(allocator),
             .wasm_loader = wasm_loader,
             .lang_dirs = .empty,
+            .io = io,
         };
 
         // Load languages from user config (~/.config/yac/languages.json)
@@ -200,6 +204,8 @@ pub const TreeSitter = struct {
     /// Queries are loaded from {lang_dir}/queries/.
     /// Also registers sibling directories for lazy loading (injection support).
     pub fn loadFromDir(self: *TreeSitter, lang_dir: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         self.addLangDir(self.allocator.dupe(u8, lang_dir) catch return);
         const configs = lang_config.loadFromDir(self.allocator, lang_dir) orelse {
             log.warn("TreeSitter: no languages found in {s}", .{lang_dir});
@@ -313,6 +319,8 @@ pub const TreeSitter = struct {
 
     /// Look up a LangState by name, lazily loading from known directories if needed.
     pub fn findOrLoadLangState(self: *TreeSitter, name: []const u8) ?*const LangState {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.findLangStateByName(name)) |ls| return ls;
 
         // Try loading from known directories
@@ -348,7 +356,9 @@ pub const TreeSitter = struct {
     }
 
     /// Look up a LangState by file extension.
-    pub fn fromExtension(self: *const TreeSitter, path: []const u8) ?*const LangState {
+    pub fn fromExtension(self: *TreeSitter, path: []const u8) ?*const LangState {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const dl = self.findDynamicLangForFile(path) orelse return null;
         return &dl.lang.state;
     }
@@ -366,6 +376,8 @@ pub const TreeSitter = struct {
     }
 
     pub fn parseBuffer(self: *TreeSitter, file_path: []const u8, source: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const dl = self.findDynamicLangForFile(file_path) orelse return error.UnsupportedLanguage;
         const ls: *LangState = &dl.lang.state;
 
@@ -401,6 +413,8 @@ pub const TreeSitter = struct {
     }
 
     pub fn removeBuffer(self: *TreeSitter, file_path: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.buffers.fetchRemove(file_path)) |kv| {
             var buf = kv.value;
             buf.deinit(self.allocator);
@@ -408,12 +422,16 @@ pub const TreeSitter = struct {
         }
     }
 
-    pub fn getTree(self: *const TreeSitter, file_path: []const u8) ?*const ts.Tree {
+    pub fn getTree(self: *TreeSitter, file_path: []const u8) ?*const ts.Tree {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const buf = self.buffers.get(file_path) orelse return null;
         return buf.tree;
     }
 
-    pub fn getSource(self: *const TreeSitter, file_path: []const u8) ?[]const u8 {
+    pub fn getSource(self: *TreeSitter, file_path: []const u8) ?[]const u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const buf = self.buffers.get(file_path) orelse return null;
         return buf.source;
     }
