@@ -952,10 +952,11 @@ pub const Handler = struct {
     pub fn ts_folding(self: *Handler, _: Allocator, p: struct {
         file: []const u8,
         text: ?[]const u8 = null,
-    }) !?treesitter_mod.folds.FoldsResult {
-        const tc = self.getTsCtx(p.file, p.text) orelse return null;
-        const tree = tc.ts.getTree(tc.file) orelse return null;
-        const folds_query = tc.lang_state.folds orelse return null;
+    }) !treesitter_mod.folds.FoldsResult {
+        const empty: treesitter_mod.folds.FoldsResult = .{ .ranges = &.{} };
+        const tc = self.getTsCtx(p.file, p.text) orelse return empty;
+        const tree = tc.ts.getTree(tc.file) orelse return empty;
+        const folds_query = tc.lang_state.folds orelse return empty;
         return try treesitter_mod.folds.extractFolds(self.gpa, folds_query, tree);
     }
 
