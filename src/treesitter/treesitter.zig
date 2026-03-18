@@ -138,7 +138,7 @@ pub const TreeSitter = struct {
     /// tree-sitter support rather than crashing (graceful degradation).
     wasm_loader: ?WasmLoader,
     /// Known language directories for lazy loading.
-    lang_dirs: std.ArrayListUnmanaged([]const u8),
+    lang_dirs: std.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) TreeSitter {
         const wasm_loader: ?WasmLoader = WasmLoader.init(allocator) catch |e| blk: {

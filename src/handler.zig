@@ -66,8 +66,8 @@ pub const Handler = struct {
     registry: ?*LspRegistry = null,
     ts: ?*treesitter_mod.TreeSitter = null,
 
-    /// Per-request: fd of the current Vim client (for async notifications)
-    client_fd: std.posix.fd_t = -1,
+    /// Per-request: writer for the current Vim client (for async notifications)
+    client_writer: ?*Io.Writer = null,
 
     // ========================================================================
     // Private helpers
@@ -352,6 +352,22 @@ pub const Handler = struct {
 
     pub fn diagnostics(_: *Handler) !void {}
 
+    pub fn workspace_symbol(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        query: []const u8 = "",
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const ws_params = try json.buildObject(alloc, .{
+            .{ "query", json.jsonString(p.query) },
+        });
+        var result = lsp_ctx.client.sendRequest("workspace/symbol", ws_params) catch |e| {
+            log.err("LSP workspace/symbol failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+    }
+
     pub fn did_change(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         version: i64 = 1,
@@ -485,11 +501,117 @@ pub const Handler = struct {
     // Stubs — will be migrated incrementally
     // ========================================================================
 
-    pub fn inlay_hints(_: *Handler) !void {}
-    pub fn folding_range(_: *Handler) !void {}
-    pub fn semantic_tokens(_: *Handler) !void {}
-    pub fn range_formatting(_: *Handler) !void {}
-    pub fn execute_command(_: *Handler) !void {}
+    pub fn inlay_hints(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        start_line: u32 = 0,
+        end_line: u32 = 100,
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const lsp_params = try json.buildObject(alloc, .{
+            .{ "textDocument", try json.buildObject(alloc, .{
+                .{ "uri", json.jsonString(lsp_ctx.uri) },
+            }) },
+            .{ "range", try json.buildObject(alloc, .{
+                .{ "start", try json.buildObject(alloc, .{
+                    .{ "line", json.jsonInteger(@intCast(p.start_line)) },
+                    .{ "character", json.jsonInteger(0) },
+                }) },
+                .{ "end", try json.buildObject(alloc, .{
+                    .{ "line", json.jsonInteger(@intCast(p.end_line)) },
+                    .{ "character", json.jsonInteger(0) },
+                }) },
+            }) },
+        });
+        var result = lsp_ctx.client.sendRequest("textDocument/inlayHint", lsp_params) catch |e| {
+            log.err("LSP inlayHint failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "inlay_hints", result.result, lsp_ctx.ssh_host);
+    }
+
+    pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
+        var result = lsp_ctx.client.sendRequest("textDocument/foldingRange", lsp_params) catch |e| {
+            log.err("LSP foldingRange failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "folding_range", result.result, lsp_ctx.ssh_host);
+    }
+
+    pub fn semantic_tokens(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
+        var result = lsp_ctx.client.sendRequest("textDocument/semanticTokens/full", lsp_params) catch |e| {
+            log.err("LSP semanticTokens failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "semantic_tokens", result.result, lsp_ctx.ssh_host);
+    }
+
+    pub fn range_formatting(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        start_line: u32 = 0,
+        start_column: u32 = 0,
+        end_line: u32 = 0,
+        end_column: u32 = 0,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        const lsp_params = try json.buildObject(alloc, .{
+            .{ "textDocument", try json.buildObject(alloc, .{
+                .{ "uri", json.jsonString(lsp_ctx.uri) },
+            }) },
+            .{ "options", try json.buildObject(alloc, .{
+                .{ "tabSize", json.jsonInteger(p.tab_size) },
+                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
+            }) },
+            .{ "range", try json.buildObject(alloc, .{
+                .{ "start", try json.buildObject(alloc, .{
+                    .{ "line", json.jsonInteger(@intCast(p.start_line)) },
+                    .{ "character", json.jsonInteger(@intCast(p.start_column)) },
+                }) },
+                .{ "end", try json.buildObject(alloc, .{
+                    .{ "line", json.jsonInteger(@intCast(p.end_line)) },
+                    .{ "character", json.jsonInteger(@intCast(p.end_column)) },
+                }) },
+            }) },
+        });
+        var result = lsp_ctx.client.sendRequest("textDocument/rangeFormatting", lsp_params) catch |e| {
+            log.err("LSP rangeFormatting failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "range_formatting", result.result, lsp_ctx.ssh_host);
+    }
+
+    pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        lsp_command: []const u8,
+        arguments: ?Value = null,
+    }) !Value {
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        var lsp_params = try json.buildObjectMap(alloc, .{
+            .{ "command", json.jsonString(p.lsp_command) },
+        });
+        if (p.arguments) |args| {
+            try lsp_params.put("arguments", args);
+        }
+        var result = lsp_ctx.client.sendRequest("workspace/executeCommand", .{ .object = lsp_params }) catch |e| {
+            log.err("LSP executeCommand failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "execute_command", result.result, null);
+    }
     pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         line: u32,
@@ -611,17 +733,267 @@ pub const Handler = struct {
         const ts_state = self.ts orelse return .null;
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, ts_state, p.markdown, p.filetype);
     }
-    pub fn picker_open(_: *Handler) !void {}
-    pub fn picker_query(_: *Handler) !void {}
-    pub fn picker_close(_: *Handler) !void {}
-    pub fn copilot_sign_in(_: *Handler) !void {}
-    pub fn copilot_sign_out(_: *Handler) !void {}
-    pub fn copilot_check_status(_: *Handler) !void {}
-    pub fn copilot_sign_in_confirm(_: *Handler) !void {}
-    pub fn copilot_complete(_: *Handler) !void {}
-    pub fn copilot_did_focus(_: *Handler) !void {}
-    pub fn copilot_accept(_: *Handler) !void {}
-    pub fn copilot_partial_accept(_: *Handler) !void {}
+    pub fn picker_open(_: *Handler, alloc: Allocator, p: struct {
+        cwd: []const u8,
+        recent_files: ?Value = null,
+    }) !Value {
+        var result = try json.buildObjectMap(alloc, .{
+            .{ "action", json.jsonString("picker_init") },
+            .{ "cwd", json.jsonString(p.cwd) },
+        });
+        if (p.recent_files) |rf| {
+            try result.put("recent_files", rf);
+        }
+        return .{ .object = result };
+    }
+
+    pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
+        query: []const u8 = "",
+        mode: []const u8 = "file",
+        file: ?[]const u8 = null,
+        text: ?[]const u8 = null,
+    }) !Value {
+        if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
+            const file = p.file orelse return .null;
+            const lsp_ctx = try self.getLspCtx(alloc, file) orelse return .null;
+            const ws_params = try json.buildObject(alloc, .{
+                .{ "query", json.jsonString(p.query) },
+            });
+            var result = lsp_ctx.client.sendRequest("workspace/symbol", ws_params) catch |e| {
+                log.err("LSP workspace/symbol failed: {any}", .{e});
+                return .null;
+            };
+            defer result.deinit();
+            return lsp_transform.transformLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
+        } else if (std.mem.eql(u8, p.mode, "grep")) {
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("picker_grep_query") },
+                .{ "query", json.jsonString(p.query) },
+            });
+        } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
+            const tc = self.getTsCtx(p.file orelse return .null, p.text) orelse return .null;
+            const tree = tc.ts.getTree(tc.file) orelse return .null;
+            const source = tc.ts.getSource(tc.file) orelse return .null;
+            const sym_query = tc.lang_state.symbols orelse return .null;
+            return try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
+        } else {
+            return try json.buildObject(alloc, .{
+                .{ "action", json.jsonString("picker_file_query") },
+                .{ "query", json.jsonString(p.query) },
+            });
+        }
+    }
+
+    pub fn picker_close(_: *Handler, alloc: Allocator) !Value {
+        return try json.buildObject(alloc, .{
+            .{ "action", json.jsonString("picker_close") },
+        });
+    }
+    // ========================================================================
+    // Copilot helpers
+    // ========================================================================
+
+    fn getCopilotClient(self: *Handler) ?*LspClient {
+        const registry = self.registry orelse return null;
+        return registry.getOrCreateCopilotClient();
+    }
+
+    fn copilotReady(self: *Handler) bool {
+        const registry = self.registry orelse return false;
+        return !registry.isInitializing(LspRegistry.copilot_key);
+    }
+
+    fn ensureCopilotDidOpen(_: *Handler, alloc: Allocator, client: *LspClient, file: []const u8) void {
+        const real_path = lsp_registry_mod.extractRealPath(file);
+        const uri = lsp_registry_mod.filePathToUri(alloc, real_path) catch return;
+        const language = LspRegistry.detectLanguage(real_path) orelse "plaintext";
+
+        // Read file content via C fopen (avoids Io dependency)
+        var path_z_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+        if (real_path.len >= path_z_buf.len) return;
+        @memcpy(path_z_buf[0..real_path.len], real_path);
+        path_z_buf[real_path.len] = 0;
+        const f = std.c.fopen(@ptrCast(path_z_buf[0..real_path.len :0]), "r") orelse return;
+        defer _ = std.c.fclose(f);
+        var file_buf: std.ArrayList(u8) = .empty;
+        var chunk: [4096]u8 = undefined;
+        while (true) {
+            const n = std.c.fread(&chunk, 1, chunk.len, f);
+            if (n == 0) break;
+            file_buf.appendSlice(alloc, chunk[0..n]) catch break;
+        }
+        const content = if (file_buf.items.len > 0) file_buf.items else return;
+
+        var td_item = ObjectMap.init(alloc);
+        td_item.put("uri", json.jsonString(uri)) catch return;
+        td_item.put("languageId", json.jsonString(language)) catch return;
+        td_item.put("version", json.jsonInteger(1)) catch return;
+        td_item.put("text", json.jsonString(content)) catch return;
+
+        var params_obj = ObjectMap.init(alloc);
+        params_obj.put("textDocument", .{ .object = td_item }) catch return;
+
+        client.sendNotification("textDocument/didOpen", .{ .object = params_obj }) catch |e| {
+            log.err("Failed to send didOpen to Copilot: {any}", .{e});
+        };
+    }
+
+    // ========================================================================
+    // Copilot handlers
+    // ========================================================================
+
+    pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !Value {
+        const registry = self.registry orelse return .null;
+        registry.resetCopilotSpawnFailed();
+        const client = self.getCopilotClient() orelse return .null;
+        if (!self.copilotReady()) return .null;
+
+        var result = client.sendRequest("signIn", .{ .object = ObjectMap.init(alloc) }) catch |e| {
+            log.err("Copilot signIn failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "copilot_sign_in", result.result, null);
+    }
+
+    pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !Value {
+        const client = self.getCopilotClient() orelse return .null;
+        if (!self.copilotReady()) return .null;
+
+        var result = client.sendRequest("signOut", .{ .object = ObjectMap.init(alloc) }) catch |e| {
+            log.err("Copilot signOut failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "copilot_sign_out", result.result, null);
+    }
+
+    pub fn copilot_check_status(self: *Handler, alloc: Allocator) !Value {
+        const client = self.getCopilotClient() orelse return .null;
+        if (!self.copilotReady()) return .null;
+
+        var result = client.sendRequest("checkStatus", .{ .object = ObjectMap.init(alloc) }) catch |e| {
+            log.err("Copilot checkStatus failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "copilot_check_status", result.result, null);
+    }
+
+    pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, p: struct {
+        userCode: ?[]const u8 = null,
+    }) !Value {
+        const client = self.getCopilotClient() orelse return .null;
+        if (!self.copilotReady()) return .null;
+
+        var confirm_params = ObjectMap.init(alloc);
+        if (p.userCode) |code| {
+            try confirm_params.put("userCode", json.jsonString(code));
+        }
+
+        var result = client.sendRequest("signInConfirm", .{ .object = confirm_params }) catch |e| {
+            log.err("Copilot signInConfirm failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "copilot_sign_in_confirm", result.result, null);
+    }
+
+    pub fn copilot_complete(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !Value {
+        const client = self.getCopilotClient() orelse return .null;
+        if (!self.copilotReady()) return .null;
+
+        self.ensureCopilotDidOpen(alloc, client, p.file);
+
+        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
+
+        const lsp_params = try json.buildObject(alloc, .{
+            .{ "textDocument", try json.buildObject(alloc, .{
+                .{ "uri", json.jsonString(uri) },
+            }) },
+            .{ "position", try json.buildObject(alloc, .{
+                .{ "line", json.jsonInteger(@intCast(p.line)) },
+                .{ "character", json.jsonInteger(@intCast(p.column)) },
+            }) },
+            .{ "context", try json.buildObject(alloc, .{
+                .{ "triggerKind", json.jsonInteger(1) },
+            }) },
+            .{ "formattingOptions", try json.buildObject(alloc, .{
+                .{ "tabSize", json.jsonInteger(p.tab_size) },
+                .{ "insertSpaces", json.jsonBool(p.insert_spaces) },
+            }) },
+        });
+
+        var result = client.sendRequest("textDocument/inlineCompletion", lsp_params) catch |e| {
+            log.err("Copilot complete failed: {any}", .{e});
+            return .null;
+        };
+        defer result.deinit();
+        return lsp_transform.transformLspResult(alloc, "copilot_complete", result.result, null);
+    }
+
+    pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+    }) !void {
+        const client = self.getCopilotClient() orelse return;
+        if (!self.copilotReady()) return;
+
+        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
+        const notify_params = try json.buildObject(alloc, .{
+            .{ "textDocument", try json.buildObject(alloc, .{
+                .{ "uri", json.jsonString(uri) },
+            }) },
+        });
+        client.sendNotification("textDocument/didFocus", notify_params) catch |e| {
+            log.err("Failed to send didFocus to Copilot: {any}", .{e});
+        };
+    }
+
+    pub fn copilot_accept(self: *Handler, alloc: Allocator, p: struct {
+        uuid: ?Value = null,
+    }) !void {
+        const client = self.getCopilotClient() orelse return;
+        if (!self.copilotReady()) return;
+
+        var args = std.json.Array.init(alloc);
+        if (p.uuid) |uuid| {
+            try args.append(uuid);
+        }
+        const cmd_params = try json.buildObject(alloc, .{
+            .{ "command", json.jsonString("github.copilot.didAcceptCompletionItem") },
+            .{ "arguments", .{ .array = args } },
+        });
+        client.sendNotification("workspace/executeCommand", cmd_params) catch |e| {
+            log.err("Failed to send Copilot accept: {any}", .{e});
+        };
+    }
+
+    pub fn copilot_partial_accept(self: *Handler, alloc: Allocator, p: struct {
+        item_id: ?[]const u8 = null,
+        accepted_text: ?[]const u8 = null,
+    }) !void {
+        const client = self.getCopilotClient() orelse return;
+        if (!self.copilotReady()) return;
+
+        var notify_params = ObjectMap.init(alloc);
+        if (p.item_id) |id| {
+            try notify_params.put("itemId", json.jsonString(id));
+        }
+        if (p.accepted_text) |text| {
+            try notify_params.put("acceptedLength", json.jsonInteger(@intCast(text.len)));
+        }
+        client.sendNotification("textDocument/didPartiallyAcceptCompletion", .{ .object = notify_params }) catch |e| {
+            log.err("Failed to send Copilot partial accept: {any}", .{e});
+        };
+    }
+    // DAP handlers — stub until DapClient is migrated to Io coroutine model
+    // (DapClient currently uses sync std.process.Child, needs Io-based spawn + readLoop)
     pub fn dap_load_config(_: *Handler) !void {}
     pub fn dap_start(_: *Handler) !void {}
     pub fn dap_breakpoint(_: *Handler) !void {}

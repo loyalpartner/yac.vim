@@ -120,6 +120,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
 - After renaming or refactoring, grep for all usages of the old name to catch stale references.
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
+- **Prefer `std.ArrayList` over `std.ArrayListUnmanaged`**: In Zig 0.16, `ArrayList` uses the same API pattern (allocator passed per-call). Use `var list: std.ArrayList(T) = .empty;` (not `std.ArrayListUnmanaged(T){}`). `ArrayListUnmanaged` still exists but `.empty` is the correct init, not `{}`.
 
 ## Tree-sitter Gotchas
 

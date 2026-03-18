@@ -44,7 +44,7 @@ pub fn extractHighlights(
     cursor.exec(query, tree.rootNode());
 
     // Collect entries; dedup by (row, col) — last capture wins (higher priority).
-    var entries = std.ArrayListUnmanaged(HlEntry).empty;
+    var entries = std.ArrayList(HlEntry).empty;
     var best = std.AutoHashMap(u64, usize).init(allocator);
     defer best.deinit();
 
@@ -164,7 +164,7 @@ fn fillErrorGaps(
     source: []const u8,
     start_line: u32,
     end_line: u32,
-    entries: *std.ArrayListUnmanaged(HlEntry),
+    entries: *std.ArrayList(HlEntry),
     best: *std.AutoHashMap(u64, usize),
 ) !void {
     var tc = tree.rootNode().walk();
@@ -206,7 +206,7 @@ fn scanErrorBytes(
     node: ts.Node,
     start_line: u32,
     end_line: u32,
-    entries: *std.ArrayListUnmanaged(HlEntry),
+    entries: *std.ArrayList(HlEntry),
     best: *std.AutoHashMap(u64, usize),
 ) !void {
     const start_byte = node.startByte();

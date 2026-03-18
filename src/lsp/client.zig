@@ -88,11 +88,6 @@ pub const LspClient = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn stdoutFd(self: *LspClient) std.posix.fd_t {
-        const stdout = self.child.stdout orelse return -1;
-        return stdout.handle;
-    }
-
     fn nextId(self: *LspClient) u32 {
         var id = self.next_id.fetchAdd(1, .monotonic);
         if (id == 0) id = self.next_id.fetchAdd(1, .monotonic);
@@ -101,14 +96,10 @@ pub const LspClient = struct {
 
     fn writeToStdin(self: *LspClient, data: []const u8) !void {
         const stdin = self.child.stdin orelse return error.StdinClosed;
-        var written: usize = 0;
-        while (written < data.len) {
-            const n_signed = std.c.write(stdin.handle, data[written..].ptr, data.len - written);
-            if (n_signed < 0) return error.WriteFailed;
-            const n: usize = @intCast(n_signed);
-            if (n == 0) return error.WriteFailed;
-            written += n;
-        }
+        var buf: [4096]u8 = undefined;
+        var file_writer = stdin.writerStreaming(self.io, &buf);
+        file_writer.interface.writeAll(data) catch return error.WriteFailed;
+        file_writer.interface.flush() catch return error.WriteFailed;
     }
 
     /// Start the readLoop coroutine. Must be called after spawn.
@@ -126,12 +117,14 @@ pub const LspClient = struct {
     fn readLoopFn(self: *LspClient) Io.Cancelable!void {
         const stdout = self.child.stdout orelse return;
         var read_buf: [4096]u8 = undefined;
+        var file_reader = stdout.readerStreaming(self.io, &read_buf);
 
         while (self.state != .shutdown) {
-            const n = std.posix.read(stdout.handle, &read_buf) catch break;
-            if (n == 0) break;
+            // Block coroutine (not OS thread) until at least 1 byte available
+            const data = file_reader.interface.peekGreedy(1) catch break;
 
-            var raw_messages = self.framer.feedData(self.allocator, read_buf[0..n]) catch break;
+            var raw_messages = self.framer.feedData(self.allocator, data) catch break;
+            file_reader.interface.toss(data.len);
             defer {
                 for (raw_messages.items) |msg| self.allocator.free(msg);
                 raw_messages.deinit(self.allocator);

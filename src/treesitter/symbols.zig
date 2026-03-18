@@ -256,7 +256,7 @@ pub fn extractPickerSymbols(
 /// appear before "fn" as direct (anonymous) children of `decl_node`.
 /// Examples: "fn", "pub fn", "pub inline fn".
 fn buildFunctionDetail(alloc: Allocator, decl_node: ts.Node) ![]const u8 {
-    var parts = std.ArrayListUnmanaged([]const u8){};
+    var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(alloc);
 
     var ci: u32 = 0;

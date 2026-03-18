@@ -265,7 +265,7 @@ pub noinline fn extractHoverHighlights(
     // Collapse consecutive blank lines and build output lines array.
     // Track the mapping from output index -> original index for highlights.
     var lines_arr = std.json.Array.init(allocator);
-    var out_map: std.ArrayListUnmanaged(u32) = .empty; // out_idx -> orig_idx
+    var out_map: std.ArrayList(u32) = .empty; // out_idx -> orig_idx
     var prev_blank = false;
     for (parsed.lines.items, 0..) |line, orig_i| {
         const is_blank = std.mem.trim(u8, line, " \t").len == 0;

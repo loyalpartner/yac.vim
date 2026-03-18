@@ -89,25 +89,8 @@ test {
     _ = @import("json_utils.zig");
     _ = @import("vim_protocol.zig");
     _ = @import("vim_server.zig");
-    // TODO: re-enable after full migration
-    // _ = @import("queue.zig");
-    // _ = @import("requests.zig");
-    // _ = @import("event_loop.zig");
-    // _ = @import("lsp/protocol.zig");
-    // _ = @import("lsp/registry.zig");
-    // _ = @import("lsp/client.zig");
-    // _ = @import("lsp/lsp.zig");
-    // _ = @import("picker.zig");
-    // _ = @import("treesitter/treesitter.zig");
-    // _ = @import("treesitter/highlights.zig");
-    // _ = @import("treesitter/document_highlight.zig");
-    // _ = @import("lsp/transform.zig");
-    // _ = @import("dap/protocol.zig");
-    // _ = @import("dap/config.zig");
-    // _ = @import("dap/client.zig");
-    // _ = @import("dap/session.zig");
-    // _ = @import("handler.zig");
-    // _ = @import("transport.zig");
+    _ = @import("lsp/protocol.zig");
+    _ = @import("lsp/transform.zig");
 }
 
 // test "restrictSocketPermissions" removed — std.c.stat unavailable on Linux in 0.16

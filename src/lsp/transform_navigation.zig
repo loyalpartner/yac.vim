@@ -164,7 +164,7 @@ pub fn transformInlayHintsResult(alloc: Allocator, result: Value) !Value {
             .string => |s| s,
             .array => |parts| blk: {
                 // Concatenate all label parts
-                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                var buf: std.ArrayList(u8) = .empty;
                 for (parts.items) |part| {
                     const part_obj = switch (part) {
                         .object => |o| o,

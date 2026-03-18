@@ -177,6 +177,9 @@ pub const LspRegistry = struct {
             return null;
         };
 
+        // Start readLoop BEFORE sending initialize (readLoop handles the response)
+        client.startReadLoop(&self.lsp_group);
+
         const init_id = client.initializeCopilot() catch {
             log.err("Failed to send Copilot initialize", .{});
             client.deinit();
@@ -514,27 +517,6 @@ pub const LspRegistry = struct {
         }
     }
 
-    /// Collect all stdout fds for polling (includes copilot client).
-    pub fn collectFds(self: *LspRegistry, fds: *std.ArrayList(std.posix.pollfd), client_keys: *std.ArrayList([]const u8)) !void {
-        var it = self.clients.iterator();
-        while (it.next()) |entry| {
-            const fd = entry.value_ptr.*.stdoutFd();
-            try fds.append(self.allocator, .{
-                .fd = fd,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            });
-            try client_keys.append(self.allocator, entry.key_ptr.*);
-        }
-        if (self.copilot_client) |c| {
-            try fds.append(self.allocator, .{
-                .fd = c.stdoutFd(),
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            });
-            try client_keys.append(self.allocator, copilot_key);
-        }
-    }
 };
 
 /// Check if a command exists in PATH (no allocation).

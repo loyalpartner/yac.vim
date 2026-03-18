@@ -70,24 +70,26 @@ pub const EventLoop = struct {
 
         var group: Io.Group = .init;
 
-        // Accept loop — use raw posix accept since Io.accept blocks without cancellation
-        const listen_fd = self.server.socket.handle;
-        while (!self.shutdown_event.isSet()) {
-            // Use posix poll with timeout to check for new connections + shutdown
-            var poll_fds = [_]std.posix.pollfd{.{
-                .fd = listen_fd,
-                .events = std.posix.POLL.IN,
-                .revents = 0,
-            }};
-            const ready = std.posix.poll(&poll_fds, 500) catch |e| {
-                log.err("poll failed: {any}", .{e});
-                continue;
-            };
+        // Spawn accept loop as a coroutine so it can be cancelled via Io
+        group.concurrent(self.io, acceptLoop, .{ self, &group }) catch |e| {
+            log.err("Failed to spawn accept loop: {any}", .{e});
+            return e;
+        };
 
-            if (ready == 0) continue; // timeout, check shutdown flag
+        // Block main thread until shutdown is requested
+        self.shutdown_event.waitUncancelable(self.io);
 
+        // Cancel accept loop + all client coroutines
+        group.cancel(self.io);
+
+        log.info("Event loop exiting", .{});
+    }
+
+    /// Accept loop coroutine: accepts connections and spawns client coroutines.
+    fn acceptLoop(self: *EventLoop, group: *Io.Group) Io.Cancelable!void {
+        while (true) {
             const stream = self.server.accept(self.io) catch |e| {
-                if (e == error.Canceled) break;
+                if (e == error.Canceled) return;
                 log.err("accept failed: {any}", .{e});
                 continue;
             };
@@ -100,45 +102,36 @@ pub const EventLoop = struct {
                 stream.close(self.io);
             };
         }
-
-        // Wait for all client coroutines to finish
-        group.cancel(self.io);
-
-        log.info("Event loop exiting", .{});
     }
 
     /// Per-client coroutine: read lines, dispatch, write responses.
-    /// Uses raw posix I/O for reliability (Io.Reader has issues with short connections).
+    /// Uses Io-native Reader/Writer — blocks the coroutine (not the OS thread).
     fn clientCoroutine(self: *EventLoop, stream: Io.net.Stream) Io.Cancelable!void {
-        const fd = stream.socket.handle;
         defer {
-            _ = std.c.close(fd);
+            stream.close(self.io);
             log.info("Client disconnected", .{});
         }
+
+        var read_buf: [8192]u8 = undefined;
+        var write_buf: [8192]u8 = undefined;
+        var reader = stream.reader(self.io, &read_buf);
+        var writer = stream.writer(self.io, &write_buf);
 
         // Receive buffer for line framing
         var recv_buf: std.ArrayList(u8) = .empty;
         defer recv_buf.deinit(self.allocator);
 
-        var read_buf: [8192]u8 = undefined;
-
-        log.debug("Client coroutine started, fd={d}", .{fd});
+        log.debug("Client coroutine started", .{});
 
         while (!self.shutdown_event.isSet()) {
-            // Read from socket
-            const n = std.posix.read(fd, &read_buf) catch |e| {
-                log.err("Client read error: {any}", .{e});
-                break;
-            };
-            if (n == 0) {
-                log.debug("Client EOF", .{});
-                break;
-            }
+            // Block coroutine (not OS thread) until at least 1 byte available
+            const data = reader.interface.peekGreedy(1) catch break;
 
-            recv_buf.appendSlice(self.allocator, read_buf[0..n]) catch |e| {
+            recv_buf.appendSlice(self.allocator, data) catch |e| {
                 log.err("Client buffer append error: {any}", .{e});
                 break;
             };
+            reader.interface.toss(data.len);
 
             // Process complete lines
             while (std.mem.indexOf(u8, recv_buf.items, "\n")) |newline_pos| {
@@ -151,7 +144,7 @@ pub const EventLoop = struct {
                     defer arena.deinit();
                     const alloc = arena.allocator();
 
-                    self.processLine(alloc, line, fd);
+                    self.processLine(alloc, line, &writer.interface);
                 }
 
                 // Remove processed line + \n from buffer
@@ -167,9 +160,9 @@ pub const EventLoop = struct {
 
 
     /// Process a single JSON-RPC line from a Vim client.
-    fn processLine(self: *EventLoop, alloc: Allocator, line: []const u8, fd: std.posix.fd_t) void {
+    fn processLine(self: *EventLoop, alloc: Allocator, line: []const u8, writer: *Io.Writer) void {
         // Set per-request context
-        self.handler.client_fd = fd;
+        self.handler.client_writer = writer;
         // Parse JSON
         const parsed = json_utils.parse(alloc, line) catch |e| {
             log.err("JSON parse error: {any}", .{e});
@@ -195,7 +188,7 @@ pub const EventLoop = struct {
             .request => |r| {
                 log.debug("Request [{d}]: {s}", .{ r.id, r.method });
                 const result = self.dispatch(alloc, r.method, r.params);
-                self.sendResponse(alloc, fd, r.id, result);
+                self.sendResponse(alloc, writer, r.id, result);
             },
             .notification => |n| {
                 log.debug("Notification: {s}", .{n.method});
@@ -224,16 +217,16 @@ pub const EventLoop = struct {
         return null;
     }
 
-    /// Send a JSON-RPC response to the Vim client.
-    fn sendResponse(_: *EventLoop, alloc: Allocator, fd: std.posix.fd_t, vim_id: u64, result: ?Value) void {
+    /// Send a JSON-RPC response to the Vim client via Io Writer.
+    fn sendResponse(_: *EventLoop, alloc: Allocator, writer: *Io.Writer, vim_id: u64, result: ?Value) void {
         const response_value = result orelse .null;
         const encoded = vim.encodeJsonRpcResponse(alloc, @as(i64, @intCast(vim_id)), response_value) catch |e| {
             log.err("Failed to encode response: {any}", .{e});
             return;
         };
 
-        // Write response + newline via posix write
-        _ = std.c.write(fd, encoded.ptr, encoded.len);
-        _ = std.c.write(fd, "\n", 1);
+        writer.writeAll(encoded) catch return;
+        writer.writeAll("\n") catch return;
+        writer.flush() catch return;
     }
 };
