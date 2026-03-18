@@ -102,6 +102,12 @@ pub const Handler = struct {
         };
     }
 
+    /// Check if the LSP server supports a capability. Returns true if unsupported.
+    fn serverUnsupported(self: *Handler, client_key: []const u8, capability: []const u8) bool {
+        const registry = self.registry orelse return true;
+        return !registry.serverSupports(client_key, capability);
+    }
+
     /// Send a position-based LSP request, block for response, transform result.
     /// handler_method is the yac handler name (e.g. "hover"), lsp_method is the LSP protocol name.
     fn sendPositionRequest(self: *Handler, alloc: Allocator, file: []const u8, line: u32, column: u32, lsp_method: []const u8, handler_method: []const u8) !Value {
@@ -565,6 +571,7 @@ pub const Handler = struct {
         file: []const u8,
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        if (self.serverUnsupported(lsp_ctx.client_key, "semanticTokensProvider")) return .null;
         const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
         var result = lsp_ctx.client.sendRequest("textDocument/semanticTokens/full", lsp_params) catch |e| {
             log.err("LSP semanticTokens failed: {any}", .{e});
@@ -584,6 +591,7 @@ pub const Handler = struct {
         insert_spaces: bool = true,
     }) !Value {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        if (self.serverUnsupported(lsp_ctx.client_key, "documentRangeFormattingProvider")) return .null;
         const lsp_params = try json.buildObject(alloc, .{
             .{ "textDocument", try json.buildObject(alloc, .{
                 .{ "uri", json.jsonString(lsp_ctx.uri) },
