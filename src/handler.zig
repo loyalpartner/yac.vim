@@ -490,7 +490,22 @@ pub const Handler = struct {
     pub fn semantic_tokens(_: *Handler) !void {}
     pub fn range_formatting(_: *Handler) !void {}
     pub fn execute_command(_: *Handler) !void {}
-    pub fn document_highlight(_: *Handler) !void {}
+    pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
+        file: []const u8,
+        line: u32,
+        column: u32,
+        text: ?[]const u8 = null,
+    }) !Value {
+        // Try LSP first
+        const lsp_result = self.sendPositionRequest(alloc, p.file, p.line, p.column, "textDocument/documentHighlight", "document_highlight") catch .null;
+        if (lsp_result != .null) return lsp_result;
+
+        // Fallback: tree-sitter based
+        const tc = self.getTsCtx(p.file, p.text) orelse return .null;
+        const tree = tc.ts.getTree(tc.file) orelse return .null;
+        const source = tc.ts.getSource(tc.file) orelse return .null;
+        return try treesitter_mod.document_highlight.extractDocumentHighlights(alloc, tree, source, p.line, p.column);
+    }
 
     // ========================================================================
     // Tree-sitter handlers
