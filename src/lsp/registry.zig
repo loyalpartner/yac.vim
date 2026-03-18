@@ -29,18 +29,6 @@ pub const LspServerConfig = lsp_config.LspServerConfig;
 // LSP Registry - manages language server lifecycles
 // ============================================================================
 
-pub const PendingOpen = struct {
-    uri: []const u8,
-    language_id: []const u8,
-    content: []const u8,
-
-    fn deinit(self: PendingOpen, allocator: Allocator) void {
-        allocator.free(self.uri);
-        allocator.free(self.language_id);
-        allocator.free(self.content);
-    }
-};
-
 pub const LspRegistry = struct {
     allocator: Allocator,
     io: Io,
@@ -52,8 +40,6 @@ pub const LspRegistry = struct {
     pending_init: std.StringHashMap(u32),
     /// Global request ID counter (shared across all clients to avoid collisions)
     next_id: std.atomic.Value(u32),
-    /// Files opened during initialization, replayed after initialized
-    pending_opens: std.StringHashMap(std.ArrayList(PendingOpen)),
     /// Languages where LSP server spawn has failed (to avoid repeat notifications)
     failed_spawns: std.StringHashMap(void),
     /// Server capabilities from initialize response: client_key -> capabilities JSON
@@ -72,7 +58,6 @@ pub const LspRegistry = struct {
             .clients = std.StringHashMap(*LspClient).init(allocator),
             .pending_init = std.StringHashMap(u32).init(allocator),
             .next_id = std.atomic.Value(u32).init(1),
-            .pending_opens = std.StringHashMap(std.ArrayList(PendingOpen)).init(allocator),
             .failed_spawns = std.StringHashMap(void).init(allocator),
             .server_capabilities = std.StringHashMap(std.json.Parsed(Value)).init(allocator),
         };
@@ -86,8 +71,6 @@ pub const LspRegistry = struct {
         }
         self.clients.deinit();
         self.pending_init.deinit();
-        self.freePendingOpens();
-        self.pending_opens.deinit();
         {
             var fsi = self.failed_spawns.keyIterator();
             while (fsi.next()) |key| self.allocator.free(key.*);
@@ -211,23 +194,11 @@ pub const LspRegistry = struct {
 
         if (self.clients.fetchRemove(client_key)) |entry| {
             entry.value.deinit();
-            // Remove from pending_init/pending_opens BEFORE freeing the key,
-            // since those maps may hold the same pointer.
             _ = self.pending_init.remove(entry.key);
-            if (self.pending_opens.fetchRemove(entry.key)) |po_entry| {
-                for (po_entry.value.items) |open| open.deinit(self.allocator);
-                var list = po_entry.value;
-                list.deinit(self.allocator);
-            }
             self.allocator.free(entry.key);
             return;
         }
         _ = self.pending_init.remove(client_key);
-        if (self.pending_opens.fetchRemove(client_key)) |entry| {
-            for (entry.value.items) |open| open.deinit(self.allocator);
-            var list = entry.value;
-            list.deinit(self.allocator);
-        }
     }
 
     /// Find an existing client for a language + file path (read-only, does not spawn).
@@ -345,16 +316,6 @@ pub const LspRegistry = struct {
         try self.clients.put(key, client);
         log.info("LSP client ready for {s}", .{language});
 
-        // Replay any queued didOpens
-        if (self.pending_opens.fetchRemove(key)) |po_entry| {
-            for (po_entry.value.items) |open| {
-                self.sendDidOpen(client, open) catch {};
-                open.deinit(self.allocator);
-            }
-            var list = po_entry.value;
-            list.deinit(self.allocator);
-        }
-
         return .{ .client = client, .client_key = key };
     }
 
@@ -404,59 +365,6 @@ pub const LspRegistry = struct {
             };
         }
 
-        // Replay files that were opened during initialization
-        if (self.pending_opens.getPtr(client_key)) |opens| {
-            for (opens.items) |open| {
-                self.sendDidOpen(client, open) catch |e| {
-                    log.err("Failed to replay didOpen for {s}: {any}", .{ open.uri, e });
-                };
-                open.deinit(self.allocator);
-            }
-            opens.deinit(self.allocator);
-            _ = self.pending_opens.remove(client_key);
-        }
-    }
-
-    /// Queue a didOpen for replay after initialization completes.
-    pub fn queuePendingOpen(self: *LspRegistry, client_key: []const u8, uri: []const u8, language_id: []const u8, content: []const u8) !void {
-        const uri_owned = try self.allocator.dupe(u8, uri);
-        errdefer self.allocator.free(uri_owned);
-        const lang_owned = try self.allocator.dupe(u8, language_id);
-        errdefer self.allocator.free(lang_owned);
-        const content_owned = try self.allocator.dupe(u8, content);
-        errdefer self.allocator.free(content_owned);
-
-        const open = PendingOpen{
-            .uri = uri_owned,
-            .language_id = lang_owned,
-            .content = content_owned,
-        };
-
-        if (self.pending_opens.getPtr(client_key)) |list| {
-            try list.append(self.allocator, open);
-        } else {
-            var list: std.ArrayList(PendingOpen) = .empty;
-            try list.append(self.allocator, open);
-            errdefer list.deinit(self.allocator);
-            try self.pending_opens.put(client_key, list);
-        }
-    }
-
-    fn sendDidOpen(self: *LspRegistry, client: *LspClient, open: PendingOpen) !void {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var td_item = ObjectMap.init(alloc);
-        try td_item.put("uri", json.jsonString(open.uri));
-        try td_item.put("languageId", json.jsonString(open.language_id));
-        try td_item.put("version", json.jsonInteger(1));
-        try td_item.put("text", json.jsonString(open.content));
-
-        var params = ObjectMap.init(alloc);
-        try params.put("textDocument", .{ .object = td_item });
-
-        try client.sendNotification("textDocument/didOpen", .{ .object = params });
     }
 
     /// Check if a client is still initializing.
@@ -513,19 +421,9 @@ pub const LspRegistry = struct {
         }
         self.clients.clearAndFree();
         self.pending_init.clearAndFree();
-        self.freePendingOpens();
-        self.pending_opens.clearAndFree();
         if (self.copilot_client) |c| {
             c.deinit();
             self.copilot_client = null;
-        }
-    }
-
-    fn freePendingOpens(self: *LspRegistry) void {
-        var it = self.pending_opens.iterator();
-        while (it.next()) |entry| {
-            for (entry.value_ptr.items) |open| open.deinit(self.allocator);
-            entry.value_ptr.deinit(self.allocator);
         }
     }
 
