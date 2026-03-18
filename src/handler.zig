@@ -14,7 +14,6 @@ const ObjectMap = json.ObjectMap;
 const LspRegistry = lsp_registry_mod.LspRegistry;
 const LspClient = lsp_client_mod.LspClient;
 
-
 // ============================================================================
 // LSP context types
 // ============================================================================
@@ -61,6 +60,70 @@ const ActionResult = struct {
 
 const OkResult = struct {
     ok: bool,
+};
+
+const GotoLocation = struct {
+    file: []const u8,
+    line: i32,
+    column: i32,
+};
+
+const ReferencesResult = struct {
+    locations: []const GotoLocation,
+};
+
+const EditItem = struct {
+    start_line: i32,
+    start_column: i32,
+    end_line: i32,
+    end_column: i32,
+    new_text: []const u8,
+};
+
+const FormattingResult = struct {
+    edits: []const EditItem,
+};
+
+const HintItem = struct {
+    line: i32,
+    column: i32,
+    label: []const u8,
+    kind: []const u8,
+};
+
+const InlayHintsResult = struct {
+    hints: []const HintItem,
+};
+
+const HighlightItem = struct {
+    line: i32,
+    col: i32,
+    end_line: i32,
+    end_col: i32,
+    kind: i32,
+};
+
+const DocumentHighlightResult = struct {
+    highlights: []const HighlightItem,
+};
+
+const VimDocumentation = struct {
+    kind: ?[]const u8 = null,
+    value: []const u8,
+};
+
+const VimCompletionItem = struct {
+    label: []const u8,
+    kind: ?i32 = null,
+    detail: ?[]const u8 = null,
+    insertText: ?[]const u8 = null,
+    filterText: ?[]const u8 = null,
+    sortText: ?[]const u8 = null,
+    documentation: ?VimDocumentation = null,
+};
+
+const CompletionResult = struct {
+    items: []const VimCompletionItem,
 };
 
 // ============================================================================
@@ -135,193 +198,111 @@ pub const Handler = struct {
     }
 
     // ========================================================================
-    // Inlined transform helpers (Value-based, to be typed later)
+    // Typed transform helpers — operate on lsp-kit structs, return Vim types
     // ========================================================================
 
-    const TransformPos = struct { line: i64, column: i64 };
+    const lsp_raw = lsp_types.lsp;
 
-    /// Extract start position {line, character} from a range object.
-    fn extractStartPosition(range_val: Value) ?TransformPos {
-        const range_obj = switch (range_val) {
-            .object => |o| o,
-            else => return null,
-        };
-        const start_obj = switch (range_obj.get("start") orelse return null) {
-            .object => |o| o,
-            else => return null,
-        };
-        const line = json.getInteger(start_obj, "line") orelse return null;
-        const column = json.getInteger(start_obj, "character") orelse return null;
-        return .{ .line = line, .column = column };
-    }
-
-    /// Build a {file, line, column} JSON object from a file path and position.
-    fn makeLocationObject(alloc: Allocator, file_path: []const u8, line: i64, column: i64) !Value {
-        return json.buildObject(alloc, .{
-            .{ "file", json.jsonString(file_path) },
-            .{ "line", json.jsonInteger(line) },
-            .{ "column", json.jsonInteger(column) },
-        });
-    }
-
-    /// Transform a goto LSP response (Location | Location[] | LocationLink) into {file, line, column}.
-    fn transformGoto(alloc: Allocator, result: Value) Value {
-        const location = switch (result) {
-            .object => result,
-            .array => |arr| blk: {
-                if (arr.items.len == 0) break :blk Value.null;
-                break :blk arr.items[0];
+    /// Transform a typed Definition result into a GotoLocation.
+    fn transformGoto(alloc: Allocator, result: lsp_types.DefinitionResult) ?GotoLocation {
+        const def_result = result orelse return null;
+        switch (def_result) {
+            .definition => |def| return gotoFromDefinition(alloc, def),
+            .definition_links => |links| {
+                if (links.len == 0) return null;
+                const link = links[0];
+                const file_path = lsp_types.uriToFilePath(alloc, link.targetUri) orelse return null;
+                return .{
+                    .file = file_path,
+                    .line = @intCast(link.targetSelectionRange.start.line),
+                    .column = @intCast(link.targetSelectionRange.start.character),
+                };
             },
-            else => return .null,
-        };
-
-        if (location == .null) return .null;
-
-        const loc_obj = switch (location) {
-            .object => |o| o,
-            else => return .null,
-        };
-
-        const uri = json.getString(loc_obj, "uri") orelse
-            json.getString(loc_obj, "targetUri") orelse
-            return .null;
-
-        const file_path = lsp_types.uriToFilePath(alloc, uri) orelse return .null;
-
-        const range_val = loc_obj.get("range") orelse loc_obj.get("targetSelectionRange") orelse return .null;
-        const pos = extractStartPosition(range_val) orelse return .null;
-
-        return makeLocationObject(alloc, file_path, pos.line, pos.column) catch .null;
-    }
-
-    /// Transform Location[] → {locations: [{file, line, column}]}.
-    fn transformReferences(alloc: Allocator, result: Value) Value {
-        const items = switch (result) {
-            .array => |a| a.items,
-            else => &[_]Value{},
-        };
-
-        var locations = std.json.Array.init(alloc);
-        for (items) |item| {
-            const loc = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const uri = json.getString(loc, "uri") orelse continue;
-            const file_path = lsp_types.uriToFilePath(alloc, uri) orelse continue;
-            const pos = extractStartPosition(loc.get("range") orelse continue) orelse continue;
-            const loc_val = makeLocationObject(alloc, file_path, pos.line, pos.column) catch continue;
-            locations.append(loc_val) catch continue;
         }
-
-        return json.buildObject(alloc, .{
-            .{ "locations", .{ .array = locations } },
-        }) catch .null;
     }
 
-    /// Transform TextEdit[] → {edits: [{start_line, start_column, end_line, end_column, new_text}]}.
-    fn transformFormatting(alloc: Allocator, result: Value) Value {
-        const items = switch (result) {
-            .array => |a| a.items,
-            else => return .null,
-        };
-
-        var edits = std.json.Array.init(alloc);
-        for (items) |item| {
-            const edit = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const range_val = edit.get("range") orelse continue;
-            const range_obj = switch (range_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const start_obj = switch (range_obj.get("start") orelse continue) {
-                .object => |o| o,
-                else => continue,
-            };
-            const end_obj = switch (range_obj.get("end") orelse continue) {
-                .object => |o| o,
-                else => continue,
-            };
-            const new_text = json.getString(edit, "newText") orelse "";
-
-            edits.append(json.buildObject(alloc, .{
-                .{ "start_line", json.jsonInteger(json.getInteger(start_obj, "line") orelse 0) },
-                .{ "start_column", json.jsonInteger(json.getInteger(start_obj, "character") orelse 0) },
-                .{ "end_line", json.jsonInteger(json.getInteger(end_obj, "line") orelse 0) },
-                .{ "end_column", json.jsonInteger(json.getInteger(end_obj, "character") orelse 0) },
-                .{ "new_text", json.jsonString(new_text) },
-            }) catch continue) catch continue;
+    fn gotoFromDefinition(alloc: Allocator, def: lsp_raw.Definition) ?GotoLocation {
+        switch (def) {
+            .location => |loc| {
+                const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse return null;
+                return .{
+                    .file = file_path,
+                    .line = @intCast(loc.range.start.line),
+                    .column = @intCast(loc.range.start.character),
+                };
+            },
+            .locations => |locs| {
+                if (locs.len == 0) return null;
+                const loc = locs[0];
+                const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse return null;
+                return .{
+                    .file = file_path,
+                    .line = @intCast(loc.range.start.line),
+                    .column = @intCast(loc.range.start.character),
+                };
+            },
         }
-
-        return json.buildObject(alloc, .{
-            .{ "edits", .{ .array = edits } },
-        }) catch .null;
     }
 
-    /// Transform InlayHint[] → {hints: [{line, column, label, kind}]}.
-    fn transformInlayHints(alloc: Allocator, result: Value) Value {
-        const items = switch (result) {
-            .array => |a| a.items,
-            else => return .null,
-        };
+    /// Transform typed references result (Location[]) into ReferencesResult.
+    fn transformReferences(alloc: Allocator, result: lsp_types.ReferencesResult) ReferencesResult {
+        const locs = result orelse return .{ .locations = &.{} };
+        var locations: std.ArrayList(GotoLocation) = .empty;
+        for (locs) |loc| {
+            const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse continue;
+            locations.append(alloc, .{
+                .file = file_path,
+                .line = @intCast(loc.range.start.line),
+                .column = @intCast(loc.range.start.character),
+            }) catch continue;
+        }
+        return .{ .locations = locations.items };
+    }
 
-        var hints = std.json.Array.init(alloc);
-        for (items) |item| {
-            const hint = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
+    /// Transform typed formatting result (TextEdit[]) into FormattingResult.
+    fn transformFormatting(alloc: Allocator, result: lsp_types.FormattingResult) FormattingResult {
+        const text_edits = result orelse return .{ .edits = &.{} };
+        var edits: std.ArrayList(EditItem) = .empty;
+        for (text_edits) |edit| {
+            edits.append(alloc, .{
+                .start_line = @intCast(edit.range.start.line),
+                .start_column = @intCast(edit.range.start.character),
+                .end_line = @intCast(edit.range.end.line),
+                .end_column = @intCast(edit.range.end.character),
+                .new_text = edit.newText,
+            }) catch continue;
+        }
+        return .{ .edits = edits.items };
+    }
 
-            // position: {line, character}
-            const pos_obj = switch (hint.get("position") orelse continue) {
-                .object => |o| o,
-                else => continue,
-            };
-            const line = json.getInteger(pos_obj, "line") orelse continue;
-            const character = json.getInteger(pos_obj, "character") orelse continue;
-
-            // label: string | InlayHintLabelPart[]
-            const label_val = hint.get("label") orelse continue;
-            const label: []const u8 = switch (label_val) {
+    /// Transform typed inlay hints (InlayHint[]) into InlayHintsResult.
+    fn transformInlayHints(alloc: Allocator, result: lsp_types.InlayHintResult) InlayHintsResult {
+        const hint_items = result orelse return .{ .hints = &.{} };
+        var hints: std.ArrayList(HintItem) = .empty;
+        for (hint_items) |hint| {
+            // Extract label text from string or label parts
+            const label: []const u8 = switch (hint.label) {
                 .string => |s| s,
-                .array => |parts| blk: {
+                .inlay_hint_label_parts => |parts| blk: {
                     var buf: std.ArrayList(u8) = .empty;
-                    for (parts.items) |part| {
-                        const part_obj = switch (part) {
-                            .object => |o| o,
-                            else => continue,
-                        };
-                        if (json.getString(part_obj, "value")) |v| {
-                            buf.appendSlice(alloc, v) catch continue;
-                        }
+                    for (parts) |part| {
+                        buf.appendSlice(alloc, part.value) catch continue;
                     }
                     break :blk buf.items;
                 },
-                else => continue,
             };
             if (label.len == 0) continue;
 
-            // kind: 1=Type, 2=Parameter (optional)
-            const kind_int = json.getInteger(hint, "kind");
-            const kind_str: []const u8 = if (kind_int) |k| switch (k) {
-                1 => "type",
-                2 => "parameter",
-                else => "other",
+            // kind: Type=1, Parameter=2
+            const kind_str: []const u8 = if (hint.kind) |k| switch (k) {
+                .Type => "type",
+                .Parameter => "parameter",
+                _ => "other",
             } else "other";
 
-            // paddingLeft / paddingRight
-            const padding_left = if (hint.get("paddingLeft")) |v| switch (v) {
-                .bool => |b| b,
-                else => false,
-            } else false;
-            const padding_right = if (hint.get("paddingRight")) |v| switch (v) {
-                .bool => |b| b,
-                else => false,
-            } else false;
-
+            // Apply padding
+            const padding_left = hint.paddingLeft orelse false;
+            const padding_right = hint.paddingRight orelse false;
             const display = if (padding_left and padding_right)
                 std.fmt.allocPrint(alloc, " {s} ", .{label}) catch label
             else if (padding_left)
@@ -331,133 +312,76 @@ pub const Handler = struct {
             else
                 label;
 
-            hints.append(json.buildObject(alloc, .{
-                .{ "line", json.jsonInteger(line) },
-                .{ "column", json.jsonInteger(character) },
-                .{ "label", json.jsonString(display) },
-                .{ "kind", json.jsonString(kind_str) },
-            }) catch continue) catch continue;
+            hints.append(alloc, .{
+                .line = @intCast(hint.position.line),
+                .column = @intCast(hint.position.character),
+                .label = display,
+                .kind = kind_str,
+            }) catch continue;
         }
-
-        return json.buildObject(alloc, .{
-            .{ "hints", .{ .array = hints } },
-        }) catch .null;
+        return .{ .hints = hints.items };
     }
 
-    /// Transform DocumentHighlight[] → {highlights: [{line, col, end_line, end_col, kind}]}.
-    fn transformDocumentHighlight(alloc: Allocator, result: Value) Value {
-        const items = switch (result) {
-            .array => |a| a.items,
-            else => return .null,
-        };
-
-        var highlights = std.json.Array.init(alloc);
-        for (items) |item| {
-            const obj = switch (item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const range_val = obj.get("range") orelse continue;
-            const range_obj = switch (range_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const start_obj = switch (range_obj.get("start") orelse continue) {
-                .object => |o| o,
-                else => continue,
-            };
-            const end_obj = switch (range_obj.get("end") orelse continue) {
-                .object => |o| o,
-                else => continue,
-            };
-            const kind = json.getInteger(obj, "kind") orelse 1;
-            const sl = json.getInteger(start_obj, "line") orelse continue;
-            const sc = json.getInteger(start_obj, "character") orelse continue;
-            const el = json.getInteger(end_obj, "line") orelse continue;
-            const ec = json.getInteger(end_obj, "character") orelse continue;
-
-            highlights.append(json.buildObject(alloc, .{
-                .{ "line", json.jsonInteger(sl) },
-                .{ "col", json.jsonInteger(sc) },
-                .{ "end_line", json.jsonInteger(el) },
-                .{ "end_col", json.jsonInteger(ec) },
-                .{ "kind", json.jsonInteger(kind) },
-            }) catch continue) catch continue;
+    /// Transform typed document highlights into DocumentHighlightResult.
+    fn transformDocumentHighlight(alloc: Allocator, result: lsp_types.DocumentHighlightResult) DocumentHighlightResult {
+        const dh_items = result orelse return .{ .highlights = &.{} };
+        var highlights: std.ArrayList(HighlightItem) = .empty;
+        for (dh_items) |dh| {
+            const kind_int: i32 = if (dh.kind) |k| @intCast(@intFromEnum(k)) else 1;
+            highlights.append(alloc, .{
+                .line = @intCast(dh.range.start.line),
+                .col = @intCast(dh.range.start.character),
+                .end_line = @intCast(dh.range.end.line),
+                .end_col = @intCast(dh.range.end.character),
+                .kind = kind_int,
+            }) catch continue;
         }
-
-        return json.buildObject(alloc, .{
-            .{ "highlights", .{ .array = highlights } },
-        }) catch .null;
+        return .{ .highlights = highlights.items };
     }
 
-    /// Transform CompletionList or CompletionItem[] → {items: [...]}.
-    fn transformCompletion(alloc: Allocator, result: Value) Value {
+    /// Transform typed completion result into CompletionResult.
+    fn transformCompletion(alloc: Allocator, result: lsp_types.CompletionResult) CompletionResult {
         const max_doc_bytes: usize = 500;
         const max_items: usize = 100;
 
-        const items_slice: []const Value = switch (result) {
-            .array => |a| a.items,
-            .object => |o| blk: {
-                if (json.getArray(o, "items")) |arr| break :blk arr;
-                break :blk &[_]Value{};
-            },
-            else => &[_]Value{},
+        const comp = result orelse return .{ .items = &.{} };
+        const items_slice: []const lsp_raw.completion.Item = switch (comp) {
+            .completion_items => |ci| ci,
+            .completion_list => |cl| cl.items,
         };
 
         const capped = if (items_slice.len > max_items) items_slice[0..max_items] else items_slice;
 
-        var items = std.json.Array.init(alloc);
+        var items: std.ArrayList(VimCompletionItem) = .empty;
 
-        for (capped) |item_val| {
-            const ci = switch (item_val) {
-                .object => |o| o,
-                else => continue,
+        for (capped) |ci| {
+            var vim_item: VimCompletionItem = .{
+                .label = ci.label,
+                .kind = if (ci.kind) |k| @intCast(@intFromEnum(k)) else null,
+                .detail = ci.detail,
+                .insertText = ci.insertText,
+                .filterText = ci.filterText,
+                .sortText = ci.sortText,
             };
 
-            const label = json.getString(ci, "label") orelse continue;
-
-            var item = ObjectMap.init(alloc);
-            item.put("label", json.jsonString(label)) catch continue;
-
-            if (json.getInteger(ci, "kind")) |kind| {
-                item.put("kind", json.jsonInteger(kind)) catch {};
-            }
-            if (json.getString(ci, "detail")) |detail| {
-                item.put("detail", json.jsonString(detail)) catch {};
-            }
-            if (json.getString(ci, "insertText")) |insert_text| {
-                item.put("insertText", json.jsonString(insert_text)) catch {};
-            }
-            if (json.getString(ci, "filterText")) |filter_text| {
-                item.put("filterText", json.jsonString(filter_text)) catch {};
-            }
-            if (json.getString(ci, "sortText")) |sort_text| {
-                item.put("sortText", json.jsonString(sort_text)) catch {};
-            }
-
-            if (ci.get("documentation")) |doc_val| {
-                switch (doc_val) {
-                    .string => |s| {
-                        item.put("documentation", json.jsonString(lsp_types.truncateUtf8(s, max_doc_bytes))) catch {};
+            if (ci.documentation) |doc| {
+                vim_item.documentation = switch (doc) {
+                    .string => |s| .{ .value = lsp_types.truncateUtf8(s, max_doc_bytes) },
+                    .markup_content => |mc| .{
+                        .kind = switch (mc.kind) {
+                            .plaintext => "plaintext",
+                            .markdown => "markdown",
+                            .unknown_value => |v| v,
+                        },
+                        .value = lsp_types.truncateUtf8(mc.value, max_doc_bytes),
                     },
-                    .object => |doc_obj| {
-                        const kind_str = json.getString(doc_obj, "kind") orelse "plaintext";
-                        const value = json.getString(doc_obj, "value") orelse "";
-                        var new_doc = ObjectMap.init(alloc);
-                        new_doc.put("kind", json.jsonString(kind_str)) catch {};
-                        new_doc.put("value", json.jsonString(lsp_types.truncateUtf8(value, max_doc_bytes))) catch {};
-                        item.put("documentation", .{ .object = new_doc }) catch {};
-                    },
-                    else => {},
-                }
+                };
             }
 
-            items.append(.{ .object = item }) catch continue;
+            items.append(alloc, vim_item) catch continue;
         }
 
-        var result_obj = ObjectMap.init(alloc);
-        result_obj.put("items", .{ .array = items }) catch return .null;
-        return .{ .object = result_obj };
+        return .{ .items = items.items };
     }
 
     /// Transform InlineCompletionList/InlineCompletionItem[] → {items: [{insertText, ...}]}.
@@ -508,6 +432,21 @@ pub const Handler = struct {
         return .{ .object = result_obj };
     }
 
+    /// Extract start position from a Value range object (used by picker symbol transform).
+    fn extractRangeStart(range_val: Value) ?struct { line: i64, column: i64 } {
+        const range_obj = switch (range_val) {
+            .object => |o| o,
+            else => return null,
+        };
+        const start_obj = switch (range_obj.get("start") orelse return null) {
+            .object => |o| o,
+            else => return null,
+        };
+        const line = json.getInteger(start_obj, "line") orelse return null;
+        const column = json.getInteger(start_obj, "character") orelse return null;
+        return .{ .line = line, .column = column };
+    }
+
     /// Recursively collect DocumentSymbol entries into items, expanding children.
     fn collectDocumentSymbols(
         alloc: Allocator,
@@ -526,18 +465,22 @@ pub const Handler = struct {
             const kind_name = lsp_types.symbolKindName(kind_int);
             const lsp_detail = json.getString(sym, "detail");
 
-            var pos: TransformPos = .{ .line = 0, .column = 0 };
+            var line: i64 = 0;
+            var column: i64 = 0;
             const range_val = sym.get("selectionRange") orelse sym.get("range");
             if (range_val) |rv| {
-                if (extractStartPosition(rv)) |p| pos = p;
+                if (extractRangeStart(rv)) |p| {
+                    line = p.line;
+                    column = p.column;
+                }
             }
 
             items.append(json.buildObject(alloc, .{
                 .{ "label", json.jsonString(name) },
                 .{ "detail", json.jsonString(lsp_detail orelse "") },
                 .{ "file", json.jsonString(file) },
-                .{ "line", json.jsonInteger(pos.line) },
-                .{ "column", json.jsonInteger(pos.column) },
+                .{ "line", json.jsonInteger(line) },
+                .{ "column", json.jsonInteger(column) },
                 .{ "depth", json.jsonInteger(depth) },
                 .{ "kind", json.jsonString(kind_name) },
             }) catch continue) catch continue;
@@ -589,13 +532,17 @@ pub const Handler = struct {
                     kind_name;
 
                 var file: []const u8 = "";
-                var pos: TransformPos = .{ .line = 0, .column = 0 };
+                var line: i64 = 0;
+                var column: i64 = 0;
                 if (json.getObject(sym, "location")) |loc| {
                     if (json.getString(loc, "uri")) |uri| {
                         file = lsp_types.uriToFilePath(alloc, uri) orelse "";
                     }
                     if (loc.get("range")) |range_val| {
-                        if (extractStartPosition(range_val)) |p| pos = p;
+                        if (extractRangeStart(range_val)) |p| {
+                            line = p.line;
+                            column = p.column;
+                        }
                     }
                 }
 
@@ -603,8 +550,8 @@ pub const Handler = struct {
                     .{ "label", json.jsonString(name) },
                     .{ "detail", json.jsonString(detail) },
                     .{ "file", json.jsonString(file) },
-                    .{ "line", json.jsonInteger(pos.line) },
-                    .{ "column", json.jsonInteger(pos.column) },
+                    .{ "line", json.jsonInteger(line) },
+                    .{ "column", json.jsonInteger(column) },
                     .{ "depth", json.jsonInteger(0) },
                     .{ "kind", json.jsonString(kind_name) },
                 }) catch continue) catch continue;
@@ -727,74 +674,88 @@ pub const Handler = struct {
     // ========================================================================
 
     pub fn goto_definition(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformGoto(alloc, v);
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !?GotoLocation {
+        const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return null;
+        return transformGoto(alloc, result);
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformGoto(alloc, v);
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !?GotoLocation {
+        const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return null;
+        return transformGoto(alloc, result);
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformGoto(alloc, v);
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !?GotoLocation {
+        const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return null;
+        return transformGoto(alloc, result);
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformGoto(alloc, v);
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !?GotoLocation {
+        const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return null;
+        return transformGoto(alloc, result);
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
+        file: []const u8,
+        line: u32,
+        column: u32,
     }) !lsp_types.HoverResult {
         return self.sendTypedPositionRequest("textDocument/hover", alloc, p.file, p.line, p.column);
     }
 
     pub fn references(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !ReferencesResult {
+        const empty: ReferencesResult = .{ .locations = &.{} };
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return empty;
         const result = lsp_ctx.client.request("textDocument/references", alloc, .{
             .textDocument = .{ .uri = lsp_ctx.uri },
             .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
             .context = .{ .includeDeclaration = true },
-        }) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformReferences(alloc, v);
+        }) catch return empty;
+        return transformReferences(alloc, result);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
+        file: []const u8,
+        line: u32,
+        column: u32,
     }) !lsp_types.CallHierarchyResult {
         return self.sendTypedPositionRequest("textDocument/prepareCallHierarchy", alloc, p.file, p.line, p.column);
     }
 
     pub fn type_hierarchy(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
+        file: []const u8,
+        line: u32,
+        column: u32,
     }) !lsp_types.TypeHierarchyResult {
         return self.sendTypedPositionRequest("textDocument/prepareTypeHierarchy", alloc, p.file, p.line, p.column);
     }
 
     pub fn completion(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
-    }) !Value {
-        const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return .null;
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformCompletion(alloc, v);
+        file: []const u8,
+        line: u32,
+        column: u32,
+    }) !CompletionResult {
+        const empty: CompletionResult = .{ .items = &.{} };
+        const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return empty;
+        return transformCompletion(alloc, result);
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -807,7 +768,9 @@ pub const Handler = struct {
     }
 
     pub fn signature_help(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
+        file: []const u8,
+        line: u32,
+        column: u32,
     }) !lsp_types.SignatureHelpResult {
         return self.sendTypedPositionRequest("textDocument/signatureHelp", alloc, p.file, p.line, p.column);
     }
@@ -981,7 +944,10 @@ pub const Handler = struct {
     // ========================================================================
 
     pub fn rename(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32, new_name: []const u8,
+        file: []const u8,
+        line: u32,
+        column: u32,
+        new_name: []const u8,
     }) !lsp_types.RenameResult {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
         return lsp_ctx.client.request("textDocument/rename", alloc, .{
@@ -992,7 +958,9 @@ pub const Handler = struct {
     }
 
     pub fn code_action(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, line: u32, column: u32,
+        file: []const u8,
+        line: u32,
+        column: u32,
     }) !lsp_types.CodeActionResult {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
         const pos: lsp_types.Position = .{ .line = @intCast(p.line), .character = @intCast(p.column) };
@@ -1004,9 +972,12 @@ pub const Handler = struct {
     }
 
     pub fn formatting(self: *Handler, alloc: Allocator, p: struct {
-        file: []const u8, tab_size: i64 = 4, insert_spaces: bool = true,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+        file: []const u8,
+        tab_size: i64 = 4,
+        insert_spaces: bool = true,
+    }) !FormattingResult {
+        const empty: FormattingResult = .{ .edits = &.{} };
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return empty;
         const result = lsp_ctx.client.request("textDocument/formatting", alloc, .{
             .textDocument = .{ .uri = lsp_ctx.uri },
             .options = .{
@@ -1015,10 +986,9 @@ pub const Handler = struct {
             },
         }) catch |e| {
             log.err("LSP formatting failed: {any}", .{e});
-            return .null;
+            return empty;
         };
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformFormatting(alloc, v);
+        return transformFormatting(alloc, result);
     }
 
     // ========================================================================
@@ -1029,8 +999,9 @@ pub const Handler = struct {
         file: []const u8,
         start_line: u32 = 0,
         end_line: u32 = 100,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
+    }) !InlayHintsResult {
+        const empty: InlayHintsResult = .{ .hints = &.{} };
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return empty;
         const result = lsp_ctx.client.request("textDocument/inlayHint", alloc, .{
             .textDocument = .{ .uri = lsp_ctx.uri },
             .range = .{
@@ -1039,10 +1010,9 @@ pub const Handler = struct {
             },
         }) catch |e| {
             log.err("LSP inlayHint failed: {any}", .{e});
-            return .null;
+            return empty;
         };
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformInlayHints(alloc, v);
+        return transformInlayHints(alloc, result);
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
@@ -1072,9 +1042,10 @@ pub const Handler = struct {
         end_column: u32 = 0,
         tab_size: i64 = 4,
         insert_spaces: bool = true,
-    }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
-        if (self.serverUnsupported(lsp_ctx.client_key, "documentRangeFormattingProvider")) return .null;
+    }) !FormattingResult {
+        const empty: FormattingResult = .{ .edits = &.{} };
+        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return empty;
+        if (self.serverUnsupported(lsp_ctx.client_key, "documentRangeFormattingProvider")) return empty;
         const result = lsp_ctx.client.request("textDocument/rangeFormatting", alloc, .{
             .textDocument = .{ .uri = lsp_ctx.uri },
             .options = .{
@@ -1087,10 +1058,9 @@ pub const Handler = struct {
             },
         }) catch |e| {
             log.err("LSP rangeFormatting failed: {any}", .{e});
-            return .null;
+            return empty;
         };
-        const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transformFormatting(alloc, v);
+        return transformFormatting(alloc, result);
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
@@ -1115,11 +1085,12 @@ pub const Handler = struct {
         column: u32,
         text: ?[]const u8 = null,
     }) !Value {
-        // Try LSP first
-        const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch return .null;
-        const raw = LspClient.typedToValue(alloc, typed) catch return .null;
-        const lsp_result = transformDocumentHighlight(alloc, raw);
-        if (lsp_result != .null) return lsp_result;
+        // Try LSP first — typed transform, then convert to Value for mixed return
+        const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch null;
+        const dh_result = transformDocumentHighlight(alloc, typed);
+        if (dh_result.highlights.len > 0) {
+            return LspClient.typedToValue(alloc, dh_result) catch .null;
+        }
 
         // Fallback: tree-sitter based
         const tc = self.getTsCtx(p.file, p.text) orelse return .null;
@@ -1386,7 +1357,6 @@ pub const Handler = struct {
         }) catch return .null;
         return transformInlineCompletion(alloc, result orelse .null);
     }
-
 
     pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
