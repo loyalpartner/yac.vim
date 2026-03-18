@@ -36,9 +36,7 @@ pub fn restrictSocketPermissions(socket_path: []const u8) void {
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.c_allocator;
 
     // Parse CLI arguments: --log-level <level> --log-file <path>
     var args_iter: std.process.Args.Iterator = .init(init.args);
