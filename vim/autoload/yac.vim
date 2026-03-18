@@ -1088,6 +1088,12 @@ function! yac#_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
+function! yac#_reset_loaded_langs() abort
+  if exists('s:loaded_langs')
+    let s:loaded_langs = {}
+  endif
+endfunction
+
 function! yac#_ts_ensure_connection() abort
   return s:ensure_connection()
 endfunction
