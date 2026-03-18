@@ -218,8 +218,8 @@ pub const LspClient = struct {
         try self.writeToStdin(framed);
         log.debug("LSP request [{d}]: {s}", .{ id, method });
 
-        // Wait for readLoop to signal us
-        waiter.event.waitUncancelable(self.io);
+        // Wait for readLoop to signal us (cancelable so group.cancel works during shutdown)
+        waiter.event.wait(self.io) catch return error.NullResponse;
 
         log.debug("LSP response [{d}]: {s}", .{ id, method });
 

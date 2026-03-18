@@ -490,13 +490,24 @@ pub const LspRegistry = struct {
 
     /// Shutdown all clients (including copilot).
     pub fn shutdownAll(self: *LspRegistry) void {
-        // Cancel all readLoop coroutines BEFORE touching client/registry state
-        self.lsp_group.cancel(self.io);
-
+        // 1. Send shutdown/exit to all LSP servers so they close stdout.
+        //    This makes readLoop coroutines exit naturally (EndOfStream).
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             _ = entry.value_ptr.*.sendShutdown() catch {};
             entry.value_ptr.*.sendExit() catch {};
+        }
+        if (self.copilot_client) |c| {
+            _ = c.sendShutdown() catch {};
+            c.sendExit() catch {};
+        }
+
+        // 2. Cancel all readLoop coroutines and wait for them to finish.
+        self.lsp_group.cancel(self.io);
+
+        // 3. Now safe to free client resources (no coroutines accessing them).
+        var it2 = self.clients.iterator();
+        while (it2.next()) |entry| {
             entry.value_ptr.*.deinit();
             self.allocator.free(entry.key_ptr.*);
         }
@@ -505,8 +516,6 @@ pub const LspRegistry = struct {
         self.freePendingOpens();
         self.pending_opens.clearAndFree();
         if (self.copilot_client) |c| {
-            _ = c.sendShutdown() catch {};
-            c.sendExit() catch {};
             c.deinit();
             self.copilot_client = null;
         }
