@@ -724,37 +724,33 @@ pub const Handler = struct {
     pub fn goto_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
         const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformGoto(alloc, v);
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
         const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformGoto(alloc, v);
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
         const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformGoto(alloc, v);
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8, line: u32, column: u32,
     }) !Value {
-        const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return .null;
         const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformGotoResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformGoto(alloc, v);
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
@@ -773,7 +769,7 @@ pub const Handler = struct {
             .context = .{ .includeDeclaration = true },
         }) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformReferencesResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformReferences(alloc, v);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
@@ -793,7 +789,7 @@ pub const Handler = struct {
     }) !Value {
         const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_completion.transformCompletionResult(alloc, v) catch .null;
+        return transformCompletion(alloc, v);
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -826,7 +822,7 @@ pub const Handler = struct {
             .query = p.query,
         }) catch return .null;
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_symbols.transformPickerSymbolResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+        return transformPickerSymbol(alloc, v);
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
@@ -956,7 +952,7 @@ pub const Handler = struct {
             return .null;
         };
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformFormattingResult(alloc, v) catch .null;
+        return transformFormatting(alloc, v);
     }
 
     // ========================================================================
@@ -980,7 +976,7 @@ pub const Handler = struct {
             return .null;
         };
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformInlayHintsResult(alloc, v) catch .null;
+        return transformInlayHints(alloc, v);
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
@@ -1028,7 +1024,7 @@ pub const Handler = struct {
             return .null;
         };
         const v = LspClient.typedToValue(alloc, result) catch return .null;
-        return transform_nav.transformFormattingResult(alloc, v) catch .null;
+        return transformFormatting(alloc, v);
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
@@ -1056,7 +1052,7 @@ pub const Handler = struct {
         // Try LSP first
         const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch return .null;
         const raw = LspClient.typedToValue(alloc, typed) catch return .null;
-        const lsp_result = transform_nav.transformDocumentHighlightResult(alloc, raw) catch .null;
+        const lsp_result = transformDocumentHighlight(alloc, raw);
         if (lsp_result != .null) return lsp_result;
 
         // Fallback: tree-sitter based
@@ -1197,7 +1193,7 @@ pub const Handler = struct {
                 .query = p.query,
             }) catch return .null;
             const v = LspClient.typedToValue(alloc, result) catch return .null;
-            return transform_symbols.transformPickerSymbolResult(alloc, v, lsp_ctx.ssh_host) catch .null;
+            return transformPickerSymbol(alloc, v);
         } else if (std.mem.eql(u8, p.mode, "grep")) {
             return try json.buildObject(alloc, .{
                 .{ "action", json.jsonString("picker_grep_query") },
@@ -1326,7 +1322,7 @@ pub const Handler = struct {
                 .insertSpaces = p.insert_spaces,
             },
         }) catch return .null;
-        return transform_completion.transformInlineCompletionResult(alloc, result orelse .null) catch .null;
+        return transformInlineCompletion(alloc, result orelse .null);
     }
 
 
