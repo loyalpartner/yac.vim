@@ -21,52 +21,18 @@ E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `
 
 ## Architecture
 
-VimScript ↔ JSON-RPC (Unix socket) ↔ Zig daemon ↔ LSP servers
+```
+Vim (VimScript) ←JSON-RPC (Unix socket)→ yacd (Zig daemon) ←LSP/DAP→ Language Servers
+                                              ↕
+                                         Tree-sitter (WASM)
+```
 
-**Vim side:**
-- `vim/autoload/yac.vim` — Core: daemon lifecycle, channel bridge (`yac#_request`, `yac#_notify`, `yac#_debug_log`), public API
-- `vim/autoload/yac_lsp.vim` — LSP operations (goto, hover, rename, code action, format, call hierarchy)
-- `vim/autoload/yac_completion.vim` — Completion popup and item resolution
-- `vim/autoload/yac_signature.vim` — Signature help popup
-- `vim/autoload/yac_diagnostics.vim` — Diagnostics (virtual text, signs, location list)
-- `vim/autoload/yac_copilot.vim` — Copilot ghost text + Tab acceptance
-- `vim/autoload/yac_picker.vim` — Fuzzy picker component + command palette
-- `vim/autoload/yac_peek.vim` — Reference peek window with tree navigation
-- `vim/autoload/yac_theme.vim` — Tree-sitter highlight theme management
-- `vim/autoload/yac_treesitter.vim` — Tree-sitter highlight request/response handling
-- `vim/autoload/yac_inlay.vim` — Inlay hints
-- `vim/autoload/yac_doc_highlight.vim` — Document highlight (cursor symbol references)
-- `vim/autoload/yac_semantic_tokens.vim` — LSP semantic token highlighting
-- `vim/autoload/yac_folding.vim` — Code folding via tree-sitter/LSP
-- `vim/autoload/yac_dap.vim` — Debug Adapter Protocol UI
-- `vim/autoload/yac_config.vim` — Project-level configuration (.yac.json)
-- `vim/autoload/yac_autopairs.vim` — Auto bracket/quote pairing
-- `vim/autoload/yac_gitsigns.vim` — Git diff signs in the sign column
-- `vim/autoload/yac_alternate.vim` — C/C++ header/implementation file switching
-- `vim/autoload/yac_install.vim` — LSP/DAP adapter auto-install/update
-- `vim/autoload/yac_test.vim` — E2E test helpers (term_start mode)
+- **Vim side**: `vim/autoload/yac*.vim` — UI, popups, channel bridge
+- **Zig daemon**: `src/` — event loop, handler dispatch, LSP/DAP clients, tree-sitter
+- **Language plugins**: `languages/{lang}/` — tree-sitter queries, grammar config
+- **Themes**: `themes/` — color theme JSON files
 
-**Zig daemon:**
-- `src/main.zig` — entry point, EventLoop
-- `src/queue.zig` — async pipeline (InQueue/OutQueue/WorkItem)
-- `src/handlers.zig` — request dispatch table
-- `src/handlers/` — per-feature request handlers
-- `src/handlers/copilot.zig` — Copilot LSP handler (global singleton)
-- `src/handlers/dap.zig` — DAP request handlers
-- `src/dap/` — DAP client, protocol, session, config
-- `src/lsp/` — LSP client, registry, protocol, config
-- `src/lsp/transform.zig` — LSP response → Vim format
-- `src/treesitter/` — Tree-sitter parsing (highlights, symbols, folds, textobjects, navigate)
-- `src/treesitter/predicates.zig` — Tree-sitter query predicate evaluator
-- `src/treesitter/highlights.zig` — Syntax highlighting with `captureToGroup` mapping
-
-**Language plugins:**
-- `languages/{lang}/queries/highlights.scm` — Syntax highlighting queries (from Zed)
-- `languages/{lang}/queries/symbols.scm` — Document symbol extraction
-- `languages/{lang}/queries/folds.scm` — Code folding ranges
-- `languages/{lang}/queries/textobjects.scm` — Text object definitions
-- `languages/{lang}/languages.json` — File extension → grammar mapping
-- `themes/` — Color themes (one-dark.json, catppuccin-mocha.json, etc.)
+Architecture is under active refactoring. Read the actual source for current structure.
 
 ## Reference
 
@@ -84,6 +50,7 @@ See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 - Read the relevant code thoroughly before attempting any fix. Do not cycle through multiple wrong approaches.
 - If the first approach fails, step back and re-analyze the root cause rather than trying variations blindly.
 - Understand the user's actual goal before trying solutions.
+- **LSP server 返回 null/空结果时，先检查 server 的 `window/logMessage` 和 `window/showMessage` 通知**。这些包含关键错误信息（如 "zig executable could not be found"）。不要猜测 timing/framing/protocol 问题。
 - **UI/rendering bugs: log first, fix second.** Add diagnostic logging (echom or debug_log) to confirm whether the issue is logical (wrong values) or visual (correct values, wrong rendering). Do not guess — one round of logging beats three rounds of speculative fixes.
 - **Prefer permanent debug logging over temporary echom.** Key operation paths should log via the module's debug_log function (e.g. `yac#_debug_log`). Enable with `<C-p>` → "Debug Toggle", check with `<C-p>` → "Open Log". Only use `echom` as a last resort when debug_log infrastructure is unavailable.
 
@@ -92,6 +59,8 @@ See [docs/new-language-plugin.md](docs/new-language-plugin.md)
 When fixing a bug, always write a test to reproduce it first. If the test cannot reproduce the bug, the testing infrastructure is incomplete — improve it first, then write the test, then fix.
 
 "Hard to test" (timing, UI, environment) is not a reason to skip tests; it's a signal to improve the test infrastructure.
+
+- **修复 use-after-free 时，`grep` 全部 `defer.*deinit` 路径一次性修完**，不要修一处发现一处。同类 bug 往往在多个 handler 中重复出现。
 
 ## Working Style
 
@@ -128,6 +97,15 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - **`captureToGroup` registration required**: New `@capture` names in highlights.scm must be added to `captureToGroup()` in `src/treesitter/highlights.zig`. Unregistered captures are silently ignored (no highlighting).
 - **Theme group registration**: New `YacTs*` highlight groups need 3 places: `captureToGroup` (Zig), `s:TS_GROUPS` list + `s:default_groups` dict (`yac_theme.vim`), `hi def link` (`yac.vim`), and theme JSON files.
 - **highlights.scm sourced from Zed**: Query files match Zed's tree-sitter queries exactly. When comparing rendering, note that Zed also applies LSP semantic tokens which yac.vim does not.
+
+## Zig 0.16 Io & Coroutine Gotchas
+
+- **`main` 必须接收 `init: std.process.Init.Minimal`**，并传 `init.environ` 给 `Io.Threaded.init`。否则子进程环境变量为空。
+- **协程中禁止 spin-wait (`tryLock` + `spinLoopHint`)**：必须用 `Io.Mutex.lockUncancelable(io)` / `.unlock(io)`。
+- **`Child.kill(io)` 已含 wait**：kill 后不要再调 `wait()`，否则断言失败。
+- **`defer result.deinit()` 后的 Value 是 dangling**：LSP `SendResult.result` 指向 `.parsed` 内存，deinit 后 UAF。必须 clone 到 arena（stringify+reparse）。
+- **阻塞 LSP 请求必须在独立协程中执行**：`sendRequest` 阻塞协程，在 client coroutine 中执行会阻塞所有后续请求。用 `Group.concurrent` 派发。
+- **shutdown 顺序**：发 LSP shutdown/exit → cancel readLoop group → free 资源。
 
 ## Platform & Cross-Platform Gotchas
 
