@@ -871,36 +871,21 @@ pub const Handler = struct {
         file: []const u8,
         version: i64 = 1,
         text: ?[]const u8 = null,
-        changes: ?Value = null,
     }) !void {
         // Update tree-sitter tree BEFORE sending to LSP
         self.parseIfSupported(p.file, p.text);
 
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
+        const t = p.text orelse return;
 
-        if (p.changes) |changes| {
-            // Incremental changes from Vim — raw JSON, keep raw API
-            var lsp_params = try json.buildObjectMap(alloc, .{
-                .{ "textDocument", try json.buildObject(alloc, .{
-                    .{ "uri", json.jsonString(lsp_ctx.uri) },
-                    .{ "version", json.jsonInteger(p.version) },
-                }) },
-            });
-            try lsp_params.put("contentChanges", changes);
-            lsp_ctx.client.sendNotification("textDocument/didChange", .{ .object = lsp_params }) catch |e| {
-                log.err("Failed to send didChange: {any}", .{e});
-            };
-        } else if (p.text) |t| {
-            // Full document text — typed API
-            lsp_ctx.client.notify("textDocument/didChange", alloc, .{
-                .textDocument = .{ .uri = lsp_ctx.uri, .version = @intCast(p.version) },
-                .contentChanges = &.{
-                    .{ .text_document_content_change_whole_document = .{ .text = t } },
-                },
-            }) catch |e| {
-                log.err("Failed to send didChange: {any}", .{e});
-            };
-        }
+        lsp_ctx.client.notify("textDocument/didChange", alloc, .{
+            .textDocument = .{ .uri = lsp_ctx.uri, .version = @intCast(p.version) },
+            .contentChanges = &.{
+                .{ .text_document_content_change_whole_document = .{ .text = t } },
+            },
+        }) catch |e| {
+            log.err("Failed to send didChange: {any}", .{e});
+        };
     }
 
     pub fn did_save(self: *Handler, alloc: Allocator, p: struct {
@@ -1066,17 +1051,12 @@ pub const Handler = struct {
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         lsp_command: []const u8,
-        arguments: ?Value = null,
+        arguments: ?[]const Value = null,
     }) !lsp_types.ResultType("workspace/executeCommand") {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
-        // arguments: ?Value → ?[]const Value for lsp-kit's typed params
-        const args_slice: ?[]const Value = if (p.arguments) |a| switch (a) {
-            .array => |arr| arr.items,
-            else => @as(?[]const Value, &.{a}),
-        } else null;
         return lsp_ctx.client.request("workspace/executeCommand", alloc, .{
             .command = p.lsp_command,
-            .arguments = args_slice,
+            .arguments = p.arguments,
         }) catch return null;
     }
     pub fn document_highlight(self: *Handler, alloc: Allocator, p: struct {
