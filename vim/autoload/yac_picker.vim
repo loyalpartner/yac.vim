@@ -1146,6 +1146,7 @@ function! s:picker_accept() abort
     call s:picker_mru_save()
   endif
 
+  let was_preview = s:picker.preview
   call s:picker_close()
 
   " Navigate to file
@@ -1155,6 +1156,13 @@ function! s:picker_accept() abort
   if s:picker_has_locations(mode) || line > 0
     call cursor(line + 1, column + 1)
     normal! zz
+  endif
+
+  " If file was loaded during preview (BufReadPost suppressed by
+  " g:yac_preview_loading), the language check and highlighting were skipped.
+  " Trigger them now that the picker is closed and events are restored.
+  if was_preview && !empty(file)
+    doautocmd BufReadPost
   endif
 endfunction
 
