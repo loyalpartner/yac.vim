@@ -253,6 +253,10 @@ endfunction
 function! s:handle_load_language_response(channel, response) abort
   if type(a:response) == v:t_dict && get(a:response, 'ok', 0)
     call yac#ts_highlights_invalidate()
+    " Trigger folding now that tree-sitter is ready
+    if !exists('b:yac_fold_levels')
+      call yac#folding_range()
+    endif
   else
     " Loading failed — remove from loaded_langs so next BufEnter retries
     for [k, v] in items(s:loaded_langs)
