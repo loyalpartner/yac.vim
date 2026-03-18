@@ -34,8 +34,8 @@ pub const EventLoop = struct {
     picker: picker_mod.Picker,
     /// Protects tree-sitter state (not thread-safe) from concurrent access
     ts_lock: std.atomic.Mutex = .unlocked,
-    /// Protects handler/registry shared state from concurrent coroutine access
-    dispatch_lock: std.atomic.Mutex = .unlocked,
+    /// Protects handler/registry shared state from concurrent coroutine access (Io-aware, yields fiber)
+    dispatch_lock: Io.Mutex = .init,
 
     // Shared subsystem state (initialized in run())
     handler: handler_mod.Handler = undefined,
@@ -122,7 +122,7 @@ pub const EventLoop = struct {
         var write_buf: [8192]u8 = undefined;
         var reader = stream.reader(self.io, &read_buf);
         var writer = stream.writer(self.io, &write_buf);
-        var write_lock: std.atomic.Mutex = .unlocked;
+        var write_lock: Io.Mutex = .init;
 
         // Group for spawned async LSP request coroutines
         var request_group: Io.Group = .init;
@@ -184,7 +184,7 @@ pub const EventLoop = struct {
 
     /// Process a single JSON-RPC line from a Vim client.
     /// Blocking LSP requests are spawned in separate coroutines.
-    fn processLine(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *std.atomic.Mutex, group: *Io.Group) void {
+    fn processLine(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *Io.Mutex, group: *Io.Group) void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const alloc = arena.allocator();
@@ -226,16 +226,16 @@ pub const EventLoop = struct {
                         self.allocator.free(line_copy);
                     };
                 } else {
-                    while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
-                    defer self.dispatch_lock.unlock();
+                    self.dispatch_lock.lockUncancelable(self.io);
+                    defer self.dispatch_lock.unlock(self.io);
                     const result = self.dispatch(alloc, r.method, r.params);
                     self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
                 }
             },
             .notification => |n| {
                 log.debug("Notification: {s}", .{n.method});
-                while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
-                defer self.dispatch_lock.unlock();
+                self.dispatch_lock.lockUncancelable(self.io);
+                defer self.dispatch_lock.unlock(self.io);
                 _ = self.dispatch(alloc, n.method, n.params);
             },
             .response => {
@@ -246,7 +246,7 @@ pub const EventLoop = struct {
 
     /// Async coroutine for blocking LSP requests.
     /// Runs in its own coroutine so the client coroutine continues processing.
-    fn asyncLspRequest(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *std.atomic.Mutex) Io.Cancelable!void {
+    fn asyncLspRequest(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *Io.Mutex) Io.Cancelable!void {
         defer self.allocator.free(raw_line);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -263,10 +263,10 @@ pub const EventLoop = struct {
 
         switch (msg) {
             .request => |r| {
-                while (!self.dispatch_lock.tryLock()) std.atomic.spinLoopHint();
+                self.dispatch_lock.lockUncancelable(self.io);
                 self.handler.client_writer = writer;
                 const result = self.dispatch(alloc, r.method, r.params);
-                self.dispatch_lock.unlock();
+                self.dispatch_lock.unlock(self.io);
                 self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
             },
             else => {},
@@ -318,15 +318,15 @@ pub const EventLoop = struct {
     }
 
     /// Send a JSON-RPC response with write lock (safe for concurrent coroutines).
-    fn sendResponseLocked(_: *EventLoop, alloc: Allocator, writer: *Io.Writer, write_lock: *std.atomic.Mutex, vim_id: u64, result: ?Value) void {
+    fn sendResponseLocked(self: *EventLoop, alloc: Allocator, writer: *Io.Writer, write_lock: *Io.Mutex, vim_id: u64, result: ?Value) void {
         const response_value = result orelse .null;
         const encoded = vim.encodeJsonRpcResponse(alloc, @as(i64, @intCast(vim_id)), response_value) catch |e| {
             log.err("Failed to encode response: {any}", .{e});
             return;
         };
 
-        while (!write_lock.tryLock()) std.atomic.spinLoopHint();
-        defer write_lock.unlock();
+        write_lock.lockUncancelable(self.io);
+        defer write_lock.unlock(self.io);
         writer.writeAll(encoded) catch return;
         writer.writeAll("\n") catch return;
         writer.flush() catch return;
