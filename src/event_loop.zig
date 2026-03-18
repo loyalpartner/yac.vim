@@ -274,7 +274,7 @@ pub const EventLoop = struct {
     }
 
     /// Dispatch a method to the handler and return the result value.
-    /// Intercepts picker actions from handler responses.
+    /// Intercepts picker actions from picker handler responses.
     fn dispatch(self: *EventLoop, alloc: Allocator, method: []const u8, params: Value) ?Value {
         if (self.vim_server.processMethod(alloc, method, params)) |maybe_result| {
             if (maybe_result) |result| {
@@ -282,8 +282,13 @@ pub const EventLoop = struct {
                     .data => |d| d,
                     .empty => return null,
                 };
-                // Intercept picker actions (file search, grep, etc.)
-                return self.processPickerAction(alloc, data);
+                // Only picker methods return actions that need interception.
+                // LSP methods return Values whose backing memory may be freed
+                // by defer result.deinit() — accessing them here would be UAF.
+                if (isPickerMethod(method)) {
+                    return self.processPickerAction(alloc, data);
+                }
+                return data;
             }
         } else |e| {
             log.err("Handler error for {s}: {any}", .{ method, e });
@@ -291,6 +296,12 @@ pub const EventLoop = struct {
 
         // Unknown method or error
         return null;
+    }
+
+    fn isPickerMethod(method: []const u8) bool {
+        return std.mem.eql(u8, method, "picker_open") or
+            std.mem.eql(u8, method, "picker_query") or
+            std.mem.eql(u8, method, "picker_close");
     }
 
     /// Check if a handler result contains a picker action and process it.
