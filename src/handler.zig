@@ -1,5 +1,4 @@
 const std = @import("std");
-const json = @import("json_utils.zig");
 const log = std.log.scoped(.handler);
 const Io = std.Io;
 const lsp_registry_mod = @import("lsp/registry.zig");
@@ -9,8 +8,6 @@ const lsp_types = @import("lsp/types.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
-const Value = json.Value;
-const ObjectMap = json.ObjectMap;
 const LspRegistry = lsp_registry_mod.LspRegistry;
 const LspClient = lsp_client_mod.LspClient;
 
@@ -871,7 +868,7 @@ pub const Handler = struct {
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         lsp_command: []const u8,
-        arguments: ?[]const Value = null,
+        arguments: ?[]const std.json.Value = null,
     }) !lsp_types.ResultType("workspace/executeCommand") {
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return null;
         return lsp_ctx.client.request("workspace/executeCommand", alloc, .{
@@ -1111,16 +1108,14 @@ pub const Handler = struct {
         }
         const content = if (file_buf.items.len > 0) file_buf.items else return;
 
-        var td_item = ObjectMap.init(alloc);
-        td_item.put("uri", json.jsonString(uri)) catch return;
-        td_item.put("languageId", json.jsonString(language)) catch return;
-        td_item.put("version", json.jsonInteger(1)) catch return;
-        td_item.put("text", json.jsonString(content)) catch return;
-
-        var params_obj = ObjectMap.init(alloc);
-        params_obj.put("textDocument", .{ .object = td_item }) catch return;
-
-        client.sendNotification("textDocument/didOpen", .{ .object = params_obj }) catch |e| {
+        client.notify("textDocument/didOpen", alloc, .{
+            .textDocument = .{
+                .uri = uri,
+                .languageId = .{ .custom_value = language },
+                .version = 1,
+                .text = content,
+            },
+        }) catch |e| {
             log.err("Failed to send didOpen to Copilot: {any}", .{e});
         };
     }
@@ -1188,31 +1183,22 @@ pub const Handler = struct {
         if (!self.copilotReady()) return;
 
         const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
-        const notify_params = try json.buildObject(alloc, .{
-            .{ "textDocument", try json.buildObject(alloc, .{
-                .{ "uri", json.jsonString(uri) },
-            }) },
-        });
-        client.sendNotification("textDocument/didFocus", notify_params) catch |e| {
+        client.notifyTyped("textDocument/didFocus", alloc, .{
+            .textDocument = .{ .uri = uri },
+        }) catch |e| {
             log.err("Failed to send didFocus to Copilot: {any}", .{e});
         };
     }
 
     pub fn copilot_accept(self: *Handler, alloc: Allocator, p: struct {
-        uuid: ?Value = null,
+        uuid: ?[]const u8 = null,
     }) !void {
         const client = self.getCopilotClient() orelse return;
         if (!self.copilotReady()) return;
 
-        var args = std.json.Array.init(alloc);
-        if (p.uuid) |uuid| {
-            try args.append(uuid);
-        }
-        const cmd_params = try json.buildObject(alloc, .{
-            .{ "command", json.jsonString("github.copilot.didAcceptCompletionItem") },
-            .{ "arguments", .{ .array = args } },
-        });
-        client.sendNotification("workspace/executeCommand", cmd_params) catch |e| {
+        client.notifyTyped("workspace/executeCommand", alloc, lsp_types.copilot.AcceptParams{
+            .arguments = if (p.uuid) |u| &.{u} else null,
+        }) catch |e| {
             log.err("Failed to send Copilot accept: {any}", .{e});
         };
     }
@@ -1224,14 +1210,10 @@ pub const Handler = struct {
         const client = self.getCopilotClient() orelse return;
         if (!self.copilotReady()) return;
 
-        var notify_params = ObjectMap.init(alloc);
-        if (p.item_id) |id| {
-            try notify_params.put("itemId", json.jsonString(id));
-        }
-        if (p.accepted_text) |text| {
-            try notify_params.put("acceptedLength", json.jsonInteger(@intCast(text.len)));
-        }
-        client.sendNotification("textDocument/didPartiallyAcceptCompletion", .{ .object = notify_params }) catch |e| {
+        client.notifyTyped("textDocument/didPartiallyAcceptCompletion", alloc, .{
+            .itemId = p.item_id,
+            .acceptedLength = if (p.accepted_text) |text| @as(?i32, @intCast(text.len)) else null,
+        }) catch |e| {
             log.err("Failed to send Copilot partial accept: {any}", .{e});
         };
     }

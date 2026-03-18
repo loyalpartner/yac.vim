@@ -504,6 +504,18 @@ pub const LspClient = struct {
         try self.sendNotification(method, params_value);
     }
 
+    /// Typed notification for non-standard methods (e.g. Copilot).
+    /// Unlike notify(), the method string is runtime and types are explicit.
+    pub fn notifyTyped(
+        self: *LspClient,
+        method: []const u8,
+        arena: Allocator,
+        params: anytype,
+    ) !void {
+        const params_value = try typedToValue(arena, params);
+        try self.sendNotification(method, params_value);
+    }
+
     /// Typed request for non-standard methods (e.g. Copilot).
     /// Unlike request(), the method string is runtime and types are explicit.
     pub fn requestTyped(

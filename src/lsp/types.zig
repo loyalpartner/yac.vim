@@ -105,6 +105,12 @@ pub const copilot = struct {
         triggerKind: i32 = 1,
     };
 
+    // -- didAcceptCompletionItem --
+    pub const AcceptParams = struct {
+        command: []const u8 = "github.copilot.didAcceptCompletionItem",
+        arguments: ?[]const []const u8 = null,
+    };
+
     // -- textDocument/inlineCompletion result --
     pub const InlineCompletionItem = struct {
         insertText: []const u8,
