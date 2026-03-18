@@ -6,6 +6,7 @@ const vim_server_mod = @import("vim_server.zig");
 const handler_mod = @import("handler.zig");
 const lsp_mod = @import("lsp/lsp.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
+const picker_mod = @import("picker.zig");
 const log = @import("log.zig");
 const compat = @import("compat.zig");
 
@@ -30,6 +31,7 @@ pub const EventLoop = struct {
     shutdown_event: Io.Event,
     lsp: lsp_mod.Lsp,
     ts: treesitter_mod.TreeSitter,
+    picker: picker_mod.Picker,
     /// Protects tree-sitter state (not thread-safe) from concurrent access
     ts_lock: std.atomic.Mutex = .unlocked,
 
@@ -45,12 +47,14 @@ pub const EventLoop = struct {
             .shutdown_event = .unset,
             .lsp = lsp_mod.Lsp.init(allocator, io),
             .ts = treesitter_mod.TreeSitter.init(allocator),
+            .picker = picker_mod.Picker.init(allocator, io),
         };
     }
 
     pub fn deinit(self: *EventLoop) void {
         self.lsp.deinit();
         self.ts.deinit();
+        self.picker.deinit();
     }
 
     /// Main event loop: accept connections, spawn per-client coroutines.
@@ -201,13 +205,16 @@ pub const EventLoop = struct {
     }
 
     /// Dispatch a method to the handler and return the result value.
+    /// Intercepts picker actions from handler responses.
     fn dispatch(self: *EventLoop, alloc: Allocator, method: []const u8, params: Value) ?Value {
         if (self.vim_server.processMethod(alloc, method, params)) |maybe_result| {
             if (maybe_result) |result| {
-                return switch (result) {
-                    .data => |data| data,
-                    .empty => null,
+                const data = switch (result) {
+                    .data => |d| d,
+                    .empty => return null,
                 };
+                // Intercept picker actions (file search, grep, etc.)
+                return self.processPickerAction(alloc, data);
             }
         } else |e| {
             log.err("Handler error for {s}: {any}", .{ method, e });
@@ -215,6 +222,19 @@ pub const EventLoop = struct {
 
         // Unknown method or error
         return null;
+    }
+
+    /// Check if a handler result contains a picker action and process it.
+    fn processPickerAction(self: *EventLoop, alloc: Allocator, data: Value) ?Value {
+        switch (self.picker.processAction(alloc, data)) {
+            .none => return data,
+            .respond_null => return null,
+            .respond => |v| return v,
+            .query_buffers => {
+                // Return recent files from picker (Vim already sent them in picker_open)
+                return picker_mod.buildPickerResults(alloc, self.picker.recentFiles(), "file");
+            },
+        }
     }
 
     /// Send a JSON-RPC response to the Vim client via Io Writer.

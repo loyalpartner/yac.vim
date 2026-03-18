@@ -1,5 +1,7 @@
 const std = @import("std");
+const Io = std.Io;
 const json_utils = @import("json_utils.zig");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
 const ObjectMap = json_utils.ObjectMap;
@@ -91,19 +93,21 @@ pub fn filterAndSort(
 
 pub const FileIndex = struct {
     allocator: Allocator,
+    io: Io,
     files: std.ArrayList([]const u8),
     recent_files: std.ArrayList([]const u8),
     child: ?std.process.Child,
     stdout_buf: std.ArrayList(u8),
     ready: bool,
 
-    pub fn init(allocator: Allocator) FileIndex {
+    pub fn init(allocator: Allocator, io: Io) FileIndex {
         return .{
             .allocator = allocator,
-            .files = .{},
-            .recent_files = .{},
+            .io = io,
+            .files = .empty,
+            .recent_files = .empty,
             .child = null,
-            .stdout_buf = .{},
+            .stdout_buf = .empty,
             .ready = false,
         };
     }
@@ -115,8 +119,8 @@ pub const FileIndex = struct {
         self.recent_files.deinit(self.allocator);
         self.stdout_buf.deinit(self.allocator);
         if (self.child) |*c| {
-            _ = c.kill() catch {};
-            _ = c.wait() catch {};
+            c.kill(self.io);
+            _ = c.wait(self.io) catch {};
         }
     }
 
@@ -127,11 +131,12 @@ pub const FileIndex = struct {
             &.{ "rg", "--files", "--hidden", "--glob", "!.git" }
         else
             &.{ "find", ".", "-type", "f", "-not", "-path", "*/.git/*" };
-        var child = std.process.Child.init(argv, self.allocator);
-        child.cwd = cwd;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-        try child.spawn();
+        const child = try std.process.spawn(self.io, .{
+            .argv = argv,
+            .cwd = .{ .path = cwd },
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
         self.child = child;
     }
 
@@ -139,14 +144,16 @@ pub const FileIndex = struct {
         const child = &(self.child orelse return true);
         const stdout = child.stdout orelse return true;
         var buf: [8192]u8 = undefined;
-        const n = std.posix.read(stdout.handle, &buf) catch return true;
-        if (n == 0) {
+        // Use C read to avoid Io dependency in poll (non-blocking check)
+        const n_signed = std.c.read(stdout.handle, &buf, buf.len);
+        if (n_signed <= 0) {
             self.processBuffer();
             self.ready = true;
-            _ = child.wait() catch {};
+            _ = child.wait(self.io) catch {};
             self.child = null;
             return true;
         }
+        const n: usize = @intCast(n_signed);
         self.stdout_buf.appendSlice(self.allocator, buf[0..n]) catch return true;
         self.processBuffer();
         return false;
@@ -188,22 +195,18 @@ pub const FileIndex = struct {
             self.allocator.free(duped);
         };
     }
-
-    pub fn getStdoutFd(self: *FileIndex) ?std.posix.fd_t {
-        const child = self.child orelse return null;
-        const stdout = child.stdout orelse return null;
-        return stdout.handle;
-    }
 };
 
 pub const Picker = struct {
     allocator: Allocator,
+    io: Io,
     file_index: ?*FileIndex,
     cwd: ?[]const u8,
 
-    pub fn init(allocator: Allocator) Picker {
+    pub fn init(allocator: Allocator, io: Io) Picker {
         return .{
             .allocator = allocator,
+            .io = io,
             .file_index = null,
             .cwd = null,
         };
@@ -216,7 +219,7 @@ pub const Picker = struct {
     pub fn start(self: *Picker, cwd: []const u8) bool {
         self.close();
         const fi = self.allocator.create(FileIndex) catch return false;
-        fi.* = FileIndex.init(self.allocator);
+        fi.* = FileIndex.init(self.allocator, self.io);
         fi.startScan(cwd) catch {
             fi.deinit();
             self.allocator.destroy(fi);
@@ -241,11 +244,6 @@ pub const Picker = struct {
 
     pub fn hasIndex(self: *Picker) bool {
         return self.file_index != null;
-    }
-
-    pub fn getStdoutFd(self: *Picker) ?std.posix.fd_t {
-        const fi = self.file_index orelse return null;
-        return fi.getStdoutFd();
     }
 
     pub fn pollScan(self: *Picker) void {
@@ -320,7 +318,7 @@ pub const Picker = struct {
             const query = json_utils.getString(obj, "query") orelse "";
             if (query.len == 0) return .respond_null;
             const cwd = self.cwd orelse return .respond_null;
-            return .{ .respond = runGrep(alloc, query, cwd) catch return .respond_null };
+            return .{ .respond = runGrep(alloc, self.io, query, cwd) catch return .respond_null };
         } else if (std.mem.eql(u8, action, "picker_close")) {
             self.close();
             return .respond_null;
@@ -349,32 +347,34 @@ pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []c
 
 /// Spawn rg synchronously and return results as a picker Value.
 /// Caller's arena allocator owns all memory.
-fn runGrep(alloc: Allocator, pattern: []const u8, cwd: []const u8) !Value {
+fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !Value {
     const argv: []const []const u8 = &.{
         "rg",             "--vimgrep", "--max-count", "5",     "--max-columns", "200",
         "--max-filesize", "1M",        "--color",     "never", "--",            pattern,
     };
-    var child = std.process.Child.init(argv, alloc);
-    child.cwd = cwd;
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Close;
-    try child.spawn();
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .close,
+        .stdout = .pipe,
+        .stderr = .close,
+    });
 
-    const stdout_fd = (child.stdout orelse return error.NoStdout).handle;
+    const stdout = child.stdout orelse return error.NoStdout;
     const max_output = 256 * 1024;
     var output_buf: std.ArrayList(u8) = .empty;
     // NOTE: do NOT deinit output_buf — parseGrepLine returns slices into it,
     // and the arena allocator will free everything when the request completes.
     while (true) {
         var buf: [8192]u8 = undefined;
-        const n = std.posix.read(stdout_fd, &buf) catch break;
-        if (n == 0) break;
+        const n_signed = std.c.read(stdout.handle, &buf, buf.len);
+        if (n_signed <= 0) break;
+        const n: usize = @intCast(n_signed);
         output_buf.appendSlice(alloc, buf[0..n]) catch break;
         if (output_buf.items.len >= max_output) break;
     }
-    _ = child.kill() catch {};
-    _ = child.wait() catch {};
+    child.kill(io);
+    _ = child.wait(io) catch {};
 
     var items = std.json.Array.init(alloc);
     var line_iter = std.mem.splitScalar(u8, output_buf.items, '\n');
@@ -403,7 +403,8 @@ fn parseGrepLine(alloc: Allocator, line: []const u8) ?Value {
     const file = line[0..colon1];
     const line_num = std.fmt.parseInt(u32, rest1[0..colon2], 10) catch return null;
     const col_num = std.fmt.parseInt(u32, rest2[0..colon3], 10) catch return null;
-    const text = std.mem.trimLeft(u8, rest2[colon3 + 1 ..], " \t");
+    const raw_text = rest2[colon3 + 1 ..];
+    const text = if (std.mem.indexOfNone(u8, raw_text, " \t")) |start| raw_text[start..] else raw_text;
 
     var item = ObjectMap.init(alloc);
     item.put("label", json_utils.jsonString(text)) catch return null;
@@ -415,13 +416,12 @@ fn parseGrepLine(alloc: Allocator, line: []const u8) ?Value {
 }
 
 fn findExecutable(name: []const u8) bool {
-    const path_env = std.posix.getenv("PATH") orelse return false;
+    const path_env = compat.getenv("PATH") orelse return false;
     var it = std.mem.splitScalar(u8, path_env, ':');
     while (it.next()) |dir| {
         var buf: [512]u8 = undefined;
         const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.fs.accessAbsolute(full, .{}) catch continue;
-        return true;
+        if (compat.fileExists(full)) return true;
     }
     return false;
 }
