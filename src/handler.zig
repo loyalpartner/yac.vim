@@ -368,12 +368,28 @@ pub const Handler = struct {
         return lsp_transform.transformLspResult(alloc, "picker_query", result.result, lsp_ctx.ssh_host);
     }
 
+    fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
+        const tc = self.getTsCtx(file, text) orelse return;
+        const t = text orelse return;
+        tc.ts.parseBuffer(tc.file, t) catch |e| {
+            log.debug("TreeSitter parse failed for {s}: {any}", .{ tc.file, e });
+        };
+    }
+
+    fn removeIfSupported(self: *Handler, file: []const u8) void {
+        const tc = self.getTsCtx(file, null) orelse return;
+        tc.ts.removeBuffer(tc.file);
+    }
+
     pub fn did_change(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
         version: i64 = 1,
         text: ?[]const u8 = null,
         changes: ?Value = null,
     }) !void {
+        // Update tree-sitter tree BEFORE sending to LSP
+        self.parseIfSupported(p.file, p.text);
+
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
 
         var lsp_params = try json.buildObjectMap(alloc, .{
@@ -411,6 +427,8 @@ pub const Handler = struct {
     pub fn did_close(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
     }) !void {
+        self.removeIfSupported(p.file);
+
         const lsp_ctx = try self.getLspCtx(alloc, p.file) orelse return;
         const lsp_params = try buildTextDocumentIdentifier(alloc, lsp_ctx.uri);
         lsp_ctx.client.sendNotification("textDocument/didClose", lsp_params) catch |e| {
