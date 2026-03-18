@@ -490,6 +490,9 @@ pub const LspRegistry = struct {
 
     /// Shutdown all clients (including copilot).
     pub fn shutdownAll(self: *LspRegistry) void {
+        // Cancel all readLoop coroutines BEFORE touching client/registry state
+        self.lsp_group.cancel(self.io);
+
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             _ = entry.value_ptr.*.sendShutdown() catch {};
