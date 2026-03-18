@@ -432,137 +432,6 @@ pub const Handler = struct {
         return .{ .object = result_obj };
     }
 
-    /// Extract start position from a Value range object (used by picker symbol transform).
-    fn extractRangeStart(range_val: Value) ?struct { line: i64, column: i64 } {
-        const range_obj = switch (range_val) {
-            .object => |o| o,
-            else => return null,
-        };
-        const start_obj = switch (range_obj.get("start") orelse return null) {
-            .object => |o| o,
-            else => return null,
-        };
-        const line = json.getInteger(start_obj, "line") orelse return null;
-        const column = json.getInteger(start_obj, "character") orelse return null;
-        return .{ .line = line, .column = column };
-    }
-
-    /// Recursively collect DocumentSymbol entries into items, expanding children.
-    fn collectDocumentSymbols(
-        alloc: Allocator,
-        arr: []const Value,
-        items: *std.json.Array,
-        file: []const u8,
-        depth: i64,
-    ) void {
-        for (arr) |sym_val| {
-            const sym = switch (sym_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const name = json.getString(sym, "name") orelse continue;
-            const kind_int = json.getInteger(sym, "kind");
-            const kind_name = lsp_types.symbolKindName(kind_int);
-            const lsp_detail = json.getString(sym, "detail");
-
-            var line: i64 = 0;
-            var column: i64 = 0;
-            const range_val = sym.get("selectionRange") orelse sym.get("range");
-            if (range_val) |rv| {
-                if (extractRangeStart(rv)) |p| {
-                    line = p.line;
-                    column = p.column;
-                }
-            }
-
-            items.append(json.buildObject(alloc, .{
-                .{ "label", json.jsonString(name) },
-                .{ "detail", json.jsonString(lsp_detail orelse "") },
-                .{ "file", json.jsonString(file) },
-                .{ "line", json.jsonInteger(line) },
-                .{ "column", json.jsonInteger(column) },
-                .{ "depth", json.jsonInteger(depth) },
-                .{ "kind", json.jsonString(kind_name) },
-            }) catch continue) catch continue;
-
-            if (sym.get("children")) |children_val| {
-                switch (children_val) {
-                    .array => |ca| collectDocumentSymbols(alloc, ca.items, items, file, depth + 1),
-                    else => {},
-                }
-            }
-        }
-    }
-
-    /// Transform workspace/symbol or documentSymbol results into picker format.
-    fn transformPickerSymbol(alloc: Allocator, result: Value) Value {
-        const arr: []const Value = switch (result) {
-            .array => |a| a.items,
-            else => &.{},
-        };
-
-        // Detect format: DocumentSymbol has no "location" field.
-        const is_doc_symbol = blk: {
-            for (arr) |sym_val| {
-                switch (sym_val) {
-                    .object => |o| break :blk o.get("location") == null,
-                    else => {},
-                }
-            }
-            break :blk false;
-        };
-
-        var items = std.json.Array.init(alloc);
-
-        if (is_doc_symbol) {
-            collectDocumentSymbols(alloc, arr, &items, "", 0);
-        } else {
-            for (arr) |sym_val| {
-                const sym = switch (sym_val) {
-                    .object => |o| o,
-                    else => continue,
-                };
-                const name = json.getString(sym, "name") orelse continue;
-                const kind_int = json.getInteger(sym, "kind");
-                const kind_name = lsp_types.symbolKindName(kind_int);
-                const container = json.getString(sym, "containerName");
-                const detail = if (container) |c|
-                    std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
-                else
-                    kind_name;
-
-                var file: []const u8 = "";
-                var line: i64 = 0;
-                var column: i64 = 0;
-                if (json.getObject(sym, "location")) |loc| {
-                    if (json.getString(loc, "uri")) |uri| {
-                        file = lsp_types.uriToFilePath(alloc, uri) orelse "";
-                    }
-                    if (loc.get("range")) |range_val| {
-                        if (extractRangeStart(range_val)) |p| {
-                            line = p.line;
-                            column = p.column;
-                        }
-                    }
-                }
-
-                items.append(json.buildObject(alloc, .{
-                    .{ "label", json.jsonString(name) },
-                    .{ "detail", json.jsonString(detail) },
-                    .{ "file", json.jsonString(file) },
-                    .{ "line", json.jsonInteger(line) },
-                    .{ "column", json.jsonInteger(column) },
-                    .{ "depth", json.jsonInteger(0) },
-                    .{ "kind", json.jsonString(kind_name) },
-                }) catch continue) catch continue;
-            }
-        }
-
-        return json.buildObject(alloc, .{
-            .{ "items", .{ .array = items } },
-            .{ "mode", json.jsonString("symbol") },
-        }) catch .null;
-    }
 
     // ========================================================================
     // System handlers
@@ -1181,19 +1050,23 @@ pub const Handler = struct {
         const ts_state = self.ts orelse return .null;
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, ts_state, p.markdown, p.filetype);
     }
-    pub fn picker_open(_: *Handler, alloc: Allocator, p: struct {
+    const PickerOpenResult = struct {
+        action: []const u8 = "picker_init",
         cwd: []const u8,
-        recent_files: ?Value = null,
-    }) !Value {
-        var result = try json.buildObjectMap(alloc, .{
-            .{ "action", json.jsonString("picker_init") },
-            .{ "cwd", json.jsonString(p.cwd) },
-        });
-        if (p.recent_files) |rf| {
-            try result.put("recent_files", rf);
-        }
-        return .{ .object = result };
+        recent_files: ?[]const []const u8 = null,
+    };
+
+    pub fn picker_open(_: *Handler, _: Allocator, p: struct {
+        cwd: []const u8,
+        recent_files: ?[]const []const u8 = null,
+    }) !PickerOpenResult {
+        return .{ .cwd = p.cwd, .recent_files = p.recent_files };
     }
+
+    const PickerAction = struct {
+        action: []const u8,
+        query: []const u8,
+    };
 
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
         query: []const u8 = "",
@@ -1207,24 +1080,25 @@ pub const Handler = struct {
             const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
                 .query = p.query,
             }) catch return .null;
-            const v = LspClient.typedToValue(alloc, result) catch return .null;
-            return transformPickerSymbol(alloc, v);
+            const typed = buildPickerSymbolsFromWorkspace(alloc, result) orelse return .null;
+            return LspClient.typedToValue(alloc, typed) catch .null;
         } else if (std.mem.eql(u8, p.mode, "grep")) {
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("picker_grep_query") },
-                .{ "query", json.jsonString(p.query) },
-            });
+            return LspClient.typedToValue(alloc, PickerAction{
+                .action = "picker_grep_query",
+                .query = p.query,
+            }) catch .null;
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
+            // Tree-sitter returns Value — TS module API boundary
             const tc = self.getTsCtx(p.file orelse return .null, p.text) orelse return .null;
             const tree = tc.ts.getTree(tc.file) orelse return .null;
             const source = tc.ts.getSource(tc.file) orelse return .null;
             const sym_query = tc.lang_state.symbols orelse return .null;
             return try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
         } else {
-            return try json.buildObject(alloc, .{
-                .{ "action", json.jsonString("picker_file_query") },
-                .{ "query", json.jsonString(p.query) },
-            });
+            return LspClient.typedToValue(alloc, PickerAction{
+                .action = "picker_file_query",
+                .query = p.query,
+            }) catch .null;
         }
     }
 
