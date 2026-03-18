@@ -34,6 +34,8 @@ Vim (VimScript) ←JSON-RPC (Unix socket)→ yacd (Zig daemon) ←LSP/DAP→ Lan
 
 Architecture is under active refactoring. Read the actual source for current structure.
 
+- **LSP typed API**: `src/lsp/types.zig` 集中定义 LSP 类型（`ResultType("method")` 派生）和 Copilot 类型。Handler 返回具体 LSP 类型（如 `?Hover`），`VimServer.wrapResult` 自动序列化。`LspClient.request()` 用 comptime method，`requestTyped()`/`notifyTyped()` 用 runtime method + 显式类型（Copilot 等非标准方法）。
+
 ## Reference
 
 - LSP 3.17 spec: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
@@ -79,6 +81,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 ## Vim Popup Gotchas
 
 - **`win_execute` + `cursorline` needs `redraw`**: When the buffer behind a popup has many text properties (tree-sitter highlights), `win_execute(popup, 'call cursor(...)')` moves the cursor correctly but Vim may not refresh the `cursorline` highlight. Always follow with `redraw`.
+- **Handler 返回 `?T`（optional）时 null 序列化为 JSON `null`**：Vim 回调用 `type(response) == v:t_dict` 检查，`null` 会被 silent 跳过。如果 Vim 端期望 dict（即使空的），handler 应返回非 optional 类型并用空 struct 作 early return。
 - **Picker sets `eventignore`**: While the picker is open, `CursorMoved`, `CursorMovedI`, `WinScrolled` are suppressed via `eventignore` to prevent tree-sitter/doc-highlight operations from interfering with popup rendering. Restored on close in `s:picker_close_popups()`.
 - **Never use `mapping: 0` on completion popup** — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim). Note: picker input popup intentionally uses `mapping: 0` to avoid `>` character timeoutlen delay — this is safe because the picker restores mappings on close and the input popup uses its own filter.
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
@@ -89,6 +92,7 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
 - After renaming or refactoring, grep for all usages of the old name to catch stale references.
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
+- **`&.{...}` 在函数返回值 struct 中是 dangling pointer**：`&.{item}` 创建栈上临时数组取 slice，函数返回后栈帧释放。用栈局部变量 `var buf: [1]T = ...` 代替，确保在 `typedToValue` 序列化前栈帧存活。
 - **Prefer `std.ArrayList` over `std.ArrayListUnmanaged`**: In Zig 0.16, `ArrayList` uses the same API pattern (allocator passed per-call). Use `var list: std.ArrayList(T) = .empty;` (not `std.ArrayListUnmanaged(T){}`). `ArrayListUnmanaged` still exists but `.empty` is the correct init, not `{}`.
 
 ## Tree-sitter Gotchas
@@ -106,6 +110,8 @@ Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
 - **`defer result.deinit()` 后的 Value 是 dangling**：LSP `SendResult.result` 指向 `.parsed` 内存，deinit 后 UAF。必须 clone 到 arena（stringify+reparse）。
 - **阻塞 LSP 请求必须在独立协程中执行**：`sendRequest` 阻塞协程，在 client coroutine 中执行会阻塞所有后续请求。用 `Group.concurrent` 派发。
 - **shutdown 顺序**：发 LSP shutdown/exit → cancel readLoop group → free 资源。
+- **`DebugAllocator` 在 `Io.Threaded` 多线程下 heap corruption**（ziglang/zig#25025, #24970）：`thread_safe = true` 不完全解决。用 `std.heap.c_allocator` 代替。
+- **TreeSitter 需要 Io.Mutex**：coroutine 模型下多个 client coroutine 在不同 worker 线程上并发访问。所有 public mutable 方法必须加 `Io.Mutex`。
 
 ## Platform & Cross-Platform Gotchas
 
