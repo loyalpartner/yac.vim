@@ -109,7 +109,7 @@ pub const EventLoop = struct {
     }
 
     /// Per-client coroutine: read lines, dispatch, write responses.
-    /// Uses Io-native Reader/Writer — blocks the coroutine (not the OS thread).
+    /// Non-blocking LSP requests are spawned in separate coroutines.
     fn clientCoroutine(self: *EventLoop, stream: Io.net.Stream) Io.Cancelable!void {
         defer {
             stream.close(self.io);
@@ -120,6 +120,11 @@ pub const EventLoop = struct {
         var write_buf: [8192]u8 = undefined;
         var reader = stream.reader(self.io, &read_buf);
         var writer = stream.writer(self.io, &write_buf);
+        var write_lock: std.atomic.Mutex = .unlocked;
+
+        // Group for spawned async LSP request coroutines
+        var request_group: Io.Group = .init;
+        defer request_group.cancel(self.io);
 
         // Receive buffer for line framing
         var recv_buf: std.ArrayList(u8) = .empty;
@@ -142,13 +147,7 @@ pub const EventLoop = struct {
                 const line = recv_buf.items[0..newline_pos];
 
                 if (line.len > 0) {
-                    log.debug("Received line: {d} bytes", .{line.len});
-
-                    var arena = std.heap.ArenaAllocator.init(self.allocator);
-                    defer arena.deinit();
-                    const alloc = arena.allocator();
-
-                    self.processLine(alloc, line, &writer.interface);
+                    self.processLine(line, &writer.interface, &write_lock, &request_group);
                 }
 
                 // Remove processed line + \n from buffer
@@ -162,13 +161,37 @@ pub const EventLoop = struct {
         }
     }
 
+    /// Check if a method makes a blocking LSP request.
+    fn isBlockingLspMethod(method: []const u8) bool {
+        const blocking = [_][]const u8{
+            "hover",                "goto_definition",    "goto_declaration",
+            "goto_type_definition", "goto_implementation", "completion",
+            "references",           "rename",             "code_action",
+            "formatting",           "range_formatting",   "signature_help",
+            "call_hierarchy",       "type_hierarchy",     "document_symbols",
+            "inlay_hints",          "folding_range",      "semantic_tokens",
+            "execute_command",      "workspace_symbol",
+            "copilot_sign_in",      "copilot_sign_out",   "copilot_check_status",
+            "copilot_sign_in_confirm", "copilot_complete",
+        };
+        for (blocking) |b| {
+            if (std.mem.eql(u8, method, b)) return true;
+        }
+        return false;
+    }
 
     /// Process a single JSON-RPC line from a Vim client.
-    fn processLine(self: *EventLoop, alloc: Allocator, line: []const u8, writer: *Io.Writer) void {
+    /// Blocking LSP requests are spawned in separate coroutines.
+    fn processLine(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *std.atomic.Mutex, group: *Io.Group) void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
         // Set per-request context
         self.handler.client_writer = writer;
+
         // Parse JSON
-        const parsed = json_utils.parse(alloc, line) catch |e| {
+        const parsed = json_utils.parse(alloc, raw_line) catch |e| {
             log.err("JSON parse error: {any}", .{e});
             return;
         };
@@ -191,8 +214,19 @@ pub const EventLoop = struct {
         switch (msg) {
             .request => |r| {
                 log.debug("Request [{d}]: {s}", .{ r.id, r.method });
-                const result = self.dispatch(alloc, r.method, r.params);
-                self.sendResponse(alloc, writer, r.id, result);
+                if (isBlockingLspMethod(r.method)) {
+                    // Spawn in separate coroutine to avoid blocking the client
+                    const line_copy = self.allocator.dupe(u8, raw_line) catch return;
+                    group.concurrent(self.io, asyncLspRequest, .{
+                        self, line_copy, writer, write_lock,
+                    }) catch |e| {
+                        log.err("Failed to spawn async LSP request: {any}", .{e});
+                        self.allocator.free(line_copy);
+                    };
+                } else {
+                    const result = self.dispatch(alloc, r.method, r.params);
+                    self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
+                }
             },
             .notification => |n| {
                 log.debug("Notification: {s}", .{n.method});
@@ -201,6 +235,33 @@ pub const EventLoop = struct {
             .response => {
                 // Responses to our calls (expr responses etc.)
             },
+        }
+    }
+
+    /// Async coroutine for blocking LSP requests.
+    /// Runs in its own coroutine so the client coroutine continues processing.
+    fn asyncLspRequest(self: *EventLoop, raw_line: []const u8, writer: *Io.Writer, write_lock: *std.atomic.Mutex) Io.Cancelable!void {
+        defer self.allocator.free(raw_line);
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        // Re-parse the cloned raw line
+        const parsed = json_utils.parse(alloc, raw_line) catch return;
+        const arr = switch (parsed.value) {
+            .array => |a| a.items,
+            else => return,
+        };
+        const msg = vim.parseJsonRpc(arr) catch return;
+
+        switch (msg) {
+            .request => |r| {
+                self.handler.client_writer = writer;
+                const result = self.dispatch(alloc, r.method, r.params);
+                self.sendResponseLocked(alloc, writer, write_lock, r.id, result);
+            },
+            else => {},
         }
     }
 
@@ -237,14 +298,16 @@ pub const EventLoop = struct {
         }
     }
 
-    /// Send a JSON-RPC response to the Vim client via Io Writer.
-    fn sendResponse(_: *EventLoop, alloc: Allocator, writer: *Io.Writer, vim_id: u64, result: ?Value) void {
+    /// Send a JSON-RPC response with write lock (safe for concurrent coroutines).
+    fn sendResponseLocked(_: *EventLoop, alloc: Allocator, writer: *Io.Writer, write_lock: *std.atomic.Mutex, vim_id: u64, result: ?Value) void {
         const response_value = result orelse .null;
         const encoded = vim.encodeJsonRpcResponse(alloc, @as(i64, @intCast(vim_id)), response_value) catch |e| {
             log.err("Failed to encode response: {any}", .{e});
             return;
         };
 
+        while (!write_lock.tryLock()) std.atomic.spinLoopHint();
+        defer write_lock.unlock();
         writer.writeAll(encoded) catch return;
         writer.writeAll("\n") catch return;
         writer.flush() catch return;
