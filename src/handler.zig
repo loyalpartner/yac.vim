@@ -128,10 +128,18 @@ pub const Handler = struct {
     /// serializes everything into `alloc` so no dangling pointers remain.
     fn cloneLspResult(alloc: Allocator, handler_method: []const u8, result: Value, ssh_host: ?[]const u8) Value {
         const transformed = lsp_transform.transformLspResult(alloc, handler_method, result, ssh_host);
-        if (transformed == .null) return .null;
-        // Serialize + reparse to deep-copy all strings into alloc
-        const serialized = json.stringifyAlloc(alloc, transformed) catch return .null;
-        const reparsed = std.json.parseFromSlice(Value, alloc, serialized, .{}) catch return .null;
+        if (transformed == .null) {
+            log.debug("cloneLspResult({s}): transform returned null", .{handler_method});
+            return .null;
+        }
+        const serialized = json.stringifyAlloc(alloc, transformed) catch |e| {
+            log.err("cloneLspResult({s}): stringify failed: {any}", .{ handler_method, e });
+            return .null;
+        };
+        const reparsed = std.json.parseFromSlice(Value, alloc, serialized, .{}) catch |e| {
+            log.err("cloneLspResult({s}): reparse failed: {any}", .{ handler_method, e });
+            return .null;
+        };
         return reparsed.value;
     }
 
