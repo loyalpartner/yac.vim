@@ -199,8 +199,8 @@ function! s:apply_highlights(state) abort
     let display = s:format_item(item)
     if has_key(item, 'detail') && !empty(item.detail)
       let detail_text = item.detail
-      if len(detail_text) > 25
-        let detail_text = detail_text[:22] . '...'
+      if strdisplaywidth(detail_text) > 25
+        let detail_text = s:truncate_display(detail_text, 22) . '...'
       endif
       let detail_start = stridx(display, detail_text, icon_bytes + label_bytes)
       if detail_start >= 0

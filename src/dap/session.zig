@@ -59,11 +59,11 @@ pub const ChainTrigger = enum {
     variable_expand,
 };
 
-const FrameList = std.ArrayListUnmanaged(CachedFrame);
-pub const VarList = std.ArrayListUnmanaged(CachedVariable);
-const WatchExprList = std.ArrayListUnmanaged([]const u8);
-const WatchResultList = std.ArrayListUnmanaged(WatchResult);
-const PathList = std.ArrayListUnmanaged(u32);
+const FrameList = std.ArrayList(CachedFrame);
+pub const VarList = std.ArrayList(CachedVariable);
+const WatchExprList = std.ArrayList([]const u8);
+const WatchResultList = std.ArrayList(WatchResult);
+const PathList = std.ArrayList(u32);
 
 pub const DapSession = struct {
     allocator: Allocator,
