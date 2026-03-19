@@ -110,4 +110,7 @@ test {
     _ = @import("lsp/transform.zig");
     _ = @import("lsp/lsp.zig");
     _ = @import("lsp/vim_types.zig");
+    _ = @import("dap/session_test.zig");
+    _ = @import("treesitter/markdown_parser.zig");
+    _ = @import("treesitter/hover_highlight_test.zig");
 }

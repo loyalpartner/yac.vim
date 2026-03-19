@@ -4,7 +4,7 @@ const json = @import("../json_utils.zig");
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
-const Writer = std.io.Writer;
+const Writer = std.Io.Writer;
 
 /// Re-export MessageFramer — DAP uses the same Content-Length framing as LSP.
 pub const MessageFramer = @import("../lsp/protocol.zig").MessageFramer;
