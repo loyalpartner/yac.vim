@@ -274,59 +274,37 @@ pub const Picker = struct {
         return fi.files.items;
     }
 
-    pub const PickerAction = union(enum) {
-        none,
-        respond_null,
-        respond: Value,
-        query_buffers,
-    };
-
-    /// Process a picker action from handler data. Returns what the EventLoop should do.
-    pub fn processAction(self: *Picker, alloc: Allocator, data: Value) PickerAction {
-        const obj = switch (data) {
-            .object => |o| o,
-            else => return .none,
-        };
-        const action = json_utils.getString(obj, "action") orelse return .none;
-
-        if (std.mem.eql(u8, action, "picker_init")) {
-            const cwd = json_utils.getString(obj, "cwd") orelse return .respond_null;
-            if (!self.start(cwd)) return .respond_null;
-            // Pre-seed MRU from Vim
-            if (json_utils.getArray(obj, "recent_files")) |rf_arr| {
-                var names: std.ArrayList([]const u8) = .empty;
-                defer names.deinit(alloc);
-                for (rf_arr) |v| {
-                    if (v == .string) names.append(alloc, v.string) catch {};
-                }
-                self.setRecentFiles(names.items);
-            }
-            return .query_buffers;
-        } else if (std.mem.eql(u8, action, "picker_file_query")) {
-            const query = json_utils.getString(obj, "query") orelse "";
-            if (!self.hasIndex()) return .respond_null;
-            self.pollScan();
-            if (query.len == 0) {
-                return .{ .respond = buildPickerResults(alloc, self.recentFiles(), "file") };
-            }
-            const file_list = self.files();
-            const recent = self.recentFiles();
-            const indices = filterAndSort(alloc, file_list, query, recent) catch return .respond_null;
-            var items: std.ArrayList([]const u8) = .empty;
-            for (indices) |idx| {
-                items.append(alloc, file_list[idx]) catch {};
-            }
-            return .{ .respond = buildPickerResults(alloc, items.items, "file") };
-        } else if (std.mem.eql(u8, action, "picker_grep_query")) {
-            const query = json_utils.getString(obj, "query") orelse "";
-            if (query.len == 0) return .respond_null;
-            const cwd = self.cwd orelse return .respond_null;
-            return .{ .respond = runGrep(alloc, self.io, query, cwd) catch return .respond_null };
-        } else if (std.mem.eql(u8, action, "picker_close")) {
-            self.close();
-            return .respond_null;
+    /// Open picker: start file index scan and return initial MRU results.
+    pub fn openPicker(self: *Picker, alloc: Allocator, cwd: []const u8, recent_files: ?[]const []const u8) ?Value {
+        if (!self.start(cwd)) return null;
+        if (recent_files) |rf| {
+            self.setRecentFiles(rf);
         }
-        return .none;
+        return buildPickerResults(alloc, self.recentFiles(), "file");
+    }
+
+    /// Query picker for files matching pattern.
+    pub fn queryFile(self: *Picker, alloc: Allocator, query: []const u8) ?Value {
+        if (!self.hasIndex()) return null;
+        self.pollScan();
+        if (query.len == 0) {
+            return buildPickerResults(alloc, self.recentFiles(), "file");
+        }
+        const file_list = self.files();
+        const recent = self.recentFiles();
+        const indices = filterAndSort(alloc, file_list, query, recent) catch return null;
+        var items: std.ArrayList([]const u8) = .empty;
+        for (indices) |idx| {
+            items.append(alloc, file_list[idx]) catch {};
+        }
+        return buildPickerResults(alloc, items.items, "file");
+    }
+
+    /// Query picker for grep results.
+    pub fn queryGrep(self: *Picker, alloc: Allocator, query: []const u8) ?Value {
+        if (query.len == 0) return null;
+        const cwd_val = self.cwd orelse return null;
+        return runGrep(alloc, self.io, query, cwd_val) catch null;
     }
 };
 

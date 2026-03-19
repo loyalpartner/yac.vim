@@ -3,13 +3,17 @@ const log = std.log.scoped(.handler);
 const Io = std.Io;
 const lsp_registry_mod = @import("../lsp/registry.zig");
 const lsp_types = @import("../lsp/types.zig");
+const lsp_client_mod = @import("../lsp/client.zig");
 const treesitter_mod = @import("../treesitter/treesitter.zig");
 const handler_types = @import("../lsp/vim_types.zig");
 const lsp_context_mod = @import("../lsp/context.zig");
 const copilot_mod = @import("../lsp/copilot.zig");
 const path_utils = @import("../lsp/path_utils.zig");
+const picker_mod = @import("../picker.zig");
+const json_utils = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
+const Value = json_utils.Value;
 const LspRegistry = lsp_registry_mod.LspRegistry;
 
 // LspContext defined in lsp/context.zig
@@ -35,9 +39,6 @@ const DocumentHighlightResult = handler_types.DocumentHighlightResult;
 const VimDocumentation = handler_types.VimDocumentation;
 const VimCompletionItem = handler_types.VimCompletionItem;
 const CompletionResult = handler_types.CompletionResult;
-const PickerOpenResult = handler_types.PickerOpenResult;
-const PickerAction = handler_types.PickerAction;
-const PickerQueryResult = handler_types.PickerQueryResult;
 
 // ============================================================================
 // Handler — Vim method handlers for VimServer dispatch (Zig 0.16)
@@ -52,9 +53,7 @@ pub const Handler = struct {
     io: Io,
     registry: *LspRegistry,
     ts: *treesitter_mod.TreeSitter,
-
-    /// Per-request: writer for the current Vim client (for async notifications)
-    client_writer: ?*Io.Writer = null,
+    picker: *picker_mod.Picker,
 
     // ========================================================================
     // Private helpers
@@ -648,11 +647,11 @@ pub const Handler = struct {
     }) !?treesitter_mod.hover_highlight.HoverResult {
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, self.ts, p.markdown, p.filetype);
     }
-    pub fn picker_open(_: *Handler, _: Allocator, p: struct {
+    pub fn picker_open(self: *Handler, alloc: Allocator, p: struct {
         cwd: []const u8,
         recent_files: ?[]const []const u8 = null,
-    }) !PickerOpenResult {
-        return .{ .cwd = p.cwd, .recent_files = p.recent_files };
+    }) !?Value {
+        return self.picker.openPicker(alloc, p.cwd, p.recent_files);
     }
 
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
@@ -660,7 +659,7 @@ pub const Handler = struct {
         mode: []const u8 = "file",
         file: ?[]const u8 = null,
         text: ?[]const u8 = null,
-    }) !?PickerQueryResult {
+    }) !?Value {
         if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
             const file = p.file orelse return null;
             const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
@@ -668,22 +667,23 @@ pub const Handler = struct {
                 .query = p.query,
             }) catch return null;
             const typed = PickerSymbolResult.fromWorkspaceSymbol(alloc, result) orelse return null;
-            return .{ .workspace_symbols = typed };
+            return lsp_client_mod.LspClient.typedToValue(alloc, typed) catch return null;
         } else if (std.mem.eql(u8, p.mode, "grep")) {
-            return .{ .action = .{ .action = "picker_grep_query", .query = p.query } };
+            return self.picker.queryGrep(alloc, p.query);
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
             const tc = self.getTsCtx(p.file orelse return null, p.text) orelse return null;
             const tree = tc.ts.getTree(tc.file) orelse return null;
             const source = tc.ts.getSource(tc.file) orelse return null;
             const sym_query = tc.lang_state.symbols orelse return null;
-            return .{ .document_symbols = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source) };
+            const picker_result = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
+            return lsp_client_mod.LspClient.typedToValue(alloc, picker_result) catch return null;
         } else {
-            return .{ .action = .{ .action = "picker_file_query", .query = p.query } };
+            return self.picker.queryFile(alloc, p.query);
         }
     }
 
-    pub fn picker_close(_: *Handler) !struct { action: []const u8 } {
-        return .{ .action = "picker_close" };
+    pub fn picker_close(self: *Handler) !void {
+        self.picker.close();
     }
     // ========================================================================
     // Copilot handlers — delegate to lsp/copilot.zig
@@ -776,4 +776,5 @@ pub const Handler = struct {
     pub fn dap_collapse_variable(_: *Handler) !void {}
     pub fn dap_add_watch(_: *Handler) !void {}
     pub fn dap_remove_watch(_: *Handler) !void {}
+
 };

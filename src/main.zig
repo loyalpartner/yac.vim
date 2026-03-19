@@ -3,7 +3,7 @@ const Io = std.Io;
 const log_mod = @import("log.zig");
 const log = std.log.scoped(.main);
 const compat = @import("compat.zig");
-const EventLoop = @import("server/event_loop.zig").EventLoop;
+const Server = @import("server/server.zig").Server;
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
@@ -77,21 +77,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     log.info("Binding to socket: {s}", .{socket_path});
 
-    var server = try addr.listen(io, .{});
-
-    // Restrict socket to owner-only (0o600) so other local users cannot connect.
+    const listener = try addr.listen(io, .{});
     restrictSocketPermissions(socket_path);
 
-    var event_loop = EventLoop.init(allocator, io, &server);
-    defer event_loop.deinit();
+    const server = try Server.create(allocator, io, listener);
+    defer server.destroy();
 
-    event_loop.run() catch |e| {
-        log.err("Event loop failed: {any}", .{e});
+    server.run() catch |e| {
+        log.err("Server failed: {any}", .{e});
     };
 
-    server.deinit(io);
-
-    // Clean up socket file
     compat.deleteFileAbsolute(socket_path);
     log.info("yacd shutdown complete", .{});
 }
@@ -104,7 +99,8 @@ test {
     _ = @import("log.zig");
     _ = @import("compat.zig");
     _ = @import("json_utils.zig");
-    _ = @import("server/event_loop.zig");
+    _ = @import("server/server.zig");
+    _ = @import("server/dispatcher.zig");
     _ = @import("server/handler.zig");
     _ = @import("server/line_framer.zig");
     _ = @import("server/vim_protocol.zig");

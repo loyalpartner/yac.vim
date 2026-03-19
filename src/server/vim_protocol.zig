@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = @import("../json_utils.zig");
+const LineFramer = @import("line_framer.zig").LineFramer;
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;
@@ -7,7 +8,7 @@ const ObjectMap = json.ObjectMap;
 const Writer = std.Io.Writer;
 
 // ============================================================================
-// JSON-RPC Messages (Vim <-> yacd)
+// Vim Channel Protocol Messages (Vim <-> yacd)
 //
 // Vim channel protocol uses JSON arrays:
 //   Request:      [positive_id, {"method": "xxx", "params": {...}}]
@@ -15,9 +16,13 @@ const Writer = std.Io.Writer;
 //   Notification: [{"method": "xxx", "params": {...}}]
 // ============================================================================
 
-pub const JsonRpcMessage = union(enum) {
+pub const VimMessage = union(enum) {
     request: struct {
         id: u64,
+        method: []const u8,
+        params: Value,
+    },
+    notification: struct {
         method: []const u8,
         params: Value,
     },
@@ -25,14 +30,10 @@ pub const JsonRpcMessage = union(enum) {
         id: i64,
         result: Value,
     },
-    notification: struct {
-        method: []const u8,
-        params: Value,
-    },
 };
 
-/// Parse a Vim channel JSON array into a JsonRpcMessage.
-pub fn parseJsonRpc(arr: []const Value) !JsonRpcMessage {
+/// Parse a Vim channel JSON array into a VimMessage.
+pub fn parseVimMessage(arr: []const Value) !VimMessage {
     switch (arr.len) {
         1 => {
             // Notification: [{"method": "xxx", "params": ...}]
@@ -77,6 +78,57 @@ pub fn parseJsonRpc(arr: []const Value) !JsonRpcMessage {
         else => return error.InvalidProtocol,
     }
 }
+
+/// Parse a raw JSON line into a VimMessage.
+/// Standalone function for re-parsing in request coroutines.
+pub fn parseVimLine(alloc: Allocator, raw_line: []const u8) ?VimMessage {
+    const parsed = json.parse(alloc, raw_line) catch return null;
+    const arr = switch (parsed.value) {
+        .array => |a| a.items,
+        else => return null,
+    };
+    return parseVimMessage(arr) catch null;
+}
+
+// ============================================================================
+// VimMessageFramer — line framing + Vim message parsing
+//
+// Accumulates bytes via feed(), yields parsed VimMessages via nextMessage().
+// Does not own I/O — caller feeds data from reader.
+// ============================================================================
+
+pub const VimMessageFramer = struct {
+    line_framer: LineFramer = .{},
+
+    pub fn deinit(self: *VimMessageFramer, allocator: Allocator) void {
+        self.line_framer.deinit(allocator);
+    }
+
+    pub fn feed(self: *VimMessageFramer, allocator: Allocator, data: []const u8) !void {
+        try self.line_framer.feed(allocator, data);
+    }
+
+    pub const Message = struct {
+        msg: VimMessage,
+        raw_line: []const u8, // valid until next nextMessage() or feed()
+    };
+
+    /// Parse next complete Vim message from buffered data.
+    /// Returns null if no complete message is available.
+    /// `alloc` is per-message (arena) for JSON parsing.
+    pub fn nextMessage(self: *VimMessageFramer, alloc: Allocator) ?Message {
+        while (self.line_framer.next()) |raw_line| {
+            const parsed = json.parse(alloc, raw_line) catch continue;
+            const arr = switch (parsed.value) {
+                .array => |a| a.items,
+                else => continue,
+            };
+            const msg = parseVimMessage(arr) catch continue;
+            return .{ .msg = msg, .raw_line = raw_line };
+        }
+        return null;
+    }
+};
 
 // ============================================================================
 // Channel Commands (yacd -> Vim)
@@ -202,7 +254,7 @@ pub fn encodeJsonRpcNotification(allocator: Allocator, method: []const u8, param
 // Tests
 // ============================================================================
 
-test "parse JSON-RPC request" {
+test "parse Vim request" {
     const allocator = std.testing.allocator;
     const input = "[1,{\"method\":\"goto_definition\",\"params\":{\"file\":\"test.rs\"}}]";
     const parsed = try json.parse(allocator, input);
@@ -213,7 +265,7 @@ test "parse JSON-RPC request" {
         else => unreachable,
     };
 
-    const msg = try parseJsonRpc(arr);
+    const msg = try parseVimMessage(arr);
     switch (msg) {
         .request => |r| {
             try std.testing.expectEqual(@as(u64, 1), r.id);
@@ -223,7 +275,7 @@ test "parse JSON-RPC request" {
     }
 }
 
-test "parse JSON-RPC response" {
+test "parse Vim response" {
     const allocator = std.testing.allocator;
     const input = "[-42,{\"result\":\"success\"}]";
     const parsed = try json.parse(allocator, input);
@@ -234,7 +286,7 @@ test "parse JSON-RPC response" {
         else => unreachable,
     };
 
-    const msg = try parseJsonRpc(arr);
+    const msg = try parseVimMessage(arr);
     switch (msg) {
         .response => |r| {
             try std.testing.expectEqual(@as(i64, -42), r.id);
@@ -243,7 +295,7 @@ test "parse JSON-RPC response" {
     }
 }
 
-test "parse JSON-RPC notification" {
+test "parse Vim notification" {
     const allocator = std.testing.allocator;
     const input = "[{\"method\":\"did_change\",\"params\":{\"file\":\"test.rs\"}}]";
     const parsed = try json.parse(allocator, input);
@@ -254,12 +306,73 @@ test "parse JSON-RPC notification" {
         else => unreachable,
     };
 
-    const msg = try parseJsonRpc(arr);
+    const msg = try parseVimMessage(arr);
     switch (msg) {
         .notification => |n| {
             try std.testing.expectEqualStrings("did_change", n.method);
         },
         else => unreachable,
+    }
+}
+
+test "parseVimLine - valid request" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const msg = parseVimLine(arena.allocator(), "[1,{\"method\":\"ping\"}]") orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (msg) {
+        .request => |r| {
+            try std.testing.expectEqual(@as(u64, 1), r.id);
+            try std.testing.expectEqualStrings("ping", r.method);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parseVimLine - invalid JSON returns null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect(parseVimLine(arena.allocator(), "not json") == null);
+}
+
+test "VimMessageFramer - nextMessage extracts complete message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var framer: VimMessageFramer = .{};
+    defer framer.deinit(std.testing.allocator);
+
+    try framer.feed(std.testing.allocator, "[1,{\"method\":\"ping\"}]\n");
+    const msg = framer.nextMessage(arena.allocator()) orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (msg.msg) {
+        .request => |r| {
+            try std.testing.expectEqualStrings("ping", r.method);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    // No more messages
+    try std.testing.expect(framer.nextMessage(arena.allocator()) == null);
+}
+
+test "VimMessageFramer - skips invalid lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var framer: VimMessageFramer = .{};
+    defer framer.deinit(std.testing.allocator);
+
+    try framer.feed(std.testing.allocator, "bad line\n[1,{\"method\":\"ping\"}]\n");
+    const msg = framer.nextMessage(arena.allocator()) orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (msg.msg) {
+        .request => |r| {
+            try std.testing.expectEqualStrings("ping", r.method);
+        },
+        else => return error.TestUnexpectedResult,
     }
 }
 
