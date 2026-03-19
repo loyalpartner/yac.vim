@@ -1,8 +1,8 @@
 const std = @import("std");
-const lsp_registry_mod = @import("../lsp/registry.zig");
-const lsp_client_mod = @import("../lsp/client.zig");
-const lsp_types = @import("../lsp/types.zig");
-const path_utils = @import("../lsp/path_utils.zig");
+const lsp_registry_mod = @import("registry.zig");
+const lsp_client_mod = @import("client.zig");
+const lsp_types = @import("types.zig");
+const path_utils = @import("path_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const LspRegistry = lsp_registry_mod.LspRegistry;

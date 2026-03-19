@@ -1,5 +1,5 @@
 const std = @import("std");
-const lsp_types = @import("../lsp/types.zig");
+const lsp_types = @import("types.zig");
 const treesitter_mod = @import("../treesitter/treesitter.zig");
 
 const Allocator = std.mem.Allocator;
@@ -388,4 +388,79 @@ test "CompletionResult.fromLsp null" {
     const alloc = std.testing.allocator;
     const result = CompletionResult.fromLsp(alloc, null);
     try std.testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "GotoLocation.fromDefinitionResult definition_links" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const link: lsp_raw.LocationLink = .{
+        .targetUri = "file:///tmp/links.zig",
+        .targetRange = .{
+            .start = .{ .line = 10, .character = 0 },
+            .end = .{ .line = 10, .character = 20 },
+        },
+        .targetSelectionRange = .{
+            .start = .{ .line = 10, .character = 5 },
+            .end = .{ .line = 10, .character = 15 },
+        },
+    };
+    const links = [_]lsp_raw.LocationLink{link};
+    const result = GotoLocation.fromDefinitionResult(alloc, .{ .definition_links = &links });
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(i32, 10), result.?.line);
+    try std.testing.expectEqual(@as(i32, 5), result.?.column);
+    try std.testing.expectEqualStrings("/tmp/links.zig", result.?.file);
+}
+
+test "InlayHintsResult.fromLsp null" {
+    const alloc = std.testing.allocator;
+    const result = InlayHintsResult.fromLsp(alloc, null);
+    try std.testing.expectEqual(@as(usize, 0), result.hints.len);
+}
+
+test "InlayHintsResult.fromLsp string label with padding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const hint: lsp_raw.InlayHint = .{
+        .position = .{ .line = 3, .character = 7 },
+        .label = .{ .string = "i64" },
+        .kind = .Type,
+        .paddingLeft = true,
+    };
+    const hints = [_]lsp_raw.InlayHint{hint};
+    const result = InlayHintsResult.fromLsp(alloc, &hints);
+    try std.testing.expectEqual(@as(usize, 1), result.hints.len);
+    try std.testing.expectEqual(@as(i32, 3), result.hints[0].line);
+    try std.testing.expectEqual(@as(i32, 7), result.hints[0].column);
+    try std.testing.expectEqualStrings("type", result.hints[0].kind);
+    try std.testing.expectEqualStrings(" i64", result.hints[0].label);
+}
+
+test "DocumentHighlightResult.fromLsp null" {
+    const alloc = std.testing.allocator;
+    const result = DocumentHighlightResult.fromLsp(alloc, null);
+    try std.testing.expectEqual(@as(usize, 0), result.highlights.len);
+}
+
+test "DocumentHighlightResult.fromLsp with highlight" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const dh: lsp_raw.DocumentHighlight = .{
+        .range = .{
+            .start = .{ .line = 2, .character = 4 },
+            .end = .{ .line = 2, .character = 10 },
+        },
+        .kind = .Text,
+    };
+    const items = [_]lsp_raw.DocumentHighlight{dh};
+    const result = DocumentHighlightResult.fromLsp(alloc, &items);
+    try std.testing.expectEqual(@as(usize, 1), result.highlights.len);
+    try std.testing.expectEqual(@as(i32, 2), result.highlights[0].line);
+    try std.testing.expectEqual(@as(i32, 4), result.highlights[0].col);
+    try std.testing.expectEqual(@as(i32, 2), result.highlights[0].end_line);
+    try std.testing.expectEqual(@as(i32, 10), result.highlights[0].end_col);
+    try std.testing.expectEqual(@as(i32, 1), result.highlights[0].kind);
 }

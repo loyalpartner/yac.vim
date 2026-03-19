@@ -4,19 +4,19 @@ const Io = std.Io;
 const lsp_registry_mod = @import("lsp/registry.zig");
 const lsp_types = @import("lsp/types.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
-const handler_types = @import("handler/types.zig");
-const lsp_context_mod = @import("handler/lsp_context.zig");
-const copilot_mod = @import("handler/copilot.zig");
+const handler_types = @import("lsp/vim_types.zig");
+const lsp_context_mod = @import("lsp/context.zig");
+const copilot_mod = @import("lsp/copilot.zig");
 const path_utils = @import("lsp/path_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const LspRegistry = lsp_registry_mod.LspRegistry;
 
-// LspContext defined in handler/lsp_context.zig
+// LspContext defined in lsp/context.zig
 const LspContext = lsp_context_mod.LspContext;
 
 // ============================================================================
-// Vim response type aliases (definitions live in handler/types.zig)
+// Vim response type aliases (definitions live in lsp/vim_types.zig)
 // ============================================================================
 
 const PickerSymbolItem = handler_types.PickerSymbolItem;
@@ -306,7 +306,6 @@ pub const Handler = struct {
         }) catch return null;
         return PickerSymbolResult.fromWorkspaceSymbol(alloc, result);
     }
-
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
         const tc = self.getTsCtx(file, text) orelse return;
@@ -680,7 +679,7 @@ pub const Handler = struct {
         return .{ .action = "picker_close" };
     }
     // ========================================================================
-    // Copilot handlers — delegate to handler/copilot.zig
+    // Copilot handlers — delegate to lsp/copilot.zig
     // ========================================================================
 
     pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !?lsp_types.copilot.SignInResult {
