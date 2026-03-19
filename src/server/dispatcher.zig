@@ -2,30 +2,36 @@ const std = @import("std");
 const Io = std.Io;
 const json_utils = @import("../json_utils.zig");
 const vim = @import("vim_protocol.zig");
-const vim_server_mod = @import("vim_server.zig");
-const handler_mod = @import("handler.zig");
-const lsp_registry_mod = @import("../lsp/registry.zig");
 const log = std.log.scoped(.dispatcher);
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
-const LspRegistry = lsp_registry_mod.LspRegistry;
 
 // ============================================================================
 // Dispatcher — per-Vim-client message dispatch
 //
 // Stack-allocated per coroutine. Reads messages via VimMessageFramer,
 // dispatches requests (spawn coroutine) and notifications (sync).
+//
+// Decoupled from business logic: dispatch is a function pointer.
+// on_connect/on_disconnect callbacks allow the caller to manage
+// writer registration without Dispatcher knowing about LspRegistry.
 // ============================================================================
 
 pub const Dispatcher = struct {
     allocator: Allocator,
     io: Io,
     stream: Io.net.Stream,
-    vim_server: *vim_server_mod.VimServer(handler_mod.Handler),
+    /// Opaque context passed to dispatch_fn, on_connect, on_disconnect.
+    dispatch_ctx: *anyopaque,
+    /// O(1) dispatch: (ctx, alloc, method, params) → ?Value.
+    dispatch_fn: *const fn (*anyopaque, Allocator, []const u8, Value) ?Value,
     dispatch_lock: *Io.Mutex,
-    registry: *LspRegistry,
     shutdown_event: *Io.Event,
+    /// Called on connect with writer + lock so the caller can register the Vim writer.
+    on_connect: ?*const fn (*anyopaque, *Io.Writer, *Io.Mutex) void = null,
+    /// Called on disconnect so the caller can clear any stored writer reference.
+    on_disconnect: ?*const fn (*anyopaque) void = null,
 
     pub fn run(self: *Dispatcher) void {
         defer {
@@ -39,8 +45,8 @@ pub const Dispatcher = struct {
         var writer = self.stream.writer(self.io, &write_buf);
         var write_lock: Io.Mutex = .init;
 
-        self.registry.setVimWriter(&writer.interface, &write_lock);
-        defer self.registry.clearVimWriter();
+        if (self.on_connect) |cb| cb(self.dispatch_ctx, &writer.interface, &write_lock);
+        defer if (self.on_disconnect) |cb| cb(self.dispatch_ctx);
 
         var request_group: Io.Group = .init;
         defer request_group.cancel(self.io);
@@ -104,20 +110,11 @@ pub const Dispatcher = struct {
         }
     }
 
-    /// Lock + dispatch to handler via VimServer.
+    /// Lock + dispatch via function pointer.
     fn dispatch(self: *Dispatcher, alloc: Allocator, method: []const u8, params: Value) ?Value {
         self.dispatch_lock.lockUncancelable(self.io);
         defer self.dispatch_lock.unlock(self.io);
-
-        if (self.vim_server.processMethod(alloc, method, params)) |maybe_result| {
-            if (maybe_result) |result| return switch (result) {
-                .data => |d| d,
-                .empty => null,
-            };
-        } else |e| {
-            log.err("Handler error for {s}: {any}", .{ method, e });
-        }
-        return null;
+        return self.dispatch_fn(self.dispatch_ctx, alloc, method, params);
     }
 
     /// Request coroutine: re-parse raw_line, dispatch, respond.

@@ -104,7 +104,7 @@ test {
     _ = @import("server/handler.zig");
     _ = @import("server/line_framer.zig");
     _ = @import("server/vim_protocol.zig");
-    _ = @import("server/vim_server.zig");
+    _ = @import("server/rpc_module.zig");
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/transform.zig");
     _ = @import("lsp/lsp.zig");

@@ -1,10 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 const json_utils = @import("../json_utils.zig");
-const vim_server_mod = @import("vim_server.zig");
+const rpc_module_mod = @import("rpc_module.zig");
 const handler_mod = @import("handler.zig");
 const lsp_mod = @import("../lsp/lsp.zig");
-const lsp_registry_mod = @import("../lsp/registry.zig");
 const treesitter_mod = @import("../treesitter/treesitter.zig");
 const picker_mod = @import("../picker.zig");
 const Dispatcher = @import("dispatcher.zig").Dispatcher;
@@ -17,7 +16,12 @@ const Value = json_utils.Value;
 // Server — lifecycle + accept loop + shared state
 //
 // Heap-allocated (stable address for internal pointers).
-// Owns: listener, subsystems (lsp, ts, picker), handler, vim_server, dispatch_lock.
+// Owns: listener, subsystems (lsp, ts, picker), handler, rpc_module, dispatch_lock.
+//
+// Dispatcher is fully decoupled from business logic: it receives a function
+// pointer (dispatchImpl) and two optional callbacks (onConnectImpl,
+// onDisconnectImpl) so that LspRegistry writer registration stays in Server
+// rather than Dispatcher.
 // ============================================================================
 
 pub const Server = struct {
@@ -29,7 +33,7 @@ pub const Server = struct {
     ts: treesitter_mod.TreeSitter,
     picker: picker_mod.Picker,
     handler: handler_mod.Handler,
-    vim_server: vim_server_mod.VimServer(handler_mod.Handler),
+    rpc_module: rpc_module_mod.RpcModule(handler_mod.Handler),
     dispatch_lock: Io.Mutex,
 
     pub fn create(allocator: Allocator, io: Io, listener: Io.net.Server) !*Server {
@@ -50,7 +54,7 @@ pub const Server = struct {
                 .ts = undefined,
                 .picker = undefined,
             },
-            .vim_server = undefined,
+            .rpc_module = undefined,
             .dispatch_lock = .init,
         };
         // Heap address stable — safe to take internal pointers
@@ -58,7 +62,16 @@ pub const Server = struct {
         self.handler.registry = &self.lsp.registry;
         self.handler.ts = &self.ts;
         self.handler.picker = &self.picker;
-        self.vim_server = .{ .handler = &self.handler };
+        self.rpc_module = rpc_module_mod.RpcModule(handler_mod.Handler).init(allocator, &self.handler);
+        self.rpc_module.registerAll() catch |e| {
+            log.err("Failed to register RPC methods: {any}", .{e});
+            self.lsp.deinit();
+            self.ts.deinit();
+            self.picker.deinit();
+            self.rpc_module.deinit();
+            allocator.destroy(self);
+            return e;
+        };
         return self;
     }
 
@@ -67,6 +80,7 @@ pub const Server = struct {
         self.lsp.deinit();
         self.ts.deinit();
         self.picker.deinit();
+        self.rpc_module.deinit();
         self.allocator.destroy(self);
     }
 
@@ -108,11 +122,30 @@ pub const Server = struct {
             .allocator = self.allocator,
             .io = self.io,
             .stream = stream,
-            .vim_server = &self.vim_server,
+            .dispatch_ctx = @ptrCast(self),
+            .dispatch_fn = dispatchImpl,
             .dispatch_lock = &self.dispatch_lock,
-            .registry = &self.lsp.registry,
             .shutdown_event = &self.shutdown_event,
+            .on_connect = onConnectImpl,
+            .on_disconnect = onDisconnectImpl,
         };
         dispatcher.run();
+    }
+
+    // ---- dispatch interface ----
+
+    fn dispatchImpl(ctx: *anyopaque, alloc: Allocator, method: []const u8, params: Value) ?Value {
+        const self: *Server = @ptrCast(@alignCast(ctx));
+        return self.rpc_module.dispatch(alloc, method, params);
+    }
+
+    fn onConnectImpl(ctx: *anyopaque, writer: *Io.Writer, lock: *Io.Mutex) void {
+        const self: *Server = @ptrCast(@alignCast(ctx));
+        self.lsp.registry.setVimWriter(writer, lock);
+    }
+
+    fn onDisconnectImpl(ctx: *anyopaque) void {
+        const self: *Server = @ptrCast(@alignCast(ctx));
+        self.lsp.registry.clearVimWriter();
     }
 };
