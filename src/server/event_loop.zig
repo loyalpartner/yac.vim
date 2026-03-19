@@ -1,14 +1,15 @@
 const std = @import("std");
 const Io = std.Io;
-const json_utils = @import("json_utils.zig");
+const json_utils = @import("../json_utils.zig");
 const vim = @import("vim_protocol.zig");
 const vim_server_mod = @import("vim_server.zig");
 const handler_mod = @import("handler.zig");
-const lsp_mod = @import("lsp/lsp.zig");
-const treesitter_mod = @import("treesitter/treesitter.zig");
-const picker_mod = @import("picker.zig");
+const LineFramer = @import("line_framer.zig").LineFramer;
+const lsp_mod = @import("../lsp/lsp.zig");
+const treesitter_mod = @import("../treesitter/treesitter.zig");
+const picker_mod = @import("../picker.zig");
 const log = std.log.scoped(.event_loop);
-const compat = @import("compat.zig");
+const compat = @import("../compat.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json_utils.Value;
@@ -131,9 +132,9 @@ pub const EventLoop = struct {
         var request_group: Io.Group = .init;
         defer request_group.cancel(self.io);
 
-        // Receive buffer for line framing
-        var recv_buf: std.ArrayList(u8) = .empty;
-        defer recv_buf.deinit(self.allocator);
+        // Line framer for newline-delimited JSON-RPC
+        var framer: LineFramer = .{};
+        defer framer.deinit(self.allocator);
 
         log.debug("Client coroutine started", .{});
 
@@ -141,27 +142,15 @@ pub const EventLoop = struct {
             // Block coroutine (not OS thread) until at least 1 byte available
             const data = reader.interface.peekGreedy(1) catch break;
 
-            recv_buf.appendSlice(self.allocator, data) catch |e| {
+            framer.feed(self.allocator, data) catch |e| {
                 log.err("Client buffer append error: {any}", .{e});
                 break;
             };
             reader.interface.toss(data.len);
 
             // Process complete lines
-            while (std.mem.indexOf(u8, recv_buf.items, "\n")) |newline_pos| {
-                const line = recv_buf.items[0..newline_pos];
-
-                if (line.len > 0) {
-                    self.processLine(line, &writer.interface, &write_lock, &request_group);
-                }
-
-                // Remove processed line + \n from buffer
-                const after = newline_pos + 1;
-                const remaining = recv_buf.items.len - after;
-                if (remaining > 0) {
-                    std.mem.copyForwards(u8, recv_buf.items[0..remaining], recv_buf.items[after..]);
-                }
-                recv_buf.shrinkRetainingCapacity(remaining);
+            while (framer.next()) |line| {
+                self.processLine(line, &writer.interface, &write_lock, &request_group);
             }
         }
     }

@@ -1,13 +1,13 @@
 const std = @import("std");
 const log = std.log.scoped(.handler);
 const Io = std.Io;
-const lsp_registry_mod = @import("lsp/registry.zig");
-const lsp_types = @import("lsp/types.zig");
-const treesitter_mod = @import("treesitter/treesitter.zig");
-const handler_types = @import("lsp/vim_types.zig");
-const lsp_context_mod = @import("lsp/context.zig");
-const copilot_mod = @import("lsp/copilot.zig");
-const path_utils = @import("lsp/path_utils.zig");
+const lsp_registry_mod = @import("../lsp/registry.zig");
+const lsp_types = @import("../lsp/types.zig");
+const treesitter_mod = @import("../treesitter/treesitter.zig");
+const handler_types = @import("../lsp/vim_types.zig");
+const lsp_context_mod = @import("../lsp/context.zig");
+const copilot_mod = @import("../lsp/copilot.zig");
+const path_utils = @import("../lsp/path_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const LspRegistry = lsp_registry_mod.LspRegistry;
@@ -733,7 +733,7 @@ pub const Handler = struct {
     // ========================================================================
 
     pub fn set_log_level(_: *Handler, _: Allocator, p: struct { level: []const u8 }) !?[]const u8 {
-        const log_m = @import("log.zig");
+        const log_m = @import("../log.zig");
         if (log_m.parseLevel(p.level)) |level| {
             log_m.setLevel(level);
             return @tagName(level);
@@ -742,7 +742,7 @@ pub const Handler = struct {
     }
 
     pub fn get_log_file(_: *Handler) !?[]const u8 {
-        const log_m = @import("log.zig");
+        const log_m = @import("../log.zig");
         return log_m.getLogFilePath();
     }
 
