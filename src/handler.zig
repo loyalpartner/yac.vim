@@ -2,126 +2,42 @@ const std = @import("std");
 const log = std.log.scoped(.handler);
 const Io = std.Io;
 const lsp_registry_mod = @import("lsp/registry.zig");
-const lsp_mod = @import("lsp/lsp.zig");
-const lsp_client_mod = @import("lsp/client.zig");
 const lsp_types = @import("lsp/types.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
+const handler_types = @import("lsp/vim_types.zig");
+const lsp_context_mod = @import("lsp/context.zig");
+const copilot_mod = @import("lsp/copilot.zig");
+const path_utils = @import("lsp/path_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const LspRegistry = lsp_registry_mod.LspRegistry;
-const LspClient = lsp_client_mod.LspClient;
+
+// LspContext defined in lsp/context.zig
+const LspContext = lsp_context_mod.LspContext;
 
 // ============================================================================
-// LSP context types
+// Vim response type aliases (definitions live in lsp/vim_types.zig)
 // ============================================================================
 
-const LspContext = struct {
-    language: []const u8,
-    client_key: []const u8,
-    uri: []const u8,
-    client: *LspClient,
-    real_path: []const u8,
-};
-
-// ============================================================================
-// Vim response types (used by handler return values)
-// ============================================================================
-
-/// A single item in the picker symbol list.
-const PickerSymbolItem = struct {
-    label: []const u8,
-    detail: []const u8,
-    file: []const u8,
-    line: i32,
-    column: i32,
-    depth: i32,
-    kind: []const u8,
-};
-
-/// Result of a picker symbol query.
-const PickerSymbolResult = struct {
-    items: []const PickerSymbolItem,
-    mode: []const u8 = "symbol",
-};
-
-const LspStatusResult = struct {
-    ready: bool,
-    state: ?[]const u8 = null,
-    initializing: ?bool = null,
-    reason: ?[]const u8 = null,
-};
-
-const ActionResult = struct {
-    action: []const u8,
-};
-
-const OkResult = struct {
-    ok: bool,
-};
-
-const GotoLocation = struct {
-    file: []const u8,
-    line: i32,
-    column: i32,
-};
-
-const ReferencesResult = struct {
-    locations: []const GotoLocation,
-};
-
-const EditItem = struct {
-    start_line: i32,
-    start_column: i32,
-    end_line: i32,
-    end_column: i32,
-    new_text: []const u8,
-};
-
-const FormattingResult = struct {
-    edits: []const EditItem,
-};
-
-const HintItem = struct {
-    line: i32,
-    column: i32,
-    label: []const u8,
-    kind: []const u8,
-};
-
-const InlayHintsResult = struct {
-    hints: []const HintItem,
-};
-
-const HighlightItem = struct {
-    line: i32,
-    col: i32,
-    end_line: i32,
-    end_col: i32,
-    kind: i32,
-};
-
-const DocumentHighlightResult = struct {
-    highlights: []const HighlightItem,
-};
-
-const VimDocumentation = struct {
-    kind: ?[]const u8 = null,
-    value: []const u8,
-};
-
-const VimCompletionItem = struct {
-    label: []const u8,
-    kind: ?i32 = null,
-    detail: ?[]const u8 = null,
-    insertText: ?[]const u8 = null,
-    filterText: ?[]const u8 = null,
-    sortText: ?[]const u8 = null,
-    documentation: ?VimDocumentation = null,
-};
-
-const CompletionResult = struct {
-    items: []const VimCompletionItem,
-};
+const PickerSymbolItem = handler_types.PickerSymbolItem;
+const PickerSymbolResult = handler_types.PickerSymbolResult;
+const LspStatusResult = handler_types.LspStatusResult;
+const ActionResult = handler_types.ActionResult;
+const OkResult = handler_types.OkResult;
+const GotoLocation = handler_types.GotoLocation;
+const ReferencesResult = handler_types.ReferencesResult;
+const EditItem = handler_types.EditItem;
+const FormattingResult = handler_types.FormattingResult;
+const HintItem = handler_types.HintItem;
+const InlayHintsResult = handler_types.InlayHintsResult;
+const HighlightItem = handler_types.HighlightItem;
+const DocumentHighlightResult = handler_types.DocumentHighlightResult;
+const VimDocumentation = handler_types.VimDocumentation;
+const VimCompletionItem = handler_types.VimCompletionItem;
+const CompletionResult = handler_types.CompletionResult;
+const PickerOpenResult = handler_types.PickerOpenResult;
+const PickerAction = handler_types.PickerAction;
+const PickerQueryResult = handler_types.PickerQueryResult;
 
 // ============================================================================
 // Handler — Vim method handlers for VimServer dispatch (Zig 0.16)
@@ -134,9 +50,8 @@ pub const Handler = struct {
     gpa: Allocator,
     shutdown_flag: *Io.Event,
     io: Io,
-    lsp: ?*lsp_mod.Lsp = null,
-    registry: ?*LspRegistry = null,
-    ts: ?*treesitter_mod.TreeSitter = null,
+    registry: *LspRegistry,
+    ts: *treesitter_mod.TreeSitter,
 
     /// Per-request: writer for the current Vim client (for async notifications)
     client_writer: ?*Io.Writer = null,
@@ -146,36 +61,12 @@ pub const Handler = struct {
     // ========================================================================
 
     fn getLspCtx(self: *Handler, alloc: Allocator, file: []const u8) !?LspContext {
-        const registry = self.registry orelse return null;
-
-        const real_path = lsp_registry_mod.extractRealPath(file);
-        const language = LspRegistry.detectLanguage(real_path) orelse return null;
-
-        if (registry.hasSpawnFailed(language)) return null;
-
-        const result = registry.getOrCreateClient(language, real_path) catch |e| {
-            log.err("LSP server not available for {s}: {any}", .{ language, e });
-            registry.markSpawnFailed(language);
-            return null;
-        };
-
-        if (registry.isInitializing(result.client_key)) return null;
-
-        const uri = try lsp_registry_mod.filePathToUri(alloc, real_path);
-
-        return .{
-            .language = language,
-            .client_key = result.client_key,
-            .uri = uri,
-            .client = result.client,
-            .real_path = real_path,
-        };
+        return LspContext.resolve(self.registry, alloc, file);
     }
 
     /// Check if the LSP server supports a capability. Returns true if unsupported.
     fn serverUnsupported(self: *Handler, client_key: []const u8, capability: []const u8) bool {
-        const registry = self.registry orelse return true;
-        return !registry.serverSupports(client_key, capability);
+        return lsp_context_mod.serverUnsupported(self.registry, client_key, capability);
     }
 
     /// Type-safe position request → typed lsp-kit result.
@@ -188,197 +79,7 @@ pub const Handler = struct {
         column: u32,
     ) !lsp_types.ResultType(lsp_method) {
         const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
-        return lsp_ctx.client.request(lsp_method, alloc, .{
-            .textDocument = .{ .uri = lsp_ctx.uri },
-            .position = .{ .line = @intCast(line), .character = @intCast(column) },
-        }) catch return null;
-    }
-
-    // ========================================================================
-    // Typed transform helpers — operate on lsp-kit structs, return Vim types
-    // ========================================================================
-
-    const lsp_raw = lsp_types.lsp;
-
-    /// Transform a typed Definition result into a GotoLocation.
-    fn transformGoto(alloc: Allocator, result: lsp_types.DefinitionResult) ?GotoLocation {
-        const def_result = result orelse return null;
-        switch (def_result) {
-            .definition => |def| return gotoFromDefinition(alloc, def),
-            .definition_links => |links| {
-                if (links.len == 0) return null;
-                const link = links[0];
-                const file_path = lsp_types.uriToFilePath(alloc, link.targetUri) orelse return null;
-                return .{
-                    .file = file_path,
-                    .line = @intCast(link.targetSelectionRange.start.line),
-                    .column = @intCast(link.targetSelectionRange.start.character),
-                };
-            },
-        }
-    }
-
-    fn gotoFromDefinition(alloc: Allocator, def: lsp_raw.Definition) ?GotoLocation {
-        switch (def) {
-            .location => |loc| {
-                const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse return null;
-                return .{
-                    .file = file_path,
-                    .line = @intCast(loc.range.start.line),
-                    .column = @intCast(loc.range.start.character),
-                };
-            },
-            .locations => |locs| {
-                if (locs.len == 0) return null;
-                const loc = locs[0];
-                const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse return null;
-                return .{
-                    .file = file_path,
-                    .line = @intCast(loc.range.start.line),
-                    .column = @intCast(loc.range.start.character),
-                };
-            },
-        }
-    }
-
-    /// Transform typed references result (Location[]) into ReferencesResult.
-    fn transformReferences(alloc: Allocator, result: lsp_types.ReferencesResult) ReferencesResult {
-        const locs = result orelse return .{ .locations = &.{} };
-        var locations: std.ArrayList(GotoLocation) = .empty;
-        for (locs) |loc| {
-            const file_path = lsp_types.uriToFilePath(alloc, loc.uri) orelse continue;
-            locations.append(alloc, .{
-                .file = file_path,
-                .line = @intCast(loc.range.start.line),
-                .column = @intCast(loc.range.start.character),
-            }) catch continue;
-        }
-        return .{ .locations = locations.items };
-    }
-
-    /// Transform typed formatting result (TextEdit[]) into FormattingResult.
-    fn transformFormatting(alloc: Allocator, result: lsp_types.FormattingResult) FormattingResult {
-        const text_edits = result orelse return .{ .edits = &.{} };
-        var edits: std.ArrayList(EditItem) = .empty;
-        for (text_edits) |edit| {
-            edits.append(alloc, .{
-                .start_line = @intCast(edit.range.start.line),
-                .start_column = @intCast(edit.range.start.character),
-                .end_line = @intCast(edit.range.end.line),
-                .end_column = @intCast(edit.range.end.character),
-                .new_text = edit.newText,
-            }) catch continue;
-        }
-        return .{ .edits = edits.items };
-    }
-
-    /// Transform typed inlay hints (InlayHint[]) into InlayHintsResult.
-    fn transformInlayHints(alloc: Allocator, result: lsp_types.InlayHintResult) InlayHintsResult {
-        const hint_items = result orelse return .{ .hints = &.{} };
-        var hints: std.ArrayList(HintItem) = .empty;
-        for (hint_items) |hint| {
-            // Extract label text from string or label parts
-            const label: []const u8 = switch (hint.label) {
-                .string => |s| s,
-                .inlay_hint_label_parts => |parts| blk: {
-                    var buf: std.ArrayList(u8) = .empty;
-                    for (parts) |part| {
-                        buf.appendSlice(alloc, part.value) catch continue;
-                    }
-                    break :blk buf.items;
-                },
-            };
-            if (label.len == 0) continue;
-
-            // kind: Type=1, Parameter=2
-            const kind_str: []const u8 = if (hint.kind) |k| switch (k) {
-                .Type => "type",
-                .Parameter => "parameter",
-                _ => "other",
-            } else "other";
-
-            // Apply padding
-            const padding_left = hint.paddingLeft orelse false;
-            const padding_right = hint.paddingRight orelse false;
-            const display = if (padding_left and padding_right)
-                std.fmt.allocPrint(alloc, " {s} ", .{label}) catch label
-            else if (padding_left)
-                std.fmt.allocPrint(alloc, " {s}", .{label}) catch label
-            else if (padding_right)
-                std.fmt.allocPrint(alloc, "{s} ", .{label}) catch label
-            else
-                label;
-
-            hints.append(alloc, .{
-                .line = @intCast(hint.position.line),
-                .column = @intCast(hint.position.character),
-                .label = display,
-                .kind = kind_str,
-            }) catch continue;
-        }
-        return .{ .hints = hints.items };
-    }
-
-    /// Transform typed document highlights into DocumentHighlightResult.
-    fn transformDocumentHighlight(alloc: Allocator, result: lsp_types.DocumentHighlightResult) DocumentHighlightResult {
-        const dh_items = result orelse return .{ .highlights = &.{} };
-        var highlights: std.ArrayList(HighlightItem) = .empty;
-        for (dh_items) |dh| {
-            const kind_int: i32 = if (dh.kind) |k| @intCast(@intFromEnum(k)) else 1;
-            highlights.append(alloc, .{
-                .line = @intCast(dh.range.start.line),
-                .col = @intCast(dh.range.start.character),
-                .end_line = @intCast(dh.range.end.line),
-                .end_col = @intCast(dh.range.end.character),
-                .kind = kind_int,
-            }) catch continue;
-        }
-        return .{ .highlights = highlights.items };
-    }
-
-    /// Transform typed completion result into CompletionResult.
-    fn transformCompletion(alloc: Allocator, result: lsp_types.CompletionResult) CompletionResult {
-        const max_doc_bytes: usize = 500;
-        const max_items: usize = 100;
-
-        const comp = result orelse return .{ .items = &.{} };
-        const items_slice: []const lsp_raw.completion.Item = switch (comp) {
-            .completion_items => |ci| ci,
-            .completion_list => |cl| cl.items,
-        };
-
-        const capped = if (items_slice.len > max_items) items_slice[0..max_items] else items_slice;
-
-        var items: std.ArrayList(VimCompletionItem) = .empty;
-
-        for (capped) |ci| {
-            var vim_item: VimCompletionItem = .{
-                .label = ci.label,
-                .kind = if (ci.kind) |k| @intCast(@intFromEnum(k)) else null,
-                .detail = ci.detail,
-                .insertText = ci.insertText,
-                .filterText = ci.filterText,
-                .sortText = ci.sortText,
-            };
-
-            if (ci.documentation) |doc| {
-                vim_item.documentation = switch (doc) {
-                    .string => |s| .{ .value = lsp_types.truncateUtf8(s, max_doc_bytes) },
-                    .markup_content => |mc| .{
-                        .kind = switch (mc.kind) {
-                            .plaintext => "plaintext",
-                            .markdown => "markdown",
-                            .unknown_value => |v| v,
-                        },
-                        .value = lsp_types.truncateUtf8(mc.value, max_doc_bytes),
-                    },
-                };
-            }
-
-            items.append(alloc, vim_item) catch continue;
-        }
-
-        return .{ .items = items.items };
+        return lsp_ctx.sendPositionRequest(lsp_method, alloc, line, column);
     }
 
     // ========================================================================
@@ -402,10 +103,8 @@ pub const Handler = struct {
     pub fn lsp_status(self: *Handler, _: Allocator, p: struct {
         file: []const u8,
     }) !LspStatusResult {
-        const registry = self.registry orelse
-            return .{ .ready = false, .reason = "not_initialized" };
-
-        const real_path = lsp_registry_mod.extractRealPath(p.file);
+        const registry = self.registry;
+        const real_path = path_utils.extractRealPath(p.file);
         const language = LspRegistry.detectLanguage(real_path) orelse
             return .{ .ready = false, .reason = "unsupported_language" };
 
@@ -426,9 +125,8 @@ pub const Handler = struct {
         text: ?[]const u8 = null,
     }) !ActionResult {
         const none: ActionResult = .{ .action = "none" };
-        const registry = self.registry orelse return none;
-
-        const real_path = lsp_registry_mod.extractRealPath(p.file);
+        const registry = self.registry;
+        const real_path = path_utils.extractRealPath(p.file);
         const language = LspRegistry.detectLanguage(real_path) orelse return none;
 
         if (registry.hasSpawnFailed(language)) return none;
@@ -439,7 +137,7 @@ pub const Handler = struct {
             return none;
         };
 
-        const uri = try lsp_registry_mod.filePathToUri(alloc, real_path);
+        const uri = try path_utils.filePathToUri(alloc, real_path);
 
         // Send didOpen
         const content = p.text orelse blk: {
@@ -482,7 +180,7 @@ pub const Handler = struct {
     pub fn lsp_reset_failed(self: *Handler, _: Allocator, p: struct {
         language: []const u8,
     }) !OkResult {
-        if (self.registry) |r| r.resetSpawnFailed(p.language);
+        self.registry.resetSpawnFailed(p.language);
         return .{ .ok = true };
     }
 
@@ -496,7 +194,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
@@ -505,7 +203,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
@@ -514,7 +212,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
@@ -523,7 +221,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
@@ -546,7 +244,7 @@ pub const Handler = struct {
             .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
             .context = .{ .includeDeclaration = true },
         }) catch return empty;
-        return transformReferences(alloc, result);
+        return ReferencesResult.fromLsp(alloc, result);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
@@ -572,7 +270,7 @@ pub const Handler = struct {
     }) !CompletionResult {
         const empty: CompletionResult = .{ .items = &.{} };
         const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return empty;
-        return transformCompletion(alloc, result);
+        return CompletionResult.fromLsp(alloc, result);
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -606,69 +304,7 @@ pub const Handler = struct {
         const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
             .query = p.query,
         }) catch return null;
-        return buildPickerSymbolsFromWorkspace(alloc, result);
-    }
-
-    fn buildPickerSymbolsFromWorkspace(alloc: Allocator, result: lsp_types.WorkspaceSymbolResult) ?PickerSymbolResult {
-        // workspace/symbol returns ?union { symbol_informations, workspace_symbols }
-        const syms = result orelse return null;
-
-        var items: std.ArrayList(PickerSymbolItem) = .empty;
-
-        switch (syms) {
-            .symbol_informations => |sis| {
-                for (sis) |si| {
-                    const kind_name = lsp_types.symbolKindStr(si.kind);
-                    const detail = if (si.containerName) |c|
-                        std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
-                    else
-                        kind_name;
-                    const file = lsp_types.uriToFilePath(alloc, si.location.uri) orelse "";
-                    items.append(alloc, .{
-                        .label = si.name,
-                        .detail = detail,
-                        .file = file,
-                        .line = @intCast(si.location.range.start.line),
-                        .column = @intCast(si.location.range.start.character),
-                        .depth = 0,
-                        .kind = kind_name,
-                    }) catch continue;
-                }
-            },
-            .workspace_symbols => |wss| {
-                for (wss) |ws| {
-                    const kind_name = lsp_types.symbolKindStr(ws.kind);
-                    const detail = if (ws.containerName) |c|
-                        std.fmt.allocPrint(alloc, "{s} ({s})", .{ kind_name, c }) catch kind_name
-                    else
-                        kind_name;
-                    // workspace.Symbol.location can be uri-only or full Location
-                    const file = switch (ws.location) {
-                        .location => |loc| lsp_types.uriToFilePath(alloc, loc.uri) orelse "",
-                        .location_uri_only => |u| lsp_types.uriToFilePath(alloc, u.uri) orelse "",
-                    };
-                    const line: i32 = switch (ws.location) {
-                        .location => |loc| @intCast(loc.range.start.line),
-                        .location_uri_only => 0,
-                    };
-                    const col: i32 = switch (ws.location) {
-                        .location => |loc| @intCast(loc.range.start.character),
-                        .location_uri_only => 0,
-                    };
-                    items.append(alloc, .{
-                        .label = ws.name,
-                        .detail = detail,
-                        .file = file,
-                        .line = line,
-                        .column = col,
-                        .depth = 0,
-                        .kind = kind_name,
-                    }) catch continue;
-                }
-            },
-        }
-
-        return .{ .items = items.items };
+        return PickerSymbolResult.fromWorkspaceSymbol(alloc, result);
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
@@ -790,7 +426,7 @@ pub const Handler = struct {
             log.err("LSP formatting failed: {any}", .{e});
             return empty;
         };
-        return transformFormatting(alloc, result);
+        return FormattingResult.fromLsp(alloc, result);
     }
 
     // ========================================================================
@@ -814,7 +450,7 @@ pub const Handler = struct {
             log.err("LSP inlayHint failed: {any}", .{e});
             return empty;
         };
-        return transformInlayHints(alloc, result);
+        return InlayHintsResult.fromLsp(alloc, result);
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
@@ -862,7 +498,7 @@ pub const Handler = struct {
             log.err("LSP rangeFormatting failed: {any}", .{e});
             return empty;
         };
-        return transformFormatting(alloc, result);
+        return FormattingResult.fromLsp(alloc, result);
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
@@ -884,7 +520,7 @@ pub const Handler = struct {
     }) !?DocumentHighlightResult {
         // Try LSP first
         const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch null;
-        const dh_result = transformDocumentHighlight(alloc, typed);
+        const dh_result = DocumentHighlightResult.fromLsp(alloc, typed);
         if (dh_result.highlights.len > 0) {
             return dh_result;
         }
@@ -920,7 +556,7 @@ pub const Handler = struct {
         file: []const u8,
         lang_state: *const treesitter_mod.LangState,
     } {
-        const ts_state = self.ts orelse return null;
+        const ts_state = self.ts;
         const lang_state = ts_state.fromExtension(file) orelse return null;
         if (ts_state.getTree(file) == null) {
             if (text) |t| {
@@ -933,8 +569,7 @@ pub const Handler = struct {
     pub fn load_language(self: *Handler, _: Allocator, p: struct {
         lang_dir: []const u8,
     }) !OkResult {
-        const ts_state = self.ts orelse return .{ .ok = false };
-        ts_state.loadFromDir(p.lang_dir);
+        self.ts.loadFromDir(p.lang_dir);
         return .{ .ok = true };
     }
 
@@ -1011,39 +646,8 @@ pub const Handler = struct {
         markdown: []const u8,
         filetype: []const u8 = "",
     }) !?treesitter_mod.hover_highlight.HoverResult {
-        const ts_state = self.ts orelse return null;
-        return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, ts_state, p.markdown, p.filetype);
+        return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, self.ts, p.markdown, p.filetype);
     }
-    const PickerOpenResult = struct {
-        action: []const u8 = "picker_init",
-        cwd: []const u8,
-        recent_files: ?[]const []const u8 = null,
-    };
-
-    pub fn picker_open(_: *Handler, _: Allocator, p: struct {
-        cwd: []const u8,
-        recent_files: ?[]const []const u8 = null,
-    }) !PickerOpenResult {
-        return .{ .cwd = p.cwd, .recent_files = p.recent_files };
-    }
-
-    const PickerAction = struct {
-        action: []const u8,
-        query: []const u8,
-    };
-
-    const PickerQueryResult = union(enum) {
-        action: PickerAction,
-        workspace_symbols: PickerSymbolResult,
-        document_symbols: treesitter_mod.symbols.PickerResult,
-
-        pub fn jsonStringify(self: PickerQueryResult, jw: anytype) @TypeOf(jw.*).Error!void {
-            switch (self) {
-                inline else => |v| try jw.write(v),
-            }
-        }
-    };
-
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
         query: []const u8 = "",
         mode: []const u8 = "file",
@@ -1056,7 +660,7 @@ pub const Handler = struct {
             const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
                 .query = p.query,
             }) catch return null;
-            const typed = buildPickerSymbolsFromWorkspace(alloc, result) orelse return null;
+            const typed = PickerSymbolResult.fromWorkspaceSymbol(alloc, result) orelse return null;
             return .{ .workspace_symbols = typed };
         } else if (std.mem.eql(u8, p.mode, "grep")) {
             return .{ .action = .{ .action = "picker_grep_query", .query = p.query } };
@@ -1075,82 +679,25 @@ pub const Handler = struct {
         return .{ .action = "picker_close" };
     }
     // ========================================================================
-    // Copilot helpers
-    // ========================================================================
-
-    fn getCopilotClient(self: *Handler) ?*LspClient {
-        const registry = self.registry orelse return null;
-        return registry.getOrCreateCopilotClient();
-    }
-
-    fn copilotReady(self: *Handler) bool {
-        const registry = self.registry orelse return false;
-        return !registry.isInitializing(LspRegistry.copilot_key);
-    }
-
-    fn ensureCopilotDidOpen(_: *Handler, alloc: Allocator, client: *LspClient, file: []const u8) void {
-        const real_path = lsp_registry_mod.extractRealPath(file);
-        const uri = lsp_registry_mod.filePathToUri(alloc, real_path) catch return;
-        const language = LspRegistry.detectLanguage(real_path) orelse "plaintext";
-
-        // Read file content via C fopen (avoids Io dependency)
-        var path_z_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
-        if (real_path.len >= path_z_buf.len) return;
-        @memcpy(path_z_buf[0..real_path.len], real_path);
-        path_z_buf[real_path.len] = 0;
-        const f = std.c.fopen(@ptrCast(path_z_buf[0..real_path.len :0]), "r") orelse return;
-        defer _ = std.c.fclose(f);
-        var file_buf: std.ArrayList(u8) = .empty;
-        var chunk: [4096]u8 = undefined;
-        while (true) {
-            const n = std.c.fread(&chunk, 1, chunk.len, f);
-            if (n == 0) break;
-            file_buf.appendSlice(alloc, chunk[0..n]) catch break;
-        }
-        const content = if (file_buf.items.len > 0) file_buf.items else return;
-
-        client.notify("textDocument/didOpen", alloc, .{
-            .textDocument = .{
-                .uri = uri,
-                .languageId = .{ .custom_value = language },
-                .version = 1,
-                .text = content,
-            },
-        }) catch |e| {
-            log.err("Failed to send didOpen to Copilot: {any}", .{e});
-        };
-    }
-
-    // ========================================================================
-    // Copilot handlers
+    // Copilot handlers — delegate to lsp/copilot.zig
     // ========================================================================
 
     pub fn copilot_sign_in(self: *Handler, alloc: Allocator) !?lsp_types.copilot.SignInResult {
-        const registry = self.registry orelse return null;
-        registry.resetCopilotSpawnFailed();
-        const client = self.getCopilotClient() orelse return null;
-        if (!self.copilotReady()) return null;
-        return client.requestTyped(?lsp_types.copilot.SignInResult, "signIn", alloc, lsp_types.copilot.SignInParams{});
+        return copilot_mod.signIn(self.registry, alloc);
     }
 
     pub fn copilot_sign_out(self: *Handler, alloc: Allocator) !?lsp_types.copilot.SignOutResult {
-        const client = self.getCopilotClient() orelse return null;
-        if (!self.copilotReady()) return null;
-        return client.requestTyped(?lsp_types.copilot.SignOutResult, "signOut", alloc, lsp_types.copilot.SignOutParams{});
+        return copilot_mod.signOut(self.registry, alloc);
     }
 
     pub fn copilot_check_status(self: *Handler, alloc: Allocator) !?lsp_types.copilot.CheckStatusResult {
-        const client = self.getCopilotClient() orelse return null;
-        if (!self.copilotReady()) return null;
-        return client.requestTyped(?lsp_types.copilot.CheckStatusResult, "checkStatus", alloc, lsp_types.copilot.CheckStatusParams{});
+        return copilot_mod.checkStatus(self.registry, alloc);
     }
 
     pub fn copilot_sign_in_confirm(self: *Handler, alloc: Allocator, p: struct {
         userCode: ?[]const u8 = null,
     }) !?lsp_types.copilot.SignInConfirmResult {
-        const client = self.getCopilotClient() orelse return null;
-        if (!self.copilotReady()) return null;
-        return client.requestTyped(?lsp_types.copilot.SignInConfirmResult, "signInConfirm", alloc, lsp_types.copilot.SignInConfirmParams{ .userCode = p.userCode });
+        return copilot_mod.signInConfirm(self.registry, alloc, p.userCode);
     }
 
     pub fn copilot_complete(self: *Handler, alloc: Allocator, p: struct {
@@ -1160,63 +707,26 @@ pub const Handler = struct {
         tab_size: i64 = 4,
         insert_spaces: bool = true,
     }) !?lsp_types.copilot.InlineCompletionResult {
-        const client = self.getCopilotClient() orelse return null;
-        if (!self.copilotReady()) return null;
-
-        self.ensureCopilotDidOpen(alloc, client, p.file);
-
-        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
-        return client.requestTyped(?lsp_types.copilot.InlineCompletionResult, "textDocument/inlineCompletion", alloc, lsp_types.copilot.InlineCompletionParams{
-            .textDocument = .{ .uri = uri },
-            .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
-            .context = .{},
-            .formattingOptions = .{
-                .tabSize = @intCast(p.tab_size),
-                .insertSpaces = p.insert_spaces,
-            },
-        }) catch return null;
+        return copilot_mod.complete(self.registry, alloc, p.file, p.line, p.column, p.tab_size, p.insert_spaces);
     }
 
     pub fn copilot_did_focus(self: *Handler, alloc: Allocator, p: struct {
         file: []const u8,
     }) !void {
-        const client = self.getCopilotClient() orelse return;
-        if (!self.copilotReady()) return;
-
-        const uri = try lsp_registry_mod.filePathToUri(alloc, lsp_registry_mod.extractRealPath(p.file));
-        client.notifyTyped("textDocument/didFocus", alloc, .{
-            .textDocument = .{ .uri = uri },
-        }) catch |e| {
-            log.err("Failed to send didFocus to Copilot: {any}", .{e});
-        };
+        return copilot_mod.didFocus(self.registry, alloc, p.file);
     }
 
     pub fn copilot_accept(self: *Handler, alloc: Allocator, p: struct {
         uuid: ?[]const u8 = null,
     }) !void {
-        const client = self.getCopilotClient() orelse return;
-        if (!self.copilotReady()) return;
-
-        client.notifyTyped("workspace/executeCommand", alloc, lsp_types.copilot.AcceptParams{
-            .arguments = if (p.uuid) |u| &.{u} else null,
-        }) catch |e| {
-            log.err("Failed to send Copilot accept: {any}", .{e});
-        };
+        return copilot_mod.accept(self.registry, alloc, p.uuid);
     }
 
     pub fn copilot_partial_accept(self: *Handler, alloc: Allocator, p: struct {
         item_id: ?[]const u8 = null,
         accepted_text: ?[]const u8 = null,
     }) !void {
-        const client = self.getCopilotClient() orelse return;
-        if (!self.copilotReady()) return;
-
-        client.notifyTyped("textDocument/didPartiallyAcceptCompletion", alloc, .{
-            .itemId = p.item_id,
-            .acceptedLength = if (p.accepted_text) |text| @as(?i32, @intCast(text.len)) else null,
-        }) catch |e| {
-            log.err("Failed to send Copilot partial accept: {any}", .{e});
-        };
+        return copilot_mod.partialAccept(self.registry, alloc, p.item_id, p.accepted_text);
     }
     // ========================================================================
     // Logging handlers

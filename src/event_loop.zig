@@ -66,7 +66,6 @@ pub const EventLoop = struct {
             .gpa = self.allocator,
             .shutdown_flag = &self.shutdown_event,
             .io = self.io,
-            .lsp = &self.lsp,
             .registry = &self.lsp.registry,
             .ts = &self.ts,
         };

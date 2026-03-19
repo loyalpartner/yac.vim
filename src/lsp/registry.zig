@@ -10,14 +10,6 @@ const Allocator = std.mem.Allocator;
 const Value = json.Value;
 const ObjectMap = json.ObjectMap;
 
-// Re-export path utilities for external callers
-pub const extractRealPath = path_utils.extractRealPath;
-pub const extractSshHost = path_utils.extractSshHost;
-pub const restoreSshPath = path_utils.restoreSshPath;
-pub const filePathToUri = path_utils.filePathToUri;
-pub const uriToFilePath = path_utils.uriToFilePath;
-pub const uriToFilePathAlloc = path_utils.uriToFilePathAlloc;
-pub const findWorkspaceUri = path_utils.findWorkspaceUri;
 
 // ============================================================================
 // LSP Server Config - data-driven language detection
@@ -92,7 +84,7 @@ pub const LspRegistry = struct {
     /// Detect language from file path extension.
     pub fn detectLanguage(file_path: []const u8) ?[]const u8 {
         // Extract real path from scp:// URLs
-        const real_path = extractRealPath(file_path);
+        const real_path = path_utils.extractRealPath(file_path);
 
         for (&lsp_config.builtin_configs) |*config| {
             for (config.file_extensions) |ext| {
@@ -209,7 +201,7 @@ pub const LspRegistry = struct {
     /// Find an existing client for a language + file path (read-only, does not spawn).
     pub fn findClient(self: *LspRegistry, language: []const u8, file_path: []const u8) ?struct { client: *LspClient, client_key: []const u8 } {
         const config = getConfig(language) orelse return null;
-        const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
+        const workspace_uri = path_utils.findWorkspaceUri(self.allocator, config, file_path);
         defer if (workspace_uri) |uri| self.allocator.free(uri);
 
         var key_buf: [std.Io.Dir.max_path_bytes + 128]u8 = undefined;
@@ -242,7 +234,7 @@ pub const LspRegistry = struct {
     /// Workspace root is detected from file_path; (language + workspace_root) determines client.
     pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {
         const config = getConfig(language) orelse return error.UnsupportedLanguage;
-        const workspace_uri = findWorkspaceUri(self.allocator, config, file_path);
+        const workspace_uri = path_utils.findWorkspaceUri(self.allocator, config, file_path);
         defer if (workspace_uri) |uri| self.allocator.free(uri);
 
         // Build lookup key on stack

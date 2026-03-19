@@ -108,4 +108,6 @@ test {
     _ = @import("vim_server.zig");
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/transform.zig");
+    _ = @import("lsp/lsp.zig");
+    _ = @import("lsp/vim_types.zig");
 }

@@ -7,6 +7,7 @@
 const std = @import("std");
 const lsp_kit = @import("lsp");
 const lsp_registry_mod = @import("registry.zig");
+const path_utils = @import("path_utils.zig");
 pub const lsp = lsp_kit.types;
 
 pub const ParamsType = lsp_kit.ParamsType;
@@ -128,7 +129,7 @@ pub const copilot = struct {
 
 /// Convert a file:// URI to a local file path (allocates in alloc).
 pub fn uriToFilePath(alloc: std.mem.Allocator, uri: []const u8) ?[]const u8 {
-    return lsp_registry_mod.uriToFilePathAlloc(alloc, uri);
+    return path_utils.uriToFilePathAlloc(alloc, uri);
 }
 
 /// LSP SymbolKind enum → display name.
