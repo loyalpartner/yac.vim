@@ -5,7 +5,6 @@ const lsp_registry_mod = @import("lsp/registry.zig");
 const lsp_types = @import("lsp/types.zig");
 const treesitter_mod = @import("treesitter/treesitter.zig");
 const handler_types = @import("handler/types.zig");
-const transforms = @import("handler/transforms.zig");
 const lsp_context_mod = @import("handler/lsp_context.zig");
 const copilot_mod = @import("handler/copilot.zig");
 const path_utils = @import("lsp/path_utils.zig");
@@ -81,31 +80,31 @@ pub const Handler = struct {
     }
 
     // ========================================================================
-    // Typed transform helpers — delegate to handler/transforms.zig
+    // Typed transform helpers — delegate to types.zig from* methods
     // ========================================================================
 
     fn transformGoto(alloc: Allocator, result: lsp_types.DefinitionResult) ?GotoLocation {
-        return transforms.transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     fn transformReferences(alloc: Allocator, result: lsp_types.ReferencesResult) ReferencesResult {
-        return transforms.transformReferences(alloc, result);
+        return ReferencesResult.fromLsp(alloc, result);
     }
 
     fn transformFormatting(alloc: Allocator, result: lsp_types.FormattingResult) FormattingResult {
-        return transforms.transformFormatting(alloc, result);
+        return FormattingResult.fromLsp(alloc, result);
     }
 
     fn transformInlayHints(alloc: Allocator, result: lsp_types.InlayHintResult) InlayHintsResult {
-        return transforms.transformInlayHints(alloc, result);
+        return InlayHintsResult.fromLsp(alloc, result);
     }
 
     fn transformDocumentHighlight(alloc: Allocator, result: lsp_types.DocumentHighlightResult) DocumentHighlightResult {
-        return transforms.transformDocumentHighlight(alloc, result);
+        return DocumentHighlightResult.fromLsp(alloc, result);
     }
 
     fn transformCompletion(alloc: Allocator, result: lsp_types.CompletionResult) CompletionResult {
-        return transforms.transformCompletion(alloc, result);
+        return CompletionResult.fromLsp(alloc, result);
     }
 
     // ========================================================================
@@ -334,7 +333,7 @@ pub const Handler = struct {
     }
 
     fn buildPickerSymbolsFromWorkspace(alloc: Allocator, result: lsp_types.WorkspaceSymbolResult) ?PickerSymbolResult {
-        return transforms.buildPickerSymbolsFromWorkspace(alloc, result);
+        return PickerSymbolResult.fromWorkspaceSymbol(alloc, result);
     }
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
