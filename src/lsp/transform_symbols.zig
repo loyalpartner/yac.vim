@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_utils = @import("../json_utils.zig");
 const lsp_registry_mod = @import("registry.zig");
+const path_utils = @import("path_utils.zig");
 const transform_navigation = @import("transform_navigation.zig");
 
 const Allocator = std.mem.Allocator;
@@ -131,7 +132,7 @@ pub fn transformPickerSymbolResult(alloc: Allocator, result: Value, ssh_host: ?[
             var pos: Position = .{ .line = 0, .column = 0 };
             if (json_utils.getObject(sym, "location")) |loc| {
                 if (json_utils.getString(loc, "uri")) |uri| {
-                    file = lsp_registry_mod.uriToFilePathAlloc(alloc, uri) orelse "";
+                    file = path_utils.uriToFilePathAlloc(alloc, uri) orelse "";
                     if (ssh_host) |host| {
                         file = std.fmt.allocPrint(alloc, "scp://{s}/{s}", .{ host, file }) catch file;
                     }
