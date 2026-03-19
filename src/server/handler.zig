@@ -648,6 +648,13 @@ pub const Handler = struct {
     }) !?treesitter_mod.hover_highlight.HoverResult {
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, self.ts, p.markdown, p.filetype);
     }
+    pub fn picker_open(_: *Handler, _: Allocator, p: struct {
+        cwd: []const u8,
+        recent_files: ?[]const []const u8 = null,
+    }) !PickerOpenResult {
+        return .{ .cwd = p.cwd, .recent_files = p.recent_files };
+    }
+
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
         query: []const u8 = "",
         mode: []const u8 = "file",
