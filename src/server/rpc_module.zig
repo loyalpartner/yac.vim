@@ -20,12 +20,56 @@ pub const ProcessResult = union(enum) {
 };
 
 // ============================================================================
-// RpcModule(Ctx) — jsonrpsee-style O(1) dispatch table for Vim JSON-RPC methods.
+// Methods — non-generic dispatch table that can hold entries from multiple
+// handler types. Entries are type-erased (ctx + fn pointer).
+// ============================================================================
+
+pub const Methods = struct {
+    map: std.StringHashMap(MethodEntry),
+
+    pub const MethodEntry = struct {
+        ctx: *anyopaque,
+        call: *const fn (*anyopaque, Allocator, Value) anyerror!ProcessResult,
+    };
+
+    pub fn init(allocator: Allocator) Methods {
+        return .{ .map = std.StringHashMap(MethodEntry).init(allocator) };
+    }
+
+    pub fn deinit(self: *Methods) void {
+        self.map.deinit();
+    }
+
+    /// O(1) dispatch: look up method, call it, return result value.
+    pub fn dispatch(self: *Methods, alloc: Allocator, method: []const u8, params: Value) ?Value {
+        const result = self.processMethod(alloc, method, params) catch return null;
+        const r = result orelse return null;
+        return switch (r) {
+            .data => |d| d,
+            .empty => null,
+        };
+    }
+
+    /// Like dispatch but returns the full ProcessResult.
+    pub fn processMethod(self: *Methods, alloc: Allocator, method: []const u8, params: Value) !?ProcessResult {
+        const entry = self.map.get(method) orelse return null;
+        return try entry.call(entry.ctx, alloc, params);
+    }
+
+    /// Merge all entries from other into self. Both share the same key strings
+    /// (no allocation — keys are comptime string literals).
+    pub fn merge(self: *Methods, other: *const Methods) !void {
+        var it = other.map.iterator();
+        while (it.next()) |entry| {
+            try self.map.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+};
+
+// ============================================================================
+// RpcModule(Ctx) — comptime builder that produces a Methods from a handler type.
 //
-// Replaces VimServer(Handler) comptime inline-for linear scan with a
-// StringHashMap populated at init time for O(1) dispatch.
-//
-// Supported handler signatures (same as VimServer):
+// Supported handler signatures:
 //   fn(*Ctx) !ReturnType                    — no params
 //   fn(*Ctx, Allocator) !ReturnType         — needs allocator, no params
 //   fn(*Ctx, Allocator, Value) !ReturnType  — raw JSON params
@@ -39,49 +83,26 @@ pub const ProcessResult = union(enum) {
 //   complex types — JSON stringify round-trip via typedToValue()
 // ============================================================================
 
-/// A type-erased callback: (ctx, alloc, params) → ProcessResult.
-pub const MethodCallback = *const fn (*anyopaque, Allocator, Value) anyerror!ProcessResult;
-
 pub fn RpcModule(comptime Ctx: type) type {
     return struct {
         ctx: *Ctx,
-        methods: std.StringHashMap(MethodCallback),
 
         const Self = @This();
 
-        pub fn init(allocator: Allocator, ctx: *Ctx) Self {
-            return .{
-                .ctx = ctx,
-                .methods = std.StringHashMap(MethodCallback).init(allocator),
-            };
+        pub fn init(ctx: *Ctx) Self {
+            return .{ .ctx = ctx };
         }
 
-        pub fn deinit(self: *Self) void {
-            self.methods.deinit();
-        }
-
-        /// Register all handler methods found on Ctx into the HashMap.
-        pub fn registerAll(self: *Self) !void {
+        /// Build a Methods table populated with all handler methods from Ctx.
+        pub fn methods(self: Self, allocator: Allocator) !Methods {
+            var m = Methods.init(allocator);
             inline for (comptime handlerMethodNames(Ctx)) |name| {
-                try self.methods.put(name, comptime makeCallback(Ctx, name));
+                try m.map.put(name, .{
+                    .ctx = @ptrCast(self.ctx),
+                    .call = comptime makeCallback(Ctx, name),
+                });
             }
-        }
-
-        /// O(1) dispatch: look up method in HashMap, call it.
-        /// Returns null for unknown methods or empty (void) results.
-        pub fn dispatch(self: *Self, alloc: Allocator, method: []const u8, params: Value) ?Value {
-            const result = self.processMethod(alloc, method, params) catch return null;
-            const r = result orelse return null;
-            return switch (r) {
-                .data => |d| d,
-                .empty => null,
-            };
-        }
-
-        /// Like dispatch but returns the full ProcessResult.
-        pub fn processMethod(self: *Self, alloc: Allocator, method: []const u8, params: Value) !?ProcessResult {
-            const cb = self.methods.get(method) orelse return null;
-            return try cb(@ptrCast(self.ctx), alloc, params);
+            return m;
         }
     };
 }
@@ -135,7 +156,7 @@ pub fn isHandlerMethod(comptime Ctx: type, comptime name: []const u8) bool {
 }
 
 /// Build a type-erased MethodCallback for a named handler method on Ctx.
-fn makeCallback(comptime Ctx: type, comptime name: []const u8) MethodCallback {
+fn makeCallback(comptime Ctx: type, comptime name: []const u8) *const fn (*anyopaque, Allocator, Value) anyerror!ProcessResult {
     return struct {
         fn call(ctx: *anyopaque, alloc: Allocator, params: Value) anyerror!ProcessResult {
             const typed_ctx: *Ctx = @ptrCast(@alignCast(ctx));
@@ -249,11 +270,10 @@ test "RpcModule: dispatch to handler fn with no params" {
     };
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(std.testing.allocator, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(std.testing.allocator);
+    defer m.deinit();
 
-    const result = module.dispatch(std.testing.allocator, "ping", .null);
+    const result = m.dispatch(std.testing.allocator, "ping", .null);
     try std.testing.expect(result != null);
     try std.testing.expect(handler.called);
     try std.testing.expectEqualStrings("pong", result.?.string);
@@ -269,11 +289,10 @@ test "RpcModule: dispatch void return → null" {
     };
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(std.testing.allocator, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(std.testing.allocator);
+    defer m.deinit();
 
-    const result = module.dispatch(std.testing.allocator, "exit", .null);
+    const result = m.dispatch(std.testing.allocator, "exit", .null);
     try std.testing.expect(result == null);
     try std.testing.expect(handler.shutdown);
 }
@@ -295,14 +314,13 @@ test "RpcModule: dispatch with raw Value params" {
     const alloc = arena.allocator();
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(alloc, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(alloc);
+    defer m.deinit();
 
     const params = try json.buildObject(alloc, .{
         .{ "file", json.jsonString("test.zig") },
     });
-    const result = module.dispatch(alloc, "hover", params);
+    const result = m.dispatch(alloc, "hover", params);
 
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("hover result", result.?.string);
@@ -329,15 +347,14 @@ test "RpcModule: dispatch with typed struct params" {
     const alloc = arena.allocator();
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(alloc, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(alloc);
+    defer m.deinit();
 
     const params = try json.buildObject(alloc, .{
         .{ "file", json.jsonString("main.zig") },
         .{ "line", json.jsonInteger(42) },
     });
-    const result = module.dispatch(alloc, "goto_definition", params);
+    const result = m.dispatch(alloc, "goto_definition", params);
 
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("main.zig", result.?.string);
@@ -352,11 +369,10 @@ test "RpcModule: unknown method returns null" {
     };
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(std.testing.allocator, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(std.testing.allocator);
+    defer m.deinit();
 
-    const result = module.dispatch(std.testing.allocator, "unknown_method", .null);
+    const result = m.dispatch(std.testing.allocator, "unknown_method", .null);
     try std.testing.expect(result == null);
 }
 
@@ -370,11 +386,10 @@ test "RpcModule: processMethod returns ProcessResult" {
     };
 
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(std.testing.allocator, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(std.testing.allocator);
+    defer m.deinit();
 
-    const result = try module.processMethod(std.testing.allocator, "check", .null);
+    const result = try m.processMethod(std.testing.allocator, "check", .null);
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("done", result.?.data.string);
 }
@@ -395,16 +410,41 @@ test "RpcModule: handlerMethodNames filters correctly" {
         pub fn helper() void {}
     };
 
-    // Register all methods and verify the count via module
     var handler = TestHandler{};
-    var module = RpcModule(TestHandler).init(std.testing.allocator, &handler);
-    defer module.deinit();
-    try module.registerAll();
+    var m = try RpcModule(TestHandler).init(&handler).methods(std.testing.allocator);
+    defer m.deinit();
 
-    try std.testing.expectEqual(@as(u32, 2), module.methods.count());
-    try std.testing.expect(module.methods.contains("method_a"));
-    try std.testing.expect(module.methods.contains("method_b"));
-    try std.testing.expect(!module.methods.contains("helper"));
+    try std.testing.expectEqual(@as(usize, 2), m.map.count());
+    try std.testing.expect(m.map.contains("method_a"));
+    try std.testing.expect(m.map.contains("method_b"));
+    try std.testing.expect(!m.map.contains("helper"));
+}
+
+test "Methods.merge: combines entries from two modules" {
+    const HandlerA = struct {
+        pub fn method_a(self: *@This()) !void {
+            _ = self;
+        }
+    };
+    const HandlerB = struct {
+        pub fn method_b(self: *@This()) !void {
+            _ = self;
+        }
+    };
+
+    var ha = HandlerA{};
+    var hb = HandlerB{};
+
+    var ma = try RpcModule(HandlerA).init(&ha).methods(std.testing.allocator);
+    defer ma.deinit();
+    var mb = try RpcModule(HandlerB).init(&hb).methods(std.testing.allocator);
+    defer mb.deinit();
+
+    try ma.merge(&mb);
+
+    try std.testing.expect(ma.map.contains("method_a"));
+    try std.testing.expect(ma.map.contains("method_b"));
+    try std.testing.expectEqual(@as(usize, 2), ma.map.count());
 }
 
 test "toValue: string" {
