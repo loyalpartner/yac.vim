@@ -1,5 +1,5 @@
 const std = @import("std");
-const json = @import("json_utils.zig");
+const json = @import("../json_utils.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = json.Value;

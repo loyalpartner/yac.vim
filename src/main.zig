@@ -3,7 +3,7 @@ const Io = std.Io;
 const log_mod = @import("log.zig");
 const log = std.log.scoped(.main);
 const compat = @import("compat.zig");
-const EventLoop = @import("event_loop.zig").EventLoop;
+const EventLoop = @import("server/event_loop.zig").EventLoop;
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
@@ -104,8 +104,11 @@ test {
     _ = @import("log.zig");
     _ = @import("compat.zig");
     _ = @import("json_utils.zig");
-    _ = @import("vim_protocol.zig");
-    _ = @import("vim_server.zig");
+    _ = @import("server/event_loop.zig");
+    _ = @import("server/handler.zig");
+    _ = @import("server/line_framer.zig");
+    _ = @import("server/vim_protocol.zig");
+    _ = @import("server/vim_server.zig");
     _ = @import("lsp/protocol.zig");
     _ = @import("lsp/transform.zig");
     _ = @import("lsp/lsp.zig");

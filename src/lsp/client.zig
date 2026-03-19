@@ -3,7 +3,7 @@ const Io = std.Io;
 const json = @import("../json_utils.zig");
 const lsp = @import("protocol.zig");
 const lsp_kit = @import("lsp");
-const vim = @import("../vim_protocol.zig");
+const vim = @import("../server/vim_protocol.zig");
 const lsp_transform = @import("transform.zig");
 const log = std.log.scoped(.lsp_client);
 
@@ -126,7 +126,8 @@ pub const LspClient = struct {
         };
     }
 
-    /// The readLoop coroutine: reads LSP messages from stdout, dispatches responses to waiters.
+    /// The readLoop coroutine: reads LSP stdout, frames messages, dispatches.
+    /// Transport + Frame layer: read raw bytes → MessageFramer → complete messages.
     fn readLoopFn(self: *LspClient) Io.Cancelable!void {
         const stdout = self.child.stdout orelse return;
         var read_buf: [4096]u8 = undefined;
@@ -143,62 +144,71 @@ pub const LspClient = struct {
                 raw_messages.deinit(self.allocator);
             }
 
+            // Server layer: parse and dispatch each message
             for (raw_messages.items) |raw_msg| {
-                const parsed = json.parse(self.allocator, raw_msg) catch continue;
-                const obj = switch (parsed.value) {
-                    .object => |o| o,
-                    else => {
-                        parsed.deinit();
-                        continue;
-                    },
-                };
-
-                if (json.getString(obj, "method")) |method| {
-                    const params = obj.get("params") orelse .null;
-
-                    if (obj.get("id")) |id_val| {
-                        // Server-to-client request — respond with null for now
-                        const id: i64 = switch (id_val) {
-                            .integer => |i| i,
-                            else => 0,
-                        };
-                        self.sendResponse(id, .null) catch {};
-                        parsed.deinit();
-                    } else {
-                        // Notification — forward to Vim if we have a writer
-                        self.forwardNotification(method, params);
-                        parsed.deinit();
-                    }
-                } else if (obj.get("id")) |id_val| {
-                    // Response — find and signal waiter
-                    const id: u32 = switch (id_val) {
-                        .integer => |i| @intCast(i),
-                        else => {
-                            parsed.deinit();
-                            continue;
-                        },
-                    };
-
-                    self.waiters_lock.lockUncancelable(self.io);
-                    const waiter = self.waiters.get(id);
-                    self.waiters_lock.unlock(self.io);
-
-                    if (waiter) |w| {
-                        w.result = obj.get("result") orelse .null;
-                        w.err = obj.get("error");
-                        w.parsed = parsed;
-                        w.completed = true;
-                        w.event.set(self.io);
-                    } else {
-                        parsed.deinit();
-                    }
-                } else {
-                    parsed.deinit();
-                }
+                self.dispatchLspMessage(raw_msg);
             }
         }
 
         log.debug("LSP readLoop exiting", .{});
+    }
+
+    /// Server layer: parse a raw LSP JSON message and dispatch it.
+    /// - Response → signal the waiting coroutine
+    /// - Server-to-client request → respond with null
+    /// - Notification → forward to Vim (progress, diagnostics)
+    fn dispatchLspMessage(self: *LspClient, raw_msg: []const u8) void {
+        const parsed = json.parse(self.allocator, raw_msg) catch return;
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => {
+                parsed.deinit();
+                return;
+            },
+        };
+
+        if (json.getString(obj, "method")) |method| {
+            const params = obj.get("params") orelse .null;
+
+            if (obj.get("id")) |id_val| {
+                // Server-to-client request — respond with null for now
+                const id: i64 = switch (id_val) {
+                    .integer => |i| i,
+                    else => 0,
+                };
+                self.sendResponse(id, .null) catch {};
+                parsed.deinit();
+            } else {
+                // Notification — forward to Vim if we have a writer
+                self.forwardNotification(method, params);
+                parsed.deinit();
+            }
+        } else if (obj.get("id")) |id_val| {
+            // Response — find and signal waiter
+            const id: u32 = switch (id_val) {
+                .integer => |i| @intCast(i),
+                else => {
+                    parsed.deinit();
+                    return;
+                },
+            };
+
+            self.waiters_lock.lockUncancelable(self.io);
+            const waiter = self.waiters.get(id);
+            self.waiters_lock.unlock(self.io);
+
+            if (waiter) |w| {
+                w.result = obj.get("result") orelse .null;
+                w.err = obj.get("error");
+                w.parsed = parsed;
+                w.completed = true;
+                w.event.set(self.io);
+            } else {
+                parsed.deinit();
+            }
+        } else {
+            parsed.deinit();
+        }
     }
 
     /// Forward an LSP notification to the Vim client (progress, diagnostics).
