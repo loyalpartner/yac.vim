@@ -394,19 +394,19 @@ function! yac#inlay_hints_toggle() abort
 endfunction
 
 function! yac#rename(...) abort
-  call call('yac_lsp#rename', a:000)
+  call call('yac_lsp_edit#rename', a:000)
 endfunction
 
 function! yac#call_hierarchy_incoming() abort
-  call yac_lsp#call_hierarchy_incoming()
+  call yac_lsp_hierarchy#call_hierarchy_incoming()
 endfunction
 
 function! yac#call_hierarchy_outgoing() abort
-  call yac_lsp#call_hierarchy_outgoing()
+  call yac_lsp_hierarchy#call_hierarchy_outgoing()
 endfunction
 
 function! yac#document_symbols() abort
-  call yac_lsp#document_symbols()
+  call yac_lsp_hierarchy#document_symbols()
 endfunction
 
 function! yac#folding_range() abort
@@ -414,17 +414,17 @@ function! yac#folding_range() abort
 endfunction
 
 function! yac#code_action() abort
-  call yac_lsp#code_action()
+  call yac_lsp_edit#code_action()
 endfunction
 
 " === Document Formatting ===
 
 function! yac#format() abort
-  call yac_lsp#format()
+  call yac_lsp_edit#format()
 endfunction
 
 function! yac#range_format() abort
-  call yac_lsp#range_format()
+  call yac_lsp_edit#range_format()
 endfunction
 
 " === Signature Help ===
@@ -436,11 +436,11 @@ endfunction
 " === Type Hierarchy ===
 
 function! yac#type_hierarchy_supertypes() abort
-  call yac_lsp#type_hierarchy_supertypes()
+  call yac_lsp_hierarchy#type_hierarchy_supertypes()
 endfunction
 
 function! yac#type_hierarchy_subtypes() abort
-  call yac_lsp#type_hierarchy_subtypes()
+  call yac_lsp_hierarchy#type_hierarchy_subtypes()
 endfunction
 
 function! yac#did_save(...) abort
@@ -557,7 +557,7 @@ endfunction
 function! s:handle_will_save_wait_until_response(channel, response) abort
   call s:debug_log(printf('[RECV]: will_save_wait_until response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
-    call yac_lsp#apply_workspace_edit(a:response.edits)
+    call yac_lsp_edit#apply_workspace_edit(a:response.edits)
   endif
 endfunction
 
@@ -584,9 +584,9 @@ function! s:handle_response(channel, msg) abort
     let params = get(a:msg, 'params', {})
     call s:debug_log("Received applyEdit action")
     if has_key(params, 'edit') && has_key(params.edit, 'changes')
-      call yac_lsp#apply_workspace_edit(params.edit.changes)
+      call yac_lsp_edit#apply_workspace_edit(params.edit.changes)
     elseif has_key(params, 'edit') && has_key(params.edit, 'documentChanges')
-      call yac_lsp#apply_workspace_edit(params.edit.documentChanges)
+      call yac_lsp_edit#apply_workspace_edit(params.edit.documentChanges)
     endif
   endif
 endfunction
@@ -877,13 +877,13 @@ function! yac#test_inject_response(method, response) abort
     \ 'references': 'yac_lsp#_handle_references_response',
     \ 'peek': 'yac_lsp#_handle_peek_response',
     \ 'peek_drill': 'yac_lsp#_handle_peek_drill_response',
-    \ 'rename': 'yac_lsp#_handle_rename_response',
-    \ 'call_hierarchy': 'yac_lsp#_handle_call_hierarchy_response',
-    \ 'document_symbols': 'yac_lsp#_handle_document_symbols_response',
-    \ 'code_action': 'yac_lsp#_handle_code_action_response',
-    \ 'execute_command': 'yac_lsp#_handle_execute_command_response',
-    \ 'formatting': 'yac_lsp#_handle_formatting_response',
-    \ 'type_hierarchy': 'yac_lsp#_handle_type_hierarchy_response',
+    \ 'rename': 'yac_lsp_edit#_handle_rename_response',
+    \ 'call_hierarchy': 'yac_lsp_hierarchy#_handle_call_hierarchy_response',
+    \ 'document_symbols': 'yac_lsp_hierarchy#_handle_document_symbols_response',
+    \ 'code_action': 'yac_lsp_edit#_handle_code_action_response',
+    \ 'execute_command': 'yac_lsp_edit#_handle_execute_command_response',
+    \ 'formatting': 'yac_lsp_edit#_handle_formatting_response',
+    \ 'type_hierarchy': 'yac_lsp_hierarchy#_handle_type_hierarchy_response',
     \ 'file_open': 'yac_lsp#_handle_file_open_response',
     \ 'semantic_tokens': 'yac_semantic_tokens#_handle_response',
     \ }
@@ -1103,7 +1103,7 @@ function! yac#_ts_flush_did_change() abort
 endfunction
 
 function! yac#_ts_show_document_symbols(symbols) abort
-  call yac_lsp#show_document_symbols(a:symbols)
+  call yac_lsp_hierarchy#show_document_symbols(a:symbols)
 endfunction
 
 " Shared utility bridges for completion/signature modules
