@@ -74,10 +74,6 @@ When fixing a bug, always write a test to reproduce it first. If the test cannot
 
 When requirements are unclear, don't spend excessive time analyzing. Write the simplest compilable minimal implementation first, so I can see the result and decide the direction. Read at most 3 files before starting to code during exploration.
 
-## Task Tracking
-
-Use `bd` (beads) for all task tracking. See [AGENTS.md](AGENTS.md) for details.
-
 ## Vim Popup Gotchas
 
 - **`win_execute` + `cursorline` needs `redraw`**: When the buffer behind a popup has many text properties (tree-sitter highlights), `win_execute(popup, 'call cursor(...)')` moves the cursor correctly but Vim may not refresh the `cursorline` highlight. Always follow with `redraw`.
