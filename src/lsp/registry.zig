@@ -85,29 +85,10 @@ pub const LspRegistry = struct {
     }
 
     /// Detect language from file path extension.
-    pub fn detectLanguage(file_path: []const u8) ?[]const u8 {
-        // Extract real path from scp:// URLs
-        const real_path = path_utils.extractRealPath(file_path);
-
-        for (&lsp_config.builtin_configs) |*config| {
-            for (config.file_extensions) |ext| {
-                if (std.mem.endsWith(u8, real_path, ext)) {
-                    return config.language_id;
-                }
-            }
-        }
-        return null;
-    }
+    pub const detectLanguage = lsp_config.detectLanguage;
 
     /// Get config for a language.
-    pub fn getConfig(language: []const u8) ?*const LspServerConfig {
-        for (&lsp_config.builtin_configs) |*config| {
-            if (std.mem.eql(u8, config.language_id, language)) {
-                return config;
-            }
-        }
-        return null;
-    }
+    pub const getConfig = lsp_config.getConfig;
 
     /// Check if a language has already had a spawn failure reported.
     pub fn hasSpawnFailed(self: *LspRegistry, language: []const u8) bool {

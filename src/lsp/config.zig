@@ -1,3 +1,6 @@
+const std = @import("std");
+const path_utils = @import("path_utils.zig");
+
 pub const LspServerConfig = struct {
     command: []const u8,
     args: []const []const u8,
@@ -5,6 +8,29 @@ pub const LspServerConfig = struct {
     file_extensions: []const []const u8,
     workspace_markers: []const []const u8,
 };
+
+/// Detect language from file path extension.
+pub fn detectLanguage(file_path: []const u8) ?[]const u8 {
+    const real_path = path_utils.extractRealPath(file_path);
+    for (&builtin_configs) |*config| {
+        for (config.file_extensions) |ext| {
+            if (std.mem.endsWith(u8, real_path, ext)) {
+                return config.language_id;
+            }
+        }
+    }
+    return null;
+}
+
+/// Get config for a language.
+pub fn getConfig(language: []const u8) ?*const LspServerConfig {
+    for (&builtin_configs) |*config| {
+        if (std.mem.eql(u8, config.language_id, language)) {
+            return config;
+        }
+    }
+    return null;
+}
 
 // Built-in server configs
 pub const builtin_configs = [_]LspServerConfig{
