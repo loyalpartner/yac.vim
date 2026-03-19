@@ -826,23 +826,23 @@ function! yac#test_bump_seq() abort
 endfunction
 
 function! yac#test_do_cr() abort
-  call yac_completion#test_do_cr()
+  call yac_completion_test#test_do_cr()
 endfunction
 
 function! yac#test_do_esc() abort
-  call yac_completion#test_do_esc()
+  call yac_completion_test#test_do_esc()
 endfunction
 
 function! yac#test_do_nav(direction) abort
-  call yac_completion#test_do_nav(a:direction)
+  call yac_completion_test#test_do_nav(a:direction)
 endfunction
 
 function! yac#test_do_bs() abort
-  return yac_completion#test_do_bs()
+  return yac_completion_test#test_do_bs()
 endfunction
 
 function! yac#test_do_tab() abort
-  return yac_completion#test_do_tab()
+  return yac_completion_test#test_do_tab()
 endfunction
 
 " Signature Help forwarding — delegated to yac_signature.vim

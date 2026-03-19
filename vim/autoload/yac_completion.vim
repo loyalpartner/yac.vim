@@ -1,4 +1,4 @@
-" yac_completion.vim — Completion module (extracted from yac.vim)
+" yac_completion.vim — Completion module (state, trigger, filter, insert)
 "
 " Dependencies on yac.vim:
 "   yac#_request(method, params, callback)  — send daemon request
@@ -8,6 +8,8 @@
 "   yac#_in_string_or_comment()                        — syntax check
 "   yac#_flush_did_change()                            — flush pending didChange
 "   yac#_cursor_lsp_col()                              — LSP column
+"
+" Rendering is delegated to yac_completion_render.vim
 
 " === Highlight Groups ===
 
@@ -33,55 +35,6 @@ if !hlexists('YacBridgeMatchChar')
 endif
 
 " === Constants ===
-
-" 补全项类型图标映射
-let s:completion_icons = {
-  \ 'Function': '󰊕 ',
-  \ 'Method': '󰊕 ',
-  \ 'Variable': '󰀫 ',
-  \ 'Field': '󰆧 ',
-  \ 'TypeParameter': '󰅲 ',
-  \ 'Constant': '󰏿 ',
-  \ 'Class': '󰠱 ',
-  \ 'Interface': '󰜰 ',
-  \ 'Struct': '󰌗 ',
-  \ 'Enum': ' ',
-  \ 'EnumMember': ' ',
-  \ 'Module': '󰆧 ',
-  \ 'Property': '󰜢 ',
-  \ 'Unit': '󰑭 ',
-  \ 'Value': '󰎠 ',
-  \ 'Keyword': '󰌋 ',
-  \ 'Snippet': '󰅴 ',
-  \ 'Text': '󰉿 ',
-  \ 'File': '󰈙 ',
-  \ 'Reference': '󰈇 ',
-  \ 'Folder': '󰉋 ',
-  \ 'Color': '󰏘 ',
-  \ 'Constructor': '󰆧 ',
-  \ 'Operator': '󰆕 ',
-  \ 'Event': '󱐋 ',
-  \ }
-
-" 补全项 kind → highlight 映射表
-let s:completion_kind_highlights = {
-  \ 'Function': 'YacCompletionFunction',
-  \ 'Method': 'YacCompletionFunction',
-  \ 'Constructor': 'YacCompletionFunction',
-  \ 'Variable': 'YacCompletionVariable',
-  \ 'Field': 'YacCompletionVariable',
-  \ 'Property': 'YacCompletionVariable',
-  \ 'Constant': 'YacCompletionVariable',
-  \ 'Struct': 'YacCompletionStruct',
-  \ 'Class': 'YacCompletionStruct',
-  \ 'Interface': 'YacCompletionStruct',
-  \ 'Enum': 'YacCompletionStruct',
-  \ 'EnumMember': 'YacCompletionStruct',
-  \ 'TypeParameter': 'YacCompletionStruct',
-  \ 'Keyword': 'YacCompletionKeyword',
-  \ 'Module': 'YacCompletionModule',
-  \ 'Snippet': 'YacCompletionKeyword',
-  \ }
 
 " LSP CompletionItemKind: 数字 → 字符串
 let s:lsp_kind_map = {
@@ -252,6 +205,13 @@ function! yac_completion#popup_visible() abort
   return s:completion.popup_id != -1
 endfunction
 
+" === Internal State Accessor (for render/test modules) ===
+
+" Returns a reference to s:completion dict (VimScript dict reference semantics)
+function! yac_completion#_get_state() abort
+  return s:completion
+endfunction
+
 " === BS Mapping ===
 
 function! yac_completion#install_bs_mapping() abort
@@ -282,7 +242,7 @@ function! yac_completion#bs_key() abort
   return s:invoke_original_bs()
 endfunction
 
-" === Test Helpers ===
+" === Test Helpers (state inspection & injection) ===
 
 function! yac_completion#get_state() abort
   return {
@@ -314,58 +274,95 @@ function! yac_completion#test_bump_seq() abort
   return s:completion.seq
 endfunction
 
-function! yac_completion#test_do_cr() abort
-  if s:completion.popup_id != -1
-    call s:completion_filter(s:completion.popup_id, "\<CR>")
-  endif
-endfunction
-
-function! yac_completion#test_do_esc() abort
-  if s:completion.popup_id != -1
-    call s:completion_filter(s:completion.popup_id, "\<Esc>")
-  endif
-endfunction
-
-function! yac_completion#test_do_nav(direction) abort
-  if s:completion.popup_id != -1
-    let key = a:direction > 0 ? "\<Down>" : "\<Up>"
-    call s:completion_filter(s:completion.popup_id, key)
-  endif
-endfunction
-
-function! yac_completion#test_do_bs() abort
-  " Simulate real mapping:1 flow: <expr> mapping fires first
-  let l:result = yac_completion#bs_key()
-  if l:result == ''
-    " BS was handled by deferred timer
-    return 1
-  endif
-  " BS produced keys — feed them (in test, just delete a char)
-  if s:completion.popup_id != -1
-    return s:completion_filter(s:completion.popup_id, "\<BS>")
-  endif
-  return 0
-endfunction
-
-function! yac_completion#test_do_tab() abort
-  " Simulate real mapping:1 flow: <expr> mapping fires first, then filter
-  let l:result = yac_copilot#tab_key()
-  if l:result == ''
-    " Ghost text was accepted by tab_key (timer deferred)
-    return 1
-  endif
-  " No ghost — pass Tab to filter if popup is open
-  if s:completion.popup_id != -1
-    return s:completion_filter(s:completion.popup_id, "\<Tab>")
-  endif
-  return 0
-endfunction
-
 function! yac_completion#get_popup_options() abort
   if s:completion.popup_id == -1
     return {}
   endif
   return popup_getoptions(s:completion.popup_id)
+endfunction
+
+" === Internal: Kind Normalization ===
+
+function! yac_completion#_normalize_kind(kind) abort
+  if type(a:kind) == v:t_number
+    return get(s:lsp_kind_map, a:kind, 'Text')
+  endif
+  return a:kind
+endfunction
+
+" === Internal: Keyboard Filter ===
+
+" Public (prefixed _) so render module can pass it as popup filter funcref
+function! yac_completion#_filter(winid, key) abort
+  " popup 已被代码关闭但 Vim 仍路由按键 — 透传
+  if s:completion.popup_id == -1
+    return 0
+  endif
+  let nr = char2nr(a:key)
+
+  " C-n / Down / Tab: 下一项
+  if nr == 14 || a:key == "\<Down>"
+    call s:move_completion_selection(1)
+    return 1
+  endif
+
+  " C-p / Up / S-Tab: 上一项
+  if nr == 16 || a:key == "\<Up>"
+    call s:move_completion_selection(-1)
+    return 1
+  endif
+
+  " CR: 接受补全
+  if a:key == "\<CR>"
+    if !empty(s:completion.items)
+      call s:insert_completion(s:completion.items[s:completion.selected])
+    endif
+    return 1
+  endif
+
+  " Tab: accept completion item
+  if a:key == "\<Tab>"
+    if !empty(s:completion.items)
+      call s:insert_completion(s:completion.items[s:completion.selected])
+    endif
+    return 1
+  endif
+
+  " Esc / C-e: 关闭补全
+  if a:key == "\<Esc>" || nr == 5
+    call s:close_completion_popup()
+    let s:completion.suppress_until = reltime()
+    " Esc 还要退出 insert 模式
+    if a:key == "\<Esc>"
+      call feedkeys("\<Esc>", 'nt')
+    endif
+    return 1
+  endif
+
+  " BS / C-h: 手动删字符 + 重新过滤
+  if a:key == "\<BS>" || nr == 8
+    let l:col = col('.')
+    if l:col <= 1
+      call s:close_completion_popup()
+      return 0
+    endif
+    " 删除光标前一个字符（支持多字节）
+    let l:line = getline('.')
+    let l:before = strpart(l:line, 0, l:col - 1)
+    let l:char = matchstr(l:before, '.$')
+    let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
+    let l:after = strpart(l:line, l:col - 1)
+    call setline('.', l:new_before . l:after)
+    call cursor(line('.'), strlen(l:new_before) + 1)
+    " 通知 LSP 文本变化
+    call yac#did_change()
+    " 重新过滤补全列表
+    call s:filter_completions()
+    return 1
+  endif
+
+  " 其他按键：透传给 insert 模式
+  return 0
 endfunction
 
 " === Internal: Background Completion ===
@@ -449,7 +446,7 @@ function! s:collect_buffer_words() abort
   return l:items
 endfunction
 
-" === Internal: Popup Rendering ===
+" === Internal: Popup Show ===
 
 function! s:show_completion_popup(items) abort
   if s:completion.popup_id == -1
@@ -464,162 +461,6 @@ function! s:show_completion_popup(items) abort
 
   " 应用当前前缀的过滤（会复用或创建 popup）
   call s:filter_completions()
-endfunction
-
-function! s:format_completion_item(item) abort
-  let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
-  let icon = get(s:completion_icons, kind_str, '󰉿 ')
-  let label = a:item.label
-  let display = icon . label
-
-  " 右侧 detail — 动态对齐，按实际显示宽度计算
-  if has_key(a:item, 'detail') && !empty(a:item.detail)
-    let detail = substitute(a:item.detail, '[\n\r].*', '', '')  " 只取第一行
-    let label_width = strdisplaywidth(display)
-    " detail 列：至少在 label 后留 2 格间距
-    let detail_col = max([label_width + 2, 30])
-    let pad = detail_col - label_width
-    " 截断 detail 使总宽度不超过 popup maxwidth
-    let max_detail_width = 70 - detail_col
-    if max_detail_width > 3 && strdisplaywidth(detail) > max_detail_width
-      " 按显示宽度截断
-      let detail = s:truncate_display(detail, max_detail_width - 3) . '...'
-    endif
-    if max_detail_width > 3
-      let display .= repeat(' ', pad) . detail
-    endif
-  endif
-
-  return display
-endfunction
-
-function! s:truncate_display(str, max_width) abort
-  let result = ''
-  let width = 0
-  for char in split(a:str, '\zs')
-    let cw = strdisplaywidth(char)
-    if width + cw > a:max_width
-      break
-    endif
-    let result .= char
-    let width += cw
-  endfor
-  return result
-endfunction
-
-function! s:render_completion_window() abort
-  let lines = map(copy(s:completion.items), {_, item -> s:format_completion_item(item)})
-
-  call s:create_or_update_completion_popup(lines)
-  call s:apply_completion_highlights()
-  call s:completion_highlight_selected()
-
-  " 显示选中项的文档
-  call s:show_completion_documentation()
-endfunction
-
-function! s:ensure_completion_prop_types(bufnr) abort
-  " 注册 kind 高亮 prop types
-  for [kind, hl] in items(s:completion_kind_highlights)
-    let type_name = 'yac_ck_' . kind
-    try
-      call prop_type_add(type_name, {'highlight': hl, 'bufnr': a:bufnr, 'priority': 10})
-    catch /E969/
-      " 已存在，忽略
-    endtry
-  endfor
-  " 注册匹配字符 prop type
-  try
-    call prop_type_add('yac_match', {'highlight': 'YacBridgeMatchChar', 'bufnr': a:bufnr, 'priority': 20, 'combine': 0})
-  catch /E969/
-  endtry
-  " 注册 detail prop type
-  try
-    call prop_type_add('yac_detail', {'highlight': 'YacCompletionDetail', 'bufnr': a:bufnr, 'priority': 5})
-  catch /E969/
-  endtry
-endfunction
-
-function! s:completion_highlight_selected() abort
-  if s:completion.popup_id == -1 | return | endif
-  let lnum = s:completion.selected + 1
-  call win_execute(s:completion.popup_id, 'noautocmd call cursor(' . lnum . ', 1)')
-endfunction
-
-function! s:apply_completion_highlights() abort
-  if s:completion.popup_id == -1 | return | endif
-  let bufnr = winbufnr(s:completion.popup_id)
-  if bufnr == -1 | return | endif
-
-  " 清除旧的 text properties
-  call prop_clear(1, len(s:completion.items), {'bufnr': bufnr})
-
-  " 确保 prop types 已注册到此 buffer
-  call s:ensure_completion_prop_types(bufnr)
-
-  let lnum = 1
-  for item in s:completion.items
-    let kind_str = s:normalize_kind(get(item, 'kind', ''))
-    let hl_type = get(s:completion_kind_highlights, kind_str, '')
-
-    let icon = get(s:completion_icons, kind_str, '󰉿 ')
-    let icon_bytes = strlen(icon)
-    let label_bytes = strlen(item.label)
-
-    " 1. icon + label 按 kind 着色
-    if !empty(hl_type)
-      call prop_add(lnum, 1, {
-        \ 'type': 'yac_ck_' . kind_str,
-        \ 'length': icon_bytes + label_bytes,
-        \ 'bufnr': bufnr
-        \ })
-    endif
-
-    " 2. 模糊匹配字符高亮（合并连续字符位置减少 prop_add 调用）
-    if has_key(item, '_match_positions') && !empty(item._match_positions)
-      let l:label = item.label
-      let l:positions = item._match_positions
-      let l:i = 0
-      while l:i < len(l:positions)
-        let l:char_start = l:positions[l:i]
-        let l:run = 1
-        while l:i + l:run < len(l:positions) && l:positions[l:i + l:run] == l:char_start + l:run
-          let l:run += 1
-        endwhile
-        " 字符位置 → 字节偏移：byteidx(label, char_idx)
-        let l:byte_start = byteidx(l:label, l:char_start)
-        let l:byte_end = byteidx(l:label, l:char_start + l:run)
-        if l:byte_start >= 0 && l:byte_end >= 0
-          call prop_add(lnum, icon_bytes + l:byte_start + 1, {
-            \ 'type': 'yac_match',
-            \ 'length': l:byte_end - l:byte_start,
-            \ 'bufnr': bufnr
-            \ })
-        endif
-        let l:i += l:run
-      endwhile
-    endif
-
-    " 3. detail 灰色
-    let display = s:format_completion_item(item)
-    if has_key(item, 'detail') && !empty(item.detail)
-      " 找到 detail 在 display 中的起始位置
-      let detail_text = item.detail
-      if len(detail_text) > 25
-        let detail_text = detail_text[:22] . '...'
-      endif
-      let detail_start = stridx(display, detail_text, icon_bytes + label_bytes)
-      if detail_start >= 0
-        call prop_add(lnum, detail_start + 1, {
-          \ 'type': 'yac_detail',
-          \ 'length': strlen(detail_text),
-          \ 'bufnr': bufnr
-          \ })
-      endif
-    endif
-
-    let lnum += 1
-  endfor
 endfunction
 
 " === Internal: Filter ===
@@ -654,266 +495,10 @@ function! s:filter_completions() abort
     return
   endif
 
-  call s:render_completion_window()
+  call yac_completion_render#render(s:completion)
 endfunction
 
-" === Internal: Popup Position & Creation ===
-
-function! s:completion_popup_position() abort
-  let screen_cursor_row = screenrow()
-  let popup_height = min([len(s:completion.items), 10])
-  let space_below = &lines - screen_cursor_row - 1
-  if space_below >= popup_height
-    return {'line': screen_cursor_row + 1, 'pos': 'topleft'}
-  else
-    return {'line': screen_cursor_row - 1, 'pos': 'botleft'}
-  endif
-endfunction
-
-function! s:create_or_update_completion_popup(lines) abort
-  if !exists('*popup_create')
-    echo "Completions: " . join(a:lines, " | ")
-    return
-  endif
-
-  if s:completion.popup_id != -1
-    " 复用已有 popup：只更新文本和 col
-    call popup_settext(s:completion.popup_id, a:lines)
-    call popup_move(s:completion.popup_id, {
-      \ 'col': s:completion.trigger_col,
-      \ })
-    return
-  endif
-
-  let l:pos = s:completion_popup_position()
-
-  let opts = {
-    \ 'line': l:pos.line,
-    \ 'col': s:completion.trigger_col,
-    \ 'pos': l:pos.pos,
-    \ 'fixed': 1,
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
-    \ 'padding': [0,0,0,0],
-    \ 'cursorline': 1,
-    \ 'highlight': 'YacCompletionNormal',
-    \ 'maxheight': 10,
-    \ 'minwidth': 25,
-    \ 'maxwidth': 70,
-    \ 'zindex': 1000,
-    \ 'filter': function('s:completion_filter'),
-    \ }
-  if has('patch-9.0.0')
-    let opts['cursorlinehighlight'] = 'YacCompletionSelect'
-  endif
-
-  let s:completion.popup_id = popup_create(a:lines, opts)
-
-  " 初始选中高亮
-  call s:completion_highlight_selected()
-endfunction
-
-" === Internal: Documentation Popup ===
-
-function! s:show_completion_documentation() abort
-  call s:close_completion_documentation()
-
-  if !exists('*popup_create') || empty(s:completion.items) || s:completion.selected >= len(s:completion.items)
-    return
-  endif
-
-  let item = s:completion.items[s:completion.selected]
-
-  " 收集纯文本行（detail + documentation）
-  let plain_lines = []
-  if has_key(item, 'detail') && !empty(item.detail)
-    call extend(plain_lines, split(item.detail, '\n'))
-  endif
-  if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(plain_lines)
-      call add(plain_lines, '')
-    endif
-    let doc_raw = item.documentation
-    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
-      let doc_raw = doc_raw.value
-    endif
-    if type(doc_raw) == v:t_string
-      call extend(plain_lines, split(doc_raw, '\n'))
-    endif
-  endif
-
-  if empty(plain_lines)
-    return
-  endif
-
-  " 立即创建 doc popup（纯文本，无需等 daemon）
-  call s:create_completion_doc_popup(plain_lines)
-
-  " 异步请求语法高亮，回调时更新
-  let md_parts = []
-  if has_key(item, 'detail') && !empty(item.detail)
-    call add(md_parts, '```' . &filetype)
-    call add(md_parts, item.detail)
-    call add(md_parts, '```')
-  endif
-  if has_key(item, 'documentation') && !empty(item.documentation)
-    if !empty(md_parts) | call add(md_parts, '') | endif
-    let doc_raw = item.documentation
-    if type(doc_raw) == v:t_dict && has_key(doc_raw, 'value')
-      let doc_raw = doc_raw.value
-    endif
-    if type(doc_raw) == v:t_string
-      call extend(md_parts, split(doc_raw, '\n'))
-    endif
-  endif
-  call yac#_request('ts_hover_highlight', {
-    \ 'markdown': join(md_parts, "\n"),
-    \ 'filetype': &filetype
-    \ }, function('s:handle_completion_doc_hl_response'))
-endfunction
-
-function! s:create_completion_doc_popup(lines) abort
-  let pos = popup_getpos(s:completion.popup_id)
-  if empty(pos) | return | endif
-
-  let doc_min_width = 30
-  let right_space = &columns - (pos.col + pos.width)
-  let left_space = pos.col - 1
-
-  if right_space >= doc_min_width + 2
-    let doc_col = pos.col + pos.width + 1
-    let doc_maxwidth = min([60, right_space - 2])
-  elseif left_space >= doc_min_width + 2
-    let doc_maxwidth = min([60, left_space - 2])
-    let doc_col = max([1, pos.col - doc_maxwidth - 2])
-  else
-    return
-  endif
-
-  if s:completion.doc_popup_id != -1
-    " 复用已有 doc popup
-    call popup_settext(s:completion.doc_popup_id, a:lines)
-    call popup_move(s:completion.doc_popup_id, {'col': doc_col})
-    return
-  endif
-
-  let s:completion.doc_popup_id = popup_create(a:lines, {
-    \ 'line': pos.line,
-    \ 'col': doc_col,
-    \ 'pos': 'topleft',
-    \ 'border': [],
-    \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
-    \ 'borderhighlight': ['YacPickerBorder'],
-    \ 'padding': [0,1,0,1],
-    \ 'highlight': 'YacPickerNormal',
-    \ 'scrollbar': 0,
-    \ 'minwidth': doc_min_width,
-    \ 'maxwidth': doc_maxwidth,
-    \ 'maxheight': 15,
-    \ 'wrap': 1,
-    \ 'zindex': 1001,
-    \ })
-endfunction
-
-function! s:handle_completion_doc_hl_response(channel, response) abort
-  if s:completion.popup_id == -1 || s:completion.doc_popup_id == -1
-    return
-  endif
-  if type(a:response) != v:t_dict || !has_key(a:response, 'lines') || empty(a:response.lines)
-    return
-  endif
-
-  " 用高亮版文本替换纯文本
-  call popup_settext(s:completion.doc_popup_id, a:response.lines)
-
-  " 应用 tree-sitter 高亮
-  let l:highlights = get(a:response, 'highlights', {})
-  if !empty(l:highlights)
-    call yac_lsp#apply_ts_highlights_to_buffer(winbufnr(s:completion.doc_popup_id), l:highlights)
-  endif
-endfunction
-
-function! s:close_completion_documentation() abort
-  if s:completion.doc_popup_id != -1 && exists('*popup_close')
-    call popup_close(s:completion.doc_popup_id)
-    let s:completion.doc_popup_id = -1
-  endif
-endfunction
-
-" === Internal: Keyboard Filter ===
-
-function! s:completion_filter(winid, key) abort
-  " popup 已被代码关闭但 Vim 仍路由按键 — 透传
-  if s:completion.popup_id == -1
-    return 0
-  endif
-  let nr = char2nr(a:key)
-
-  " C-n / Down / Tab: 下一项
-  if nr == 14 || a:key == "\<Down>"
-    call s:move_completion_selection(1)
-    return 1
-  endif
-
-  " C-p / Up / S-Tab: 上一项
-  if nr == 16 || a:key == "\<Up>"
-    call s:move_completion_selection(-1)
-    return 1
-  endif
-
-  " CR: 接受补全
-  if a:key == "\<CR>"
-    if !empty(s:completion.items)
-      call s:insert_completion(s:completion.items[s:completion.selected])
-    endif
-    return 1
-  endif
-
-  " Tab: accept completion item
-  if a:key == "\<Tab>"
-    if !empty(s:completion.items)
-      call s:insert_completion(s:completion.items[s:completion.selected])
-    endif
-    return 1
-  endif
-
-  " Esc / C-e: 关闭补全
-  if a:key == "\<Esc>" || nr == 5
-    call s:close_completion_popup()
-    let s:completion.suppress_until = reltime()
-    " Esc 还要退出 insert 模式
-    if a:key == "\<Esc>"
-      call feedkeys("\<Esc>", 'nt')
-    endif
-    return 1
-  endif
-
-  " BS / C-h: 手动删字符 + 重新过滤
-  if a:key == "\<BS>" || nr == 8
-    let l:col = col('.')
-    if l:col <= 1
-      call s:close_completion_popup()
-      return 0
-    endif
-    " 删除光标前一个字符（支持多字节）
-    let l:line = getline('.')
-    let l:before = strpart(l:line, 0, l:col - 1)
-    let l:char = matchstr(l:before, '.$')
-    let l:new_before = strpart(l:before, 0, strlen(l:before) - strlen(l:char))
-    let l:after = strpart(l:line, l:col - 1)
-    call setline('.', l:new_before . l:after)
-    call cursor(line('.'), strlen(l:new_before) + 1)
-    " 通知 LSP 文本变化
-    call yac#did_change()
-    " 重新过滤补全列表
-    call s:filter_completions()
-    return 1
-  endif
-
-  " 其他按键：透传给 insert 模式
-  return 0
-endfunction
+" === Internal: Navigation ===
 
 function! s:move_completion_selection(direction) abort
   let new_idx = s:completion.selected + a:direction
@@ -924,22 +509,13 @@ function! s:move_completion_selection(direction) abort
   endif
 
   let s:completion.selected = new_idx
-  call s:completion_highlight_selected()
+  call yac_completion_render#highlight_selected(s:completion)
 
   " debounce 文档请求
   if s:completion.doc_timer_id != -1
     call timer_stop(s:completion.doc_timer_id)
   endif
-  let s:completion.doc_timer_id = timer_start(100, {-> s:show_completion_documentation()})
-endfunction
-
-" === Internal: Kind Normalization ===
-
-function! s:normalize_kind(kind) abort
-  if type(a:kind) == v:t_number
-    return get(s:lsp_kind_map, a:kind, 'Text')
-  endif
-  return a:kind
+  let s:completion.doc_timer_id = timer_start(100, {-> yac_completion_render#show_doc(yac_completion#_get_state())})
 endfunction
 
 " === Internal: Insert & Close ===
@@ -966,7 +542,7 @@ function! s:insert_completion(item) abort
   let cursor_byte_col = col('.') - 1
 
   " 函数/方法自动加括号
-  let kind_str = s:normalize_kind(get(a:item, 'kind', ''))
+  let kind_str = yac_completion#_normalize_kind(get(a:item, 'kind', ''))
   let add_parens = has_key(s:callable_kinds, kind_str)
         \ && !(cursor_byte_col < len(line) && line[cursor_byte_col] ==# '(')
   let current_prefix = yac#_get_current_word_prefix()
@@ -1020,7 +596,7 @@ function! s:close_completion_popup() abort
     let s:completion.trigger_col = 0
   endif
   " 同时关闭文档popup
-  call s:close_completion_documentation()
+  call yac_completion_render#close_doc(s:completion)
 endfunction
 
 " === Internal: BS Handling ===
