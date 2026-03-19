@@ -35,6 +35,9 @@ const DocumentHighlightResult = handler_types.DocumentHighlightResult;
 const VimDocumentation = handler_types.VimDocumentation;
 const VimCompletionItem = handler_types.VimCompletionItem;
 const CompletionResult = handler_types.CompletionResult;
+const PickerOpenResult = handler_types.PickerOpenResult;
+const PickerAction = handler_types.PickerAction;
+const PickerQueryResult = handler_types.PickerQueryResult;
 
 // ============================================================================
 // Handler — Vim method handlers for VimServer dispatch (Zig 0.16)
@@ -77,34 +80,6 @@ pub const Handler = struct {
     ) !lsp_types.ResultType(lsp_method) {
         const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
         return lsp_ctx.sendPositionRequest(lsp_method, alloc, line, column);
-    }
-
-    // ========================================================================
-    // Typed transform helpers — delegate to types.zig from* methods
-    // ========================================================================
-
-    fn transformGoto(alloc: Allocator, result: lsp_types.DefinitionResult) ?GotoLocation {
-        return GotoLocation.fromDefinitionResult(alloc, result);
-    }
-
-    fn transformReferences(alloc: Allocator, result: lsp_types.ReferencesResult) ReferencesResult {
-        return ReferencesResult.fromLsp(alloc, result);
-    }
-
-    fn transformFormatting(alloc: Allocator, result: lsp_types.FormattingResult) FormattingResult {
-        return FormattingResult.fromLsp(alloc, result);
-    }
-
-    fn transformInlayHints(alloc: Allocator, result: lsp_types.InlayHintResult) InlayHintsResult {
-        return InlayHintsResult.fromLsp(alloc, result);
-    }
-
-    fn transformDocumentHighlight(alloc: Allocator, result: lsp_types.DocumentHighlightResult) DocumentHighlightResult {
-        return DocumentHighlightResult.fromLsp(alloc, result);
-    }
-
-    fn transformCompletion(alloc: Allocator, result: lsp_types.CompletionResult) CompletionResult {
-        return CompletionResult.fromLsp(alloc, result);
     }
 
     // ========================================================================
@@ -219,7 +194,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/definition", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_declaration(self: *Handler, alloc: Allocator, p: struct {
@@ -228,7 +203,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/declaration", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_type_definition(self: *Handler, alloc: Allocator, p: struct {
@@ -237,7 +212,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/typeDefinition", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn goto_implementation(self: *Handler, alloc: Allocator, p: struct {
@@ -246,7 +221,7 @@ pub const Handler = struct {
         column: u32,
     }) !?GotoLocation {
         const result = self.sendTypedPositionRequest("textDocument/implementation", alloc, p.file, p.line, p.column) catch return null;
-        return transformGoto(alloc, result);
+        return GotoLocation.fromDefinitionResult(alloc, result);
     }
 
     pub fn hover(self: *Handler, alloc: Allocator, p: struct {
@@ -269,7 +244,7 @@ pub const Handler = struct {
             .position = .{ .line = @intCast(p.line), .character = @intCast(p.column) },
             .context = .{ .includeDeclaration = true },
         }) catch return empty;
-        return transformReferences(alloc, result);
+        return ReferencesResult.fromLsp(alloc, result);
     }
 
     pub fn call_hierarchy(self: *Handler, alloc: Allocator, p: struct {
@@ -295,7 +270,7 @@ pub const Handler = struct {
     }) !CompletionResult {
         const empty: CompletionResult = .{ .items = &.{} };
         const result = self.sendTypedPositionRequest("textDocument/completion", alloc, p.file, p.line, p.column) catch return empty;
-        return transformCompletion(alloc, result);
+        return CompletionResult.fromLsp(alloc, result);
     }
 
     pub fn document_symbols(self: *Handler, alloc: Allocator, p: struct {
@@ -329,12 +304,9 @@ pub const Handler = struct {
         const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
             .query = p.query,
         }) catch return null;
-        return buildPickerSymbolsFromWorkspace(alloc, result);
-    }
-
-    fn buildPickerSymbolsFromWorkspace(alloc: Allocator, result: lsp_types.WorkspaceSymbolResult) ?PickerSymbolResult {
         return PickerSymbolResult.fromWorkspaceSymbol(alloc, result);
     }
+
 
     fn parseIfSupported(self: *Handler, file: []const u8, text: ?[]const u8) void {
         const tc = self.getTsCtx(file, text) orelse return;
@@ -455,7 +427,7 @@ pub const Handler = struct {
             log.err("LSP formatting failed: {any}", .{e});
             return empty;
         };
-        return transformFormatting(alloc, result);
+        return FormattingResult.fromLsp(alloc, result);
     }
 
     // ========================================================================
@@ -479,7 +451,7 @@ pub const Handler = struct {
             log.err("LSP inlayHint failed: {any}", .{e});
             return empty;
         };
-        return transformInlayHints(alloc, result);
+        return InlayHintsResult.fromLsp(alloc, result);
     }
 
     pub fn folding_range(self: *Handler, alloc: Allocator, p: struct {
@@ -527,7 +499,7 @@ pub const Handler = struct {
             log.err("LSP rangeFormatting failed: {any}", .{e});
             return empty;
         };
-        return transformFormatting(alloc, result);
+        return FormattingResult.fromLsp(alloc, result);
     }
 
     pub fn execute_command(self: *Handler, alloc: Allocator, p: struct {
@@ -549,7 +521,7 @@ pub const Handler = struct {
     }) !?DocumentHighlightResult {
         // Try LSP first
         const typed = self.sendTypedPositionRequest("textDocument/documentHighlight", alloc, p.file, p.line, p.column) catch null;
-        const dh_result = transformDocumentHighlight(alloc, typed);
+        const dh_result = DocumentHighlightResult.fromLsp(alloc, typed);
         if (dh_result.highlights.len > 0) {
             return dh_result;
         }
@@ -677,10 +649,6 @@ pub const Handler = struct {
     }) !?treesitter_mod.hover_highlight.HoverResult {
         return try treesitter_mod.hover_highlight.extractHoverHighlights(alloc, self.ts, p.markdown, p.filetype);
     }
-    const PickerOpenResult = handler_types.PickerOpenResult;
-    const PickerAction = handler_types.PickerAction;
-    const PickerQueryResult = handler_types.PickerQueryResult;
-
     pub fn picker_query(self: *Handler, alloc: Allocator, p: struct {
         query: []const u8 = "",
         mode: []const u8 = "file",
@@ -693,7 +661,7 @@ pub const Handler = struct {
             const result = lsp_ctx.client.request("workspace/symbol", alloc, .{
                 .query = p.query,
             }) catch return null;
-            const typed = buildPickerSymbolsFromWorkspace(alloc, result) orelse return null;
+            const typed = PickerSymbolResult.fromWorkspaceSymbol(alloc, result) orelse return null;
             return .{ .workspace_symbols = typed };
         } else if (std.mem.eql(u8, p.mode, "grep")) {
             return .{ .action = .{ .action = "picker_grep_query", .query = p.query } };
