@@ -1,4 +1,8 @@
 " yac.vim core implementation
+"
+" Connection management → yac_connection.vim
+" Debug commands       → yac_debug.vim
+" Status buffer        → yac_status.vim
 
 " Plugin root directory (parent of vim/)
 let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
@@ -60,26 +64,12 @@ hi def link YacTsMarkupItalic        YacTsLabel
 hi def link YacTsMarkupBold          YacTsConstantBuiltin
 hi def link YacTsMarkupStrikethrough YacTsComment
 
-" 连接池管理 - daemon socket mode
-let s:channel_pool = {}  " {'local': channel, 'user@host1': channel, ...}
-let s:current_connection_key = 'local'  " 用于调试显示
-let s:daemon_started = 0
-let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-debug.log'
+" === State ===
 
-" Completion — delegated to yac_completion.vim
+let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-debug.log'
 
 " didChange debounce timer
 let s:did_change_timer = -1
-
-" Diagnostics — delegated to yac_diagnostics.vim
-
-" Picker — delegated to yac_picker.vim
-
-
-" 获取当前 buffer 应该使用的连接 key
-function! s:get_connection_key() abort
-  return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
-endfunction
 
 " Debug 日志写入文件，不干扰 Vim 命令行
 function! s:debug_log(msg) abort
@@ -106,165 +96,14 @@ function! s:cursor_lsp_col() abort
   return mode() ==# 'i' ? col('.') - 1 : col('.')
 endfunction
 
-" 获取 daemon socket 路径
-function! s:get_socket_path() abort
-  if !empty($XDG_RUNTIME_DIR)
-    return $XDG_RUNTIME_DIR . '/yacd.sock'
-  elseif !empty($USER)
-    return '/tmp/yacd-' . $USER . '.sock'
-  else
-    return '/tmp/yacd.sock'
-  endif
-endfunction
-
-" 尝试连接到 daemon socket
-function! s:try_connect(sock_path) abort
-  try
-    let l:ch = ch_open('unix:' . a:sock_path, {
-      \ 'mode': 'json',
-      \ 'callback': function('s:handle_response'),
-      \ 'close_cb': function('s:handle_close'),
-      \ })
-    if ch_status(l:ch) == 'open'
-      return l:ch
-    endif
-  catch
-  endtry
-  return v:null
-endfunction
-
-" 启动 daemon 进程（fire-and-forget）
-function! s:start_daemon() abort
-  let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/zig-out/bin/yacd'])
-  if exists('g:yac_log_level')
-    let l:cmd += ['--log-level', g:yac_log_level]
-  endif
-  if exists('g:yac_log_file')
-    let l:cmd += ['--log-file', g:yac_log_file]
-  endif
-  " stoponexit='' means don't kill on VimLeave
-  call job_start(l:cmd, {'stoponexit': ''})
-  call s:debug_log('Started yacd daemon')
-endfunction
-
-" 确保连接到 daemon
-function! s:ensure_connection() abort
-  let l:key = s:get_connection_key()
-  let s:current_connection_key = l:key
-
-  " 复用已有 open channel
-  if has_key(s:channel_pool, l:key) && ch_status(s:channel_pool[l:key]) == 'open'
-    return s:channel_pool[l:key]
-  endif
-  if has_key(s:channel_pool, l:key)
-    unlet s:channel_pool[l:key]
-    " Reconnecting to a (possibly new) daemon — languages must be re-loaded
-    if exists('s:loaded_langs')
-      let s:loaded_langs = {}
-    endif
-  endif
-
-  " 开启 channel 日志（仅第一次）
-  if !exists('s:log_started')
-    if get(g:, 'yac_debug', 0)
-      call ch_logfile('/tmp/vim_channel.log', 'w')
-      call s:debug_log('Channel logging enabled to /tmp/vim_channel.log')
-    endif
-    let s:log_started = 1
-  endif
-
-  let l:sock = s:get_socket_path()
-
-  " 尝试连接到已有 daemon
-  let l:ch = s:try_connect(l:sock)
-  if l:ch isnot v:null
-    let s:channel_pool[l:key] = l:ch
-    call s:debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
-    return l:ch
-  endif
-
-  " 启动 daemon 并重试（防止重复启动）
-  if !s:daemon_started
-    let s:daemon_started = 1
-    call s:start_daemon()
-  endif
-  for i in range(20)
-    sleep 100m
-    let l:ch = s:try_connect(l:sock)
-    if l:ch isnot v:null
-      let s:channel_pool[l:key] = l:ch
-      call s:debug_log(printf('Connected to daemon [%s] after start', l:key))
-      return l:ch
-    endif
-  endfor
-
-  echoerr 'Failed to connect to yacd daemon'
-  return v:null
-endfunction
-
-" 启动/连接 daemon
+" 启动/连接 daemon — delegated to yac_connection.vim
 function! yac#start() abort
-  return s:ensure_connection() isnot v:null
+  return yac_connection#start()
 endfunction
 
-" Load a language plugin into the daemon (async, idempotent).
-" Sends load_language request without blocking; highlights refresh on completion.
-" Also loads dependency languages from sibling directories.
+" Load a language plugin into the daemon — delegated to yac_connection.vim
 function! yac#ensure_language(lang_dir) abort
-  if !exists('s:loaded_langs') | let s:loaded_langs = {} | endif
-  if has_key(s:loaded_langs, a:lang_dir) | return | endif
-
-  " Load dependencies first (works even without daemon connection)
-  call s:load_language_deps(a:lang_dir)
-
-  let l:key = s:get_connection_key()
-  let l:ch = get(s:channel_pool, l:key, '')
-  if empty(l:ch) || ch_status(l:ch) !=# 'open' | return | endif
-
-  " Only mark as loading AFTER confirming channel is open.
-  " Otherwise a failed send (daemon not started yet) permanently blocks retries.
-  let s:loaded_langs[a:lang_dir] = 'loading'
-
-  call s:request('load_language', {'lang_dir': a:lang_dir},
-    \ 's:handle_load_language_response')
-endfunction
-
-function! s:load_language_deps(lang_dir) abort
-  let l:json_path = a:lang_dir . '/languages.json'
-  if !filereadable(l:json_path) | return | endif
-  try
-    let l:config = json_decode(join(readfile(l:json_path), "\n"))
-    let l:parent = fnamemodify(a:lang_dir, ':h')
-    for [name, info] in items(l:config)
-      for dep in get(info, 'dependencies', [])
-        " Reject path traversal: only bare directory names allowed
-        if dep =~# '[/\\]' || dep =~# '^\.' | continue | endif
-        let l:dep_dir = l:parent . '/' . dep
-        if isdirectory(l:dep_dir)
-          call yac#ensure_language(l:dep_dir)
-        endif
-      endfor
-    endfor
-  catch
-    call s:debug_log(printf('[load_language_deps] failed to parse %s: %s', l:json_path, v:exception))
-  endtry
-endfunction
-
-function! s:handle_load_language_response(channel, response) abort
-  if type(a:response) == v:t_dict && get(a:response, 'ok', 0)
-    call yac#ts_highlights_invalidate()
-    " Trigger folding now that tree-sitter is ready
-    if !exists('b:yac_fold_levels')
-      call yac#folding_range()
-    endif
-  else
-    " Loading failed — remove from loaded_langs so next BufEnter retries
-    for [k, v] in items(s:loaded_langs)
-      if v ==# 'loading'
-        call remove(s:loaded_langs, k)
-      endif
-    endfor
-  endif
+  call yac_connection#ensure_language(a:lang_dir)
 endfunction
 
 function! s:request(method, params, callback_func) abort
@@ -273,11 +112,11 @@ function! s:request(method, params, callback_func) abort
     \ 'params': a:params
     \ }
 
-  let l:ch = s:ensure_connection()
+  let l:ch = yac_connection#ensure_connection()
 
   if l:ch isnot v:null && ch_status(l:ch) == 'open'
     call s:debug_log(printf('[SEND][%s]: %s -> %s:%d:%d',
-      \ s:current_connection_key,
+      \ yac_connection#get_current_connection_key(),
       \ a:method,
       \ fnamemodify(get(a:params, 'file', ''), ':t'),
       \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
@@ -285,7 +124,7 @@ function! s:request(method, params, callback_func) abort
     " 使用指定的回调函数
     call ch_sendexpr(l:ch, jsonrpc_msg, {'callback': a:callback_func})
   else
-    echoerr printf('yacd not running for %s', s:get_connection_key())
+    echoerr printf('yacd not running for %s', yac_connection#get_connection_key())
   endif
 endfunction
 
@@ -296,11 +135,11 @@ function! s:notify(method, params) abort
     \ 'params': a:params
     \ }
 
-  let l:ch = s:ensure_connection()
+  let l:ch = yac_connection#ensure_connection()
 
   if l:ch isnot v:null && ch_status(l:ch) == 'open'
     call s:debug_log(printf('[NOTIFY][%s]: %s -> %s:%d:%d',
-      \ s:current_connection_key,
+      \ yac_connection#get_current_connection_key(),
       \ a:method,
       \ fnamemodify(get(a:params, 'file', ''), ':t'),
       \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
@@ -309,7 +148,7 @@ function! s:notify(method, params) abort
     call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
     return 1
   else
-    echoerr printf('yacd not running for %s', s:get_connection_key())
+    echoerr printf('yacd not running for %s', yac_connection#get_connection_key())
   endif
   return 0
 endfunction
@@ -561,36 +400,6 @@ function! s:handle_will_save_wait_until_response(channel, response) abort
   endif
 endfunction
 
-" 处理 channel 关闭回调
-function! s:handle_close(channel) abort
-  let s:daemon_started = 0
-  call s:cleanup_dead_connections()
-endfunction
-
-" Channel回调，只处理服务器主动推送的通知
-" Vim JSON channel: [0, data] → callback receives data (dict) directly
-function! s:handle_response(channel, msg) abort
-  if type(a:msg) != v:t_dict || !has_key(a:msg, 'action')
-    return
-  endif
-
-  if a:msg.action ==# 'diagnostics'
-    let diags = get(a:msg, 'params', {})
-    let items = get(diags, 'diagnostics', [])
-    let uri = get(diags, 'uri', '')
-    call s:debug_log("Received diagnostics: " . len(items) . " items for " . uri)
-    call yac_diagnostics#handle_publish(uri, items)
-  elseif a:msg.action ==# 'applyEdit'
-    let params = get(a:msg, 'params', {})
-    call s:debug_log("Received applyEdit action")
-    if has_key(params, 'edit') && has_key(params.edit, 'changes')
-      call yac_lsp_edit#apply_workspace_edit(params.edit.changes)
-    elseif has_key(params, 'edit') && has_key(params.edit, 'documentChanges')
-      call yac_lsp_edit#apply_workspace_edit(params.edit.documentChanges)
-    endif
-  endif
-endfunction
-
 " Toast notification popup (top-right corner, auto-dismiss)
 let s:toast_popup = -1
 
@@ -624,150 +433,32 @@ function! yac#toast(msg, ...) abort
     \ })
 endfunction
 
-" 关闭当前连接的 channel
-" Send exit request to daemon, then close all channels.
+" Connection management — delegated to yac_connection.vim
+
 function! yac#stop() abort
-  " Send exit to daemon via any open channel
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) == 'open'
-      call s:debug_log(printf('Sending exit to daemon via %s', key))
-      try
-        call ch_sendraw(ch, json_encode([{'method': 'exit', 'params': {}}]) . "\n")
-      catch
-      endtry
-    endif
-    break
-  endfor
-  call s:stop_all_channels()
-  " Reset so next start() can launch a new daemon
-  let s:daemon_started = 0
-  if exists('s:loaded_langs')
-    let s:loaded_langs = {}
-  endif
+  call yac_connection#stop()
 endfunction
 
 function! yac#restart() abort
-  call yac#stop()
-  " Brief delay to let daemon clean up socket
-  sleep 200m
-  call yac#start()
+  call yac_connection#restart()
 endfunction
 
-" 关闭所有 channel 连接（内部使用）
-function! s:stop_all_channels() abort
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) == 'open'
-      call s:debug_log(printf('Closing channel for %s', key))
-      call ch_close(ch)
-    endif
-  endfor
-  let s:channel_pool = {}
-endfunction
-
-" === Debug 功能 ===
-
-" 切换调试模式
-function! yac#debug_toggle() abort
-  let g:yac_debug = !get(g:, 'yac_debug', 0)
-
-  if g:yac_debug
-    echo 'YacDebug: Debug mode ENABLED'
-    echo '  - Command send/receive logging enabled'
-    echo '  - Channel communication will be logged to /tmp/vim_channel.log'
-    echo '  - Use :YacDebugToggle to disable'
-
-    " 如果有活跃的连接，断开以启用channel日志
-    if !empty(s:channel_pool)
-      call s:debug_log('Reconnecting to enable channel logging...')
-      call s:stop_all_channels()
-      " 下次调用 LSP 命令时会自动重新连接
-    endif
-  else
-    echo 'YacDebug: Debug mode DISABLED'
-    echo '  - Command logging disabled'
-    echo '  - Channel logging will stop for new connections'
-  endif
-endfunction
-
-" 显示调试状态
-function! yac#debug_status() abort
-  let debug_enabled = get(g:, 'yac_debug', 0)
-  let active_connections = len(s:channel_pool)
-  let current_key = s:get_connection_key()
-
-  echo 'YacDebug Status:'
-  echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
-  echo printf('  Active Connections: %d', active_connections)
-  echo printf('  Current Buffer: %s', current_key)
-  echo printf('  Socket: %s', s:get_socket_path())
-
-  if active_connections > 0
-    echo '  Connection Details:'
-    for [key, ch] in items(s:channel_pool)
-      let status = ch_status(ch)
-      echo printf('    %s: %s', key, status)
-    endfor
-  endif
-
-  echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
-  let l:log_dir = resolve(fnamemodify(s:get_socket_path(), ':h'))
-  let l:log_files = map(filter(readdir(l:log_dir), 'v:val =~# "^yacd-.*\\.log$"'),
-    \ {_, v -> l:log_dir . '/' . v})
-  call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
-  echo '  Daemon Log: ' . (empty(l:log_files) ? 'Not available' : l:log_files[0])
-  echo ''
-  echo 'Commands:'
-  echo '  :YacDebugToggle - Toggle debug mode'
-  echo '  :YacDebugStatus - Show this status'
-  echo '  :YacConnections - Show connection details'
-  echo '  :YacOpenLog     - Open LSP process log'
-  echo '  :YacDaemonStop  - Stop the daemon'
-endfunction
-
-" 连接管理功能
-function! yac#connections() abort
-  if empty(s:channel_pool)
-    echo 'No active LSP connections'
-    return
-  endif
-
-  echo 'Active LSP Connections (daemon mode):'
-  echo '======================================='
-  echo printf('  Socket: %s', s:get_socket_path())
-  echo ''
-  for [key, ch] in items(s:channel_pool)
-    let status = ch_status(ch)
-    let is_current = (key == s:get_connection_key()) ? ' (current)' : ''
-    echo printf('  %s: %s%s', key, status, is_current)
-  endfor
-
-  echo ''
-  echo printf('Current buffer connection: %s', s:get_connection_key())
-endfunction
-
-" 自动清理死连接
-function! s:cleanup_dead_connections() abort
-  let dead_keys = []
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) != 'open'
-      call add(dead_keys, key)
-    endif
-  endfor
-
-  for key in dead_keys
-    if has_key(s:channel_pool, key)
-      call s:debug_log(printf('Removing dead connection: %s', key))
-      unlet s:channel_pool[key]
-    endif
-  endfor
-
-  return len(dead_keys)
-endfunction
-
-" 手动清理命令
 function! yac#cleanup_connections() abort
-  let cleaned = s:cleanup_dead_connections()
-  echo printf('Cleaned up %d dead connections', cleaned)
+  call yac_connection#cleanup_connections()
+endfunction
+
+" === Debug 功能 — delegated to yac_debug.vim ===
+
+function! yac#debug_toggle() abort
+  call yac_debug#debug_toggle()
+endfunction
+
+function! yac#debug_status() abort
+  call yac_debug#debug_status()
+endfunction
+
+function! yac#connections() abort
+  call yac_debug#connections()
 endfunction
 
 " Signature Help — delegated to yac_signature.vim
@@ -895,29 +586,9 @@ function! yac#test_inject_response(method, response) abort
   endif
 endfunction
 
-" === 日志查看功能 ===
-
-" 简单打开日志文件
+" Log viewer — delegated to yac_debug.vim
 function! yac#open_log() abort
-  " Find per-process log: yacd-{pid}.log in the same dir as the socket
-  let l:sock = s:get_socket_path()
-  let l:dir = resolve(fnamemodify(l:sock, ':h'))
-  let l:files = map(filter(readdir(l:dir), 'v:val =~# "^yacd-.*\\.log$"'),
-    \ {_, v -> l:dir . '/' . v})
-
-  if empty(l:files)
-    echo 'No log files found in: ' . l:dir
-    return
-  endif
-
-  " Sort by modification time (newest first)
-  call sort(l:files, {a, b -> getftime(b) - getftime(a)})
-  let l:log_file = l:files[0]
-
-  split
-  execute 'edit ' . fnameescape(l:log_file)
-  setlocal filetype=log
-  setlocal nomodeline
+  call yac_debug#open_log()
 endfunction
 
 " === Inlay Hints (delegated to yac_inlay.vim) ===
@@ -1089,13 +760,11 @@ function! yac#_debug_log(msg) abort
 endfunction
 
 function! yac#_reset_loaded_langs() abort
-  if exists('s:loaded_langs')
-    let s:loaded_langs = {}
-  endif
+  call yac_connection#reset_loaded_langs()
 endfunction
 
 function! yac#_ts_ensure_connection() abort
-  return s:ensure_connection()
+  return yac_connection#ensure_connection()
 endfunction
 
 function! yac#_ts_flush_did_change() abort
@@ -1128,7 +797,7 @@ function! yac#_flush_did_change() abort
 endfunction
 
 function! yac#_ensure_connection() abort
-  return s:ensure_connection()
+  return yac_connection#ensure_connection()
 endfunction
 
 function! yac#_completion_popup_visible() abort
@@ -1204,172 +873,21 @@ function! yac#ts_highlights_invalidate() abort
 endfunction
 
 " ============================================================================
-" Statusline — lightweight string for &statusline integration
+" Statusline + Status buffer — delegated to yac_status.vim
 " ============================================================================
 
 function! yac#statusline() abort
-  let l:parts = []
-
-  " LSP server name
-  let l:lsp_cmd = get(b:, 'yac_lsp_command', '')
-  if !empty(l:lsp_cmd)
-    " Strip path and common suffixes for display
-    let l:name = fnamemodify(l:lsp_cmd, ':t')
-    let l:name = substitute(l:name, '-langserver$\|-language-server$', '', '')
-    call add(l:parts, l:name)
-  endif
-
-  " Diagnostic counts
-  let l:diags = get(b:, 'yac_diagnostics', [])
-  if !empty(l:diags)
-    let l:errors = 0
-    let l:warnings = 0
-    for l:d in l:diags
-      if l:d.severity ==# 'Error'
-        let l:errors += 1
-      elseif l:d.severity ==# 'Warning'
-        let l:warnings += 1
-      endif
-    endfor
-    if l:errors > 0
-      call add(l:parts, 'E:' . l:errors)
-    endif
-    if l:warnings > 0
-      call add(l:parts, 'W:' . l:warnings)
-    endif
-  endif
-
-  return join(l:parts, ' ')
+  return yac_status#statusline()
 endfunction
 
-" ============================================================================
-" YacStatus — consolidated health check in a scratch buffer
-" ============================================================================
-
 function! yac#status() abort
-  " Reuse existing status buffer if open
-  let l:bufname = '[yac-status]'
-  let l:bufnr = bufnr(l:bufname)
-  if l:bufnr != -1
-    let l:winid = bufwinid(l:bufnr)
-    if l:winid != -1
-      call win_gotoid(l:winid)
-    else
-      execute 'buffer' l:bufnr
-    endif
-  else
-    enew
-    file [yac-status]
-  endif
-
-  setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
-  setlocal filetype=yac-status
-  setlocal modifiable
-
-  let l:lines = []
-
-  " --- Header ---
-  call add(l:lines, '=== yac.vim Status ===')
-  call add(l:lines, '')
-
-  " --- Daemon ---
-  call add(l:lines, '## Daemon')
-  let l:sock = s:get_socket_path()
-  let l:sock_exists = filereadable(l:sock) || getftype(l:sock) ==# 'socket'
-  let l:active_conns = len(s:channel_pool)
-  let l:has_open = 0
-  for [l:key, l:ch] in items(s:channel_pool)
-    if ch_status(l:ch) ==# 'open'
-      let l:has_open = 1
-      break
-    endif
-  endfor
-
-  call add(l:lines, printf('  Socket:  %s %s', l:sock, l:sock_exists ? '(exists)' : '(not found)'))
-  call add(l:lines, printf('  Status:  %s', l:has_open ? 'Running' : 'Not connected'))
-  if l:active_conns > 0
-    for [l:key, l:ch] in items(s:channel_pool)
-      call add(l:lines, printf('  Channel: %s [%s]', l:key, ch_status(l:ch)))
-    endfor
-  endif
-
-  " Daemon log
-  let l:log_dir = fnamemodify(l:sock, ':h')
-  let l:log_files = glob(l:log_dir . '/yacd-*.log', 0, 1)
-  call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
-  call add(l:lines, printf('  Log:     %s', empty(l:log_files) ? '(none)' : l:log_files[0]))
-  call add(l:lines, '')
-
-  " --- LSP ---
-  call add(l:lines, '## LSP Servers')
-  let l:has_lsp = 0
-  for [l:lang, l:lang_dir] in items(get(g:, 'yac_lang_plugins', {}))
-    let l:json_path = l:lang_dir . '/languages.json'
-    if !filereadable(l:json_path) | continue | endif
-    try
-      let l:config = json_decode(join(readfile(l:json_path), "\n"))
-      for [l:name, l:info] in items(l:config)
-        let l:lsp = get(l:info, 'lsp_server', {})
-        if empty(l:lsp) | continue | endif
-        let l:has_lsp = 1
-        let l:cmd = l:lsp.command
-        let l:available = executable(l:cmd)
-        let l:install = get(l:lsp, 'install', {})
-        let l:method = get(l:install, 'method', 'system')
-        call add(l:lines, printf('  %-12s  %-25s  %s  (%s)',
-              \ l:name, l:cmd,
-              \ l:available ? 'OK' : 'NOT FOUND',
-              \ l:method))
-      endfor
-    catch
-    endtry
-  endfor
-  if !l:has_lsp
-    call add(l:lines, '  (no language plugins with LSP configured)')
-  endif
-  call add(l:lines, '')
-
-  " --- Tree-sitter ---
-  call add(l:lines, '## Tree-sitter')
-  call add(l:lines, printf('  Highlights: %s', get(g:, 'yac_ts_highlights', 1) ? 'Enabled' : 'Disabled'))
-  let l:ts_langs = []
-  for [l:lang, l:lang_dir] in items(get(g:, 'yac_lang_plugins', {}))
-    let l:wasm = l:lang_dir . '/grammar/parser.wasm'
-    if filereadable(l:wasm)
-      call add(l:ts_langs, l:lang)
-    endif
-  endfor
-  call sort(l:ts_langs)
-  call add(l:lines, printf('  Languages:  %s (%d)', join(l:ts_langs, ', '), len(l:ts_langs)))
-  call add(l:lines, '')
-
-  " --- Copilot ---
-  call add(l:lines, '## Copilot')
-  let l:copilot_enabled = get(g:, 'yac_copilot_auto', 1)
-  let l:copilot_cmd = 'copilot-language-server'
-  let l:copilot_available = executable(l:copilot_cmd)
-  call add(l:lines, printf('  Enabled:   %s', l:copilot_enabled ? 'Yes' : 'No'))
-  call add(l:lines, printf('  Server:    %s %s', l:copilot_cmd, l:copilot_available ? '(found)' : '(NOT FOUND)'))
-  call add(l:lines, '')
-
-  " --- Settings ---
-  call add(l:lines, '## Settings')
-  call add(l:lines, printf('  auto_complete:      %s', get(g:, 'yac_auto_complete', 1) ? 'on' : 'off'))
-  call add(l:lines, printf('  auto_install_lsp:   %s', get(g:, 'yac_auto_install_lsp', 1) ? 'on' : 'off'))
-  call add(l:lines, printf('  diagnostic_vtext:   %s', get(g:, 'yac_diagnostic_virtual_text', 1) ? 'on' : 'off'))
-  call add(l:lines, printf('  doc_highlight:      %s', get(g:, 'yac_doc_highlight', 1) ? 'on' : 'off'))
-  call add(l:lines, printf('  debug:              %s', get(g:, 'yac_debug', 0) ? 'on' : 'off'))
-
-  " Write to buffer
-  silent! %delete _
-  call setline(1, l:lines)
-  setlocal nomodifiable
+  call yac_status#status()
 endfunction
 
 " 启动定时清理任务
 if !exists('s:cleanup_timer')
   " 每5分钟清理一次死连接
-  let s:cleanup_timer = timer_start(300000, {-> s:cleanup_dead_connections()}, {'repeat': -1})
+  let s:cleanup_timer = timer_start(300000, {-> yac_connection#cleanup_connections()}, {'repeat': -1})
 endif
 call yac_picker#mru_load()
 
