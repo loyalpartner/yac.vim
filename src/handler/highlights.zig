@@ -36,7 +36,9 @@ pub const HighlightsHandler = struct {
     }) !?treesitter_mod.highlights.HighlightsResult {
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return null;
         const tree = tc.ts.getTree(tc.file) orelse return null;
-        const source = tc.ts.getSource(tc.file) orelse return null;
+        defer tree.destroy();
+        const source = tc.ts.getSource(alloc, tc.file) orelse return null;
+        defer alloc.free(source);
         const hl_query = tc.lang_state.highlights orelse return null;
 
         var result = try treesitter_mod.highlights.extractHighlights(alloc, hl_query, tree, source, p.start_line, p.end_line);

@@ -30,6 +30,7 @@ pub const FoldingHandler = struct {
         const empty: treesitter_mod.folds.FoldsResult = .{ .ranges = &.{} };
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return empty;
         const tree = tc.ts.getTree(tc.file) orelse return empty;
+        defer tree.destroy();
         const folds_query = tc.lang_state.folds orelse return empty;
         return try treesitter_mod.folds.extractFolds(self.gpa, folds_query, tree);
     }

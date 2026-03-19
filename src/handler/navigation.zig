@@ -128,7 +128,9 @@ pub const NavigationHandler = struct {
         // Fallback: tree-sitter based
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return null;
         const tree = tc.ts.getTree(tc.file) orelse return null;
-        const source = tc.ts.getSource(tc.file) orelse return null;
+        defer tree.destroy();
+        const source = tc.ts.getSource(alloc, tc.file) orelse return null;
+        defer alloc.free(source);
         const ts_result = try treesitter_mod.document_highlight.extractDocumentHighlights(alloc, tree, source, p.line, p.column);
         if (ts_result) |r| {
             var items: std.ArrayList(HighlightItem) = .empty;

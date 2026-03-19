@@ -19,6 +19,8 @@ uv run pytest                    # run E2E tests (tests/test_e2e.py)
 
 E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `uv run pytest`.
 
+- **E2E 测试调试**：失败测试会保留工作目录，输出 `workspace preserved: /tmp/yac_test_XXXXX`。读 `{workspace}/run/yacd-{pid}.log`（daemon 日志）和 `{workspace}/yac-vim-debug.log`（Vim 日志）排查问题，不要只看 pytest 截断输出。
+
 ## Architecture
 
 ```
@@ -79,6 +81,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **`win_execute` + `cursorline` needs `redraw`**: When the buffer behind a popup has many text properties (tree-sitter highlights), `win_execute(popup, 'call cursor(...)')` moves the cursor correctly but Vim may not refresh the `cursorline` highlight. Always follow with `redraw`.
 - **Handler 返回 `?T`（optional）时 null 序列化为 JSON `null`**：Vim 回调用 `type(response) == v:t_dict` 检查，`null` 会被 silent 跳过。如果 Vim 端期望 dict（即使空的），handler 应返回非 optional 类型并用空 struct 作 early return。
 - **Picker sets `eventignore`**: While the picker is open, `CursorMoved`, `CursorMovedI`, `WinScrolled` are suppressed via `eventignore` to prevent tree-sitter/doc-highlight operations from interfering with popup rendering. Restored on close in `s:picker_close_popups()`.
+- **VimScript `str[0:-1]` 是整个字符串，不是空字符串**：负索引从末尾计数。处理 LSP 0-based column 转 1-based 后做 `str[0 : col-2]` 时，col=1 得到 `str[0:-1]`。必须加 `col <= 1 ? '' : str[0 : col-2]` 守卫。
 - **Never use `mapping: 0` on completion popup** — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim). Note: picker input popup intentionally uses `mapping: 0` to avoid `>` character timeoutlen delay — this is safe because the picker restores mappings on close and the input popup uses its own filter.
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
 - Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
@@ -108,6 +111,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **shutdown 顺序**：发 LSP shutdown/exit → cancel readLoop group → free 资源。
 - **`DebugAllocator` 在 `Io.Threaded` 多线程下 heap corruption**（ziglang/zig#25025, #24970）：`thread_safe = true` 不完全解决。用 `std.heap.c_allocator` 代替。
 - **TreeSitter 需要 Io.Mutex**：coroutine 模型下多个 client coroutine 在不同 worker 线程上并发访问。所有 public mutable 方法必须加 `Io.Mutex`。
+- **`Io.File` 异步写入用 `writeStreamingAll(io, data)`**：没有 `writeAll` 方法。`writeStreamingAll` 内部处理 partial write，pipe buffer 满时 yield 协程而非阻塞线程。
 
 ## Platform & Cross-Platform Gotchas
 

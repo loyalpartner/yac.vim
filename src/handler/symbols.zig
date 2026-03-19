@@ -28,7 +28,9 @@ pub const SymbolsHandler = struct {
     }) !?treesitter_mod.symbols.SymbolsResult {
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return null;
         const tree = tc.ts.getTree(tc.file) orelse return null;
-        const source = tc.ts.getSource(tc.file) orelse return null;
+        defer tree.destroy();
+        const source = tc.ts.getSource(alloc, tc.file) orelse return null;
+        defer alloc.free(source);
         const sym_query = tc.lang_state.symbols orelse return null;
         return try treesitter_mod.symbols.extractSymbols(alloc, sym_query, tree, source, tc.file);
     }

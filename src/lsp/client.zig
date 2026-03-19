@@ -46,6 +46,8 @@ pub const LspClient = struct {
     /// Pending response waiters: request_id → *ResponseWaiter
     waiters: std.AutoHashMap(u32, *ResponseWaiter),
     waiters_lock: Io.Mutex = .init,
+    /// Protects concurrent writes to child stdin pipe
+    write_lock: Io.Mutex = .init,
     /// Queued notifications for external processing
     queued_notifications: std.ArrayList(LspMessage),
     /// Vim client writer for forwarding LSP notifications (progress, diagnostics)
@@ -103,16 +105,10 @@ pub const LspClient = struct {
     }
 
     fn writeToStdin(self: *LspClient, data: []const u8) !void {
+        self.write_lock.lockUncancelable(self.io);
+        defer self.write_lock.unlock(self.io);
         const stdin = self.child.stdin orelse return error.StdinClosed;
-        // Use raw C write to bypass Io runtime — ensures immediate pipe delivery.
-        // Io.File.Writer may buffer/batch writes in Io.Threaded context.
-        var written: usize = 0;
-        while (written < data.len) {
-            const n = std.c.write(stdin.handle, data[written..].ptr, data.len - written);
-            if (n < 0) return error.WriteFailed;
-            if (n == 0) return error.WriteFailed;
-            written += @intCast(n);
-        }
+        try stdin.writeStreamingAll(self.io, data);
     }
 
     /// Start the readLoop coroutine. Must be called after spawn.

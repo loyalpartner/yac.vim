@@ -113,6 +113,7 @@ pub const FileIndex = struct {
     child: ?std.process.Child,
     stdout_buf: std.ArrayList(u8),
     ready: bool,
+    scan_group: Io.Group,
 
     pub fn init(allocator: Allocator, io: Io) FileIndex {
         return .{
@@ -123,17 +124,18 @@ pub const FileIndex = struct {
             .child = null,
             .stdout_buf = .empty,
             .ready = false,
+            .scan_group = .init,
         };
     }
 
     pub fn deinit(self: *FileIndex) void {
+        self.scan_group.cancel(self.io);
         for (self.files.items) |f| self.allocator.free(f);
         self.files.deinit(self.allocator);
         for (self.recent_files.items) |f| self.allocator.free(f);
         self.recent_files.deinit(self.allocator);
         self.stdout_buf.deinit(self.allocator);
         if (self.child) |*c| {
-            // kill() already waits and sets id=null in Zig 0.16
             c.kill(self.io);
             self.child = null;
         }
@@ -153,27 +155,24 @@ pub const FileIndex = struct {
             .stderr = .ignore,
         });
         self.child = child;
+        // Read scan output in a dedicated coroutine (non-blocking, yields instead of blocking OS thread)
+        self.scan_group.concurrent(self.io, readScanOutput, .{self}) catch {};
     }
 
-    pub fn pollScan(self: *FileIndex) bool {
-        const child = &(self.child orelse return true);
-        const stdout = child.stdout orelse return true;
-        var buf: [8192]u8 = undefined;
-        // Use C read to avoid Io dependency in poll (non-blocking check)
-        const n_signed = std.c.read(stdout.handle, &buf, buf.len);
-        if (n_signed <= 0) {
+    /// Reader coroutine: reads child stdout via Io (yields coroutine, not blocks thread).
+    fn readScanOutput(self: *FileIndex) Io.Cancelable!void {
+        const stdout = (self.child orelse return).stdout orelse return;
+        var read_buf: [8192]u8 = undefined;
+        var reader = stdout.readerStreaming(self.io, &read_buf);
+
+        while (true) {
+            const data = reader.interface.peekGreedy(1) catch break;
+            self.stdout_buf.appendSlice(self.allocator, data) catch break;
+            reader.interface.toss(data.len);
             self.processBuffer();
-            self.ready = true;
-            if (child.id != null) {
-                _ = child.wait(self.io) catch {};
-            }
-            self.child = null;
-            return true;
         }
-        const n: usize = @intCast(n_signed);
-        self.stdout_buf.appendSlice(self.allocator, buf[0..n]) catch return true;
         self.processBuffer();
-        return false;
+        self.ready = true;
     }
 
     fn processBuffer(self: *FileIndex) void {
@@ -217,6 +216,7 @@ pub const FileIndex = struct {
 pub const Picker = struct {
     allocator: Allocator,
     io: Io,
+    picker_lock: Io.Mutex = .init,
     file_index: ?*FileIndex,
     cwd: ?[]const u8,
 
@@ -230,11 +230,31 @@ pub const Picker = struct {
     }
 
     pub fn deinit(self: *Picker) void {
-        self.close();
+        self.closeInternal();
     }
 
-    pub fn start(self: *Picker, cwd: []const u8) bool {
-        self.close();
+    /// Internal close without lock (caller must hold picker_lock or be in deinit).
+    fn closeInternal(self: *Picker) void {
+        if (self.cwd) |c| {
+            self.allocator.free(c);
+            self.cwd = null;
+        }
+        if (self.file_index) |fi| {
+            fi.deinit();
+            self.allocator.destroy(fi);
+            self.file_index = null;
+        }
+    }
+
+    pub fn close(self: *Picker) void {
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
+        self.closeInternal();
+    }
+
+    /// Internal start without lock (caller must hold picker_lock).
+    fn startInternal(self: *Picker, cwd: []const u8) bool {
+        self.closeInternal();
         const fi = self.allocator.create(FileIndex) catch return false;
         fi.* = FileIndex.init(self.allocator, self.io);
         fi.startScan(cwd) catch {
@@ -247,33 +267,26 @@ pub const Picker = struct {
         return true;
     }
 
-    pub fn close(self: *Picker) void {
-        if (self.cwd) |c| {
-            self.allocator.free(c);
-            self.cwd = null;
-        }
-        if (self.file_index) |fi| {
-            fi.deinit();
-            self.allocator.destroy(fi);
-            self.file_index = null;
-        }
+    pub fn start(self: *Picker, cwd: []const u8) bool {
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
+        return self.startInternal(cwd);
     }
 
     pub fn hasIndex(self: *Picker) bool {
         return self.file_index != null;
     }
 
-    pub fn pollScan(self: *Picker) void {
-        const fi = self.file_index orelse return;
-        _ = fi.pollScan();
-    }
-
     pub fn setRecentFiles(self: *Picker, recent: []const []const u8) void {
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
         const fi = self.file_index orelse return;
         fi.setRecentFiles(recent) catch {};
     }
 
     pub fn appendIfMissing(self: *Picker, path: []const u8) void {
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
         const fi = self.file_index orelse return;
         fi.appendIfMissing(path);
     }
@@ -290,35 +303,44 @@ pub const Picker = struct {
 
     /// Open picker: start file index scan and return initial MRU results.
     pub fn openPicker(self: *Picker, alloc: Allocator, cwd: []const u8, recent_files: ?[]const []const u8) ?PickerResults {
-        if (!self.start(cwd)) return null;
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
+        if (!self.startInternal(cwd)) return null;
         if (recent_files) |rf| {
-            self.setRecentFiles(rf);
+            const fi = self.file_index orelse return null;
+            fi.setRecentFiles(rf) catch {};
         }
-        return buildPickerResults(alloc, self.recentFiles(), "file");
+        const fi = self.file_index orelse return null;
+        return buildPickerResults(alloc, fi.recent_files.items, "file");
     }
 
     /// Query picker for files matching pattern.
+    /// Files are populated asynchronously by the scan coroutine.
     pub fn queryFile(self: *Picker, alloc: Allocator, query: []const u8) ?PickerResults {
-        if (!self.hasIndex()) return null;
-        self.pollScan();
+        self.picker_lock.lockUncancelable(self.io);
+        defer self.picker_lock.unlock(self.io);
+        const fi = self.file_index orelse return null;
         if (query.len == 0) {
-            return buildPickerResults(alloc, self.recentFiles(), "file");
+            return buildPickerResults(alloc, fi.recent_files.items, "file");
         }
-        const file_list = self.files();
-        const recent = self.recentFiles();
-        const indices = filterAndSort(alloc, file_list, query, recent) catch return null;
+        const indices = filterAndSort(alloc, fi.files.items, query, fi.recent_files.items) catch return null;
         var items: std.ArrayList([]const u8) = .empty;
         for (indices) |idx| {
-            items.append(alloc, file_list[idx]) catch {};
+            items.append(alloc, fi.files.items[idx]) catch {};
         }
         return buildPickerResults(alloc, items.items, "file");
     }
 
     /// Query picker for grep results.
+    /// Lock briefly to copy cwd, then run grep without lock (grep does I/O).
     pub fn queryGrep(self: *Picker, alloc: Allocator, query: []const u8) ?PickerResults {
         if (query.len == 0) return null;
-        const cwd_val = self.cwd orelse return null;
-        return runGrep(alloc, self.io, query, cwd_val) catch null;
+        const cwd_copy = blk: {
+            self.picker_lock.lockUncancelable(self.io);
+            defer self.picker_lock.unlock(self.io);
+            break :blk alloc.dupe(u8, self.cwd orelse return null) catch return null;
+        };
+        return runGrep(alloc, self.io, query, cwd_copy) catch null;
     }
 };
 
@@ -331,7 +353,8 @@ pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []c
     return .{ .items = items.items, .mode = mode };
 }
 
-/// Spawn rg synchronously and return typed picker results.
+/// Spawn rg and return typed picker results.
+/// Uses Io-aware reader (yields coroutine, not blocks OS thread).
 /// Caller's arena allocator owns all memory.
 fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !PickerResults {
     const argv: []const []const u8 = &.{
@@ -351,15 +374,14 @@ fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !Pick
     var output_buf: std.ArrayList(u8) = .empty;
     // NOTE: do NOT deinit output_buf — parseGrepLine returns slices into it,
     // and the arena allocator will free everything when the request completes.
+    var read_buf: [8192]u8 = undefined;
+    var reader = stdout.readerStreaming(io, &read_buf);
     while (true) {
-        var buf: [8192]u8 = undefined;
-        const n_signed = std.c.read(stdout.handle, &buf, buf.len);
-        if (n_signed <= 0) break;
-        const n: usize = @intCast(n_signed);
-        output_buf.appendSlice(alloc, buf[0..n]) catch break;
+        const data = reader.interface.peekGreedy(1) catch break;
+        output_buf.appendSlice(alloc, data) catch break;
+        reader.interface.toss(data.len);
         if (output_buf.items.len >= max_output) break;
     }
-    // kill() already waits and cleans up in Zig 0.16
     child.kill(io);
 
     var items: std.ArrayList(PickerItem) = .empty;

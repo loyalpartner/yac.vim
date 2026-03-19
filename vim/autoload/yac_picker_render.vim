@@ -279,9 +279,10 @@ function! yac_picker_render#render() abort
     for item in p.items
       let depth = get(item, 'depth', 0)
       let indent_bytes = 2 * (depth + 1)
+      let line_len = get(p.line_lengths, lnum - 1, 0)
       for hl in get(item, 'highlights', [])
         let byte_col = indent_bytes + hl.col + 1
-        if hl.len > 0
+        if hl.len > 0 && byte_col >= 1 && byte_col <= line_len
           call prop_add(lnum, byte_col, {'type': hl.hl, 'length': hl.len, 'bufnr': bufnr})
         endif
       endfor

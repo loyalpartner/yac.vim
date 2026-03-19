@@ -314,7 +314,7 @@ function! s:apply_text_edit(edit) abort
   if start_line == end_line && start_col == end_col
     " 纯插入
     let current_line = getline(start_line)
-    let before = current_line[0 : start_col - 2]
+    let before = start_col <= 1 ? '' : current_line[0 : start_col - 2]
     let after = current_line[start_col - 1 :]
     call setline(start_line, before . a:edit.new_text . after)
   else
@@ -322,7 +322,7 @@ function! s:apply_text_edit(edit) abort
     if start_line == end_line
       " 同一行替换
       let current_line = getline(start_line)
-      let before = current_line[0 : start_col - 2]
+      let before = start_col <= 1 ? '' : current_line[0 : start_col - 2]
       let after = current_line[end_col - 1 :]
       call setline(start_line, before . a:edit.new_text . after)
     else
@@ -331,7 +331,7 @@ function! s:apply_text_edit(edit) abort
 
       " 第一行：保留开头，替换剩余部分
       let first_line = getline(start_line)
-      let first_part = first_line[0 : start_col - 2]
+      let first_part = start_col <= 1 ? '' : first_line[0 : start_col - 2]
 
       " 最后一行：替换开头，保留剩余部分
       let last_line = getline(end_line)

@@ -64,7 +64,9 @@ pub const PickerHandler = struct {
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
             const tc = app_mod.getTsCtx(&self.app.ts, p.file orelse return null, p.text) orelse return null;
             const tree = tc.ts.getTree(tc.file) orelse return null;
-            const source = tc.ts.getSource(tc.file) orelse return null;
+            defer tree.destroy();
+            const source = tc.ts.getSource(alloc, tc.file) orelse return null;
+            defer alloc.free(source);
             const sym_query = tc.lang_state.symbols orelse return null;
             const picker_result = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
             return .{ .document_symbol = picker_result };

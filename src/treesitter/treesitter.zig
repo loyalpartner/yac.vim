@@ -422,18 +422,29 @@ pub const TreeSitter = struct {
         }
     }
 
-    pub fn getTree(self: *TreeSitter, file_path: []const u8) ?*const ts.Tree {
+    /// Returns true if a parsed tree exists for the given file.
+    pub fn hasTree(self: *TreeSitter, file_path: []const u8) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        const buf = self.buffers.get(file_path) orelse return null;
-        return buf.tree;
+        return self.buffers.contains(file_path);
     }
 
-    pub fn getSource(self: *TreeSitter, file_path: []const u8) ?[]const u8 {
+    /// Returns an owned shallow copy of the tree (via ts_tree_copy, O(1)).
+    /// Caller must call `destroy()` when done.
+    pub fn getTree(self: *TreeSitter, file_path: []const u8) ?*ts.Tree {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const buf = self.buffers.get(file_path) orelse return null;
-        return buf.source;
+        return buf.tree.dupe();
+    }
+
+    /// Returns an owned copy of the source text.
+    /// Caller must free with the same allocator.
+    pub fn getSource(self: *TreeSitter, alloc: Allocator, file_path: []const u8) ?[]const u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const buf = self.buffers.get(file_path) orelse return null;
+        return alloc.dupe(u8, buf.source) catch return null;
     }
 
     /// Returns true if the WASM loader is available (i.e. WasmLoader.init succeeded).

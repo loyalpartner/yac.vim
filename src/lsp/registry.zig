@@ -19,11 +19,18 @@ pub const LspServerConfig = lsp_config.LspServerConfig;
 
 // ============================================================================
 // LSP Registry - manages language server lifecycles
+//
+// Thread safety: all public methods use registry_lock for fine-grained
+// locking. getOrCreateClient/getOrCreateCopilotClient use two-phase
+// locking to avoid holding the lock during blocking LSP I/O.
 // ============================================================================
 
 pub const LspRegistry = struct {
     allocator: Allocator,
     io: Io,
+    /// Fine-grained lock protecting registry data structures.
+    /// Individual methods lock/unlock; callers need not hold this externally.
+    registry_lock: Io.Mutex = .init,
     /// Group for LSP readLoop coroutines
     lsp_group: Io.Group = .init,
     /// client_key -> LspClient (key = "language\x00workspace_uri")
@@ -108,11 +115,15 @@ pub const LspRegistry = struct {
 
     /// Check if a language has already had a spawn failure reported.
     pub fn hasSpawnFailed(self: *LspRegistry, language: []const u8) bool {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         return self.failed_spawns.contains(language);
     }
 
     /// Mark a language as having a spawn failure.
     pub fn markSpawnFailed(self: *LspRegistry, language: []const u8) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         const key = self.allocator.dupe(u8, language) catch return;
         self.failed_spawns.put(key, {}) catch {
             self.allocator.free(key);
@@ -121,27 +132,45 @@ pub const LspRegistry = struct {
 
     /// Reset a language's spawn failure flag (called after successful install).
     pub fn resetSpawnFailed(self: *LspRegistry, language: []const u8) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         if (self.failed_spawns.fetchRemove(language)) |entry| {
             self.allocator.free(entry.key);
         }
     }
 
-    /// Get an existing client by client key (includes copilot).
-    pub fn getClient(self: *LspRegistry, client_key: []const u8) ?*LspClient {
+    /// Internal: get client without locking (caller must hold registry_lock).
+    fn getClientImpl(self: *LspRegistry, client_key: []const u8) ?*LspClient {
         if (std.mem.eql(u8, client_key, copilot_key)) return self.copilot_client;
         return self.clients.get(client_key);
     }
 
+    /// Get an existing client by client key (includes copilot).
+    pub fn getClient(self: *LspRegistry, client_key: []const u8) ?*LspClient {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
+        return self.getClientImpl(client_key);
+    }
+
     /// Reset Copilot spawn failure flag to allow retry (e.g. on explicit sign-in).
     pub fn resetCopilotSpawnFailed(self: *LspRegistry) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         self.copilot_spawn_failed = false;
     }
 
     /// Get or create the global Copilot language server client.
+    /// Two-phase lock: check under lock -> spawn unlocked -> store under lock.
     pub fn getOrCreateCopilotClient(self: *LspRegistry) ?*LspClient {
-        if (self.copilot_client) |c| return c;
-        if (self.copilot_spawn_failed) return null;
+        // Phase 1: Check under lock
+        {
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
+            if (self.copilot_client) |c| return c;
+            if (self.copilot_spawn_failed) return null;
+        }
 
+        // Phase 2: Spawn + async init (no lock)
         log.info("Starting copilot-language-server --stdio", .{});
         const client = LspClient.spawn(
             self.allocator,
@@ -151,6 +180,8 @@ pub const LspRegistry = struct {
             &self.next_id,
         ) catch {
             log.warn("Failed to spawn copilot-language-server", .{});
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
             self.copilot_spawn_failed = true;
             return null;
         };
@@ -163,21 +194,39 @@ pub const LspRegistry = struct {
         const init_id = client.initializeCopilot() catch {
             log.err("Failed to send Copilot initialize", .{});
             client.deinit();
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
             self.copilot_spawn_failed = true;
             return null;
         };
-        self.pending_init.put(copilot_key, init_id) catch {
-            client.deinit();
-            self.copilot_spawn_failed = true;
-            return null;
-        };
-        self.copilot_client = client;
+
+        // Phase 3: Store under lock + double-check
+        {
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
+            if (self.copilot_client) |existing| {
+                // Race: another coroutine created it while we were spawning
+                log.warn("Copilot client race — discarding duplicate", .{});
+                _ = client.sendShutdown() catch {};
+                client.sendExit() catch {};
+                return existing;
+            }
+            self.pending_init.put(copilot_key, init_id) catch {
+                client.deinit();
+                self.copilot_spawn_failed = true;
+                return null;
+            };
+            self.copilot_client = client;
+        }
+
         log.info("Copilot client created, init request id={d}", .{init_id});
         return client;
     }
 
     /// Remove a dead client and free its resources.
     pub fn removeClient(self: *LspRegistry, client_key: []const u8) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         // Handle copilot client separately (not in clients hashmap)
         if (std.mem.eql(u8, client_key, copilot_key)) {
             if (self.copilot_client) |c| {
@@ -200,6 +249,8 @@ pub const LspRegistry = struct {
 
     /// Find an existing client for a language + file path (read-only, does not spawn).
     pub fn findClient(self: *LspRegistry, language: []const u8, file_path: []const u8) ?struct { client: *LspClient, client_key: []const u8 } {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         const config = getConfig(language) orelse return null;
         const workspace_uri = path_utils.findWorkspaceUri(self.allocator, config, file_path);
         defer if (workspace_uri) |uri| self.allocator.free(uri);
@@ -231,6 +282,7 @@ pub const LspRegistry = struct {
     }
 
     /// Get or create a client for a language + file path.
+    /// Two-phase lock: check under lock -> spawn+init unlocked -> store under lock.
     /// Workspace root is detected from file_path; (language + workspace_root) determines client.
     pub fn getOrCreateClient(self: *LspRegistry, language: []const u8, file_path: []const u8) !struct { client: *LspClient, client_key: []const u8 } {
         const config = getConfig(language) orelse return error.UnsupportedLanguage;
@@ -244,23 +296,28 @@ pub const LspRegistry = struct {
         else
             std.fmt.bufPrint(&key_buf, "{s}", .{language}) catch return error.KeyTooLong;
 
-        if (self.clients.get(lookup_key)) |client| {
-            return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
-        }
+        // Phase 1: Check existing under lock
+        {
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
 
-        // Reuse any existing client for this language ONLY when the file has no
-        // workspace marker (workspace_uri == null), e.g. stdlib/toolchain files.
-        // Files with a workspace marker must get their own client to avoid
-        // cross-project interference.
-        if (workspace_uri == null) {
-            var it = self.clients.iterator();
-            while (it.next()) |entry| {
-                if (matchesLanguage(entry.key_ptr.*, language)) {
-                    return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
+            if (self.clients.get(lookup_key)) |client| {
+                return .{ .client = client, .client_key = self.clients.getKey(lookup_key).? };
+            }
+
+            // Reuse any existing client for this language ONLY when the file has no
+            // workspace marker (workspace_uri == null), e.g. stdlib/toolchain files.
+            if (workspace_uri == null) {
+                var it = self.clients.iterator();
+                while (it.next()) |entry| {
+                    if (matchesLanguage(entry.key_ptr.*, language)) {
+                        return .{ .client = entry.value_ptr.*, .client_key = entry.key_ptr.* };
+                    }
                 }
             }
         }
 
+        // Phase 2: Spawn + initialize (no lock — may block on LSP I/O)
         // Resolve command: check PATH first, then managed binary dir
         var managed_path: ?[]const u8 = null;
         const command_to_use: []const u8 = if (commandExistsInPath(config.command))
@@ -274,8 +331,6 @@ pub const LspRegistry = struct {
         log.info("Starting {s} for {s} (workspace: {s})", .{ command_to_use, language, workspace_uri orelse "(none)" });
         const client = try LspClient.spawn(self.allocator, self.io, command_to_use, config.args, &self.next_id);
         errdefer client.deinit();
-        const key = try self.allocator.dupe(u8, lookup_key);
-        errdefer self.allocator.free(key);
 
         // Set Vim writer for notification forwarding
         client.vim_writer = self.vim_writer;
@@ -294,6 +349,23 @@ pub const LspRegistry = struct {
 
         client.state = .initialized;
         try client.sendInitialized();
+
+        // Phase 3: Store under lock + double-check
+        const key = try self.allocator.dupe(u8, lookup_key);
+        errdefer self.allocator.free(key);
+
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
+
+        // Double-check: another coroutine may have created this client
+        if (self.clients.get(lookup_key)) |existing| {
+            self.allocator.free(key);
+            // Orphan our client — send shutdown so its readLoop exits naturally
+            _ = client.sendShutdown() catch {};
+            client.sendExit() catch {};
+            log.warn("Client race for {s} — discarding duplicate", .{language});
+            return .{ .client = existing, .client_key = self.clients.getKey(lookup_key).? };
+        }
 
         // Store capabilities JSON for feature detection
         if (init_result.result != .null) {
@@ -322,33 +394,42 @@ pub const LspRegistry = struct {
 
     /// Handle an initialize response: store capabilities, send 'initialized', then replay queued didOpens.
     pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8, result: Value) !void {
-        _ = self.pending_init.remove(client_key);
-        const client = self.getClient(client_key) orelse return;
+        // Registry operations under lock
+        const client = blk: {
+            self.registry_lock.lockUncancelable(self.io);
+            defer self.registry_lock.unlock(self.io);
 
-        // Store server capabilities from initialize result
-        if (result == .object) {
-            if (result.object.get("capabilities")) |caps| {
-                // Deep-copy capabilities by serializing and re-parsing
-                const serialized = json.stringifyAlloc(self.allocator, caps) catch {
-                    return try self.finishInit(client, client_key);
-                };
-                defer self.allocator.free(serialized);
-                const parsed = json.parse(self.allocator, serialized) catch |e| {
-                    log.err("Failed to parse capabilities: {any}", .{e});
-                    return try self.finishInit(client, client_key);
-                };
-                // Use the stable key from the clients map; for copilot use its constant key
-                const stable_key = if (std.mem.eql(u8, client_key, copilot_key))
-                    copilot_key
-                else
-                    self.clients.getKey(client_key) orelse client_key;
-                self.server_capabilities.put(stable_key, parsed) catch |e| {
-                    log.err("Failed to store capabilities: {any}", .{e});
-                    parsed.deinit();
-                };
+            _ = self.pending_init.remove(client_key);
+            const c = self.getClientImpl(client_key) orelse return;
+
+            // Store server capabilities from initialize result
+            if (result == .object) {
+                if (result.object.get("capabilities")) |caps| {
+                    // Deep-copy capabilities by serializing and re-parsing
+                    const serialized = json.stringifyAlloc(self.allocator, caps) catch {
+                        break :blk c;
+                    };
+                    defer self.allocator.free(serialized);
+                    const parsed = json.parse(self.allocator, serialized) catch |e| {
+                        log.err("Failed to parse capabilities: {any}", .{e});
+                        break :blk c;
+                    };
+                    // Use the stable key from the clients map; for copilot use its constant key
+                    const stable_key = if (std.mem.eql(u8, client_key, copilot_key))
+                        copilot_key
+                    else
+                        self.clients.getKey(client_key) orelse client_key;
+                    self.server_capabilities.put(stable_key, parsed) catch |e| {
+                        log.err("Failed to store capabilities: {any}", .{e});
+                        parsed.deinit();
+                    };
+                }
             }
-        }
 
+            break :blk c;
+        };
+
+        // Client I/O without lock
         try self.finishInit(client, client_key);
     }
 
@@ -370,11 +451,15 @@ pub const LspRegistry = struct {
 
     /// Check if a client is still initializing.
     pub fn isInitializing(self: *LspRegistry, client_key: []const u8) bool {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         return self.pending_init.contains(client_key);
     }
 
     /// Get the init request ID for a client (if initializing).
     pub fn getInitRequestId(self: *LspRegistry, client_key: []const u8) ?u32 {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         return self.pending_init.get(client_key);
     }
 
@@ -382,6 +467,8 @@ pub const LspRegistry = struct {
     /// capability_name maps to the top-level key in ServerCapabilities, e.g.:
     /// "documentFormattingProvider", "signatureHelpProvider", "typeHierarchyProvider"
     pub fn serverSupports(self: *LspRegistry, client_key: []const u8, capability_name: []const u8) bool {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         const stable_key = self.clients.getKey(client_key) orelse return true;
         const parsed = self.server_capabilities.get(stable_key) orelse return true; // assume yes if unknown
         const caps = switch (parsed.value) {
@@ -399,6 +486,8 @@ pub const LspRegistry = struct {
 
     /// Set Vim writer on all existing and future LSP clients for notification forwarding.
     pub fn setVimWriter(self: *LspRegistry, writer: *Io.Writer, lock: *Io.Mutex) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.vim_writer = writer;
@@ -415,6 +504,8 @@ pub const LspRegistry = struct {
 
     /// Clear Vim writer (client disconnecting).
     pub fn clearVimWriter(self: *LspRegistry) void {
+        self.registry_lock.lockUncancelable(self.io);
+        defer self.registry_lock.unlock(self.io);
         var it = self.clients.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.vim_writer = null;

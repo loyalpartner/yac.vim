@@ -22,6 +22,7 @@ pub const TextObjectsHandler = struct {
     }) !?treesitter_mod.navigate.NavResult {
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return null;
         const tree = tc.ts.getTree(tc.file) orelse return null;
+        defer tree.destroy();
         const nav_query = tc.lang_state.textobjects orelse return null;
         return try treesitter_mod.navigate.navigate(alloc, nav_query, tree, p.scope, p.direction, p.line);
     }
@@ -37,6 +38,7 @@ pub const TextObjectsHandler = struct {
         _ = p.around; // TODO: pass around to findTextObject if API supports it
         const tc = app_mod.getTsCtx(&self.app.ts, p.file, p.text) orelse return null;
         const tree = tc.ts.getTree(tc.file) orelse return null;
+        defer tree.destroy();
         const tobj_query = tc.lang_state.textobjects orelse return null;
         return try treesitter_mod.textobjects.findTextObject(alloc, tobj_query, tree, p.scope, p.line, p.column);
     }

@@ -55,7 +55,7 @@ pub const TsCtx = struct {
 /// Parses the buffer if text is provided and the tree doesn't exist yet.
 pub fn getTsCtx(ts: *treesitter_mod.TreeSitter, file: []const u8, text: ?[]const u8) ?TsCtx {
     const lang_state = ts.fromExtension(file) orelse return null;
-    if (ts.getTree(file) == null) {
+    if (!ts.hasTree(file)) {
         if (text) |t| {
             ts.parseBuffer(file, t) catch return null;
         }
