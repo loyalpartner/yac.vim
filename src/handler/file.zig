@@ -48,12 +48,11 @@ pub const FileHandler = struct {
             return .{ .ready = false, .reason = "unsupported_language" };
 
         if (registry.findClient(language, real_path)) |cr| {
-            const initializing = registry.isInitializing(cr.client_key);
             const state = cr.client.state;
             return .{
-                .ready = state == .initialized and !initializing,
+                .ready = cr.client.isReady(),
                 .state = @tagName(state),
-                .initializing = initializing,
+                .initializing = state == .initializing,
             };
         }
         return .{ .ready = false, .reason = "no_client" };

@@ -405,7 +405,7 @@ pub const LspClient = struct {
         return self.sendRequest("initialize", params_value);
     }
 
-    pub fn initializeCopilot(self: *LspClient) !u32 {
+    pub fn initializeCopilot(self: *LspClient) !SendResult {
         self.state = .initializing;
         var init_options = ObjectMap.init(self.allocator);
         var editor_info = ObjectMap.init(self.allocator);
@@ -427,7 +427,12 @@ pub const LspClient = struct {
             },
             .initializationOptions = .{ .object = init_options },
         });
-        return try self.sendRequestAsync("initialize", params_value);
+        return self.sendRequest("initialize", params_value);
+    }
+
+    /// Whether this client is fully initialized and ready for requests.
+    pub fn isReady(self: *const LspClient) bool {
+        return self.state == .initialized;
     }
 
     pub fn sendInitialized(self: *LspClient) !void {

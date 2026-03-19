@@ -35,8 +35,6 @@ pub const LspRegistry = struct {
     lsp_group: Io.Group = .init,
     /// client_key -> LspClient (key = "language\x00workspace_uri")
     clients: std.StringHashMap(*LspClient),
-    /// Requests waiting for initialization to complete: client_key -> init request ID
-    pending_init: std.StringHashMap(u32),
     /// Global request ID counter (shared across all clients to avoid collisions)
     next_id: std.atomic.Value(u32),
     /// Languages where LSP server spawn has failed (to avoid repeat notifications)
@@ -58,7 +56,6 @@ pub const LspRegistry = struct {
             .allocator = allocator,
             .io = io,
             .clients = std.StringHashMap(*LspClient).init(allocator),
-            .pending_init = std.StringHashMap(u32).init(allocator),
             .next_id = std.atomic.Value(u32).init(1),
             .failed_spawns = std.StringHashMap(void).init(allocator),
             .server_capabilities = std.StringHashMap(std.json.Parsed(Value)).init(allocator),
@@ -72,7 +69,6 @@ pub const LspRegistry = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.clients.deinit();
-        self.pending_init.deinit();
         {
             var fsi = self.failed_spawns.keyIterator();
             while (fsi.next()) |key| self.allocator.free(key.*);
@@ -160,7 +156,7 @@ pub const LspRegistry = struct {
     }
 
     /// Get or create the global Copilot language server client.
-    /// Two-phase lock: check under lock -> spawn unlocked -> store under lock.
+    /// Two-phase lock: check under lock -> spawn+init unlocked -> store under lock.
     pub fn getOrCreateCopilotClient(self: *LspRegistry) ?*LspClient {
         // Phase 1: Check under lock
         {
@@ -170,7 +166,7 @@ pub const LspRegistry = struct {
             if (self.copilot_spawn_failed) return null;
         }
 
-        // Phase 2: Spawn + async init (no lock)
+        // Phase 2: Spawn + synchronous init (no lock — blocks on LSP I/O)
         log.info("Starting copilot-language-server --stdio", .{});
         const client = LspClient.spawn(
             self.allocator,
@@ -186,12 +182,11 @@ pub const LspRegistry = struct {
             return null;
         };
 
-        // Set Vim writer for notification forwarding + start readLoop
         client.vim_writer = self.vim_writer;
         client.vim_write_lock = self.vim_write_lock;
         client.startReadLoop(&self.lsp_group);
 
-        const init_id = client.initializeCopilot() catch {
+        var init_result = client.initializeCopilot() catch {
             log.err("Failed to send Copilot initialize", .{});
             client.deinit();
             self.registry_lock.lockUncancelable(self.io);
@@ -199,27 +194,35 @@ pub const LspRegistry = struct {
             self.copilot_spawn_failed = true;
             return null;
         };
+        defer init_result.deinit();
+
+        client.state = .initialized;
+        client.sendInitialized() catch {};
+
+        // Copilot requires workspace/didChangeConfiguration after initialized
+        {
+            const settings = ObjectMap.init(self.allocator);
+            var config_params = ObjectMap.init(self.allocator);
+            config_params.put("settings", .{ .object = settings }) catch {};
+            client.sendNotification("workspace/didChangeConfiguration", .{ .object = config_params }) catch |e| {
+                log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
+            };
+        }
 
         // Phase 3: Store under lock + double-check
         {
             self.registry_lock.lockUncancelable(self.io);
             defer self.registry_lock.unlock(self.io);
             if (self.copilot_client) |existing| {
-                // Race: another coroutine created it while we were spawning
                 log.warn("Copilot client race — discarding duplicate", .{});
                 _ = client.sendShutdown() catch {};
                 client.sendExit() catch {};
                 return existing;
             }
-            self.pending_init.put(copilot_key, init_id) catch {
-                client.deinit();
-                self.copilot_spawn_failed = true;
-                return null;
-            };
             self.copilot_client = client;
         }
 
-        log.info("Copilot client created, init request id={d}", .{init_id});
+        log.info("Copilot client ready", .{});
         return client;
     }
 
@@ -227,24 +230,19 @@ pub const LspRegistry = struct {
     pub fn removeClient(self: *LspRegistry, client_key: []const u8) void {
         self.registry_lock.lockUncancelable(self.io);
         defer self.registry_lock.unlock(self.io);
-        // Handle copilot client separately (not in clients hashmap)
         if (std.mem.eql(u8, client_key, copilot_key)) {
             if (self.copilot_client) |c| {
                 c.deinit();
                 self.copilot_client = null;
             }
-            _ = self.pending_init.remove(copilot_key);
             self.copilot_spawn_failed = true;
             return;
         }
 
         if (self.clients.fetchRemove(client_key)) |entry| {
             entry.value.deinit();
-            _ = self.pending_init.remove(entry.key);
             self.allocator.free(entry.key);
-            return;
         }
-        _ = self.pending_init.remove(client_key);
     }
 
     /// Find an existing client for a language + file path (read-only, does not spawn).
@@ -392,77 +390,6 @@ pub const LspRegistry = struct {
         return .{ .client = client, .client_key = key };
     }
 
-    /// Handle an initialize response: store capabilities, send 'initialized', then replay queued didOpens.
-    pub fn handleInitializeResponse(self: *LspRegistry, client_key: []const u8, result: Value) !void {
-        // Registry operations under lock
-        const client = blk: {
-            self.registry_lock.lockUncancelable(self.io);
-            defer self.registry_lock.unlock(self.io);
-
-            _ = self.pending_init.remove(client_key);
-            const c = self.getClientImpl(client_key) orelse return;
-
-            // Store server capabilities from initialize result
-            if (result == .object) {
-                if (result.object.get("capabilities")) |caps| {
-                    // Deep-copy capabilities by serializing and re-parsing
-                    const serialized = json.stringifyAlloc(self.allocator, caps) catch {
-                        break :blk c;
-                    };
-                    defer self.allocator.free(serialized);
-                    const parsed = json.parse(self.allocator, serialized) catch |e| {
-                        log.err("Failed to parse capabilities: {any}", .{e});
-                        break :blk c;
-                    };
-                    // Use the stable key from the clients map; for copilot use its constant key
-                    const stable_key = if (std.mem.eql(u8, client_key, copilot_key))
-                        copilot_key
-                    else
-                        self.clients.getKey(client_key) orelse client_key;
-                    self.server_capabilities.put(stable_key, parsed) catch |e| {
-                        log.err("Failed to store capabilities: {any}", .{e});
-                        parsed.deinit();
-                    };
-                }
-            }
-
-            break :blk c;
-        };
-
-        // Client I/O without lock
-        try self.finishInit(client, client_key);
-    }
-
-    fn finishInit(self: *LspRegistry, client: *LspClient, client_key: []const u8) !void {
-        try client.sendInitialized();
-        log.info("LSP initialized: {s}", .{client_key});
-
-        // Copilot requires workspace/didChangeConfiguration after initialized
-        if (std.mem.eql(u8, client_key, copilot_key)) {
-            const settings = ObjectMap.init(self.allocator);
-            var config_params = ObjectMap.init(self.allocator);
-            try config_params.put("settings", .{ .object = settings });
-            client.sendNotification("workspace/didChangeConfiguration", .{ .object = config_params }) catch |e| {
-                log.err("Failed to send didChangeConfiguration to Copilot: {any}", .{e});
-            };
-        }
-
-    }
-
-    /// Check if a client is still initializing.
-    pub fn isInitializing(self: *LspRegistry, client_key: []const u8) bool {
-        self.registry_lock.lockUncancelable(self.io);
-        defer self.registry_lock.unlock(self.io);
-        return self.pending_init.contains(client_key);
-    }
-
-    /// Get the init request ID for a client (if initializing).
-    pub fn getInitRequestId(self: *LspRegistry, client_key: []const u8) ?u32 {
-        self.registry_lock.lockUncancelable(self.io);
-        defer self.registry_lock.unlock(self.io);
-        return self.pending_init.get(client_key);
-    }
-
     /// Check if a server supports a given capability.
     /// capability_name maps to the top-level key in ServerCapabilities, e.g.:
     /// "documentFormattingProvider", "signatureHelpProvider", "typeHierarchyProvider"
@@ -543,7 +470,6 @@ pub const LspRegistry = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.clients.clearAndFree();
-        self.pending_init.clearAndFree();
         if (self.copilot_client) |c| {
             c.deinit();
             self.copilot_client = null;

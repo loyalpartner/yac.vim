@@ -33,7 +33,7 @@ pub const LspContext = struct {
             return null;
         };
 
-        if (registry.isInitializing(result.client_key)) return null;
+        if (!result.client.isReady()) return null;
 
         const uri = try path_utils.filePathToUri(alloc, real_path);
 

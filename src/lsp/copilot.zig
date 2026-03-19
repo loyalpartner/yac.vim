@@ -18,7 +18,8 @@ pub fn getCopilotClient(registry: *LspRegistry) ?*LspClient {
 }
 
 pub fn isReady(registry: *LspRegistry) bool {
-    return !registry.isInitializing(LspRegistry.copilot_key);
+    const client = registry.getOrCreateCopilotClient() orelse return false;
+    return client.isReady();
 }
 
 pub fn ensureDidOpen(alloc: Allocator, client: *LspClient, file: []const u8) void {
