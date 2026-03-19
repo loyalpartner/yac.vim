@@ -56,12 +56,14 @@ pub const Methods = struct {
         return try entry.call(entry.ctx, alloc, params);
     }
 
-    /// Merge all entries from other into self. Both share the same key strings
-    /// (no allocation — keys are comptime string literals).
-    pub fn merge(self: *Methods, other: *const Methods) !void {
-        var it = other.map.iterator();
-        while (it.next()) |entry| {
-            try self.map.put(entry.key_ptr.*, entry.value_ptr.*);
+    /// Register all handler methods from a typed handler pointer directly.
+    pub fn register(self: *Methods, handler: anytype) !void {
+        const Ctx = @typeInfo(@TypeOf(handler)).pointer.child;
+        inline for (comptime handlerMethodNames(Ctx)) |name| {
+            try self.map.put(name, .{
+                .ctx = @ptrCast(handler),
+                .call = comptime makeCallback(Ctx, name),
+            });
         }
     }
 };
@@ -420,7 +422,7 @@ test "RpcModule: handlerMethodNames filters correctly" {
     try std.testing.expect(!m.map.contains("helper"));
 }
 
-test "Methods.merge: combines entries from two modules" {
+test "Methods.register: combines entries from multiple handlers" {
     const HandlerA = struct {
         pub fn method_a(self: *@This()) !void {
             _ = self;
@@ -435,16 +437,15 @@ test "Methods.merge: combines entries from two modules" {
     var ha = HandlerA{};
     var hb = HandlerB{};
 
-    var ma = try RpcModule(HandlerA).init(&ha).methods(std.testing.allocator);
-    defer ma.deinit();
-    var mb = try RpcModule(HandlerB).init(&hb).methods(std.testing.allocator);
-    defer mb.deinit();
+    var m = Methods.init(std.testing.allocator);
+    defer m.deinit();
 
-    try ma.merge(&mb);
+    try m.register(&ha);
+    try m.register(&hb);
 
-    try std.testing.expect(ma.map.contains("method_a"));
-    try std.testing.expect(ma.map.contains("method_b"));
-    try std.testing.expectEqual(@as(usize, 2), ma.map.count());
+    try std.testing.expect(m.map.contains("method_a"));
+    try std.testing.expect(m.map.contains("method_b"));
+    try std.testing.expectEqual(@as(usize, 2), m.map.count());
 }
 
 test "toValue: string" {

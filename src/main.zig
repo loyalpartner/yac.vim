@@ -7,7 +7,6 @@ const app_mod = @import("app.zig");
 const App = app_mod.App;
 const Server = @import("server/server.zig").Server;
 const Methods = @import("server/server.zig").Methods;
-const RpcModule = @import("server/rpc_module.zig").RpcModule;
 
 // Handler modules
 const SystemHandler = @import("handler/system.zig").SystemHandler;
@@ -135,40 +134,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var api = Methods.init(allocator);
     defer api.deinit();
 
-    var m_sys = try RpcModule(SystemHandler).init(&sys).methods(allocator);
-    defer m_sys.deinit();
-    var m_file = try RpcModule(FileHandler).init(&file).methods(allocator);
-    defer m_file.deinit();
-    var m_nav = try RpcModule(NavigationHandler).init(&nav).methods(allocator);
-    defer m_nav.deinit();
-    var m_comp = try RpcModule(CompletionHandler).init(&comp).methods(allocator);
-    defer m_comp.deinit();
-    var m_edit = try RpcModule(EditingHandler).init(&edit).methods(allocator);
-    defer m_edit.deinit();
-    var m_hl = try RpcModule(HighlightsHandler).init(&hl).methods(allocator);
-    defer m_hl.deinit();
-    var m_sym = try RpcModule(SymbolsHandler).init(&sym).methods(allocator);
-    defer m_sym.deinit();
-    var m_fold = try RpcModule(FoldingHandler).init(&fold).methods(allocator);
-    defer m_fold.deinit();
-    var m_tobj = try RpcModule(TextObjectsHandler).init(&tobj).methods(allocator);
-    defer m_tobj.deinit();
-    var m_pick = try RpcModule(PickerHandler).init(&pick).methods(allocator);
-    defer m_pick.deinit();
-    var m_dbg = try RpcModule(DebugHandler).init(&dbg).methods(allocator);
-    defer m_dbg.deinit();
-
-    try api.merge(&m_sys);
-    try api.merge(&m_file);
-    try api.merge(&m_nav);
-    try api.merge(&m_comp);
-    try api.merge(&m_edit);
-    try api.merge(&m_hl);
-    try api.merge(&m_sym);
-    try api.merge(&m_fold);
-    try api.merge(&m_tobj);
-    try api.merge(&m_pick);
-    try api.merge(&m_dbg);
+    inline for (.{ &sys, &file, &nav, &comp, &edit, &hl, &sym, &fold, &tobj, &pick, &dbg }) |h| {
+        try api.register(h);
+    }
 
     // ---- Server ----
 

@@ -4,18 +4,31 @@ const Allocator = std.mem.Allocator;
 const app_mod = @import("../app.zig");
 const App = app_mod.App;
 const lsp_context_mod = @import("../lsp/context.zig");
-const lsp_client_mod = @import("../lsp/client.zig");
 const handler_types = @import("../lsp/vim_types.zig");
 const treesitter_mod = @import("../treesitter/treesitter.zig");
-const json_utils = @import("../json_utils.zig");
+const picker_mod = @import("../picker.zig");
 
 const LspContext = lsp_context_mod.LspContext;
 const PickerSymbolResult = handler_types.PickerSymbolResult;
-const Value = json_utils.Value;
+const PickerResults = picker_mod.PickerResults;
 
 // ============================================================================
 // PickerHandler — file/grep/symbol picker
 // ============================================================================
+
+/// Union result for picker_query — different modes return different typed results.
+/// Custom jsonStringify delegates to the inner type (no wrapper object in JSON).
+pub const PickerQueryResult = union(enum) {
+    file: PickerResults,
+    workspace_symbol: PickerSymbolResult,
+    document_symbol: treesitter_mod.symbols.PickerResult,
+
+    pub fn jsonStringify(self: PickerQueryResult, jw: anytype) @TypeOf(jw.*).Error!void {
+        switch (self) {
+            inline else => |v| try jw.write(v),
+        }
+    }
+};
 
 pub const PickerHandler = struct {
     app: *App,
@@ -27,7 +40,7 @@ pub const PickerHandler = struct {
     pub fn picker_open(self: *PickerHandler, alloc: Allocator, p: struct {
         cwd: []const u8,
         recent_files: ?[]const []const u8 = null,
-    }) !?Value {
+    }) !?PickerResults {
         return self.app.picker.openPicker(alloc, p.cwd, p.recent_files);
     }
 
@@ -36,7 +49,7 @@ pub const PickerHandler = struct {
         mode: []const u8 = "file",
         file: ?[]const u8 = null,
         text: ?[]const u8 = null,
-    }) !?Value {
+    }) !?PickerQueryResult {
         if (std.mem.eql(u8, p.mode, "workspace_symbol")) {
             const file = p.file orelse return null;
             const lsp_ctx = try self.getLspCtx(alloc, file) orelse return null;
@@ -44,18 +57,20 @@ pub const PickerHandler = struct {
                 .query = p.query,
             }) catch return null;
             const typed = PickerSymbolResult.fromWorkspaceSymbol(alloc, result) orelse return null;
-            return lsp_client_mod.LspClient.typedToValue(alloc, typed) catch return null;
+            return .{ .workspace_symbol = typed };
         } else if (std.mem.eql(u8, p.mode, "grep")) {
-            return self.app.picker.queryGrep(alloc, p.query);
+            const results = self.app.picker.queryGrep(alloc, p.query) orelse return null;
+            return .{ .file = results };
         } else if (std.mem.eql(u8, p.mode, "document_symbol")) {
             const tc = app_mod.getTsCtx(&self.app.ts, p.file orelse return null, p.text) orelse return null;
             const tree = tc.ts.getTree(tc.file) orelse return null;
             const source = tc.ts.getSource(tc.file) orelse return null;
             const sym_query = tc.lang_state.symbols orelse return null;
             const picker_result = try treesitter_mod.symbols.extractPickerSymbols(alloc, sym_query, tree, source);
-            return lsp_client_mod.LspClient.typedToValue(alloc, picker_result) catch return null;
+            return .{ .document_symbol = picker_result };
         } else {
-            return self.app.picker.queryFile(alloc, p.query);
+            const results = self.app.picker.queryFile(alloc, p.query) orelse return null;
+            return .{ .file = results };
         }
     }
 

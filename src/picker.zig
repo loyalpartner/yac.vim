@@ -1,13 +1,27 @@
 const std = @import("std");
 const Io = std.Io;
-const json_utils = @import("json_utils.zig");
 const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
-const Value = json_utils.Value;
-const ObjectMap = json_utils.ObjectMap;
 
 const max_results = 50;
 const max_files = 50000;
+
+// ============================================================================
+// Picker result types — typed structs, serialized by RpcModule framework.
+// ============================================================================
+
+pub const PickerItem = struct {
+    label: []const u8,
+    detail: []const u8 = "",
+    file: []const u8 = "",
+    line: i32 = 0,
+    column: i32 = 0,
+};
+
+pub const PickerResults = struct {
+    items: []const PickerItem,
+    mode: []const u8,
+};
 
 const ScoredEntry = struct {
     index: usize,
@@ -275,7 +289,7 @@ pub const Picker = struct {
     }
 
     /// Open picker: start file index scan and return initial MRU results.
-    pub fn openPicker(self: *Picker, alloc: Allocator, cwd: []const u8, recent_files: ?[]const []const u8) ?Value {
+    pub fn openPicker(self: *Picker, alloc: Allocator, cwd: []const u8, recent_files: ?[]const []const u8) ?PickerResults {
         if (!self.start(cwd)) return null;
         if (recent_files) |rf| {
             self.setRecentFiles(rf);
@@ -284,7 +298,7 @@ pub const Picker = struct {
     }
 
     /// Query picker for files matching pattern.
-    pub fn queryFile(self: *Picker, alloc: Allocator, query: []const u8) ?Value {
+    pub fn queryFile(self: *Picker, alloc: Allocator, query: []const u8) ?PickerResults {
         if (!self.hasIndex()) return null;
         self.pollScan();
         if (query.len == 0) {
@@ -301,34 +315,25 @@ pub const Picker = struct {
     }
 
     /// Query picker for grep results.
-    pub fn queryGrep(self: *Picker, alloc: Allocator, query: []const u8) ?Value {
+    pub fn queryGrep(self: *Picker, alloc: Allocator, query: []const u8) ?PickerResults {
         if (query.len == 0) return null;
         const cwd_val = self.cwd orelse return null;
         return runGrep(alloc, self.io, query, cwd_val) catch null;
     }
 };
 
-/// Build picker results in the standard JSON format for Vim.
-pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []const u8) Value {
-    var items = std.json.Array.init(alloc);
+/// Build picker results from a list of file paths.
+pub fn buildPickerResults(alloc: Allocator, paths: []const []const u8, mode: []const u8) PickerResults {
+    var items: std.ArrayList(PickerItem) = .empty;
     for (paths) |path| {
-        var item = ObjectMap.init(alloc);
-        item.put("label", json_utils.jsonString(path)) catch continue;
-        item.put("detail", json_utils.jsonString("")) catch continue;
-        item.put("file", json_utils.jsonString(path)) catch continue;
-        item.put("line", json_utils.jsonInteger(0)) catch continue;
-        item.put("column", json_utils.jsonInteger(0)) catch continue;
-        items.append(.{ .object = item }) catch continue;
+        items.append(alloc, .{ .label = path, .file = path }) catch continue;
     }
-    var result = ObjectMap.init(alloc);
-    result.put("items", .{ .array = items }) catch {};
-    result.put("mode", json_utils.jsonString(mode)) catch {};
-    return .{ .object = result };
+    return .{ .items = items.items, .mode = mode };
 }
 
-/// Spawn rg synchronously and return results as a picker Value.
+/// Spawn rg synchronously and return typed picker results.
 /// Caller's arena allocator owns all memory.
-fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !Value {
+fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !PickerResults {
     const argv: []const []const u8 = &.{
         "rg",             "--vimgrep", "--max-count", "5",     "--max-columns", "200",
         "--max-filesize", "1M",        "--color",     "never", "--",            pattern,
@@ -357,24 +362,21 @@ fn runGrep(alloc: Allocator, io: Io, pattern: []const u8, cwd: []const u8) !Valu
     // kill() already waits and cleans up in Zig 0.16
     child.kill(io);
 
-    var items = std.json.Array.init(alloc);
+    var items: std.ArrayList(PickerItem) = .empty;
     var line_iter = std.mem.splitScalar(u8, output_buf.items, '\n');
     while (line_iter.next()) |line| {
         if (items.items.len >= max_results) break;
         if (line.len == 0) continue;
-        const item = parseGrepLine(alloc, line) orelse continue;
-        items.append(item) catch break;
+        const item = parseGrepLine(line) orelse continue;
+        items.append(alloc, item) catch break;
     }
 
-    var result = ObjectMap.init(alloc);
-    result.put("items", .{ .array = items }) catch {};
-    result.put("mode", json_utils.jsonString("grep")) catch {};
-    return .{ .object = result };
+    return .{ .items = items.items, .mode = "grep" };
 }
 
 /// Parse a single rg --vimgrep output line: `path:line:column:text`
 /// With child.cwd set, rg outputs relative paths (no colons on Unix).
-fn parseGrepLine(alloc: Allocator, line: []const u8) ?Value {
+fn parseGrepLine(line: []const u8) ?PickerItem {
     const colon1 = std.mem.indexOfScalar(u8, line, ':') orelse return null;
     const rest1 = line[colon1 + 1 ..];
     const colon2 = std.mem.indexOfScalar(u8, rest1, ':') orelse return null;
@@ -382,18 +384,18 @@ fn parseGrepLine(alloc: Allocator, line: []const u8) ?Value {
     const colon3 = std.mem.indexOfScalar(u8, rest2, ':') orelse return null;
 
     const file = line[0..colon1];
-    const line_num = std.fmt.parseInt(u32, rest1[0..colon2], 10) catch return null;
-    const col_num = std.fmt.parseInt(u32, rest2[0..colon3], 10) catch return null;
+    const line_num = std.fmt.parseInt(i32, rest1[0..colon2], 10) catch return null;
+    const col_num = std.fmt.parseInt(i32, rest2[0..colon3], 10) catch return null;
     const raw_text = rest2[colon3 + 1 ..];
     const text = if (std.mem.indexOfNone(u8, raw_text, " \t")) |start| raw_text[start..] else raw_text;
 
-    var item = ObjectMap.init(alloc);
-    item.put("label", json_utils.jsonString(text)) catch return null;
-    item.put("detail", json_utils.jsonString(file)) catch return null;
-    item.put("file", json_utils.jsonString(file)) catch return null;
-    item.put("line", json_utils.jsonInteger(if (line_num > 0) @as(i64, line_num) - 1 else 0)) catch return null;
-    item.put("column", json_utils.jsonInteger(if (col_num > 0) @as(i64, col_num) - 1 else 0)) catch return null;
-    return .{ .object = item };
+    return .{
+        .label = text,
+        .detail = file,
+        .file = file,
+        .line = if (line_num > 0) line_num - 1 else 0,
+        .column = if (col_num > 0) col_num - 1 else 0,
+    };
 }
 
 fn findExecutable(name: []const u8) bool {
@@ -477,25 +479,13 @@ test "filterAndSort - empty pattern returns recent files" {
 }
 
 test "parseGrepLine - parses rg vimgrep output" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
     const line = "src/main.zig:42:10:    const x = 5;";
-    const result = parseGrepLine(alloc, line) orelse {
+    const item = parseGrepLine(line) orelse {
         return error.TestUnexpectedResult;
     };
-    const obj = switch (result) {
-        .object => |o| o,
-        else => return error.TestUnexpectedResult,
-    };
-    // file
-    try std.testing.expectEqualStrings("src/main.zig", json_utils.getString(obj, "file").?);
-    // line is 0-based (42 - 1 = 41)
-    try std.testing.expectEqual(@as(i64, 41), obj.get("line").?.integer);
-    // column is 0-based (10 - 1 = 9)
-    try std.testing.expectEqual(@as(i64, 9), obj.get("column").?.integer);
-    // label is the trimmed text
-    try std.testing.expectEqualStrings("const x = 5;", json_utils.getString(obj, "label").?);
-    // detail is the file path
-    try std.testing.expectEqualStrings("src/main.zig", json_utils.getString(obj, "detail").?);
+    try std.testing.expectEqualStrings("src/main.zig", item.file);
+    try std.testing.expectEqual(@as(i32, 41), item.line); // 0-based (42 - 1)
+    try std.testing.expectEqual(@as(i32, 9), item.column); // 0-based (10 - 1)
+    try std.testing.expectEqualStrings("const x = 5;", item.label);
+    try std.testing.expectEqualStrings("src/main.zig", item.detail);
 }
