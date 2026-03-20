@@ -13,9 +13,26 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     mod.addImport("lsp", lsp_dep.module("lsp"));
 
+    // Executable
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    exe_mod.addImport("lsp", lsp_dep.module("lsp"));
+
+    const exe = b.addExecutable(.{
+        .name = "yacd",
+        .root_module = exe_mod,
+    });
+    b.installArtifact(exe);
+
+    // Tests
     const tests = b.addTest(.{
         .root_module = mod,
     });
