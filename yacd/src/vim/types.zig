@@ -14,6 +14,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         // Requests (Vim -> yacd)
         .{ "hover", PositionParams },
         .{ "definition", PositionParams },
+        .{ "goto_definition", PositionParams },
         .{ "references", PositionParams },
         .{ "completion", CompletionParams },
         .{ "signature_help", PositionParams },
@@ -33,6 +34,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "progress", ProgressPush },
         .{ "install_progress", InstallProgressPush },
         .{ "install_complete", InstallCompletePush },
+        .{ "started", StartedPush },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -45,6 +47,7 @@ pub fn ResultType(comptime method: []const u8) type {
     const map = .{
         .{ "hover", HoverResult },
         .{ "definition", LocationResult },
+        .{ "goto_definition", LocationResult },
         .{ "references", ReferencesResult },
         .{ "completion", CompletionResult },
         .{ "signature_help", SignatureHelpResult },
@@ -71,7 +74,7 @@ pub fn ResultType(comptime method: []const u8) type {
 pub const PositionParams = struct {
     file: []const u8,
     line: u32,
-    col: u32,
+    column: u32,
 };
 
 pub const FileParams = struct {
@@ -115,7 +118,7 @@ pub const HoverResult = struct {
 pub const LocationResult = struct {
     file: []const u8,
     line: u32,
-    col: u32,
+    column: u32,
 };
 
 pub const ReferencesResult = struct {
@@ -206,6 +209,11 @@ pub const InstallCompletePush = struct {
     language: []const u8,
     success: bool,
     message: []const u8 = "",
+};
+
+pub const StartedPush = struct {
+    pid: i32,
+    log_file: []const u8,
 };
 
 // ============================================================================

@@ -82,6 +82,12 @@ pub fn fileToUri(allocator: Allocator, file_path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "file://{s}", .{file_path});
 }
 
+/// Strip "file://" prefix from a URI. Returns the path portion.
+pub fn uriToFile(uri: []const u8) []const u8 {
+    const prefix = "file://";
+    return if (std.mem.startsWith(u8, uri, prefix)) uri[prefix.len..] else uri;
+}
+
 // ============================================================================
 // Built-in configs
 // ============================================================================

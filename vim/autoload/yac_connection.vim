@@ -1,7 +1,7 @@
-" yac_connection.vim — daemon connection management
+" yac_connection.vim — daemon connection management (stdio mode)
 "
-" Owns all connection state: channel pool, socket, daemon lifecycle.
-" Public API used by yac.vim (s:request/s:notify) and debug/status modules.
+" Owns all connection state: job, channel, daemon lifecycle.
+" yacd communicates via stdin/stdout JSON channel (no Unix socket).
 
 " === State ===
 
@@ -9,73 +9,47 @@
 " function body returns the call stack, not the file path).
 let s:plugin_root = fnamemodify(resolve(expand('<sfile>:p')), ':h:h:h')
 
-let s:channel_pool = {}
-let s:current_connection_key = 'local'
-let s:daemon_started = 0
+let s:daemon_job = v:null
+let s:daemon_channel = v:null
+let s:daemon_log_file = ''
 let s:loaded_langs = {}
 let s:log_started = 0
 
 " === Internal helpers ===
 
-function! s:get_connection_key() abort
-  return exists('b:yac_ssh_host') ? b:yac_ssh_host : 'local'
-endfunction
-
-function! s:get_socket_path() abort
-  if !empty($XDG_RUNTIME_DIR)
-    return $XDG_RUNTIME_DIR . '/yacd.sock'
-  elseif !empty($USER)
-    return '/tmp/yacd-' . $USER . '.sock'
-  else
-    return '/tmp/yacd.sock'
-  endif
-endfunction
-
-" 尝试连接到 daemon socket
-function! s:try_connect(sock_path) abort
-  try
-    let l:ch = ch_open('unix:' . a:sock_path, {
-      \ 'mode': 'json',
-      \ 'callback': function('s:handle_response'),
-      \ 'close_cb': function('s:handle_close'),
-      \ })
-    if ch_status(l:ch) == 'open'
-      return l:ch
-    endif
-  catch
-  endtry
-  return v:null
-endfunction
-
-" 启动 daemon 进程（fire-and-forget）
+" 启动 daemon 进程，通过 stdio JSON channel 通信
 function! s:start_daemon() abort
-  let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/zig-out/bin/yacd'])
+  let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/yacd/zig-out/bin/yacd'])
   if exists('g:yac_log_level')
     let l:cmd += ['--log-level', g:yac_log_level]
   endif
   if exists('g:yac_log_file')
     let l:cmd += ['--log-file', g:yac_log_file]
   endif
-  " stoponexit='' means don't kill on VimLeave
-  call job_start(l:cmd, {'stoponexit': ''})
-  call yac#_debug_log('Started yacd daemon')
+
+  let s:daemon_job = job_start(l:cmd, {
+    \ 'mode': 'json',
+    \ 'callback': function('s:handle_push'),
+    \ 'close_cb': function('s:handle_close'),
+    \ 'stoponexit': 'kill',
+    \ })
+
+  if job_status(s:daemon_job) !=# 'run'
+    let s:daemon_job = v:null
+    let s:daemon_channel = v:null
+    return v:false
+  endif
+
+  let s:daemon_channel = job_getchannel(s:daemon_job)
+  call yac#_debug_log('Started yacd daemon (stdio)')
+  return v:true
 endfunction
 
-" 确保连接到 daemon
+" 确保 daemon 在运行并返回 channel
 function! s:ensure_connection() abort
-  let l:key = s:get_connection_key()
-  let s:current_connection_key = l:key
-
-  " 复用已有 open channel
-  if has_key(s:channel_pool, l:key) && ch_status(s:channel_pool[l:key]) == 'open'
-    return s:channel_pool[l:key]
-  endif
-  if has_key(s:channel_pool, l:key)
-    unlet s:channel_pool[l:key]
-    " Reconnecting to a (possibly new) daemon — languages must be re-loaded
-    if exists('s:loaded_langs')
-      let s:loaded_langs = {}
-    endif
+  " 已有 channel 且可用
+  if s:daemon_channel isnot v:null && ch_status(s:daemon_channel) ==# 'open'
+    return s:daemon_channel
   endif
 
   " 开启 channel 日志（仅第一次）
@@ -87,44 +61,28 @@ function! s:ensure_connection() abort
     let s:log_started = 1
   endif
 
-  let l:sock = s:get_socket_path()
+  " 清理旧状态
+  call s:cleanup()
 
-  " 尝试连接到已有 daemon
-  let l:ch = s:try_connect(l:sock)
-  if l:ch isnot v:null
-    let s:channel_pool[l:key] = l:ch
-    call yac#_debug_log(printf('Connected to daemon [%s] via %s', l:key, l:sock))
-    return l:ch
+  " 启动 daemon
+  if !s:start_daemon()
+    echoerr 'Failed to start yacd daemon'
+    return v:null
   endif
 
-  " 启动 daemon 并重试（防止重复启动）
-  if !s:daemon_started
-    let s:daemon_started = 1
-    call s:start_daemon()
-  endif
-  for i in range(20)
-    sleep 100m
-    let l:ch = s:try_connect(l:sock)
-    if l:ch isnot v:null
-      let s:channel_pool[l:key] = l:ch
-      call yac#_debug_log(printf('Connected to daemon [%s] after start', l:key))
-      return l:ch
-    endif
-  endfor
-
-  echoerr 'Failed to connect to yacd daemon'
-  return v:null
+  return s:daemon_channel
 endfunction
 
 " 处理 channel 关闭回调
 function! s:handle_close(channel) abort
-  let s:daemon_started = 0
-  call s:cleanup_dead_connections()
+  call s:cleanup()
 endfunction
 
 " Channel 回调：只处理服务器主动推送的通知
 " Vim JSON channel: [0, data] → callback receives data (dict) directly
-function! s:handle_response(channel, msg) abort
+" Channel callback: handles push notifications (id=0 messages) from daemon.
+" Responses to ch_sendexpr are matched by Vim using the positive ID.
+function! s:handle_push(channel, msg) abort
   if type(a:msg) != v:t_dict || !has_key(a:msg, 'action')
     return
   endif
@@ -143,37 +101,38 @@ function! s:handle_response(channel, msg) abort
     elseif has_key(params, 'edit') && has_key(params.edit, 'documentChanges')
       call yac_lsp_edit#apply_workspace_edit(params.edit.documentChanges)
     endif
+  elseif a:msg.action ==# 'started'
+    let params = get(a:msg, 'params', {})
+    let s:daemon_log_file = get(params, 'log_file', '')
+    call yac#_debug_log(printf('Daemon started: pid=%s, log=%s',
+      \ get(params, 'pid', '?'), s:daemon_log_file))
+  elseif a:msg.action ==# 'install_progress'
+    let params = get(a:msg, 'params', {})
+    call yac#_debug_log(printf('[install] %s: %s (%d%%)',
+      \ get(params, 'language', ''), get(params, 'message', ''), get(params, 'percentage', 0)))
+  elseif a:msg.action ==# 'install_complete'
+    let params = get(a:msg, 'params', {})
+    let l:lang = get(params, 'language', '')
+    let l:ok = get(params, 'success', v:false)
+    call yac#_debug_log(printf('[install] %s: %s — %s',
+      \ l:lang, l:ok ? 'OK' : 'FAIL', get(params, 'message', '')))
+    if l:ok
+      echomsg printf('[yac] %s LSP server installed', l:lang)
+    else
+      echoerr printf('[yac] Failed to install %s: %s', l:lang, get(params, 'message', ''))
+    endif
   endif
 endfunction
 
-" 关闭所有 channel 连接（内部使用）
-function! s:stop_all_channels() abort
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) == 'open'
-      call yac#_debug_log(printf('Closing channel for %s', key))
-      call ch_close(ch)
-    endif
-  endfor
-  let s:channel_pool = {}
-endfunction
-
-" 自动清理死连接
-function! s:cleanup_dead_connections() abort
-  let dead_keys = []
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) != 'open'
-      call add(dead_keys, key)
-    endif
-  endfor
-
-  for key in dead_keys
-    if has_key(s:channel_pool, key)
-      call yac#_debug_log(printf('Removing dead connection: %s', key))
-      unlet s:channel_pool[key]
-    endif
-  endfor
-
-  return len(dead_keys)
+" 清理 daemon 状态
+function! s:cleanup() abort
+  let s:daemon_channel = v:null
+  let s:daemon_log_file = ''
+  if s:daemon_job isnot v:null && job_status(s:daemon_job) ==# 'run'
+    call job_stop(s:daemon_job, 'kill')
+  endif
+  let s:daemon_job = v:null
+  let s:loaded_langs = {}
 endfunction
 
 " Load language dependencies from languages.json
@@ -225,30 +184,23 @@ function! yac_connection#start() abort
   return s:ensure_connection() isnot v:null
 endfunction
 
-" Send exit to daemon, then close all channels.
+" Send exit to daemon, then clean up.
 function! yac_connection#stop() abort
-  for [key, ch] in items(s:channel_pool)
-    if ch_status(ch) == 'open'
-      call yac#_debug_log(printf('Sending exit to daemon via %s', key))
-      try
-        call ch_sendraw(ch, json_encode([{'method': 'exit', 'params': {}}]) . "\n")
-      catch
-      endtry
-    endif
-    break
-  endfor
-  call s:stop_all_channels()
-  " Reset so next start() can launch a new daemon
-  let s:daemon_started = 0
-  if exists('s:loaded_langs')
-    let s:loaded_langs = {}
+  if s:daemon_channel isnot v:null && ch_status(s:daemon_channel) ==# 'open'
+    call yac#_debug_log('Sending exit to daemon')
+    try
+      call ch_sendraw(s:daemon_channel, json_encode([{'method': 'exit', 'params': {}}]) . "\n")
+    catch
+    endtry
+    " Give daemon time to shut down gracefully
+    sleep 100m
   endif
+  call s:cleanup()
 endfunction
 
 function! yac_connection#restart() abort
   call yac_connection#stop()
-  " Brief delay to let daemon clean up socket
-  sleep 200m
+  sleep 100m
   call yac_connection#start()
 endfunction
 
@@ -260,9 +212,9 @@ function! yac_connection#ensure_language(lang_dir) abort
   " Load dependencies first (works even without daemon connection)
   call s:load_language_deps(a:lang_dir)
 
-  let l:key = s:get_connection_key()
-  let l:ch = get(s:channel_pool, l:key, '')
-  if empty(l:ch) || ch_status(l:ch) !=# 'open' | return | endif
+  if s:daemon_channel is v:null || ch_status(s:daemon_channel) !=# 'open'
+    return
+  endif
 
   " Only mark as loading AFTER confirming channel is open.
   " Otherwise a failed send (daemon not started yet) permanently blocks retries.
@@ -278,30 +230,40 @@ function! yac_connection#reset_loaded_langs() abort
   endif
 endfunction
 
-" 手动清理命令
 function! yac_connection#cleanup_connections() abort
-  let cleaned = s:cleanup_dead_connections()
-  echo printf('Cleaned up %d dead connections', cleaned)
+  if s:daemon_channel isnot v:null && ch_status(s:daemon_channel) !=# 'open'
+    call s:cleanup()
+    echo 'Cleaned up dead daemon connection'
+  else
+    echo 'No dead connections'
+  endif
 endfunction
 
-" Close all channels (called by debug_toggle when reconnecting)
 function! yac_connection#stop_all_channels() abort
-  call s:stop_all_channels()
+  call s:cleanup()
 endfunction
 
 " Accessors for debug/status modules
-function! yac_connection#get_socket_path() abort
-  return s:get_socket_path()
-endfunction
-
 function! yac_connection#get_channel_pool() abort
-  return s:channel_pool
+  " Compatibility: return dict with single entry
+  if s:daemon_channel isnot v:null
+    return {'local': s:daemon_channel}
+  endif
+  return {}
 endfunction
 
 function! yac_connection#get_connection_key() abort
-  return s:get_connection_key()
+  return 'local'
 endfunction
 
 function! yac_connection#get_current_connection_key() abort
-  return s:current_connection_key
+  return 'local'
+endfunction
+
+function! yac_connection#get_daemon_job() abort
+  return s:daemon_job
+endfunction
+
+function! yac_connection#get_log_file() abort
+  return s:daemon_log_file
 endfunction

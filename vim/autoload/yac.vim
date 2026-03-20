@@ -71,6 +71,7 @@ let s:debug_log_file = $YAC_DEBUG_LOG != '' ? $YAC_DEBUG_LOG : '/tmp/yac-vim-deb
 " didChange debounce timer
 let s:did_change_timer = -1
 
+
 " Debug 日志写入文件，不干扰 Vim 命令行
 function! s:debug_log(msg) abort
   if !get(g:, 'yac_debug', 0)
@@ -107,25 +108,19 @@ function! yac#ensure_language(lang_dir) abort
 endfunction
 
 function! s:request(method, params, callback_func) abort
-  let jsonrpc_msg = {
-    \ 'method': a:method,
-    \ 'params': a:params
-    \ }
-
   let l:ch = yac_connection#ensure_connection()
-
-  if l:ch isnot v:null && ch_status(l:ch) == 'open'
-    call s:debug_log(printf('[SEND][%s]: %s -> %s:%d:%d',
-      \ yac_connection#get_current_connection_key(),
-      \ a:method,
-      \ fnamemodify(get(a:params, 'file', ''), ':t'),
-      \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
-
-    " 使用指定的回调函数
-    call ch_sendexpr(l:ch, jsonrpc_msg, {'callback': a:callback_func})
-  else
+  if l:ch is v:null || ch_status(l:ch) != 'open'
     echoerr printf('yacd not running for %s', yac_connection#get_connection_key())
+    return
   endif
+
+  call s:debug_log(printf('[SEND] %s -> %s:%d:%d',
+    \ a:method,
+    \ fnamemodify(get(a:params, 'file', ''), ':t'),
+    \ get(a:params, 'line', -1), get(a:params, 'column', -1)))
+
+  call ch_sendexpr(l:ch, {'method': a:method, 'params': a:params},
+    \ {'callback': a:callback_func})
 endfunction
 
 " Notification - fire and forget, clear semantics
@@ -754,6 +749,7 @@ endfunction
 function! yac#_notify(method, params) abort
   call s:notify(a:method, a:params)
 endfunction
+
 
 function! yac#_debug_log(msg) abort
   call s:debug_log(a:msg)

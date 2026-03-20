@@ -6,6 +6,8 @@ const LangConfig = config.LangConfig;
 const InstallInfo = config.InstallInfo;
 const Notifier = @import("../notifier.zig").Notifier;
 
+const log = std.log.scoped(.installer);
+
 /// Wrapper around std.c.getenv that returns a Zig slice.
 fn getenv(name: [*:0]const u8) ?[]const u8 {
     const val = std.c.getenv(name) orelse return null;
@@ -141,6 +143,8 @@ pub const Installer = struct {
         // Single cleanup point: finishInstall removes from map + frees key
         defer self.finishInstall(owned_lang);
 
+        log.info("installing {s} via {s}", .{ language, @tagName(info.method) });
+
         // Ensure base directories exist
         try self.ensureDirs();
 
@@ -179,6 +183,7 @@ pub const Installer = struct {
         // Create symlink: bin/{bin_name} → packages/{language}/...
         try self.createBinLink(language, bin_name, info);
 
+        log.info("install complete: {s}", .{language});
         self.sendProgress(language, "Done", 100);
     }
 
@@ -367,6 +372,7 @@ pub const Installer = struct {
     }
 
     fn runChild(self: *Installer, argv: []const []const u8, cwd: []const u8) !void {
+        log.debug("exec: {s} (cwd={s})", .{ argv[0], cwd });
         var child = std.process.spawn(self.io, .{
             .argv = argv,
             .cwd = .{ .path = cwd },

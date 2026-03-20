@@ -6,6 +6,8 @@ const config = @import("config.zig");
 const LspProxy = @import("lsp/root.zig").LspProxy;
 const Installer = @import("lsp/root.zig").Installer;
 
+const log = std.log.scoped(.registry);
+
 // ============================================================================
 // ProxyRegistry — file_path → LspProxy resolver
 //
@@ -19,6 +21,7 @@ const Installer = @import("lsp/root.zig").Installer;
 pub const ProxyRegistry = struct {
     allocator: Allocator,
     io: Io,
+    group: ?*Io.Group = null,
     proxies: std.StringHashMap(*LspProxy),
     failed_spawns: std.StringHashMap(void),
     installer: ?*Installer = null,
@@ -51,7 +54,7 @@ pub const ProxyRegistry = struct {
     /// Resolve a file path to an LspProxy.
     /// Detects language, finds workspace, creates proxy if needed.
     /// On spawn failure, triggers auto-install if InstallInfo is available.
-    pub fn resolve(self: *ProxyRegistry, file_path: []const u8, group: *Io.Group) !*LspProxy {
+    pub fn resolve(self: *ProxyRegistry, file_path: []const u8, group_override: ?*Io.Group) !*LspProxy {
         const lang_config = config.detectConfig(file_path) orelse return error.UnknownLanguage;
         const language = lang_config.language_id;
 
@@ -89,7 +92,10 @@ pub const ProxyRegistry = struct {
         }
 
         // Create new proxy (outside lock — may block on LSP initialize)
-        const proxy = self.spawnProxy(lang_config, workspace_uri, group) catch |err| {
+        log.info("spawning LSP for {s}", .{language});
+        const g = group_override orelse self.group orelse return error.CommandNotFound;
+        const proxy = self.spawnProxy(lang_config, workspace_uri, g) catch |err| {
+            log.warn("spawn failed for {s}: {s}", .{ language, @errorName(err) });
             // Spawn failed — try auto-install
             if (self.installer) |inst| {
                 if (lang_config.install) |info| {
@@ -99,7 +105,7 @@ pub const ProxyRegistry = struct {
                             .lang_config = lang_config,
                             .registry = self,
                         };
-                        group.concurrent(self.io, autoInstall, .{ctx}) catch {};
+                        g.concurrent(self.io, autoInstall, .{ctx}) catch {};
                         return error.Installing;
                     }
                 }
@@ -125,6 +131,7 @@ pub const ProxyRegistry = struct {
         }
 
         try self.proxies.put(owned_key, proxy);
+        log.info("LSP ready: {s}", .{owned_key});
         return proxy;
     }
 
@@ -156,11 +163,12 @@ pub const ProxyRegistry = struct {
             try argv.append(self.allocator, arg);
         }
 
-        var child = std.process.Child.init(argv.items, self.allocator);
-        child.stdin_behavior = .pipe;
-        child.stdout_behavior = .pipe;
-        child.stderr_behavior = .pipe;
-        child.spawn(self.io) catch return error.CommandNotFound;
+        const child = std.process.spawn(self.io, .{
+            .argv = argv.items,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        }) catch return error.CommandNotFound;
 
         // Build initialize params
         const root_uri: ?[]const u8 = workspace_uri;
@@ -216,7 +224,9 @@ const AutoInstallCtx = struct {
 };
 
 fn autoInstall(ctx: AutoInstallCtx) Io.Cancelable!void {
+    log.info("auto-install starting for {s}", .{ctx.lang_config.language_id});
     ctx.installer.install(ctx.lang_config) catch |err| {
+        log.err("auto-install failed for {s}: {s}", .{ ctx.lang_config.language_id, @errorName(err) });
         ctx.registry.markFailed(ctx.lang_config.language_id);
 
         ctx.installer.notifier.send("install_complete", .{

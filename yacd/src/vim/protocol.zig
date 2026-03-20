@@ -115,7 +115,7 @@ pub fn encodeResponse(allocator: Allocator, id: u32, result: std.json.Value) ![]
     errdefer aw.deinit();
     const w = &aw.writer;
 
-    try w.print("[{d},", .{-@as(i64, @intCast(id))});
+    try w.print("[{d},", .{@as(i64, @intCast(id))});
     try std.json.Stringify.value(result, .{ .emit_null_optional_fields = false }, w);
     try w.writeAll("]\n");
 
@@ -233,7 +233,7 @@ test "encodeResponse: negative id" {
     const encoded = try encodeResponse(allocator, 42, .{ .string = "ok" });
     defer allocator.free(encoded);
 
-    try std.testing.expectEqualStrings("[-42,\"ok\"]\n", encoded);
+    try std.testing.expectEqualStrings("[42,\"ok\"]\n", encoded);
 }
 
 test "encodeNotification: action + params" {

@@ -1,6 +1,6 @@
 " yac.vim plugin entry point
 
-" 兼容性检查 - 需要 channel + Unix socket 支持
+" 兼容性检查 - 需要 channel + job 支持
 if !has('channel') || !has('job')
   finish
 endif

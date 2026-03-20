@@ -71,10 +71,8 @@ function! yac_status#status() abort
 
   " --- Daemon ---
   call add(l:lines, '## Daemon')
-  let l:sock = yac_connection#get_socket_path()
-  let l:sock_exists = filereadable(l:sock) || getftype(l:sock) ==# 'socket'
+  let l:job = yac_connection#get_daemon_job()
   let l:pool = yac_connection#get_channel_pool()
-  let l:active_conns = len(l:pool)
   let l:has_open = 0
   for [l:key, l:ch] in items(l:pool)
     if ch_status(l:ch) ==# 'open'
@@ -83,16 +81,15 @@ function! yac_status#status() abort
     endif
   endfor
 
-  call add(l:lines, printf('  Socket:  %s %s', l:sock, l:sock_exists ? '(exists)' : '(not found)'))
+  call add(l:lines, printf('  Transport: stdio'))
+  call add(l:lines, printf('  Job:     %s', l:job isnot v:null ? job_status(l:job) : 'not started'))
   call add(l:lines, printf('  Status:  %s', l:has_open ? 'Running' : 'Not connected'))
-  if l:active_conns > 0
-    for [l:key, l:ch] in items(l:pool)
-      call add(l:lines, printf('  Channel: %s [%s]', l:key, ch_status(l:ch)))
-    endfor
-  endif
+  for [l:key, l:ch] in items(l:pool)
+    call add(l:lines, printf('  Channel: %s [%s]', l:key, ch_status(l:ch)))
+  endfor
 
   " Daemon log
-  let l:log_dir = fnamemodify(l:sock, ':h')
+  let l:log_dir = yac_debug#log_dir()
   let l:log_files = glob(l:log_dir . '/yacd-*.log', 0, 1)
   call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
   call add(l:lines, printf('  Log:     %s', empty(l:log_files) ? '(none)' : l:log_files[0]))

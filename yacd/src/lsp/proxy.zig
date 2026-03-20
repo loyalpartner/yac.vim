@@ -21,8 +21,10 @@ const LspConnection = @import("connection.zig").LspConnection;
 
 pub const LspProxy = struct {
     allocator: Allocator,
+    io: Io,
     connection: *LspConnection,
     init_result: lsp.ResultType("initialize"),
+    opened_files: std.StringHashMap(void),
     state: State = .initialized,
 
     pub const State = enum {
@@ -48,15 +50,46 @@ pub const LspProxy = struct {
         const self = try allocator.create(LspProxy);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .connection = conn,
             .init_result = result,
+            .opened_files = std.StringHashMap(void).init(allocator),
         };
         return self;
     }
 
     pub fn deinit(self: *LspProxy) void {
+        var it = self.opened_files.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.opened_files.deinit();
         self.connection.deinit();
         self.allocator.destroy(self);
+    }
+
+    /// Ensure a file is opened on the LSP server. Reads the file and sends didOpen if needed.
+    pub fn ensureOpen(self: *LspProxy, uri: []const u8, language_id: []const u8) !void {
+        if (self.opened_files.get(uri) != null) return;
+
+        const config = @import("../config.zig");
+        const file_path = config.uriToFile(uri);
+        const content = Io.Dir.cwd().readFileAlloc(self.io, file_path, self.allocator, .limited(10 * 1024 * 1024)) catch "";
+        defer if (content.len > 0) self.allocator.free(content);
+
+        try self.didOpen(.{
+            .textDocument = .{
+                .uri = uri,
+                .languageId = .{ .custom_value = language_id },
+                .version = 0,
+                .text = content,
+            },
+        });
+
+        const owned_uri = try self.allocator.dupe(u8, uri);
+        self.opened_files.put(owned_uri, {}) catch {
+            self.allocator.free(owned_uri);
+        };
     }
 
     /// Graceful shutdown: shutdown request → exit notification.

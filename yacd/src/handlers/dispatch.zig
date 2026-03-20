@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const vim = @import("../vim/root.zig");
 const protocol = vim.protocol;
 
+const log = std.log.scoped(.dispatch);
+
 // ============================================================================
 // Dispatcher — dynamic method → handler routing (typed)
 //
@@ -65,14 +67,42 @@ pub const Dispatcher = struct {
         const S = struct {
             fn call(ctx: *anyopaque, allocator: Allocator, raw_params: std.json.Value) ?std.json.Value {
                 const self: *T = @ptrCast(@alignCast(ctx));
+
+                // Log raw params
+                logValue("params", allocator, raw_params);
+
                 const params: Params = if (Params == void) {} else
-                    protocol.fromJsonValue(Params, allocator, raw_params) catch return null;
-                const result: Result = func(self, allocator, params) catch return null;
+                    protocol.fromJsonValue(Params, allocator, raw_params) catch |err| {
+                        log.warn("params parse error: {s}", .{@errorName(err)});
+                        return null;
+                    };
+                const result: Result = func(self, allocator, params) catch |err| {
+                    log.warn("handler error: {s}", .{@errorName(err)});
+                    return null;
+                };
                 if (Result == void) return .null;
-                return protocol.toJsonValue(allocator, result) catch null;
+                const json_result = protocol.toJsonValue(allocator, result) catch return null;
+
+                // Log raw result
+                logValue("result", allocator, json_result);
+
+                return json_result;
             }
         };
         return &S.call;
+    }
+
+    fn logValue(label: []const u8, allocator: Allocator, value: std.json.Value) void {
+        if (!log.isEnabled(.debug)) return; // skip serialization when debug is off
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &aw.writer) catch return;
+        const json = aw.toOwnedSlice() catch return;
+        defer allocator.free(json);
+        if (json.len <= 500) {
+            log.debug("{s}: {s}", .{ label, json });
+        } else {
+            log.debug("{s}: {s}... ({d} bytes)", .{ label, json[0..200], json.len });
+        }
     }
 };
 

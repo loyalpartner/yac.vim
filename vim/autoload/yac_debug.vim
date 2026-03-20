@@ -1,5 +1,11 @@
 " yac_debug.vim — debug toggle, status display, connection info, log viewer
 
+" Log directory — matches log.zig computeLogPath() priority:
+"   $XDG_RUNTIME_DIR > /tmp
+function! yac_debug#log_dir() abort
+  return !empty($XDG_RUNTIME_DIR) ? $XDG_RUNTIME_DIR : '/tmp'
+endfunction
+
 " === Debug 功能 ===
 
 " 切换调试模式
@@ -36,7 +42,9 @@ function! yac_debug#debug_status() abort
   echo '  Debug Mode: ' . (debug_enabled ? 'ENABLED' : 'DISABLED')
   echo printf('  Active Connections: %d', active_connections)
   echo printf('  Current Buffer: %s', current_key)
-  echo printf('  Socket: %s', yac_connection#get_socket_path())
+  echo printf('  Transport: stdio')
+  let l:job = yac_connection#get_daemon_job()
+  echo printf('  Daemon Job: %s', l:job isnot v:null ? job_status(l:job) : 'not started')
 
   if active_connections > 0
     echo '  Connection Details:'
@@ -47,7 +55,7 @@ function! yac_debug#debug_status() abort
   endif
 
   echo '  Channel Log: /tmp/vim_channel.log' . (debug_enabled ? ' (enabled)' : ' (disabled for new connections)')
-  let l:log_dir = resolve(fnamemodify(yac_connection#get_socket_path(), ':h'))
+  let l:log_dir = yac_debug#log_dir()
   let l:log_files = map(filter(readdir(l:log_dir), 'v:val =~# "^yacd-.*\\.log$"'),
     \ {_, v -> l:log_dir . '/' . v})
   call sort(l:log_files, {a, b -> getftime(b) - getftime(a)})
@@ -69,9 +77,10 @@ function! yac_debug#connections() abort
     return
   endif
 
-  echo 'Active LSP Connections (daemon mode):'
-  echo '======================================='
-  echo printf('  Socket: %s', yac_connection#get_socket_path())
+  echo 'Active LSP Connections (stdio mode):'
+  echo '======================================'
+  let l:job = yac_connection#get_daemon_job()
+  echo printf('  Daemon: %s', l:job isnot v:null ? job_status(l:job) : 'not started')
   echo ''
   for [key, ch] in items(l:pool)
     let status = ch_status(ch)
@@ -85,11 +94,20 @@ endfunction
 
 " === 日志查看功能 ===
 
-" 简单打开日志文件
+" 打开当前 daemon 的日志文件
 function! yac_debug#open_log() abort
-  " Find per-process log: yacd-{pid}.log in the same dir as the socket
-  let l:sock = yac_connection#get_socket_path()
-  let l:dir = resolve(fnamemodify(l:sock, ':h'))
+  " Prefer the exact log path pushed by daemon on connect
+  let l:log_file = yac_connection#get_log_file()
+  if !empty(l:log_file) && filereadable(l:log_file)
+    split
+    execute 'edit ' . fnameescape(l:log_file)
+    setlocal filetype=log
+    setlocal nomodeline
+    return
+  endif
+
+  " Fallback: scan log directory for newest yacd-*.log
+  let l:dir = yac_debug#log_dir()
   let l:files = map(filter(readdir(l:dir), 'v:val =~# "^yacd-.*\\.log$"'),
     \ {_, v -> l:dir . '/' . v})
 
@@ -98,12 +116,9 @@ function! yac_debug#open_log() abort
     return
   endif
 
-  " Sort by modification time (newest first)
   call sort(l:files, {a, b -> getftime(b) - getftime(a)})
-  let l:log_file = l:files[0]
-
   split
-  execute 'edit ' . fnameescape(l:log_file)
+  execute 'edit ' . fnameescape(l:files[0])
   setlocal filetype=log
   setlocal nomodeline
 endfunction

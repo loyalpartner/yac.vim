@@ -7,6 +7,8 @@ const VimMessage = protocol.VimMessage;
 const LineFramer = @import("framer.zig").LineFramer;
 const net = Io.net;
 
+const log = std.log.scoped(.vim_server);
+
 // ============================================================================
 // VimServer — stdio / TCP single-client server
 //
@@ -138,6 +140,13 @@ pub const VimServer = struct {
             for (msgs) |msg| {
                 const encoded = protocol.encodeMessage(ch.allocator, msg) catch continue;
                 defer ch.allocator.free(encoded);
+                // Log what we're writing to Vim (strip trailing \n)
+                const trimmed = if (encoded.len > 0 and encoded[encoded.len - 1] == '\n') encoded[0 .. encoded.len - 1] else encoded;
+                if (trimmed.len <= 500) {
+                    log.debug("-> Vim: {s}", .{trimmed});
+                } else {
+                    log.debug("-> Vim: {s}... ({d} bytes)", .{ trimmed[0..200], trimmed.len });
+                }
                 iface.writeAll(encoded) catch return;
                 iface.flush() catch return;
             }

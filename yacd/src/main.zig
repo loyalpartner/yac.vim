@@ -2,15 +2,28 @@ const std = @import("std");
 const Io = std.Io;
 const App = @import("app.zig").App;
 const Transport = @import("vim/root.zig").Transport;
+const log_mod = @import("log.zig");
+
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .logFn = log_mod.stdLogBridge,
+};
+
+const log = std.log.scoped(.main);
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.c_allocator;
+
+    // Parse CLI args
+    const cli = parseCli(init.args);
+    log_mod.initWithArgs(cli.log_level, cli.log_file);
+    defer log_mod.deinit();
+
+    log.info("transport={s}", .{if (cli.transport == .stdio) "stdio" else "tcp"});
+
     var threaded: Io.Threaded = .init(allocator, .{ .environ = init.environ });
     defer threaded.deinit();
     const io = threaded.io();
-
-    // Parse transport from command-line args
-    const transport = parseTransport(init.args);
 
     const app = try App.create(allocator, io);
     defer {
@@ -19,7 +32,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     var group: Io.Group = .init;
-    try app.serve(transport, &group);
+    try app.serve(cli.transport, &group);
+    log.info("serving, waiting for connections", .{});
 
     // Block until shutdown requested
     while (!app.shutdown_requested.load(.acquire)) {
@@ -27,11 +41,24 @@ pub fn main(init: std.process.Init.Minimal) !void {
         _ = std.c.nanosleep(&req, null);
     }
 
-    // Cancel all coroutines
+    log.info("shutdown requested, cancelling coroutines", .{});
     group.cancel(io);
+    log.info("exiting", .{});
 }
 
-fn parseTransport(args: std.process.Args) Transport {
+const CliArgs = struct {
+    transport: Transport,
+    log_level: ?log_mod.Level,
+    log_file: ?[]const u8,
+};
+
+fn parseCli(args: std.process.Args) CliArgs {
+    var result = CliArgs{
+        .transport = .stdio,
+        .log_level = null,
+        .log_file = null,
+    };
+
     var iter = std.process.Args.Iterator.init(args);
     _ = iter.skip(); // skip argv[0]
 
@@ -41,9 +68,17 @@ fn parseTransport(args: std.process.Args) Transport {
             const port = std.fmt.parseInt(u16, port_str, 10) catch {
                 @panic("invalid --port value");
             };
-            return .{ .tcp = port };
+            result.transport = .{ .tcp = port };
+        } else if (std.mem.startsWith(u8, arg, "--log-level=")) {
+            result.log_level = log_mod.parseLevel(arg["--log-level=".len..]);
+        } else if (std.mem.startsWith(u8, arg, "--log-file=")) {
+            result.log_file = arg["--log-file=".len..];
+        } else if (std.mem.eql(u8, arg, "--log-level")) {
+            result.log_level = if (iter.next()) |v| log_mod.parseLevel(v) else null;
+        } else if (std.mem.eql(u8, arg, "--log-file")) {
+            result.log_file = iter.next();
         }
     }
 
-    return .stdio;
+    return result;
 }

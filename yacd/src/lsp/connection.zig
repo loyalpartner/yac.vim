@@ -9,6 +9,8 @@ const Framer = @import("framer.zig").Framer;
 
 const JsonRPCMessage = lsp.JsonRPCMessage;
 
+const log = std.log.scoped(.lsp_conn);
+
 // ============================================================================
 // LSP Transport — JSON-RPC connection to a child LSP server
 //
@@ -95,6 +97,10 @@ pub const LspConnection = struct {
             writeLsp,
         );
         group.concurrent(io, dispatchLoop, .{self}) catch {};
+        // Read stderr in background — log any output from LSP server
+        if (self.pipe.child.stderr) |_| {
+            group.concurrent(io, stderrLoop, .{self}) catch {};
+        }
         return self;
     }
 
@@ -177,11 +183,13 @@ pub const LspConnection = struct {
             .method = method,
             .params = params,
         } };
+        log.debug("-> [{d}] {s}", .{ id, method });
         try self.channel.send(msg);
 
         // Block coroutine until dispatch loop signals us
         waiter.event.wait(self.io) catch return error.Canceled;
 
+        log.debug("<- [{d}] {s}", .{ id, method });
         return waiter.response orelse error.NullResponse;
     }
 
@@ -203,6 +211,12 @@ pub const LspConnection = struct {
         if (T == ?std.json.Value) return params;
         if (T == std.json.Value) return params;
         if (T == @TypeOf(null)) return null;
+
+        // Empty struct (.{}) → empty object {} instead of empty array []
+        const info = @typeInfo(T);
+        if (info == .@"struct" and info.@"struct".fields.len == 0) {
+            return .{ .object = std.json.ObjectMap.init(allocator) };
+        }
 
         var aw: Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
@@ -249,12 +263,20 @@ pub const LspConnection = struct {
 
             for (msgs) |msg| {
                 switch (msg) {
-                    .response => |r| self.handleResponse(r),
+                    .response => |r| {
+                        const id_num: i64 = switch (r.id orelse continue) {
+                            .number => |i| i,
+                            .string => continue,
+                        };
+                        log.debug("dispatch: response id={d}", .{id_num});
+                        self.handleResponse(r);
+                    },
                     .notification => |n| {
+                        log.debug("dispatch: notification {s}", .{n.method});
                         self.notifications.send(n) catch {};
                     },
                     .request => |r| {
-                        // Auto-respond with null
+                        log.debug("dispatch: server request {s}", .{r.method});
                         self.respond(r.id, null) catch {};
                     },
                 }
@@ -328,11 +350,46 @@ pub const LspConnection = struct {
         const body = aw.toOwnedSlice() catch return;
         defer pipe.allocator.free(body);
 
+        // Log outbound messages (truncated for readability)
+        if (body.len <= 500) {
+            log.debug("-> LSP: {s}", .{body});
+        } else {
+            log.debug("-> LSP: {s}... ({d} bytes)", .{ body[0..200], body.len });
+        }
+
         // Frame with Content-Length header
         const framed = Framer.frame(pipe.allocator, body) catch return;
         defer pipe.allocator.free(framed);
 
         stdin.writeStreamingAll(io, framed) catch {};
+    }
+
+    // ====================================================================
+    // Stderr reader: log LSP server error output
+    // ====================================================================
+
+    fn stderrLoop(self: *LspConnection) Io.Cancelable!void {
+        const stderr = self.pipe.child.stderr orelse return;
+        var read_buf: [4096]u8 = undefined;
+        var reader = stderr.readerStreaming(self.io, &read_buf);
+        while (true) {
+            const data = reader.interface.peekGreedy(1) catch return;
+            if (data.len == 0) return;
+            // Log each line from stderr
+            var start: usize = 0;
+            for (data, 0..) |c, i| {
+                if (c == '\n') {
+                    if (i > start) {
+                        log.warn("LSP stderr: {s}", .{data[start..i]});
+                    }
+                    start = i + 1;
+                }
+            }
+            if (start < data.len) {
+                log.warn("LSP stderr: {s}", .{data[start..]});
+            }
+            reader.interface.toss(data.len);
+        }
     }
 };
 

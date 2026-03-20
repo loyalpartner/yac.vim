@@ -16,6 +16,9 @@ const CompletionHandler = @import("handlers/completion.zig").CompletionHandler;
 const DocumentHandler = @import("handlers/document.zig").DocumentHandler;
 const SystemHandler = @import("handlers/system.zig").SystemHandler;
 const InstallHandler = @import("handlers/install.zig").InstallHandler;
+const log_mod = @import("log.zig");
+
+const log = std.log.scoped(.app);
 
 // ============================================================================
 // App — top-level application state
@@ -71,6 +74,7 @@ pub const App = struct {
         // Register routes
         try app.dispatcher.register("hover", &app.nav, NavigationHandler.hover);
         try app.dispatcher.register("definition", &app.nav, NavigationHandler.definition);
+        try app.dispatcher.register("goto_definition", &app.nav, NavigationHandler.gotoDefinition);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
         try app.dispatcher.register("completion", &app.comp, CompletionHandler.completion);
         try app.dispatcher.register("did_open", &app.doc, DocumentHandler.didOpen);
@@ -93,6 +97,7 @@ pub const App = struct {
     }
 
     pub fn serve(self: *App, transport: Transport, group: *Io.Group) !void {
+        self.registry.group = group;
         try self.server.serve(transport, group, @ptrCast(self), onConnect);
     }
 
@@ -102,12 +107,21 @@ pub const App = struct {
 
     fn onConnect(ctx: *anyopaque, ch: *VimChannel, group: *Io.Group) void {
         const self: *App = @ptrCast(@alignCast(ctx));
+        log.info("vim client connected", .{});
         self.notifier.addChannel(ch);
+
+        // Push daemon info to Vim
+        self.notifier.send("started", .{
+            .pid = @as(i32, @intCast(std.c.getpid())),
+            .log_file = log_mod.getLogFilePath() orelse "",
+        }) catch {};
+
         group.concurrent(ch.io, consumeLoop, .{ self, ch, group }) catch {};
     }
 
     fn consumeLoop(self: *App, ch: *VimChannel, group: *Io.Group) Io.Cancelable!void {
         defer {
+            log.info("vim client disconnected, requesting shutdown", .{});
             self.notifier.removeChannel(ch);
             self.shutdown_requested.store(true, .release); // single client — disconnect → exit
         }
@@ -128,11 +142,15 @@ pub const App = struct {
     }
 
     fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request) Io.Cancelable!void {
+        log.info("request [{d}] {s}", .{ req.id, req.method });
         const result = self.dispatcher.dispatch(
             ch.allocator,
             req.method,
             req.params,
-        ) orelse .null;
+        ) orelse blk: {
+            log.warn("unknown method: {s}", .{req.method});
+            break :blk .null;
+        };
         ch.send(.{ .response = .{
             .id = req.id,
             .result = result,
