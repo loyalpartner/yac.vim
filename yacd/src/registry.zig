@@ -25,6 +25,8 @@ pub const ProxyRegistry = struct {
     proxies: std.StringHashMap(*LspProxy),
     failed_spawns: std.StringHashMap(void),
     installer: ?*Installer = null,
+    on_notification: ?*const LspProxy.OnNotification = null,
+    notify_ctx: ?*anyopaque = null,
     lock: Io.Mutex = .init,
 
     pub fn init(allocator: Allocator, io: Io) ProxyRegistry {
@@ -178,7 +180,11 @@ pub const ProxyRegistry = struct {
             .capabilities = .{},
         };
 
-        return LspProxy.init(self.allocator, self.io, child, group, init_params);
+        const notify_cb: ?LspProxy.NotifyCallback = if (self.on_notification) |func|
+            .{ .func = func, .ctx = self.notify_ctx.? }
+        else
+            null;
+        return LspProxy.init(self.allocator, self.io, child, group, init_params, notify_cb);
     }
 
     /// Mark a language as permanently failed (until reset). Thread-safe.

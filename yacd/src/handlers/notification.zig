@@ -1,30 +1,54 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const ProxyRegistry = @import("../registry.zig").ProxyRegistry;
 const Notifier = @import("../notifier.zig").Notifier;
+const LspProxy = @import("../lsp/root.zig").LspProxy;
+
+const log = std.log.scoped(.notification);
 
 // ============================================================================
-// NotificationHandler — LSP notification → Vim push forwarding
+// NotificationHandler — LSP notification → log / Vim push
 //
-// Drains notification queues from all active LspProxy connections and
-// forwards them to Vim via Notifier.
+// Receives LSP notifications via LspProxy's drain coroutine and either
+// logs them or forwards to Vim via Notifier.
 //
 // Mapping:
+//   window/logMessage              → log.info (daemon log)
+//   window/showMessage             → log.info (daemon log)
 //   textDocument/publishDiagnostics → notifier.send("diagnostics", ...)
-//   window/logMessage              → notifier.send("log_message", ...)
 //   $/progress                     → notifier.send("progress", ...)
 // ============================================================================
 
 pub const NotificationHandler = struct {
-    registry: *ProxyRegistry,
     notifier: *Notifier,
     allocator: Allocator,
 
-    /// Forward LSP notifications. Run as a coroutine.
-    pub fn forwardLoop(self: *NotificationHandler, io: Io) Io.Cancelable!void {
+    /// LspProxy.OnNotification-compatible callback.
+    /// Cast ctx to *NotificationHandler and dispatch.
+    pub fn callback(ctx: *anyopaque, method: []const u8, params: ?std.json.Value) void {
+        const self: *NotificationHandler = @ptrCast(@alignCast(ctx));
+        self.handle(method, params);
+    }
+
+    pub fn handle(self: *NotificationHandler, method: []const u8, params: ?std.json.Value) void {
+        if (std.mem.eql(u8, method, "window/logMessage") or
+            std.mem.eql(u8, method, "window/showMessage"))
+        {
+            logMessage(params);
+        }
+        // TODO: textDocument/publishDiagnostics
         _ = self;
-        _ = io;
-        // TODO: iterate proxies, drain notifications, map to Vim push
+    }
+
+    fn logMessage(params: ?std.json.Value) void {
+        const obj = switch (params orelse return) {
+            .object => |o| o,
+            else => return,
+        };
+        const msg = switch (obj.get("message") orelse return) {
+            .string => |s| s,
+            else => return,
+        };
+        log.info("LSP: {s}", .{msg});
     }
 };

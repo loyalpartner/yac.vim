@@ -93,16 +93,12 @@ pub const Dispatcher = struct {
     }
 
     fn logValue(label: []const u8, allocator: Allocator, value: std.json.Value) void {
-        if (!log.isEnabled(.debug)) return; // skip serialization when debug is off
+        if (!std.log.logEnabled(.debug, .dispatch)) return;
         var aw: std.Io.Writer.Allocating = .init(allocator);
         std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &aw.writer) catch return;
         const json = aw.toOwnedSlice() catch return;
         defer allocator.free(json);
-        if (json.len <= 500) {
-            log.debug("{s}: {s}", .{ label, json });
-        } else {
-            log.debug("{s}: {s}... ({d} bytes)", .{ label, json[0..200], json.len });
-        }
+        log.debug("{s}: {s}", .{ label, json });
     }
 };
 

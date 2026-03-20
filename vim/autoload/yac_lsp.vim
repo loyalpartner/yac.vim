@@ -22,7 +22,7 @@ function! s:goto_request(method) abort
 endfunction
 
 function! yac_lsp#goto_definition() abort
-  call s:goto_request('goto_definition')
+  call s:goto_request('definition')
 endfunction
 
 function! yac_lsp#goto_declaration() abort

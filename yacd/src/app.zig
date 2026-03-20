@@ -16,6 +16,7 @@ const CompletionHandler = @import("handlers/completion.zig").CompletionHandler;
 const DocumentHandler = @import("handlers/document.zig").DocumentHandler;
 const SystemHandler = @import("handlers/system.zig").SystemHandler;
 const InstallHandler = @import("handlers/install.zig").InstallHandler;
+const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
 const log_mod = @import("log.zig");
 
 const log = std.log.scoped(.app);
@@ -40,6 +41,7 @@ pub const App = struct {
     doc: DocumentHandler,
     sys: SystemHandler,
     inst: InstallHandler,
+    lsp_notify: NotificationHandler,
 
     pub fn create(allocator: Allocator, io: Io) !*App {
         const app = try allocator.create(App);
@@ -54,6 +56,7 @@ pub const App = struct {
             .doc = .{ .registry = undefined },
             .sys = .{ .registry = undefined, .shutdown_requested = undefined },
             .inst = .{ .installer = undefined, .registry = undefined },
+            .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
         };
 
         // Initialize installer with io + notifier pointer
@@ -67,14 +70,16 @@ pub const App = struct {
         app.sys.shutdown_requested = &app.shutdown_requested;
         app.inst.installer = &app.installer;
         app.inst.registry = &app.registry;
+        app.lsp_notify.notifier = &app.notifier;
 
-        // Wire installer into registry for auto-install on spawn failure
+        // Wire installer + notification handler into registry
         app.registry.installer = &app.installer;
+        app.registry.on_notification = &NotificationHandler.callback;
+        app.registry.notify_ctx = @ptrCast(&app.lsp_notify);
 
         // Register routes
         try app.dispatcher.register("hover", &app.nav, NavigationHandler.hover);
         try app.dispatcher.register("definition", &app.nav, NavigationHandler.definition);
-        try app.dispatcher.register("goto_definition", &app.nav, NavigationHandler.gotoDefinition);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
         try app.dispatcher.register("completion", &app.comp, CompletionHandler.completion);
         try app.dispatcher.register("did_open", &app.doc, DocumentHandler.didOpen);

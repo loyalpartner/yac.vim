@@ -244,7 +244,7 @@ pub const LspConnection = struct {
         errdefer aw.deinit();
         try std.json.Stringify.value(value, .{}, &aw.writer);
         const json = try aw.toOwnedSlice();
-        defer allocator.free(json);
+        // NOT freed — parseFromSlice may reference strings in this buffer (zero-copy).
 
         const parsed = try std.json.parseFromSlice(T, allocator, json, .{ .ignore_unknown_fields = true });
         // Intentionally not deinit'd — result references the parsed arena.
@@ -317,10 +317,10 @@ pub const LspConnection = struct {
             const data = reader.interface.peekGreedy(1) catch return null;
             var raw_messages = pipe.framer.feed(pipe.allocator, data) catch return null;
             reader.interface.toss(data.len);
-            defer {
-                for (raw_messages.items) |m| pipe.allocator.free(m);
-                raw_messages.deinit(pipe.allocator);
-            }
+            // Note: raw_messages items are NOT freed — parsed JSON values
+            // reference strings in these buffers (parseFromSlice uses zero-copy
+            // for unescaped strings). Only free the ArrayList container.
+            defer raw_messages.deinit(pipe.allocator);
 
             for (raw_messages.items) |raw_msg| {
                 const parsed = std.json.parseFromSlice(

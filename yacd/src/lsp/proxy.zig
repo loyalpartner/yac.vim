@@ -25,6 +25,8 @@ pub const LspProxy = struct {
     connection: *LspConnection,
     init_result: lsp.ResultType("initialize"),
     opened_files: std.StringHashMap(void),
+    on_notification: ?*const OnNotification = null,
+    notify_ctx: ?*anyopaque = null,
     state: State = .initialized,
 
     pub const State = enum {
@@ -32,14 +34,23 @@ pub const LspProxy = struct {
         shutdown,
     };
 
+    /// Callback type for LSP notifications.
+    pub const OnNotification = fn (ctx: *anyopaque, method: []const u8, params: ?std.json.Value) void;
+
     /// Create connection, perform LSP initialize handshake, return ready proxy.
     /// Must be called from a coroutine context (blocks on initialize request).
+    pub const NotifyCallback = struct {
+        func: *const OnNotification,
+        ctx: *anyopaque,
+    };
+
     pub fn init(
         allocator: Allocator,
         io: Io,
         child: std.process.Child,
         group: *Io.Group,
         init_params: lsp.ParamsType("initialize"),
+        notify_cb: ?NotifyCallback,
     ) !*LspProxy {
         const conn = try LspConnection.init(allocator, io, child, group);
         errdefer conn.deinit();
@@ -54,8 +65,28 @@ pub const LspProxy = struct {
             .connection = conn,
             .init_result = result,
             .opened_files = std.StringHashMap(void).init(allocator),
+            .on_notification = if (notify_cb) |cb| cb.func else null,
+            .notify_ctx = if (notify_cb) |cb| cb.ctx else null,
         };
+
+        // Spawn notification drain coroutine
+        group.concurrent(io, drainNotifications, .{self}) catch {};
+
         return self;
+    }
+
+    /// Drain LSP notifications from the connection queue and dispatch to callback.
+    fn drainNotifications(self: *LspProxy) Io.Cancelable!void {
+        while (true) {
+            self.connection.notifications.wait() catch return;
+            const msgs = self.connection.notifications.drain() orelse continue;
+            defer self.allocator.free(msgs);
+            for (msgs) |n| {
+                if (self.on_notification) |cb| {
+                    cb(self.notify_ctx.?, n.method, n.params);
+                }
+            }
+        }
     }
 
     pub fn deinit(self: *LspProxy) void {
