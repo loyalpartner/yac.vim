@@ -1,4 +1,5 @@
 const std = @import("std");
+const picker_source = @import("../picker/source.zig");
 
 // ============================================================================
 // Vim <-> yacd type registry
@@ -24,6 +25,10 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "did_save", FileParams },
         .{ "exit", void },
         .{ "status", void },
+        // Picker
+        .{ "picker_open", PickerOpenParams },
+        .{ "picker_query", PickerQueryParams },
+        .{ "picker_close", void },
         // Install
         .{ "install_lsp", InstallLspParams },
         .{ "reset_failed", ResetFailedParams },
@@ -56,6 +61,10 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "did_save", void },
         .{ "exit", void },
         .{ "status", StatusResult },
+        // Picker
+        .{ "picker_open", PickerResultsType },
+        .{ "picker_query", PickerResultsType },
+        .{ "picker_close", void },
         .{ "install_lsp", InstallLspResult },
         .{ "reset_failed", void },
     };
@@ -103,6 +112,19 @@ pub const InstallLspParams = struct {
 
 pub const ResetFailedParams = struct {
     language: []const u8,
+};
+
+pub const PickerOpenParams = struct {
+    cwd: []const u8,
+    file: ?[]const u8 = null,
+    recent_files: ?[]const []const u8 = null,
+};
+
+pub const PickerQueryParams = struct {
+    query: []const u8,
+    mode: []const u8,
+    file: ?[]const u8 = null,
+    text: ?[]const u8 = null,
 };
 
 // ============================================================================
@@ -166,6 +188,9 @@ pub const InstallLspResult = struct {
     success: bool,
     message: []const u8 = "",
 };
+
+pub const PickerItemType = picker_source.PickerItem;
+pub const PickerResultsType = picker_source.PickerResults;
 
 // ============================================================================
 // Push types (yacd -> Vim)

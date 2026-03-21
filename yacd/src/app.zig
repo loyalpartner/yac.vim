@@ -16,7 +16,9 @@ const CompletionHandler = @import("handlers/completion.zig").CompletionHandler;
 const DocumentHandler = @import("handlers/document.zig").DocumentHandler;
 const SystemHandler = @import("handlers/system.zig").SystemHandler;
 const InstallHandler = @import("handlers/install.zig").InstallHandler;
+const PickerHandler = @import("handlers/picker.zig").PickerHandler;
 const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
+const Picker = @import("picker/root.zig").Picker;
 const log_mod = @import("log.zig");
 
 const log = std.log.scoped(.app);
@@ -36,11 +38,14 @@ pub const App = struct {
     installer: Installer,
     shutdown_requested: std.atomic.Value(bool) = .{ .raw = false },
 
+    picker: Picker,
+
     nav: NavigationHandler,
     comp: CompletionHandler,
     doc: DocumentHandler,
     sys: SystemHandler,
     inst: InstallHandler,
+    pick: PickerHandler,
     lsp_notify: NotificationHandler,
 
     pub fn create(allocator: Allocator, io: Io) !*App {
@@ -51,11 +56,13 @@ pub const App = struct {
             .dispatcher = Dispatcher.init(allocator),
             .registry = ProxyRegistry.init(allocator, io),
             .installer = undefined, // init below (needs &app.notifier)
+            .picker = Picker.init(allocator, io),
             .nav = .{ .registry = undefined },
             .comp = .{ .registry = undefined },
             .doc = .{ .registry = undefined },
             .sys = .{ .registry = undefined, .shutdown_requested = undefined },
             .inst = .{ .installer = undefined, .registry = undefined },
+            .pick = .{ .picker = undefined, .registry = undefined },
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
         };
 
@@ -70,6 +77,8 @@ pub const App = struct {
         app.sys.shutdown_requested = &app.shutdown_requested;
         app.inst.installer = &app.installer;
         app.inst.registry = &app.registry;
+        app.pick.picker = &app.picker;
+        app.pick.registry = &app.registry;
         app.lsp_notify.notifier = &app.notifier;
 
         // Wire installer + notification handler into registry
@@ -90,11 +99,15 @@ pub const App = struct {
         try app.dispatcher.register("exit", &app.sys, SystemHandler.exit);
         try app.dispatcher.register("install_lsp", &app.inst, InstallHandler.installLsp);
         try app.dispatcher.register("reset_failed", &app.inst, InstallHandler.resetFailed);
+        try app.dispatcher.register("picker_open", &app.pick, PickerHandler.pickerOpen);
+        try app.dispatcher.register("picker_query", &app.pick, PickerHandler.pickerQuery);
+        try app.dispatcher.register("picker_close", &app.pick, PickerHandler.pickerClose);
 
         return app;
     }
 
     pub fn deinit(self: *App) void {
+        self.picker.deinit();
         self.dispatcher.deinit();
         self.notifier.deinit();
         self.installer.deinit();

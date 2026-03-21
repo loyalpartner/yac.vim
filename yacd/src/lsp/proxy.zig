@@ -166,6 +166,15 @@ pub const LspProxy = struct {
     }
 
     // ====================================================================
+    // Workspace — requests
+    // ====================================================================
+
+    pub fn workspaceSymbol(self: *LspProxy, params: lsp.ParamsType("workspace/symbol")) !lsp.ResultType("workspace/symbol") {
+        try self.ensureCapability(.workspaceSymbolProvider);
+        return self.connection.request("workspace/symbol", params);
+    }
+
+    // ====================================================================
     // Text Document — notifications
     // ====================================================================
 

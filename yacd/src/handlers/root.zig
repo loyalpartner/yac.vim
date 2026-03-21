@@ -5,6 +5,7 @@ pub const DocumentHandler = @import("document.zig").DocumentHandler;
 pub const NotificationHandler = @import("notification.zig").NotificationHandler;
 pub const SystemHandler = @import("system.zig").SystemHandler;
 pub const InstallHandler = @import("install.zig").InstallHandler;
+pub const PickerHandler = @import("picker.zig").PickerHandler;
 
 test {
     _ = @import("dispatch.zig");
