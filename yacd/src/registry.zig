@@ -177,7 +177,9 @@ pub const ProxyRegistry = struct {
         const init_params: lsp.ParamsType("initialize") = .{
             .processId = @intCast(std.c.getpid()),
             .rootUri = root_uri,
-            .capabilities = .{},
+            .capabilities = .{
+                .window = .{ .workDoneProgress = true },
+            },
         };
 
         const notify_cb: ?LspProxy.NotifyCallback = if (self.on_notification) |func|

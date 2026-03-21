@@ -272,7 +272,8 @@ pub const LspConnection = struct {
                         self.handleResponse(r);
                     },
                     .notification => |n| {
-                        log.debug("dispatch: notification {s}", .{n.method});
+                        if (!std.mem.eql(u8, n.method, "$/progress"))
+                            log.debug("dispatch: notification {s}", .{n.method});
                         self.notifications.send(n) catch {};
                     },
                     .request => |r| {

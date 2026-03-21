@@ -402,11 +402,9 @@ function! yac#toast(msg, ...) abort
   let opts = a:0 > 0 ? a:1 : {}
   let time = get(opts, 'time', 3000)
   let hl = get(opts, 'highlight', 'Normal')
-  let width = 40
+  let width = max([strwidth(a:msg) + 4, 40])
+  let width = min([width, &columns - 4])
   let msg = a:msg
-  if strwidth(msg) > width - 2
-    let msg = msg[:width - 5] . '...'
-  endif
   if s:toast_popup != -1
     silent! call popup_close(s:toast_popup)
     let s:toast_popup = -1

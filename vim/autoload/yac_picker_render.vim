@@ -443,3 +443,22 @@ function! yac_picker_render#handle_query_response(channel, response) abort
     endif
   endif
 endfunction
+
+" Handle file index progress push from daemon.
+" Updates the picker title to show indexing progress.
+function! yac_picker_render#handle_index_progress(params) abort
+  let p = yac_picker#_get_state()
+  if p.input_popup == -1 | return | endif
+  " Only update title when picker is in file mode and user hasn't typed yet
+  if p.mode !=# 'file' && p.mode !=# '' | return | endif
+  let file_count = get(a:params, 'file_count', 0)
+  let done = get(a:params, 'done', v:false)
+  let spec = yac_picker#_current_mode_spec()
+  let label = get(spec, 'label', 'YacPicker')
+  if done
+    let title = printf(' %s [%d files] ', label, file_count)
+  else
+    let title = printf(' %s [indexing %d...] ', label, file_count)
+  endif
+  call popup_setoptions(p.input_popup, #{title: title})
+endfunction

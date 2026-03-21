@@ -39,6 +39,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "install_progress", InstallProgressPush },
         .{ "install_complete", InstallCompletePush },
         .{ "started", StartedPush },
+        .{ "picker_progress", PickerProgressPush },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -218,8 +219,10 @@ pub const LogMessagePush = struct {
 
 pub const ProgressPush = struct {
     token: []const u8,
+    title: ?[]const u8 = null,
     message: ?[]const u8 = null,
     percentage: ?u32 = null,
+    done: bool = false,
 };
 
 pub const InstallProgressPush = struct {
@@ -237,6 +240,11 @@ pub const InstallCompletePush = struct {
 pub const StartedPush = struct {
     pid: i32,
     log_file: []const u8,
+};
+
+pub const PickerProgressPush = struct {
+    file_count: u32,
+    done: bool,
 };
 
 // ============================================================================

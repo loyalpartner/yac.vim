@@ -106,10 +106,19 @@ function! s:handle_push(channel, msg) abort
     let s:daemon_log_file = get(params, 'log_file', '')
     call yac#_debug_log(printf('Daemon started: pid=%s, log=%s',
       \ get(params, 'pid', '?'), s:daemon_log_file))
+    " Setup document sync and open current file
+    call yac_lsp#setup_document_sync()
+    call yac_lsp#notify_did_open()
   elseif a:msg.action ==# 'install_progress'
     let params = get(a:msg, 'params', {})
     call yac#_debug_log(printf('[install] %s: %s (%d%%)',
       \ get(params, 'language', ''), get(params, 'message', ''), get(params, 'percentage', 0)))
+  elseif a:msg.action ==# 'picker_progress'
+    let params = get(a:msg, 'params', {})
+    call yac_picker_render#handle_index_progress(params)
+  elseif a:msg.action ==# 'progress'
+    let params = get(a:msg, 'params', {})
+    call yac_status#handle_progress(params)
   elseif a:msg.action ==# 'install_complete'
     let params = get(a:msg, 'params', {})
     let l:lang = get(params, 'language', '')

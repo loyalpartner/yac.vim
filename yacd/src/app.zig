@@ -18,6 +18,7 @@ const SystemHandler = @import("handlers/system.zig").SystemHandler;
 const InstallHandler = @import("handlers/install.zig").InstallHandler;
 const PickerHandler = @import("handlers/picker.zig").PickerHandler;
 const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
+const NotifyDispatcher = @import("handlers/notification.zig").NotifyDispatcher;
 const Picker = @import("picker/root.zig").Picker;
 const log_mod = @import("log.zig");
 
@@ -39,6 +40,7 @@ pub const App = struct {
     shutdown_requested: std.atomic.Value(bool) = .{ .raw = false },
 
     picker: Picker,
+    notify_dispatch: NotifyDispatcher,
 
     nav: NavigationHandler,
     comp: CompletionHandler,
@@ -56,7 +58,8 @@ pub const App = struct {
             .dispatcher = Dispatcher.init(allocator),
             .registry = ProxyRegistry.init(allocator, io),
             .installer = undefined, // init below (needs &app.notifier)
-            .picker = Picker.init(allocator, io),
+            .picker = undefined, // init below (needs &app.notifier)
+            .notify_dispatch = NotifyDispatcher.init(allocator),
             .nav = .{ .registry = undefined },
             .comp = .{ .registry = undefined },
             .doc = .{ .registry = undefined },
@@ -66,8 +69,9 @@ pub const App = struct {
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
         };
 
-        // Initialize installer with io + notifier pointer
+        // Initialize subsystems that need notifier pointer
         app.installer = Installer.init(allocator, io, &app.notifier);
+        app.picker = Picker.init(allocator, io, &app.notifier);
 
         // Self-referential pointers (safe: App is heap-allocated)
         app.nav.registry = &app.registry;
@@ -81,12 +85,17 @@ pub const App = struct {
         app.pick.registry = &app.registry;
         app.lsp_notify.notifier = &app.notifier;
 
-        // Wire installer + notification handler into registry
+        // Wire installer into registry
         app.registry.installer = &app.installer;
-        app.registry.on_notification = &NotificationHandler.callback;
-        app.registry.notify_ctx = @ptrCast(&app.lsp_notify);
 
-        // Register routes
+        // Register LSP notification routes (typed via NotifyDispatcher)
+        try app.notify_dispatch.register("window/logMessage", &app.lsp_notify, NotificationHandler.logMessage);
+        try app.notify_dispatch.register("window/showMessage", &app.lsp_notify, NotificationHandler.showMessage);
+        try app.notify_dispatch.register("$/progress", &app.lsp_notify, NotificationHandler.progress);
+        app.registry.on_notification = &NotifyDispatcher.onNotification;
+        app.registry.notify_ctx = @ptrCast(&app.notify_dispatch);
+
+        // Register Vim request routes
         try app.dispatcher.register("hover", &app.nav, NavigationHandler.hover);
         try app.dispatcher.register("definition", &app.nav, NavigationHandler.definition);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
@@ -109,6 +118,7 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         self.picker.deinit();
         self.dispatcher.deinit();
+        self.notify_dispatch.deinit();
         self.notifier.deinit();
         self.installer.deinit();
         self.registry.deinit();
@@ -152,11 +162,18 @@ pub const App = struct {
                     .request => |req| {
                         group.concurrent(ch.io, handleRequest, .{ self, ch, req }) catch {};
                     },
-                    .notification => {},
+                    .notification => |n| {
+                        group.concurrent(ch.io, handleNotification, .{ self, ch, n }) catch {};
+                    },
                     .response => {},
                 }
             }
         }
+    }
+
+    fn handleNotification(self: *App, ch: *VimChannel, n: VimMessage.Notification) Io.Cancelable!void {
+        log.info("notification {s}", .{n.action});
+        _ = self.dispatcher.dispatch(ch.allocator, n.action, n.params);
     }
 
     fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request) Io.Cancelable!void {

@@ -1,6 +1,66 @@
 " yac_status.vim — statusline and YacStatus health-check buffer
 
 " ============================================================================
+" LSP progress tracking — $/progress notifications from daemon
+" ============================================================================
+
+" Active progress tokens: {token: {message, percentage}}
+let s:progress = {}
+let s:progress_titles = {}
+let s:redraw_timer = -1
+
+function! yac_status#handle_progress(params) abort
+  let token = get(a:params, 'token', '')
+  if empty(token) | return | endif
+  let msg = get(a:params, 'message', v:null)
+  let pct = get(a:params, 'percentage', v:null)
+  let title = get(a:params, 'title', v:null)
+  let done = get(a:params, 'done', v:false)
+  if done
+    if has_key(s:progress, token)
+      call remove(s:progress, token)
+    endif
+    call yac#toast('[yac] Indexing complete')
+  else
+    let s:progress[token] = {'message': msg, 'percentage': pct}
+    " Format toast like old version: [yac] Title (N%): Message
+    let display = '[yac] '
+    let t = title isnot v:null ? title : get(s:progress_titles, token, token)
+    if title isnot v:null
+      let s:progress_titles[token] = title
+    endif
+    let display .= t
+    if pct isnot v:null
+      let display .= printf(' (%d%%)', pct)
+    endif
+    if msg isnot v:null
+      let display .= ': ' . msg
+    endif
+    call yac#toast(display)
+  endif
+endfunction
+
+" Return progress string for statusline (empty when idle).
+function! yac_status#progress_string() abort
+  if empty(s:progress) | return '' | endif
+  " Show the most recent active progress
+  let parts = []
+  for [token, info] in items(s:progress)
+    let s = ''
+    if info.message isnot v:null
+      let s = info.message
+    endif
+    if info.percentage isnot v:null
+      let s = (empty(s) ? '' : s . ' ') . info.percentage . '%'
+    endif
+    if !empty(s)
+      call add(parts, s)
+    endif
+  endfor
+  return join(parts, ' | ')
+endfunction
+
+" ============================================================================
 " Statusline — lightweight string for &statusline integration
 " ============================================================================
 
@@ -34,6 +94,12 @@ function! yac_status#statusline() abort
     if l:warnings > 0
       call add(l:parts, 'W:' . l:warnings)
     endif
+  endif
+
+  " LSP progress
+  let l:prog = yac_status#progress_string()
+  if !empty(l:prog)
+    call add(l:parts, l:prog)
   endif
 
   return join(l:parts, ' ')

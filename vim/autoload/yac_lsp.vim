@@ -414,3 +414,51 @@ endfunction
 function! s:on_lsp_status(ch, response) abort
   let g:yac_lsp_status = a:response
 endfunction
+
+" === Document Sync (did_open / did_change / did_save / did_close) ===
+
+let s:opened_files = {}
+
+function! yac_lsp#notify_did_open() abort
+  let file = expand('%:p')
+  if empty(file) | return | endif
+  if has_key(s:opened_files, file) | return | endif
+  let s:opened_files[file] = 1
+  call yac#_notify('did_open', {
+    \ 'file': file,
+    \ 'language': &filetype,
+    \ 'text': join(getline(1, '$'), "\n"),
+    \ })
+endfunction
+
+function! yac_lsp#notify_did_change() abort
+  let file = expand('%:p')
+  if empty(file) || !has_key(s:opened_files, file) | return | endif
+  call yac#_notify('did_change', {
+    \ 'file': file,
+    \ 'text': join(getline(1, '$'), "\n"),
+    \ })
+endfunction
+
+function! yac_lsp#notify_did_save() abort
+  let file = expand('%:p')
+  if empty(file) || !has_key(s:opened_files, file) | return | endif
+  call yac#_notify('did_save', {'file': file})
+endfunction
+
+function! yac_lsp#notify_did_close() abort
+  let file = expand('%:p')
+  if empty(file) || !has_key(s:opened_files, file) | return | endif
+  call remove(s:opened_files, file)
+  call yac#_notify('did_close', {'file': file})
+endfunction
+
+function! yac_lsp#setup_document_sync() abort
+  augroup YacDocSync
+    autocmd!
+    autocmd BufEnter    * call yac_lsp#notify_did_open()
+    autocmd TextChanged * call yac_lsp#notify_did_change()
+    autocmd BufWritePost * call yac_lsp#notify_did_save()
+    autocmd BufDelete   * call yac_lsp#notify_did_close()
+  augroup END
+endfunction

@@ -5,6 +5,7 @@ const source = @import("source.zig");
 const PickerResults = source.PickerResults;
 const FileSource = @import("file_source.zig").FileSource;
 const GrepSource = @import("grep_source.zig").GrepSource;
+const Notifier = @import("../notifier.zig").Notifier;
 
 const log = std.log.scoped(.picker);
 
@@ -20,15 +21,20 @@ pub const Picker = struct {
     io: Io,
     file_source: FileSource,
     grep_source: GrepSource,
+    notifier: *Notifier,
     lock: Io.Mutex = .init,
 
-    pub fn init(allocator: Allocator, io: Io) Picker {
-        return .{
+    pub fn init(allocator: Allocator, io: Io, notifier: *Notifier) Picker {
+        var self = Picker{
             .allocator = allocator,
             .io = io,
             .file_source = FileSource.init(allocator, io),
             .grep_source = GrepSource.init(io),
+            .notifier = notifier,
         };
+        self.file_source.on_progress = &onProgress;
+        self.file_source.progress_ctx = @ptrCast(notifier);
+        return self;
     }
 
     pub fn deinit(self: *Picker) void {
@@ -76,5 +82,14 @@ pub const Picker = struct {
         self.lock.lockUncancelable(self.io);
         defer self.lock.unlock(self.io);
         self.file_source.reset();
+    }
+
+    fn onProgress(ctx: *anyopaque, file_count: u32, done: bool) void {
+        log.debug("picker_progress: {d} files, done={}", .{ file_count, done });
+        const notifier: *Notifier = @ptrCast(@alignCast(ctx));
+        notifier.send("picker_progress", .{
+            .file_count = file_count,
+            .done = done,
+        }) catch {};
     }
 };

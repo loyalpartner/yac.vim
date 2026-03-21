@@ -7,8 +7,11 @@ const PickerItem = source.PickerItem;
 const PickerResults = source.PickerResults;
 const findExecutable = source.findExecutable;
 
+const log = std.log.scoped(.file_source);
+
 const max_results = 50;
 const max_files = 50000;
+const progress_interval = 100; // notify every N files
 
 // ============================================================================
 // FileSource — async file scanner + fuzzy matcher
@@ -38,6 +41,8 @@ const FileLister = enum {
 };
 
 pub const FileSource = struct {
+    pub const OnProgress = *const fn (ctx: *anyopaque, file_count: u32, done: bool) void;
+
     allocator: Allocator,
     io: Io,
     files: std.ArrayList([]const u8),
@@ -48,6 +53,9 @@ pub const FileSource = struct {
     scan_group: Io.Group,
     cwd: ?[]const u8,
     lister: FileLister,
+    on_progress: ?OnProgress = null,
+    progress_ctx: ?*anyopaque = null,
+    last_reported: u32 = 0,
 
     pub fn init(allocator: Allocator, io: Io) FileSource {
         return .{
@@ -105,6 +113,7 @@ pub const FileSource = struct {
         if (self.cwd) |c| self.allocator.free(c);
         self.cwd = try self.allocator.dupe(u8, cwd);
 
+        log.info("startScan: cwd={s} lister={s}", .{ cwd, @tagName(self.lister) });
         const child = try std.process.spawn(self.io, .{
             .argv = self.lister.argv(),
             .cwd = .{ .path = cwd },
@@ -113,6 +122,7 @@ pub const FileSource = struct {
         });
         self.child = child;
         self.scan_group = .init;
+        self.reportProgress(false); // notify scan started
         self.scan_group.concurrent(self.io, readScanOutput, .{self}) catch {};
     }
 
@@ -122,14 +132,33 @@ pub const FileSource = struct {
         var read_buf: [8192]u8 = undefined;
         var reader = stdout.readerStreaming(self.io, &read_buf);
 
+        self.last_reported = 0;
         while (true) {
             const data = reader.interface.peekGreedy(1) catch break;
             self.stdout_buf.appendSlice(self.allocator, data) catch break;
             reader.interface.toss(data.len);
             self.processBuffer();
+            self.maybeReportProgress(false);
         }
         self.processBuffer();
         self.ready = true;
+        self.reportProgress(true);
+        log.info("scan complete: {d} files", .{self.files.items.len});
+    }
+
+    fn maybeReportProgress(self: *FileSource, done: bool) void {
+        const count: u32 = @intCast(self.files.items.len);
+        if (count - self.last_reported >= progress_interval) {
+            self.reportProgress(done);
+        }
+    }
+
+    fn reportProgress(self: *FileSource, done: bool) void {
+        const count: u32 = @intCast(self.files.items.len);
+        self.last_reported = count;
+        if (self.on_progress) |cb| {
+            cb(self.progress_ctx.?, count, done);
+        }
     }
 
     fn processBuffer(self: *FileSource) void {
