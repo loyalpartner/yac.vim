@@ -178,25 +178,63 @@ pub const App = struct {
             ch.waitInbound() catch return;
             const msgs = ch.recv() orelse continue;
             defer ch.allocator.free(msgs);
-            // Process all messages synchronously. msgs memory is freed at end
-            // of this loop body — concurrent dispatch would cause UAF since
-            // req/notification fields point into msgs buffer.
             for (msgs) |msg| {
                 switch (msg) {
-                    .request => |req| self.handleRequestSync(ch, req),
-                    .notification => |n| self.handleNotificationSync(ch, n),
+                    .request => |req| {
+                        // Clone request data into a per-request arena so the
+                        // concurrent coroutine owns its data independently of msgs.
+                        const arena_ptr = ch.allocator.create(std.heap.ArenaAllocator) catch continue;
+                        arena_ptr.* = std.heap.ArenaAllocator.init(ch.allocator);
+                        const owned = cloneRequest(arena_ptr.allocator(), req) catch {
+                            arena_ptr.deinit();
+                            ch.allocator.destroy(arena_ptr);
+                            continue;
+                        };
+                        group.concurrent(ch.io, handleRequest, .{ self, ch, owned, arena_ptr }) catch {
+                            arena_ptr.deinit();
+                            ch.allocator.destroy(arena_ptr);
+                        };
+                    },
+                    .notification => |n| {
+                        const a = ch.allocator.create(std.heap.ArenaAllocator) catch continue;
+                        a.* = std.heap.ArenaAllocator.init(ch.allocator);
+                        const owned = cloneNotification(a.allocator(), n) catch {
+                            a.deinit();
+                            ch.allocator.destroy(a);
+                            continue;
+                        };
+                        group.concurrent(ch.io, handleNotification, .{ self, ch, owned, a }) catch {
+                            a.deinit();
+                            ch.allocator.destroy(a);
+                        };
+                    },
                     .response => {},
                 }
             }
         }
     }
 
-    fn handleNotificationSync(self: *App, ch: *VimChannel, n: VimMessage.Notification) void {
+    fn handleNotification(self: *App, ch: *VimChannel, n: VimMessage.Notification, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
+        defer {
+            arena_ptr.deinit();
+            ch.allocator.destroy(arena_ptr);
+        }
         log.info("notification {s}", .{n.action});
         _ = self.dispatcher.dispatch(ch.allocator, n.action, n.params);
     }
 
-    fn handleRequestSync(self: *App, ch: *VimChannel, req: VimMessage.Request) void {
+    fn cloneNotification(arena: std.mem.Allocator, n: VimMessage.Notification) !VimMessage.Notification {
+        return .{
+            .action = try arena.dupe(u8, n.action),
+            .params = try cloneJsonValue(arena, n.params),
+        };
+    }
+
+    fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
+        defer {
+            arena_ptr.deinit();
+            ch.allocator.destroy(arena_ptr);
+        }
         log.info("request [{d}] {s}", .{ req.id, req.method });
         const result = self.dispatcher.dispatch(
             ch.allocator,
@@ -210,5 +248,38 @@ pub const App = struct {
             .id = req.id,
             .result = result,
         } }) catch {};
+    }
+
+    fn cloneRequest(arena: std.mem.Allocator, req: VimMessage.Request) !VimMessage.Request {
+        return .{
+            .id = req.id,
+            .method = try arena.dupe(u8, req.method),
+            .params = try cloneJsonValue(arena, req.params),
+        };
+    }
+
+    fn cloneJsonValue(alloc: std.mem.Allocator, v: std.json.Value) std.mem.Allocator.Error!std.json.Value {
+        return switch (v) {
+            .string => |s| .{ .string = try alloc.dupe(u8, s) },
+            .object => |obj| blk: {
+                var new_obj = std.json.ObjectMap.init(alloc);
+                var it = obj.iterator();
+                while (it.next()) |entry| {
+                    try new_obj.put(
+                        try alloc.dupe(u8, entry.key_ptr.*),
+                        try cloneJsonValue(alloc, entry.value_ptr.*),
+                    );
+                }
+                break :blk .{ .object = new_obj };
+            },
+            .array => |arr| blk: {
+                var new_arr = try std.json.Array.initCapacity(alloc, arr.items.len);
+                for (arr.items) |item| {
+                    new_arr.appendAssumeCapacity(try cloneJsonValue(alloc, item));
+                }
+                break :blk .{ .array = new_arr };
+            },
+            else => v,
+        };
     }
 };

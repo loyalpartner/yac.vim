@@ -176,12 +176,12 @@ pub fn fromJsonValue(comptime T: type, allocator: Allocator, value: std.json.Val
     errdefer aw.deinit();
     try std.json.Stringify.value(value, .{}, &aw.writer);
     const json = try aw.toOwnedSlice();
-    // Intentionally not freed — parsed result may reference this buffer.
-    // Caller should use an arena allocator.
+    defer allocator.free(json); // Safe now — alloc_always makes independent copies
 
-    const parsed = try std.json.parseFromSlice(T, allocator, json, .{ .ignore_unknown_fields = true });
-    // Intentionally not deinit'd — result references the parsed arena.
-    return parsed.value;
+    return try std.json.parseFromSliceLeaky(T, allocator, json, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always, // Never reference input buffer
+    });
 }
 
 // ============================================================================
