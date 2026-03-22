@@ -3,7 +3,9 @@ const ts = @import("tree_sitter");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const highlights_mod = @import("highlights.zig");
+const outline_mod = @import("outline.zig");
 const queries_mod = @import("queries.zig");
+const picker_source = @import("../picker/source.zig");
 const lang_config_mod = @import("lang_config.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
 const file_io = @import("file_io.zig");
@@ -18,6 +20,7 @@ pub const LangState = struct {
     language: *const ts.Language,
     highlights: ?*ts.Query,
     injections: ?*ts.Query,
+    outline: ?*ts.Query,
 
     fn initForDynamic(language: *const ts.Language, lang_name: []const u8, allocator: Allocator, query_dir: []const u8, wasm_loader: *WasmLoader) !LangState {
         const parser = ts.Parser.create();
@@ -28,11 +31,13 @@ pub const LangState = struct {
 
         const hl_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "highlights", language);
         const inj_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "injections", language);
+        const outline_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "outline", language);
 
-        log.info("LangState initialized for {s} (hl:{s} inj:{s})", .{
+        log.info("LangState initialized for {s} (hl:{s} inj:{s} outline:{s})", .{
             lang_name,
             if (hl_query != null) "ok" else "-",
             if (inj_query != null) "ok" else "-",
+            if (outline_query != null) "ok" else "-",
         });
 
         return .{
@@ -40,12 +45,14 @@ pub const LangState = struct {
             .language = language,
             .highlights = hl_query,
             .injections = inj_query,
+            .outline = outline_query,
         };
     }
 
     pub fn deinit(self: *LangState) void {
         if (self.highlights) |q| q.destroy();
         if (self.injections) |q| q.destroy();
+        if (self.outline) |q| q.destroy();
         _ = self.parser.takeWasmStore();
         self.parser.destroy();
     }
@@ -385,6 +392,18 @@ pub const Engine = struct {
         defer self.mutex.unlock(self.io);
         const buf = self.buffers.get(file) orelse return 0;
         return buf.version;
+    }
+
+    /// Extract document outline (symbols) for a buffer.
+    pub fn getOutline(self: *Engine, file: []const u8, arena: Allocator) ![]const picker_source.PickerItem {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const buf = self.buffers.getPtr(file) orelse return error.BufferNotFound;
+        const dl = self.findDynamicLangByName(buf.lang_name) orelse return error.UnsupportedLanguage;
+        const outline_query = dl.state.outline orelse return error.NoOutlineQuery;
+
+        return try outline_mod.extractOutline(arena, outline_query, buf.tree, buf.source.items, file);
     }
 
     /// Check if a buffer is tracked.

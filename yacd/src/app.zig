@@ -95,6 +95,7 @@ pub const App = struct {
         app.inst.registry = &app.registry;
         app.pick.picker = &app.picker;
         app.pick.registry = &app.registry;
+        app.pick.engine = &app.engine;
         app.lsp_notify.notifier = &app.notifier;
 
         // Tree-sitter handler wiring

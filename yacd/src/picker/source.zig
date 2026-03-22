@@ -6,12 +6,22 @@ const std = @import("std");
 // PickerItem/PickerResults are serialized to Vim via JSON-RPC.
 // ============================================================================
 
+pub const PickerHighlight = struct {
+    col: i32,
+    len: i32,
+    hl: []const u8,
+};
+
 pub const PickerItem = struct {
     label: []const u8,
     detail: []const u8 = "",
     file: []const u8 = "",
     line: i32 = 0,
     column: i32 = 0,
+    // Document symbol fields (optional — only used by document_symbol mode)
+    depth: ?i32 = null,
+    kind: ?[]const u8 = null,
+    highlights: ?[]const PickerHighlight = null,
 };
 
 pub const PickerResults = struct {
