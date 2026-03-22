@@ -19,6 +19,8 @@ const InstallHandler = @import("handlers/install.zig").InstallHandler;
 const PickerHandler = @import("handlers/picker.zig").PickerHandler;
 const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
 const NotifyDispatcher = @import("handlers/notification.zig").NotifyDispatcher;
+const TreeSitterHandler = @import("handlers/treesitter.zig").TreeSitterHandler;
+const Engine = @import("treesitter/root.zig").Engine;
 const Picker = @import("picker/root.zig").Picker;
 const log_mod = @import("log.zig");
 
@@ -27,7 +29,8 @@ const log = std.log.scoped(.app);
 // ============================================================================
 // App — top-level application state
 //
-// Owns all subsystems: server, dispatcher, notifier, registry, installer, handlers.
+// Owns all subsystems: server, dispatcher, notifier, registry, installer,
+// handlers, tree-sitter engine.
 // Heap-allocated for stable self-referential pointers.
 // ============================================================================
 
@@ -41,6 +44,7 @@ pub const App = struct {
 
     picker: Picker,
     notify_dispatch: NotifyDispatcher,
+    engine: Engine,
 
     nav: NavigationHandler,
     comp: CompletionHandler,
@@ -49,9 +53,15 @@ pub const App = struct {
     inst: InstallHandler,
     pick: PickerHandler,
     lsp_notify: NotificationHandler,
+    ts_handler: TreeSitterHandler,
 
-    pub fn create(allocator: Allocator, io: Io) !*App {
+    pub fn create(allocator: Allocator, io: Io, languages_dir: ?[]const u8) !*App {
         const app = try allocator.create(App);
+        var engine = Engine.init(allocator, io);
+        // Pre-scan languages directory so grammars can be lazy-loaded on first file open
+        if (languages_dir) |dir| {
+            engine.scanLanguagesDir(dir);
+        }
         app.* = .{
             .server = .{ .allocator = allocator, .io = io },
             .notifier = Notifier.init(allocator, io),
@@ -60,6 +70,7 @@ pub const App = struct {
             .installer = undefined, // init below (needs &app.notifier)
             .picker = undefined, // init below (needs &app.notifier)
             .notify_dispatch = NotifyDispatcher.init(allocator),
+            .engine = engine,
             .nav = .{ .registry = undefined },
             .comp = .{ .registry = undefined },
             .doc = .{ .registry = undefined },
@@ -67,6 +78,7 @@ pub const App = struct {
             .inst = .{ .installer = undefined, .registry = undefined },
             .pick = .{ .picker = undefined, .registry = undefined },
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
+            .ts_handler = .{ .engine = undefined, .notifier = undefined, .allocator = allocator, .last_viewport = std.StringHashMap(u32).init(allocator) },
         };
 
         // Initialize subsystems that need notifier pointer
@@ -84,6 +96,11 @@ pub const App = struct {
         app.pick.picker = &app.picker;
         app.pick.registry = &app.registry;
         app.lsp_notify.notifier = &app.notifier;
+
+        // Tree-sitter handler wiring
+        app.ts_handler.engine = &app.engine;
+        app.ts_handler.notifier = &app.notifier;
+        app.doc.ts_handler = &app.ts_handler;
 
         // Wire installer into registry
         app.registry.installer = &app.installer;
@@ -111,11 +128,14 @@ pub const App = struct {
         try app.dispatcher.register("picker_open", &app.pick, PickerHandler.pickerOpen);
         try app.dispatcher.register("picker_query", &app.pick, PickerHandler.pickerQuery);
         try app.dispatcher.register("picker_close", &app.pick, PickerHandler.pickerClose);
+        try app.dispatcher.register("load_language", &app.ts_handler, TreeSitterHandler.loadLanguage);
+        try app.dispatcher.register("ts_viewport", &app.ts_handler, TreeSitterHandler.onViewport);
 
         return app;
     }
 
     pub fn deinit(self: *App) void {
+        self.engine.deinit();
         self.picker.deinit();
         self.dispatcher.deinit();
         self.notify_dispatch.deinit();
@@ -163,7 +183,11 @@ pub const App = struct {
                         group.concurrent(ch.io, handleRequest, .{ self, ch, req }) catch {};
                     },
                     .notification => |n| {
-                        group.concurrent(ch.io, handleNotification, .{ self, ch, n }) catch {};
+                        // Process notifications synchronously to avoid UAF:
+                        // n.action/n.params point into msgs memory which is freed
+                        // at end of this loop body. Concurrent dispatch would access
+                        // freed memory.
+                        self.handleNotificationSync(ch, n);
                     },
                     .response => {},
                 }
@@ -171,7 +195,7 @@ pub const App = struct {
         }
     }
 
-    fn handleNotification(self: *App, ch: *VimChannel, n: VimMessage.Notification) Io.Cancelable!void {
+    fn handleNotificationSync(self: *App, ch: *VimChannel, n: VimMessage.Notification) void {
         log.info("notification {s}", .{n.action});
         _ = self.dispatcher.dispatch(ch.allocator, n.action, n.params);
     }

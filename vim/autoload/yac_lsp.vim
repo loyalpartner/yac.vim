@@ -412,7 +412,9 @@ function! yac_lsp#lsp_status(file) abort
 endfunction
 
 function! s:on_lsp_status(ch, response) abort
-  let g:yac_lsp_status = a:response
+  if type(a:response) == v:t_dict
+    let g:yac_lsp_status = a:response
+  endif
 endfunction
 
 " === Document Sync (did_open / did_change / did_save / did_close) ===
@@ -428,6 +430,7 @@ function! yac_lsp#notify_did_open() abort
     \ 'file': file,
     \ 'language': &filetype,
     \ 'text': join(getline(1, '$'), "\n"),
+    \ 'visible_top': line('w0') - 1,
     \ })
 endfunction
 

@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const app = try App.create(allocator, io);
+    const app = try App.create(allocator, io, cli.languages_dir);
     defer {
         app.deinit();
         allocator.destroy(app);
@@ -50,6 +50,7 @@ const CliArgs = struct {
     transport: Transport,
     log_level: ?log_mod.Level,
     log_file: ?[]const u8,
+    languages_dir: ?[]const u8,
 };
 
 fn parseCli(args: std.process.Args) CliArgs {
@@ -57,6 +58,7 @@ fn parseCli(args: std.process.Args) CliArgs {
         .transport = .stdio,
         .log_level = null,
         .log_file = null,
+        .languages_dir = null,
     };
 
     var iter = std.process.Args.Iterator.init(args);
@@ -73,10 +75,14 @@ fn parseCli(args: std.process.Args) CliArgs {
             result.log_level = log_mod.parseLevel(arg["--log-level=".len..]);
         } else if (std.mem.startsWith(u8, arg, "--log-file=")) {
             result.log_file = arg["--log-file=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--languages-dir=")) {
+            result.languages_dir = arg["--languages-dir=".len..];
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             result.log_level = if (iter.next()) |v| log_mod.parseLevel(v) else null;
         } else if (std.mem.eql(u8, arg, "--log-file")) {
             result.log_file = iter.next();
+        } else if (std.mem.eql(u8, arg, "--languages-dir")) {
+            result.languages_dir = iter.next();
         }
     }
 

@@ -1,24 +1,94 @@
-" yac_treesitter.vim — Tree-sitter integration (extracted from yac.vim)
+" yac_treesitter.vim — Tree-sitter integration (push mode)
+"
+" Push mode: yacd parses on did_open/did_change and pushes ts_highlights.
+" No pull requests from Vim — scrolling is zero-RPC.
 "
 " Dependencies on yac.vim:
 "   yac#_request(method, params, callback)       — send daemon request
 "   yac#_notify(method, params)                  — send daemon notification
 "   yac#_debug_log(msg)                          — debug logging
-"   yac#_ts_ensure_connection()                     — get channel handle
-"   yac#_ts_flush_did_change()                      — flush pending edits
-"   yac#_ts_show_document_symbols(symbols)          — show symbols in picker
-"   yac#toast(msg, ...)                             — toast notification
+"   yac#_ts_ensure_connection()                  — get channel handle
+"   yac#_ts_show_document_symbols(symbols)       — show symbols in picker
+"   yac#toast(msg, ...)                          — toast notification
 
 " ============================================================================
 " State variables
 " ============================================================================
 
-" Debounce timer for ts highlights
-let s:ts_hl_timer = -1
-let s:ts_hl_last_range = ''
 let s:ts_prop_types_created = {}
-" NOTE: seq is per-buffer (b:yac_ts_hl_seq) so buffer switches don't
-" discard in-flight responses for the previous buffer.
+" Per-buffer: b:yac_ts_hl_version — last applied version (version guard)
+
+" ============================================================================
+" Push handler — called by yac_connection.vim on ts_highlights push
+" ============================================================================
+
+function! yac_treesitter#handle_push(params) abort
+  if type(a:params) != v:t_dict
+        \ || !has_key(a:params, 'highlights')
+        \ || !has_key(a:params, 'file')
+    return
+  endif
+
+  " Defer prop updates while picker is open
+  if yac_picker#is_open()
+    return
+  endif
+
+  let l:file = a:params.file
+  let l:version = get(a:params, 'version', 0)
+
+  " Find the buffer number for this file
+  let l:bufnr = bufnr(l:file)
+  if l:bufnr == -1 || !bufexists(l:bufnr)
+    return
+  endif
+
+  " Version guard: skip if we already applied a newer version
+  let l:cur_version = getbufvar(l:bufnr, 'yac_ts_hl_version', 0)
+  if l:version > 0 && l:version <= l:cur_version
+    return
+  endif
+
+  let l:line_start = get(a:params, 'line_start', 0)
+  let l:line_end = get(a:params, 'line_end', 0)
+  let l:is_partial = l:line_start > 0 && l:line_end > 0
+
+  call yac#_debug_log(printf('[TS_PUSH] file=%s version=%d groups=%d lines=%d-%d',
+    \ l:file, l:version, len(a:params.highlights), l:line_start, l:line_end))
+
+  " Double-buffered replacement
+  let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
+  let l:new_gen = 1 - l:old_gen
+  let l:old_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
+
+  let l:new_types = s:ts_apply_highlights(l:new_gen, a:params.highlights, l:bufnr)
+
+  " Remove old generation props — only in the pushed line range (viewport mode)
+  " or the entire buffer (full mode). This prevents flash on scroll.
+  for prop_type in l:old_types
+    if l:is_partial
+      " prop_remove with line range removes one at a time — loop until done
+      while prop_remove({'type': prop_type, 'bufnr': l:bufnr},
+        \ l:line_start, l:line_end) > 0
+      endwhile
+    else
+      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
+    endif
+  endfor
+
+  call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
+  call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
+  call setbufvar(l:bufnr, 'yac_ts_hl_version', l:version)
+
+  " Disable Vim's built-in syntax once tree-sitter highlights are active
+  if !getbufvar(l:bufnr, 'yac_ts_syntax_off', 0)
+    let l:win = bufwinid(l:bufnr)
+    if l:win != -1
+      call win_execute(l:win, 'setlocal syntax=OFF')
+    endif
+    call setbufvar(l:bufnr, 'yac_ts_syntax_off', 1)
+  endif
+endfunction
 
 " ============================================================================
 " Symbols
@@ -71,7 +141,6 @@ endfunction
 function! yac_treesitter#_handle_ts_navigate_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
   if type(a:response) == v:t_dict && has_key(a:response, 'line')
-    " Convert 0-based to 1-based
     let lnum = a:response.line + 1
     let col = get(a:response, 'column', 0) + 1
     call cursor(lnum, col)
@@ -114,157 +183,8 @@ function! yac_treesitter#select(target) abort
 endfunction
 
 " ============================================================================
-" Syntax highlighting
+" Prop application (shared between push and hover)
 " ============================================================================
-
-function! yac_treesitter#highlights_request(...) abort
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:vis_lo = line('w0') - 1  " 0-indexed
-  let l:vis_hi = line('w$')
-  let l:cov_lo = get(b:, 'yac_ts_hl_lo', -1)
-  let l:cov_hi = get(b:, 'yac_ts_hl_hi', -1)
-
-  " Already fully covered — nothing to do
-  if l:cov_lo >= 0 && l:vis_lo >= l:cov_lo && l:vis_hi <= l:cov_hi
-    return
-  endif
-
-  let l:pad = max([line('w$') - line('w0'), 20])
-  let l:is_scroll = 0
-
-  " Scroll mode: only request the uncovered delta direction
-  if a:0 > 0 && a:1 ==# 'scroll' && l:cov_lo >= 0
-    let l:need_up   = l:vis_lo < l:cov_lo
-    let l:need_down = l:vis_hi > l:cov_hi
-    if l:need_down && !l:need_up
-      let l:req_lo = l:cov_hi
-      let l:req_hi = l:vis_hi + l:pad
-      let l:is_scroll = 1
-    elseif l:need_up && !l:need_down
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      " Limit to visible area + pad (like scroll-down), not the full gap to cov_lo.
-      " Requesting all of [vis_lo..cov_lo] can be thousands of lines for G→gg on
-      " large files, causing a noticeable delay.  The gap is filled incrementally
-      " as the user scrolls back down.
-      let l:req_hi = min([l:cov_lo, l:vis_hi + l:pad])
-      let l:is_scroll = 1
-    endif
-    " Both directions exceeded (big jump) → fall through to full request
-  endif
-
-  if !l:is_scroll
-    if l:cov_lo < 0
-      let l:req_lo = max([0, l:vis_lo - l:pad])
-      let l:req_hi = l:vis_hi + l:pad
-    else
-      let l:req_lo = max([0, min([l:vis_lo, l:cov_lo]) - l:pad])
-      let l:req_hi = max([l:vis_hi, l:cov_hi]) + l:pad
-    endif
-  endif
-
-  let l:params = {
-    \ 'file': expand('%:p'),
-    \ 'start_line': l:req_lo,
-    \ 'end_line': l:req_hi,
-    \ }
-  if !get(b:, 'yac_ts_hl_parsed', 0)
-    let l:params.text = join(getline(1, '$'), "\n")
-    let b:yac_ts_hl_parsed = 1
-  endif
-  let l:bufnr = bufnr('%')
-  let l:seq = get(b:, 'yac_ts_hl_seq', 0) + 1
-  let b:yac_ts_hl_seq = l:seq
-  call yac#_request('ts_highlights', l:params,
-    \ {ch, resp -> s:handle_ts_highlights_response(
-    \     ch, resp, l:seq, l:bufnr, l:is_scroll)})
-endfunction
-
-function! s:handle_ts_highlights_response(channel, response, seq, bufnr, is_scroll) abort
-  if type(a:response) != v:t_dict
-        \ || !has_key(a:response, 'highlights')
-        \ || !has_key(a:response, 'range')
-    return
-  endif
-  " Defer prop updates while picker is open — applying text properties
-  " to the underlying buffer triggers a Vim redraw that can break popup
-  " cursorline rendering (observed with large markdown files).
-  if yac_picker#is_open()
-    return
-  endif
-  " Per-buffer seq: discard stale responses for THIS buffer, but don't
-  " discard responses just because the user switched to another buffer.
-  if a:seq != getbufvar(a:bufnr, 'yac_ts_hl_seq', 0)
-    return
-  endif
-  " Buffer may have been wiped
-  if !bufexists(a:bufnr)
-    return
-  endif
-
-  let l:bufnr = a:bufnr
-
-  if a:is_scroll
-    " Scroll path: append delta props to current generation (no flip)
-    let l:gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:cur_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-    let l:old_lo = getbufvar(l:bufnr, 'yac_ts_hl_lo', -1)
-    let l:old_hi = getbufvar(l:bufnr, 'yac_ts_hl_hi', -1)
-    " Gap detection: if the new response doesn't connect to existing coverage,
-    " clear old props first so they don't duplicate when scrolling back to that area.
-    let l:is_gap = l:old_lo >= 0 && (a:response.range[1] < l:old_lo || a:response.range[0] > l:old_hi)
-    if l:is_gap
-      for l:t in l:cur_types
-        silent! call prop_remove({'type': l:t, 'bufnr': l:bufnr, 'all': 1})
-      endfor
-      let l:cur_types = []
-    endif
-    let l:new_types = s:ts_apply_highlights(l:gen, a:response.highlights, l:bufnr)
-    " Merge new types into existing list (avoid duplicates from prior scrolls)
-    for l:t in l:new_types
-      if index(l:cur_types, l:t) < 0
-        call add(l:cur_types, l:t)
-      endif
-    endfor
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:cur_types)
-    if l:is_gap
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-    else
-      call setbufvar(l:bufnr, 'yac_ts_hl_lo',
-            \ (l:old_lo < 0 ? a:response.range[0] : min([l:old_lo, a:response.range[0]])))
-      call setbufvar(l:bufnr, 'yac_ts_hl_hi',
-            \ (l:old_hi < 0 ? a:response.range[1] : max([l:old_hi, a:response.range[1]])))
-    endif
-  else
-    " Edit path: double-buffered full replacement
-    let l:old_gen = getbufvar(l:bufnr, 'yac_ts_hl_gen', 0)
-    let l:new_gen = 1 - l:old_gen
-    let l:old_types = getbufvar(l:bufnr, 'yac_ts_hl_prop_types', [])
-
-    let l:new_types = s:ts_apply_highlights(l:new_gen, a:response.highlights, l:bufnr)
-
-    for prop_type in l:old_types
-      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-    endfor
-
-    call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
-    call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
-    call setbufvar(l:bufnr, 'yac_ts_hl_lo', a:response.range[0])
-    call setbufvar(l:bufnr, 'yac_ts_hl_hi', a:response.range[1])
-  endif
-
-  " Disable Vim's built-in syntax for this buffer once tree-sitter highlights
-  " are active — prevents conflicts (e.g. JSON syntax marking // as Error).
-  if !getbufvar(l:bufnr, 'yac_ts_syntax_off', 0)
-    let l:win = bufwinid(l:bufnr)
-    if l:win != -1
-      call win_execute(l:win, 'setlocal syntax=OFF')
-    endif
-    call setbufvar(l:bufnr, 'yac_ts_syntax_off', 1)
-  endif
-endfunction
 
 " Apply highlight groups for a given generation. Returns the list of
 " prop type names that were created/used.
@@ -279,8 +199,7 @@ function! s:ts_apply_highlights(gen, highlights, bufnr) abort
   return l:types
 endfunction
 
-" Batch-add text properties.  Positions arrive from Zig already in
-" [lnum, col, end_lnum, end_col] format ready for prop_add_list.
+" Batch-add text properties.
 function! s:ts_add_props(prop_type, positions, bufnr) abort
   if !empty(a:positions)
     try
@@ -312,9 +231,6 @@ function! s:ensure_ts_prop_type(prop_type, highlight_group) abort
   endif
 endfunction
 
-" Container groups (string, comment) get lower priority so that child
-" captures (escape, embedded/variable, punctuation) override them when
-" overlapping — e.g. f-string interpolation {var} inside a string.
 function! s:ts_prop_priority(group) abort
   if a:group ==# 'YacTsString' || a:group ==# 'YacTsComment'
         \ || a:group ==# 'YacTsCommentDocumentation'
@@ -330,29 +246,22 @@ function! s:clear_ts_highlights() abort
   endfor
 endfunction
 
-function! s:ts_highlights_reset_coverage() abort
-  call s:clear_ts_highlights()
-  let b:yac_ts_hl_gen = 0
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let b:yac_ts_hl_prop_types = []
-  let s:ts_hl_last_range = ''
-endfunction
-
 " ============================================================================
 " Enable / Disable / Toggle
 " ============================================================================
 
 function! yac_treesitter#highlights_enable() abort
   let b:yac_ts_highlights_enabled = 1
-  call s:ts_highlights_reset_coverage()
-  call yac_treesitter#highlights_request()
+  " In push mode, highlights arrive automatically via did_open.
+  " Force a did_open to get initial highlights if not yet sent.
+  call yac_lsp#notify_did_open()
 endfunction
 
 function! yac_treesitter#highlights_disable() abort
   let b:yac_ts_highlights_enabled = 0
-  call s:ts_highlights_reset_coverage()
+  call s:clear_ts_highlights()
+  let b:yac_ts_hl_prop_types = []
+  let b:yac_ts_hl_version = 0
   " Restore Vim's built-in syntax when tree-sitter is disabled
   if get(b:, 'yac_ts_syntax_off', 0)
     let &l:syntax = &filetype
@@ -369,69 +278,30 @@ function! yac_treesitter#highlights_toggle() abort
 endfunction
 
 " ============================================================================
-" Debounce / Detach / Invalidate
+" Legacy compatibility — these are no-ops in push mode but may be called
+" by existing code (E2E tests, keybindings, etc.)
 " ============================================================================
 
-function! yac_treesitter#highlights_debounce() abort
-  " 忽略 popup 窗口（C-n 在 popup 中移动光标会触发 CursorMoved）
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  " Skip while picker is open — WinScrolled from popup scroll fires with
-  " main window as current, bypassing the popup guard above.
-  if yac_picker#is_open()
-    return
-  endif
-  " Auto-enable on first BufEnter if global option is on
-  if !exists('b:yac_ts_highlights_enabled') && get(g:, 'yac_ts_highlights', 1)
-    let b:yac_ts_highlights_enabled = 1
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  let l:range = expand('%:p') . ':' . line('w0') . ':' . line('w$')
-  if l:range ==# s:ts_hl_last_range
-    return
-  endif
-  let s:ts_hl_last_range = l:range
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-  endif
-  let s:ts_hl_timer = timer_start(30, {-> yac_treesitter#highlights_request('scroll')})
+function! yac_treesitter#highlights_request(...) abort
+  " No-op in push mode — highlights are pushed by daemon
 endfunction
 
-" On BufLeave, reset the debounce fingerprint so BufEnter will re-check
-" coverage.  Text properties are buffer-bound (via bufnr) and don't bleed
-" into other buffers, so we keep them and the coverage metadata intact.
+function! yac_treesitter#highlights_debounce() abort
+  " No-op in push mode
+endfunction
+
 function! yac_treesitter#highlights_detach() abort
-  let s:ts_hl_last_range = ''
+  " No-op in push mode
 endfunction
 
 function! yac_treesitter#highlights_invalidate() abort
-  if win_gettype() ==# 'popup'
-    return
-  endif
-  if yac_picker#is_open()
-    return
-  endif
-  if !get(b:, 'yac_ts_highlights_enabled', 0)
-    return
-  endif
-  " Cancel pending debounce timer — it would use stale tree state
-  if s:ts_hl_timer != -1
-    call timer_stop(s:ts_hl_timer)
-    let s:ts_hl_timer = -1
-  endif
-  " Flush pending did_change so daemon's tree-sitter tree is up to date
-  " before we request highlights. Same pattern as yac#complete().
-  call yac#_ts_flush_did_change()
-  " Reset metadata but keep old props on screen.
-  " The response handler does clear + apply synchronously (no gap).
-  " With prop_add, old props have auto-tracked positions so they're
-  " mostly correct during the brief async wait.
-  let b:yac_ts_hl_lo = -1
-  let b:yac_ts_hl_hi = -1
-  let b:yac_ts_hl_parsed = 0
-  let s:ts_hl_last_range = ''
-  call yac_treesitter#highlights_request()
+  " In push mode, trigger a did_change to re-parse and push.
+  " Use did_change if daemon already has the buffer, otherwise fall back
+  " to a full did_open (e.g. when load_language completes after did_open).
+  let file = expand('%:p')
+  if empty(file) | return | endif
+  call yac#_notify('did_change', {
+    \ 'file': file,
+    \ 'text': join(getline(1, '$'), "\n"),
+    \ })
 endfunction

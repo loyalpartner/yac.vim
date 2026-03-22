@@ -233,6 +233,10 @@ endfunction
 if get(g:, 'yac_auto_start', 1)
   augroup yac_auto
     autocmd!
+    " BufReadPre: send did_open WITHOUT text — daemon reads from disk and
+    " parses in parallel with Vim's own file loading (TS-only, no LSP).
+    " visible_top: viewport hint for prioritized highlighting (0-based).
+    autocmd BufReadPre * if s:not_preview_loading() | call yac#_notify('did_open', {'file': expand('<afile>:p'), 'visible_top': line('w0') - 1}) | endif
     autocmd BufReadPost,BufNewFile * if s:not_preview_loading() | call s:yac_check_language() | endif
     autocmd BufWritePre * if s:not_preview_loading() | call yac#will_save(1) | endif
     autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
@@ -242,7 +246,8 @@ if get(g:, 'yac_auto_start', 1)
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
     autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | call yac#inlay_hints_on_insert_leave() | endif
     autocmd InsertEnter * if s:not_preview_loading() | call yac#inlay_hints_on_insert_enter() | endif
-    autocmd CursorMoved * if s:not_preview_loading() | call yac#document_highlight_debounce() | endif
+    autocmd CursorMoved * if s:not_preview_loading() | call yac#document_highlight_debounce() | call yac#ts_viewport_debounce() | endif
+    autocmd WinScrolled * if s:not_preview_loading() | call yac#ts_viewport_debounce() | endif
     autocmd CursorMovedI,InsertEnter * if s:not_preview_loading() | call yac#clear_document_highlights() | endif
     autocmd VimLeave * call yac#stop()
   augroup END
@@ -270,17 +275,8 @@ augroup yac_autopairs
   autocmd BufReadPost,BufNewFile * call yac_autopairs#setup()
 augroup END
 
-" Tree-sitter highlights autocommands
-" Use * pattern — handlers check per-buffer enablement
-augroup yac_ts_highlights
-  autocmd!
-  autocmd CursorMoved,CursorMovedI,BufEnter * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
-  autocmd WinScrolled * if s:not_preview_loading() | call yac#ts_highlights_debounce() | endif
-  autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
-  autocmd InsertLeave * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
-  autocmd BufReadPost * if s:not_preview_loading() | call yac#ts_highlights_invalidate() | endif
-  autocmd BufLeave * if s:not_preview_loading() | call yac#ts_highlights_detach() | endif
-augroup END
+" Tree-sitter highlights — push mode (no pull autocmds needed)
+" Highlights are pushed automatically by yacd after did_open/did_change.
 
 " Semantic tokens — request after save and on buffer enter (debounced)
 if get(g:, 'yac_semantic_tokens', 1)
@@ -313,3 +309,4 @@ endif
 if get(g:, 'yac_copilot_auto', 1)
   call yac_copilot#enable()
 endif
+

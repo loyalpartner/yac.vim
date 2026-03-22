@@ -7,6 +7,7 @@ pub const NotifyDispatcher = @import("notification.zig").NotifyDispatcher;
 pub const SystemHandler = @import("system.zig").SystemHandler;
 pub const InstallHandler = @import("install.zig").InstallHandler;
 pub const PickerHandler = @import("picker.zig").PickerHandler;
+pub const TreeSitterHandler = @import("treesitter.zig").TreeSitterHandler;
 
 test {
     _ = @import("dispatch.zig");

@@ -70,7 +70,13 @@ class VimRunner:
         # Symlink read-only directories needed by the plugin at runtime
         (tmpdir / "vim").symlink_to(self.project_root / "vim")
         (tmpdir / "vimrc").symlink_to(self.project_root / "vimrc")
-        (tmpdir / "zig-out").symlink_to(self.project_root / "zig-out")
+        # Symlink both old and new daemon paths
+        if (self.project_root / "zig-out").exists():
+            (tmpdir / "zig-out").symlink_to(self.project_root / "zig-out")
+        if (self.project_root / "yacd").exists():
+            (tmpdir / "yacd").symlink_to(self.project_root / "yacd")
+        if (self.project_root / "languages").exists():
+            (tmpdir / "languages").symlink_to(self.project_root / "languages")
         (tmpdir / "tests").symlink_to(self.project_root / "tests")
 
         return tmpdir
@@ -312,8 +318,15 @@ def shared_workspace():
     )
 
     # Symlinks for plugin runtime
-    for name in ["vim", "vimrc", "zig-out", "tests"]:
+    for name in ["vim", "vimrc", "tests"]:
         (tmpdir / name).symlink_to(PROJECT_ROOT / name)
+    # Symlink daemon builds and language data
+    if (PROJECT_ROOT / "zig-out").exists():
+        (tmpdir / "zig-out").symlink_to(PROJECT_ROOT / "zig-out")
+    if (PROJECT_ROOT / "yacd").exists():
+        (tmpdir / "yacd").symlink_to(PROJECT_ROOT / "yacd")
+    if (PROJECT_ROOT / "languages").exists():
+        (tmpdir / "languages").symlink_to(PROJECT_ROOT / "languages")
 
     yield tmpdir, runtime_dir
 
@@ -345,6 +358,9 @@ def vim_runner(shared_workspace):
 
 @pytest.fixture(scope="session")
 def check_bridge():
-    bridge = PROJECT_ROOT / "zig-out" / "bin" / "yacd"
+    bridge = PROJECT_ROOT / "yacd" / "zig-out" / "bin" / "yacd"
     if not bridge.exists():
-        pytest.skip("yacd not built, run 'zig build' first")
+        # Fallback to old path
+        bridge = PROJECT_ROOT / "zig-out" / "bin" / "yacd"
+        if not bridge.exists():
+            pytest.skip("yacd not built, run 'cd yacd && zig build' first")

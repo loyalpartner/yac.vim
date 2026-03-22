@@ -112,26 +112,20 @@ call yac_test#assert_eq(s:sig33_after_del, s:sig34_orig,
   \ 'After deleting line above, shifted line should keep same highlight signature')
 
 " ============================================================================
-" Test 7: scroll-up branch min() regression (E118)
+" Test 7: Push mode — all lines get highlights without scroll requests
 " ============================================================================
-call yac_test#log('INFO', 'Test 7: scroll-up branch min() regression (E118)')
+call yac_test#log('INFO', 'Test 7: Push mode — all lines highlighted')
 
 call s:reload_and_wait()
 
 call cursor(1, 1)
 normal! zt
 
-call yac#ts_highlights_disable()
-
-let b:yac_ts_highlights_enabled = 1
-let b:yac_ts_hl_lo = 20
-let b:yac_ts_hl_hi = line('$')
-
-call yac#ts_highlights_request('scroll')
-
+" In push mode, all highlights are pushed on did_open/did_change.
+" Line 1 should already have props from the initial push.
 call yac_test#wait_assert(
   \ {-> !empty(s:get_ts_props(1))},
-  \ 3000, 'scroll-up: line 1 should get ts props after scroll-up request (E118 regression)')
+  \ 3000, 'push mode: line 1 should have ts props from initial push')
 
 call yac#ts_highlights_disable()
 call yac_test#teardown()

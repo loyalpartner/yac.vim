@@ -1,5 +1,17 @@
 const std = @import("std");
 
+fn addTreeSitterDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const ts_dep = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+        .@"enable-wasm" = true,
+    });
+    mod.addImport("tree_sitter", ts_dep.module("tree_sitter"));
+
+    // Wasmtime (Rust) requires libunwind for exception handling
+    mod.linkSystemLibrary("unwind", .{ .use_pkg_config = .no });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -16,6 +28,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     mod.addImport("lsp", lsp_dep.module("lsp"));
+    addTreeSitterDeps(b, mod, target, optimize);
 
     // Executable
     const exe_mod = b.createModule(.{
@@ -25,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     exe_mod.addImport("lsp", lsp_dep.module("lsp"));
+    addTreeSitterDeps(b, exe_mod, target, optimize);
 
     const exe = b.addExecutable(.{
         .name = "yacd",

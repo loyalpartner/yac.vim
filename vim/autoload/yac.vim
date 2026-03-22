@@ -90,6 +90,33 @@ function! s:flush_did_change() abort
   call s:send_did_change(expand('%:p'), join(getline(1, '$'), "\n"))
 endfunction
 
+" === Tree-sitter viewport tracking ===
+" Send ts_viewport when visible area moves >50 lines from last push.
+" Small scrolls stay within the ±300 margin — no push needed.
+let s:ts_viewport_timer = -1
+let s:ts_viewport_last_top = -1
+
+function! yac#ts_viewport_debounce() abort
+  let top = line('w0') - 1
+  " Skip if moved less than 50 lines from last push (still within margin)
+  if s:ts_viewport_last_top >= 0 && abs(top - s:ts_viewport_last_top) < 50
+    return
+  endif
+  if s:ts_viewport_timer != -1
+    call timer_stop(s:ts_viewport_timer)
+  endif
+  let l:file = expand('%:p')
+  let s:ts_viewport_timer = timer_start(16,
+    \ {-> s:send_ts_viewport(l:file, top)})
+endfunction
+
+function! s:send_ts_viewport(file, top) abort
+  let s:ts_viewport_timer = -1
+  let s:ts_viewport_last_top = a:top
+  if empty(a:file) | return | endif
+  call s:notify('ts_viewport', {'file': a:file, 'visible_top': a:top})
+endfunction
+
 " Mode-aware 0-based byte column for LSP requests.
 " Insert mode: cursor is between characters, col('.') - 1 is correct.
 " Normal/command mode: cursor is ON a character, col('.') gives "after" position.

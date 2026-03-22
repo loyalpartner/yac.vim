@@ -6,6 +6,9 @@
             .url = "https://github.com/zigtools/lsp-kit/archive/refs/heads/main.tar.gz",
             .hash = "lsp_kit-0.1.0-bi_PLwozDAApVpvVJHz80NPklig5biWlZCkyxjFbOtiD",
         },
+        .tree_sitter = .{
+            .path = "../vendor/zig-tree-sitter",
+        },
     },
     .fingerprint = 0xdba0eb7add5d775f,
     .minimum_zig_version = "0.16.0",

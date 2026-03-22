@@ -20,6 +20,11 @@ let s:log_started = 0
 " 启动 daemon 进程，通过 stdio JSON channel 通信
 function! s:start_daemon() abort
   let l:cmd = get(g:, 'yac_daemon_command', [s:plugin_root . '/yacd/zig-out/bin/yacd'])
+  " Pass languages directory so daemon can lazy-load grammars on did_open
+  let l:langs_dir = s:plugin_root . '/languages'
+  if isdirectory(l:langs_dir)
+    let l:cmd += ['--languages-dir', l:langs_dir]
+  endif
   if exists('g:yac_log_level')
     let l:cmd += ['--log-level', g:yac_log_level]
   endif
@@ -119,6 +124,9 @@ function! s:handle_push(channel, msg) abort
   elseif a:msg.action ==# 'progress'
     let params = get(a:msg, 'params', {})
     call yac_status#handle_progress(params)
+  elseif a:msg.action ==# 'ts_highlights'
+    let params = get(a:msg, 'params', {})
+    call yac_treesitter#handle_push(params)
   elseif a:msg.action ==# 'install_complete'
     let params = get(a:msg, 'params', {})
     let l:lang = get(params, 'language', '')

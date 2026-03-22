@@ -292,7 +292,9 @@ endfunction
 
 function! s:probe_lsp_status() abort
   " Check result from previous async callback (processed during sleep interval)
-  let l:ready = get(g:yac_lsp_status, 'ready', 0)
+  " Guard against null/non-dict responses (yacd may not support lsp_status)
+  let l:ready = type(g:yac_lsp_status) == v:t_dict
+        \ ? get(g:yac_lsp_status, 'ready', 0) : 0
   " Fire next async query for the following poll cycle
   call yac#lsp_status(expand('%:p'))
   return l:ready

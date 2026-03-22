@@ -1,5 +1,6 @@
 const std = @import("std");
 const picker_source = @import("../picker/source.zig");
+const ts_highlights = @import("../treesitter/highlights.zig");
 
 // ============================================================================
 // Vim <-> yacd type registry
@@ -40,6 +41,10 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "install_complete", InstallCompletePush },
         .{ "started", StartedPush },
         .{ "picker_progress", PickerProgressPush },
+        .{ "ts_highlights", TsHighlightsPush },
+        // Tree-sitter
+        .{ "load_language", LoadLanguageParams },
+        .{ "ts_viewport", TsViewportParams },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -68,6 +73,8 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "picker_close", void },
         .{ "install_lsp", InstallLspResult },
         .{ "reset_failed", void },
+        .{ "load_language", LoadLanguageResult },
+        .{ "ts_viewport", void },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -99,7 +106,8 @@ pub const CompletionParams = struct {
 pub const DidOpenParams = struct {
     file: []const u8,
     language: ?[]const u8 = null,
-    text: []const u8,
+    text: ?[]const u8 = null, // null → daemon reads file from disk (BufReadPre optimization)
+    visible_top: ?u32 = null, // viewport hint: visible area start (0-based line)
 };
 
 pub const DidChangeParams = struct {
@@ -248,6 +256,63 @@ pub const PickerProgressPush = struct {
 };
 
 // ============================================================================
+// Tree-sitter types
+// ============================================================================
+
+pub const LoadLanguageParams = struct {
+    lang_dir: []const u8,
+};
+
+pub const LoadLanguageResult = struct {
+    ok: bool,
+};
+
+/// ts_viewport: Vim scrolled/jumped — extend highlight coverage.
+pub const TsViewportParams = struct {
+    file: []const u8,
+    visible_top: u32,
+};
+
+/// Push: tree-sitter highlights for a buffer.
+/// Custom jsonStringify outputs highlights as {group: [[l,c,el,ec], ...]} dict.
+pub const TsHighlightsPush = struct {
+    file: []const u8,
+    version: u32,
+    line_start: u32 = 0, // 1-based start line of highlighted range (0 = full buffer)
+    line_end: u32 = 0, // 1-based end line (0 = full buffer)
+    highlights: []const ts_highlights.GroupHighlights,
+
+    pub fn jsonStringify(self: TsHighlightsPush, jw: anytype) @TypeOf(jw.*).Error!void {
+        try jw.beginObject();
+        try jw.objectField("file");
+        try jw.write(self.file);
+        try jw.objectField("version");
+        try jw.write(self.version);
+        try jw.objectField("line_start");
+        try jw.write(self.line_start);
+        try jw.objectField("line_end");
+        try jw.write(self.line_end);
+        try jw.objectField("highlights");
+        try jw.beginObject();
+        for (self.highlights) |g| {
+            try jw.objectField(g.group);
+            try jw.beginArray();
+            for (g.spans) |s| {
+                try jw.beginArray();
+                try jw.write(s.lnum);
+                try jw.write(s.col);
+                try jw.write(s.end_lnum);
+                try jw.write(s.end_col);
+                try jw.endArray();
+            }
+            try jw.endArray();
+        }
+        try jw.endObject();
+        try jw.endObject();
+    }
+};
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -256,6 +321,8 @@ test "ParamsType: known methods resolve" {
     try std.testing.expect(ParamsType("completion") == CompletionParams);
     try std.testing.expect(ParamsType("exit") == void);
     try std.testing.expect(ParamsType("diagnostics") == DiagnosticsPush);
+    try std.testing.expect(ParamsType("ts_highlights") == TsHighlightsPush);
+    try std.testing.expect(ParamsType("load_language") == LoadLanguageParams);
 }
 
 test "ResultType: known methods resolve" {
