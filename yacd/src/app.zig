@@ -178,18 +178,13 @@ pub const App = struct {
             ch.waitInbound() catch return;
             const msgs = ch.recv() orelse continue;
             defer ch.allocator.free(msgs);
+            // Process all messages synchronously. msgs memory is freed at end
+            // of this loop body — concurrent dispatch would cause UAF since
+            // req/notification fields point into msgs buffer.
             for (msgs) |msg| {
                 switch (msg) {
-                    .request => |req| {
-                        group.concurrent(ch.io, handleRequest, .{ self, ch, req }) catch {};
-                    },
-                    .notification => |n| {
-                        // Process notifications synchronously to avoid UAF:
-                        // n.action/n.params point into msgs memory which is freed
-                        // at end of this loop body. Concurrent dispatch would access
-                        // freed memory.
-                        self.handleNotificationSync(ch, n);
-                    },
+                    .request => |req| self.handleRequestSync(ch, req),
+                    .notification => |n| self.handleNotificationSync(ch, n),
                     .response => {},
                 }
             }
@@ -201,7 +196,7 @@ pub const App = struct {
         _ = self.dispatcher.dispatch(ch.allocator, n.action, n.params);
     }
 
-    fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request) Io.Cancelable!void {
+    fn handleRequestSync(self: *App, ch: *VimChannel, req: VimMessage.Request) void {
         log.info("request [{d}] {s}", .{ req.id, req.method });
         const result = self.dispatcher.dispatch(
             ch.allocator,
