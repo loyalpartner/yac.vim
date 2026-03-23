@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Engine = @import("../treesitter/root.zig").Engine;
+const markdown_highlight = @import("../treesitter/markdown_highlight.zig");
 const Notifier = @import("../notifier.zig").Notifier;
 const vim = @import("../vim/root.zig");
 
@@ -99,6 +100,11 @@ pub const TreeSitterHandler = struct {
     pub fn onClose(self: *TreeSitterHandler, file: []const u8) void {
         self.engine.closeBuffer(file);
         _ = self.last_viewport.remove(file);
+    }
+
+    /// ts_hover_highlight: highlight markdown code blocks for popups.
+    pub fn tsHoverHighlight(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.TsHoverHighlightParams) !vim.types.TsHoverHighlightResult {
+        return try markdown_highlight.highlight(allocator, self.engine, params.markdown, params.filetype);
     }
 
     /// load_language: load WASM grammar from a directory.

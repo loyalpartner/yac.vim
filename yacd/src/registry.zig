@@ -179,6 +179,21 @@ pub const ProxyRegistry = struct {
             .rootUri = root_uri,
             .capabilities = .{
                 .window = .{ .workDoneProgress = true },
+                .textDocument = .{
+                    .hover = .{
+                        .contentFormat = &.{ .markdown, .plaintext },
+                    },
+                    .completion = .{
+                        .completionItem = .{
+                            .documentationFormat = &.{ .markdown, .plaintext },
+                        },
+                    },
+                    .signatureHelp = .{
+                        .signatureInformation = .{
+                            .documentationFormat = &.{ .markdown, .plaintext },
+                        },
+                    },
+                },
             },
         };
 

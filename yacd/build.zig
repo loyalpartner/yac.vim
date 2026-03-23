@@ -1,5 +1,11 @@
 const std = @import("std");
 
+fn addMd4cDeps(b: *std.Build, mod: *std.Build.Module) void {
+    const md4c_root = b.path("../vendor/md4c");
+    mod.addIncludePath(md4c_root);
+    mod.addCSourceFile(.{ .file = md4c_root.path(b, "md4c.c") });
+}
+
 fn addTreeSitterDeps(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const ts_dep = b.dependency("tree_sitter", .{
         .target = target,
@@ -29,6 +35,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.addImport("lsp", lsp_dep.module("lsp"));
     addTreeSitterDeps(b, mod, target, optimize);
+    addMd4cDeps(b, mod);
 
     // Executable
     const exe_mod = b.createModule(.{
@@ -39,6 +46,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("lsp", lsp_dep.module("lsp"));
     addTreeSitterDeps(b, exe_mod, target, optimize);
+    addMd4cDeps(b, exe_mod);
 
     const exe = b.addExecutable(.{
         .name = "yacd",

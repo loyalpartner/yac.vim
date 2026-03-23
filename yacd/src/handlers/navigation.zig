@@ -46,11 +46,35 @@ pub const NavigationHandler = struct {
     }
 
     pub fn hover(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.HoverResult {
-        _ = self;
-        _ = allocator;
-        _ = params;
-        // TODO: resolve proxy → proxy.hover() → extract contents
-        return .{ .contents = "" };
+        log.info("hover {s}:{d}:{d}", .{ params.file, params.line, params.column });
+        const proxy = self.registry.resolve(params.file, null) catch
+            return .{ .contents = "" };
+
+        const uri = try config.fileToUri(allocator, params.file);
+        const lang_config = config.detectConfig(params.file) orelse
+            return .{ .contents = "" };
+
+        proxy.ensureOpen(uri, lang_config.language_id) catch {};
+
+        const result = proxy.hover(.{
+            .textDocument = .{ .uri = uri },
+            .position = .{ .line = params.line, .character = params.column },
+        }) catch return .{ .contents = "" };
+
+        const hover_result = result orelse return .{ .contents = "" };
+        const contents = switch (hover_result.contents) {
+            .markup_content => |mc| mc.value,
+            .marked_string => |ms| switch (ms) {
+                .string => |s| s,
+                .marked_string_with_language => |wl| wl.value,
+            },
+            .marked_strings => |ms| if (ms.len > 0) switch (ms[0]) {
+                .string => |s| s,
+                .marked_string_with_language => |wl| wl.value,
+            } else "",
+        };
+        if (contents.len == 0) return .{ .contents = "" };
+        return .{ .contents = try allocator.dupe(u8, contents) };
     }
 
     pub fn references(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.ReferencesResult {

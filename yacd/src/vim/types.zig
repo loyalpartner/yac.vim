@@ -45,6 +45,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         // Tree-sitter
         .{ "load_language", LoadLanguageParams },
         .{ "ts_viewport", TsViewportParams },
+        .{ "ts_hover_highlight", TsHoverHighlightParams },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -75,6 +76,7 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "reset_failed", void },
         .{ "load_language", LoadLanguageResult },
         .{ "ts_viewport", void },
+        .{ "ts_hover_highlight", TsHoverHighlightResult },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -275,6 +277,14 @@ pub const TsViewportParams = struct {
     file: []const u8,
     visible_top: u32,
 };
+
+/// ts_hover_highlight: highlight markdown code blocks for hover/signature/completion doc.
+pub const TsHoverHighlightParams = struct {
+    markdown: []const u8,
+    filetype: []const u8,
+};
+
+pub const TsHoverHighlightResult = @import("../treesitter/markdown_highlight.zig").HighlightResult;
 
 /// Push: tree-sitter highlights for a buffer.
 /// Custom jsonStringify outputs highlights as {group: [[l,c,el,ec], ...]} dict.

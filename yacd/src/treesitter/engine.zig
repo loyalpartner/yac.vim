@@ -432,6 +432,15 @@ pub const Engine = struct {
         return self.wasm_loader != null;
     }
 
+    /// Find a loaded language by name. Returns null if not loaded.
+    /// Used by markdown_highlight to get parser + query for code blocks.
+    pub fn findLangByName(self: *Engine, name: []const u8) ?*const LangState {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const dl = self.findDynamicLangByName(name) orelse return null;
+        return &dl.state;
+    }
+
     // ========================================================================
     // Private helpers
     // ========================================================================

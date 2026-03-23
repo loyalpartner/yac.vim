@@ -131,6 +131,7 @@ pub const App = struct {
         try app.dispatcher.register("picker_close", &app.pick, PickerHandler.pickerClose);
         try app.dispatcher.register("load_language", &app.ts_handler, TreeSitterHandler.loadLanguage);
         try app.dispatcher.register("ts_viewport", &app.ts_handler, TreeSitterHandler.onViewport);
+        try app.dispatcher.register("ts_hover_highlight", &app.ts_handler, TreeSitterHandler.tsHoverHighlight);
 
         return app;
     }
