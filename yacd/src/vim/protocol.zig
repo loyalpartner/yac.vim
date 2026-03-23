@@ -155,6 +155,13 @@ pub fn toJsonValue(allocator: Allocator, value: anytype) !std.json.Value {
     if (T == ?std.json.Value) return value orelse .null;
     if (T == void) return .null;
 
+    // Empty struct (.{}) → empty object {} instead of empty array []
+    // Zig serializes zero-field structs as [], but JSON-RPC expects {}.
+    const info = @typeInfo(T);
+    if (info == .@"struct" and info.@"struct".fields.len == 0) {
+        return .{ .object = std.json.ObjectMap.init(allocator) };
+    }
+
     var aw: Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     try std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, &aw.writer);

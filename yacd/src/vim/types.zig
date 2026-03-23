@@ -46,6 +46,15 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "load_language", LoadLanguageParams },
         .{ "ts_viewport", TsViewportParams },
         .{ "ts_hover_highlight", TsHoverHighlightParams },
+        // Copilot
+        .{ "copilot_complete", CopilotCompleteParams },
+        .{ "copilot_sign_in", void },
+        .{ "copilot_sign_out", void },
+        .{ "copilot_check_status", void },
+        .{ "copilot_sign_in_confirm", CopilotSignInConfirmParams },
+        .{ "copilot_accept", CopilotAcceptParams },
+        .{ "copilot_partial_accept", CopilotPartialAcceptParams },
+        .{ "copilot_did_focus", FileParams },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -77,6 +86,15 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "load_language", LoadLanguageResult },
         .{ "ts_viewport", void },
         .{ "ts_hover_highlight", TsHoverHighlightResult },
+        // Copilot
+        .{ "copilot_complete", CopilotCompleteResult },
+        .{ "copilot_sign_in", CopilotSignInResult },
+        .{ "copilot_sign_out", CopilotSignOutResult },
+        .{ "copilot_check_status", CopilotCheckStatusResult },
+        .{ "copilot_sign_in_confirm", CopilotSignInConfirmResult },
+        .{ "copilot_accept", void },
+        .{ "copilot_partial_accept", void },
+        .{ "copilot_did_focus", void },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -335,6 +353,58 @@ pub const TsHighlightsPush = struct {
         try jw.endObject();
         try jw.endObject();
     }
+};
+
+// ============================================================================
+// Copilot types (Vim ↔ yacd)
+// ============================================================================
+
+pub const CopilotCompleteParams = struct {
+    file: []const u8,
+    line: u32,
+    column: u32,
+    tab_size: i32 = 4,
+    insert_spaces: i32 = 1, // Vim sends 0/1, not true/false
+    text: ?[]const u8 = null, // Buffer content (avoids disk/buffer mismatch)
+};
+
+pub const CopilotCompleteItem = @import("../lsp/copilot_types.zig").InlineCompletionItem;
+
+pub const CopilotCompleteResult = struct {
+    items: []const CopilotCompleteItem,
+};
+
+pub const CopilotSignInResult = struct {
+    status: ?[]const u8 = null,
+    userCode: ?[]const u8 = null,
+    verificationUri: ?[]const u8 = null,
+};
+
+pub const CopilotSignInConfirmParams = struct {
+    userCode: ?[]const u8 = null,
+};
+
+pub const CopilotSignInConfirmResult = struct {
+    status: ?[]const u8 = null,
+    user: ?[]const u8 = null,
+};
+
+pub const CopilotSignOutResult = struct {
+    status: ?[]const u8 = null,
+};
+
+pub const CopilotCheckStatusResult = struct {
+    status: ?[]const u8 = null,
+    user: ?[]const u8 = null,
+};
+
+pub const CopilotAcceptParams = struct {
+    uuid: ?[]const u8 = null,
+};
+
+pub const CopilotPartialAcceptParams = struct {
+    item_id: ?[]const u8 = null,
+    accepted_text: ?[]const u8 = null,
 };
 
 // ============================================================================

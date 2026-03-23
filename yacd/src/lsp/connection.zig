@@ -131,11 +131,21 @@ pub const LspConnection = struct {
         comptime method: []const u8,
         params: anytype,
     ) !lsp.ResultType(method) {
+        return self.requestAs(lsp.ResultType(method), method, params);
+    }
+
+    /// Send a request with explicit result type (for non-standard methods).
+    pub fn requestAs(
+        self: *LspConnection,
+        comptime T: type,
+        method: []const u8,
+        params: anytype,
+    ) !T {
         const params_value = try toValue(self.allocator, params);
         const response = try self.requestRaw(method, params_value);
         return switch (response.result_or_error) {
             .@"error" => error.LspError,
-            .result => |result| try fromValue(lsp.ResultType(method), self.allocator, result),
+            .result => |result| try fromValue(T, self.allocator, result),
         };
     }
 
@@ -143,6 +153,15 @@ pub const LspConnection = struct {
     pub fn notify(
         self: *LspConnection,
         comptime method: []const u8,
+        params: anytype,
+    ) !void {
+        return self.notifyAs(method, params);
+    }
+
+    /// Send a notification with runtime method string (for non-standard methods).
+    pub fn notifyAs(
+        self: *LspConnection,
+        method: []const u8,
         params: anytype,
     ) !void {
         const params_value = try toValue(self.allocator, params);
@@ -162,7 +181,7 @@ pub const LspConnection = struct {
     // Internal: raw JSON-RPC send
     // ====================================================================
 
-    fn requestRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !JsonRPCMessage.Response {
+    pub fn requestRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !JsonRPCMessage.Response {
         const id = self.nextId();
 
         // Register waiter BEFORE sending (response may arrive instantly)
@@ -193,7 +212,7 @@ pub const LspConnection = struct {
         return waiter.response orelse error.NullResponse;
     }
 
-    fn notifyRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !void {
+    pub fn notifyRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !void {
         const msg: JsonRPCMessage = .{ .notification = .{
             .method = method,
             .params = params,

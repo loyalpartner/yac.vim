@@ -113,6 +113,7 @@ function! s:send_copilot_request() abort
     \ 'column': s:cursor_lsp_col(),
     \ 'tab_size': &tabstop,
     \ 'insert_spaces': &expandtab,
+    \ 'text': join(getline(1, '$'), "\n"),
     \ }, 'yac_copilot#_handle_complete')
 endfunction
 

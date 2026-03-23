@@ -45,9 +45,7 @@ pub const VimServer = struct {
         switch (transport) {
             .stdio => group.concurrent(self.io, serveStdio, .{ self, group, ctx, on_connect }) catch {},
             .tcp => |port| {
-                const addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-                var server = try addr.listen(self.io, .{ .reuse_address = true });
-                group.concurrent(self.io, serveTcpOnce, .{ self, &server, group, ctx, on_connect }) catch {};
+                group.concurrent(self.io, serveTcpOnce, .{ self, port, group, ctx, on_connect }) catch {};
             },
         }
     }
@@ -86,11 +84,13 @@ pub const VimServer = struct {
 
     fn serveTcpOnce(
         self: *VimServer,
-        server: *net.Server,
+        port: u16,
         group: *Io.Group,
         ctx: *anyopaque,
         on_connect: OnConnect,
     ) Io.Cancelable!void {
+        const addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+        var server = addr.listen(self.io, .{ .reuse_address = true }) catch return;
         const stream = server.accept(self.io) catch return;
 
         var ch = VimChannel.init(self.allocator, self.io);

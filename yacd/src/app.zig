@@ -20,6 +20,8 @@ const PickerHandler = @import("handlers/picker.zig").PickerHandler;
 const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
 const NotifyDispatcher = @import("handlers/notification.zig").NotifyDispatcher;
 const TreeSitterHandler = @import("handlers/treesitter.zig").TreeSitterHandler;
+const CopilotHandler = @import("handlers/copilot.zig").CopilotHandler;
+const CopilotProxy = @import("lsp/root.zig").CopilotProxy;
 const Engine = @import("treesitter/root.zig").Engine;
 const Picker = @import("picker/root.zig").Picker;
 const log_mod = @import("log.zig");
@@ -54,6 +56,8 @@ pub const App = struct {
     pick: PickerHandler,
     lsp_notify: NotificationHandler,
     ts_handler: TreeSitterHandler,
+    copilot_proxy: ?*CopilotProxy = null,
+    copilot: CopilotHandler,
 
     pub fn create(allocator: Allocator, io: Io, languages_dir: ?[]const u8) !*App {
         const app = try allocator.create(App);
@@ -79,6 +83,7 @@ pub const App = struct {
             .pick = .{ .picker = undefined, .registry = undefined },
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
             .ts_handler = .{ .engine = undefined, .notifier = undefined, .allocator = allocator, .last_viewport = std.StringHashMap(u32).init(allocator) },
+            .copilot = .{ .proxy = undefined, .allocator = allocator, .io = io, .group = undefined },
         };
 
         // Initialize subsystems that need notifier pointer
@@ -97,6 +102,10 @@ pub const App = struct {
         app.pick.registry = &app.registry;
         app.pick.engine = &app.engine;
         app.lsp_notify.notifier = &app.notifier;
+
+        // Copilot handler wiring
+        app.copilot.proxy = &app.copilot_proxy;
+        app.copilot.group = &app.registry.group;
 
         // Tree-sitter handler wiring
         app.ts_handler.engine = &app.engine;
@@ -134,10 +143,21 @@ pub const App = struct {
         try app.dispatcher.register("ts_viewport", &app.ts_handler, TreeSitterHandler.onViewport);
         try app.dispatcher.register("ts_hover_highlight", &app.ts_handler, TreeSitterHandler.tsHoverHighlight);
 
+        // Copilot
+        try app.dispatcher.register("copilot_complete", &app.copilot, CopilotHandler.copilotComplete);
+        try app.dispatcher.register("copilot_sign_in", &app.copilot, CopilotHandler.copilotSignIn);
+        try app.dispatcher.register("copilot_sign_out", &app.copilot, CopilotHandler.copilotSignOut);
+        try app.dispatcher.register("copilot_check_status", &app.copilot, CopilotHandler.copilotCheckStatus);
+        try app.dispatcher.register("copilot_sign_in_confirm", &app.copilot, CopilotHandler.copilotSignInConfirm);
+        try app.dispatcher.register("copilot_accept", &app.copilot, CopilotHandler.copilotAccept);
+        try app.dispatcher.register("copilot_partial_accept", &app.copilot, CopilotHandler.copilotPartialAccept);
+        try app.dispatcher.register("copilot_did_focus", &app.copilot, CopilotHandler.copilotDidFocus);
+
         return app;
     }
 
     pub fn deinit(self: *App) void {
+        if (self.copilot_proxy) |cp| cp.deinit();
         self.engine.deinit();
         self.picker.deinit();
         self.dispatcher.deinit();
