@@ -99,7 +99,7 @@ pub const FileParams = struct {
 pub const CompletionParams = struct {
     file: []const u8,
     line: u32,
-    col: u32,
+    column: u32,
     trigger_character: ?[]const u8 = null,
 };
 
@@ -159,6 +159,9 @@ pub const CompletionItem = struct {
     kind: ?u32 = null,
     detail: ?[]const u8 = null,
     insert_text: ?[]const u8 = null,
+    filter_text: ?[]const u8 = null,
+    sort_text: ?[]const u8 = null,
+    documentation: ?[]const u8 = null,
 };
 
 pub const CompletionResult = struct {
