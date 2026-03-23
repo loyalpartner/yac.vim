@@ -36,6 +36,11 @@ pub fn setLevel(level: Level) void {
     min_level = level;
 }
 
+/// Get the log file descriptor, or -1 if not initialized.
+pub fn getLogFd() std.posix.fd_t {
+    return log_fd;
+}
+
 /// Get the current log file path, or null if logging is not initialized.
 pub fn getLogFilePath() ?[]const u8 {
     if (log_file_path_len == 0) return null;

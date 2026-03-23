@@ -4,20 +4,28 @@ const PickerItem = source.PickerItem;
 const findExecutable = source.findExecutable;
 
 // ============================================================================
-// GrepEngine — vtable interface for grep backends
+// GrepEngine — data-driven grep backend configuration
 //
-// Each implementation provides argv() and parseLine().
+// Each engine is a static struct: prefix args + suffix args + line parser.
 // detect() returns a pointer to the best available static engine.
-// Adding a new backend = implement the two functions + add to detect().
+// Adding a new backend = define a new Engine constant.
 // ============================================================================
 
+pub const max_argv = 16;
+pub const ArgvBuf = [max_argv][]const u8;
+
 pub const Engine = struct {
-    argvFn: *const fn (pattern: []const u8) []const []const u8,
+    prefix: []const []const u8, // args before pattern
+    suffix: []const []const u8, // args after pattern (e.g. "." for grep)
     parseLineFn: *const fn (line: []const u8) ?PickerItem,
     name: []const u8,
 
-    pub fn argv(self: *const Engine, pattern: []const u8) []const []const u8 {
-        return self.argvFn(pattern);
+    /// Build argv into caller-provided buffer: prefix ++ pattern ++ suffix.
+    pub fn buildArgv(self: *const Engine, pattern: []const u8, buf: *ArgvBuf) []const []const u8 {
+        @memcpy(buf[0..self.prefix.len], self.prefix);
+        buf[self.prefix.len] = pattern;
+        @memcpy(buf[self.prefix.len + 1 ..][0..self.suffix.len], self.suffix);
+        return buf[0 .. self.prefix.len + 1 + self.suffix.len];
     }
 
     pub fn parseLine(self: *const Engine, line: []const u8) ?PickerItem {
@@ -36,95 +44,55 @@ pub const Engine = struct {
 // Built-in engines
 // ============================================================================
 
+/// rg — ripgrep with vimgrep output (path:line:col:text)
 pub const rg = Engine{
-    .argvFn = &Rg.argv,
-    .parseLineFn = &Rg.parseLine,
+    .prefix = &.{ "rg", "--vimgrep", "--max-count", "5", "--max-columns", "200", "--max-filesize", "1M", "--color", "never", "--" },
+    .suffix = &.{},
+    .parseLineFn = &parseVimgrep,
     .name = "rg",
 };
 
+/// GNU/BSD grep -rn (path:line:text)
 pub const system_grep = Engine{
-    .argvFn = &SystemGrep.argv,
-    .parseLineFn = &SystemGrep.parseLine,
+    .prefix = &.{ "grep", "-rn", "--color=never", "-m", "5", "--" },
+    .suffix = &.{"."},
+    .parseLineFn = &parsePathLineText,
     .name = "grep",
 };
 
+/// git grep -n (path:line:text)
 pub const git_grep = Engine{
-    .argvFn = &GitGrep.argv,
-    .parseLineFn = &GitGrep.parseLine,
+    .prefix = &.{ "git", "grep", "-n", "--color=never", "-m", "5", "--" },
+    .suffix = &.{},
+    .parseLineFn = &parsePathLineText,
     .name = "git grep",
 };
 
 // ============================================================================
-// rg — ripgrep with vimgrep output (path:line:col:text)
+// Line parsers
 // ============================================================================
 
-const Rg = struct {
-    fn argv(pattern: []const u8) []const []const u8 {
-        return &.{
-            "rg",             "--vimgrep", "--max-count", "5",
-            "--max-columns",  "200",       "--max-filesize", "1M",
-            "--color",        "never",     "--",          pattern,
-        };
-    }
+/// Parse `path:line:col:text` format (ripgrep --vimgrep).
+fn parseVimgrep(line: []const u8) ?PickerItem {
+    const colon1 = std.mem.indexOfScalar(u8, line, ':') orelse return null;
+    const rest1 = line[colon1 + 1 ..];
+    const colon2 = std.mem.indexOfScalar(u8, rest1, ':') orelse return null;
+    const rest2 = rest1[colon2 + 1 ..];
+    const colon3 = std.mem.indexOfScalar(u8, rest2, ':') orelse return null;
 
-    fn parseLine(line: []const u8) ?PickerItem {
-        // path:line:col:text
-        const colon1 = std.mem.indexOfScalar(u8, line, ':') orelse return null;
-        const rest1 = line[colon1 + 1 ..];
-        const colon2 = std.mem.indexOfScalar(u8, rest1, ':') orelse return null;
-        const rest2 = rest1[colon2 + 1 ..];
-        const colon3 = std.mem.indexOfScalar(u8, rest2, ':') orelse return null;
+    const file = line[0..colon1];
+    const line_num = std.fmt.parseInt(i32, rest1[0..colon2], 10) catch return null;
+    const col_num = std.fmt.parseInt(i32, rest2[0..colon3], 10) catch return null;
+    const text = trimLeading(rest2[colon3 + 1 ..]);
 
-        const file = line[0..colon1];
-        const line_num = std.fmt.parseInt(i32, rest1[0..colon2], 10) catch return null;
-        const col_num = std.fmt.parseInt(i32, rest2[0..colon3], 10) catch return null;
-        const text = trimLeading(rest2[colon3 + 1 ..]);
-
-        return .{
-            .label = text,
-            .detail = file,
-            .file = file,
-            .line = if (line_num > 0) line_num - 1 else 0,
-            .column = if (col_num > 0) col_num - 1 else 0,
-        };
-    }
-};
-
-// ============================================================================
-// SystemGrep — GNU/BSD grep -rn (path:line:text)
-// ============================================================================
-
-const SystemGrep = struct {
-    fn argv(pattern: []const u8) []const []const u8 {
-        return &.{
-            "grep", "-rn", "--color=never", "-m", "5", "--", pattern, ".",
-        };
-    }
-
-    fn parseLine(line: []const u8) ?PickerItem {
-        return parsePathLineText(line);
-    }
-};
-
-// ============================================================================
-// GitGrep — git grep -n (path:line:text)
-// ============================================================================
-
-const GitGrep = struct {
-    fn argv(pattern: []const u8) []const []const u8 {
-        return &.{
-            "git", "grep", "-n", "--color=never", "-m", "5", "--", pattern,
-        };
-    }
-
-    fn parseLine(line: []const u8) ?PickerItem {
-        return parsePathLineText(line);
-    }
-};
-
-// ============================================================================
-// Shared parsers
-// ============================================================================
+    return .{
+        .label = text,
+        .detail = file,
+        .file = file,
+        .line = if (line_num > 0) line_num - 1 else 0,
+        .column = if (col_num > 0) col_num - 1 else 0,
+    };
+}
 
 /// Parse `path:line:text` format (grep, git grep).
 fn parsePathLineText(line: []const u8) ?PickerItem {
@@ -155,13 +123,16 @@ fn trimLeading(s: []const u8) []const u8 {
 
 test "detect returns a valid engine" {
     const e = Engine.detect();
-    _ = e.argv("test");
+    var buf: ArgvBuf = undefined;
+    _ = e.buildArgv("test", &buf);
 }
 
-test "rg: argv and parseLine" {
-    const args = rg.argv("hello");
+test "rg: buildArgv and parseLine" {
+    var buf: ArgvBuf = undefined;
+    const args = rg.buildArgv("hello", &buf);
     try std.testing.expectEqualStrings("rg", args[0]);
     try std.testing.expectEqualStrings("--vimgrep", args[1]);
+    try std.testing.expectEqualStrings("hello", args[args.len - 1]);
 
     const item = rg.parseLine("src/main.zig:42:10:    const x = 5;") orelse
         return error.TestUnexpectedResult;
@@ -169,6 +140,14 @@ test "rg: argv and parseLine" {
     try std.testing.expectEqual(@as(i32, 41), item.line);
     try std.testing.expectEqual(@as(i32, 9), item.column);
     try std.testing.expectEqualStrings("const x = 5;", item.label);
+}
+
+test "system_grep: buildArgv has trailing dot" {
+    var buf: ArgvBuf = undefined;
+    const args = system_grep.buildArgv("foo", &buf);
+    try std.testing.expectEqualStrings("grep", args[0]);
+    try std.testing.expectEqualStrings("foo", args[args.len - 2]);
+    try std.testing.expectEqualStrings(".", args[args.len - 1]);
 }
 
 test "system_grep: parseLine" {

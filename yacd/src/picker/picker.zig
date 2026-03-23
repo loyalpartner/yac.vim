@@ -69,7 +69,11 @@ pub const Picker = struct {
             const cwd_copy = blk: {
                 self.lock.lockUncancelable(self.io);
                 defer self.lock.unlock(self.io);
-                break :blk allocator.dupe(u8, self.file_source.getCwd() orelse return null) catch return null;
+                const cwd = self.file_source.getCwd() orelse {
+                    log.warn("grep: getCwd() is null, picker not opened?", .{});
+                    return null;
+                };
+                break :blk allocator.dupe(u8, cwd) catch return null;
             };
             return self.grep_source.query(allocator, q, cwd_copy);
         }

@@ -19,6 +19,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     log_mod.initWithArgs(cli.log_level, cli.log_file);
     defer log_mod.deinit();
 
+    // Redirect stderr to log file so panic/crash stack traces go to the log
+    const lfd = log_mod.getLogFd();
+    if (lfd >= 0) _ = std.c.dup2(lfd, 2);
+
     log.info("transport={s}", .{if (cli.transport == .stdio) "stdio" else "tcp"});
 
     var threaded: Io.Threaded = .init(allocator, .{ .environ = init.environ });
