@@ -17,7 +17,8 @@ zig build test                   # run Zig unit tests
 uv run pytest                    # run E2E tests (tests/test_e2e.py)
 ```
 
-E2E tests require ReleaseFast build: `zig build -Doptimize=ReleaseFast` before `uv run pytest`.
+E2E tests require ReleaseSafe build: `zig build -Doptimize=ReleaseSafe` before `uv run pytest`.
+- **不要用 ReleaseFast 跑测试** — 安全检查被禁用，UAF/整数溢出等 bug 会静默通过。
 
 - **E2E 测试调试**：失败测试会保留工作目录，输出 `workspace preserved: /tmp/yac_test_XXXXX`。读 `{workspace}/run/yacd-{pid}.log`（daemon 日志）和 `{workspace}/yac-vim-debug.log`（Vim 日志）排查问题，不要只看 pytest 截断输出。
 
@@ -30,7 +31,8 @@ Vim (VimScript) ←JSON-RPC (Unix socket)→ yacd (Zig daemon) ←LSP/DAP→ Lan
 ```
 
 - **Vim side**: `vim/autoload/yac*.vim` — UI, popups, channel bridge
-- **Zig daemon**: `src/` — event loop, handler dispatch, LSP/DAP clients, tree-sitter
+- **Zig daemon (active)**: `yacd/src/` — event loop, handler dispatch, LSP/DAP clients, tree-sitter, picker
+- **Zig daemon (legacy)**: `src/` — 旧版本，不再开发。所有新功能在 `yacd/` 目录
 - **Language plugins**: `languages/{lang}/` — tree-sitter queries, grammar config
 - **Themes**: `themes/` — color theme JSON files
 
@@ -91,7 +93,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - Verify variable names, dictionary syntax, and runtime behavior — not just compilation.
 - After renaming or refactoring, grep for all usages of the old name to catch stale references.
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
-- **`&.{...}` 在函数返回值 struct 中是 dangling pointer**：`&.{item}` 创建栈上临时数组取 slice，函数返回后栈帧释放。用栈局部变量 `var buf: [1]T = ...` 代替，确保在 `typedToValue` 序列化前栈帧存活。
+- **`&.{...}` 含运行时值时是 dangling pointer**：`&.{comptime_val, runtime_val}` 创建栈上临时数组。函数返回后栈帧释放，slice 悬空。Debug 构建中栈被 `0xAA` 覆写，触发 integerOverflow；Release 中可能碰巧正常（UB）。修复：用调用者提供的 buffer 或数据驱动的 prefix/suffix 模式。
 - **Prefer `std.ArrayList` over `std.ArrayListUnmanaged`**: In Zig 0.16, `ArrayList` uses the same API pattern (allocator passed per-call). Use `var list: std.ArrayList(T) = .empty;` (not `std.ArrayListUnmanaged(T){}`). `ArrayListUnmanaged` still exists but `.empty` is the correct init, not `{}`.
 
 ## Tree-sitter Gotchas
@@ -112,6 +114,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **`DebugAllocator` 在 `Io.Threaded` 多线程下 heap corruption**（ziglang/zig#25025, #24970）：`thread_safe = true` 不完全解决。用 `std.heap.c_allocator` 代替。
 - **TreeSitter 需要 Io.Mutex**：coroutine 模型下多个 client coroutine 在不同 worker 线程上并发访问。所有 public mutable 方法必须加 `Io.Mutex`。
 - **`Io.File` 异步写入用 `writeStreamingAll(io, data)`**：没有 `writeAll` 方法。`writeStreamingAll` 内部处理 partial write，pipe buffer 满时 yield 协程而非阻塞线程。
+- **`Reader.readAlloc(n)` 读取恰好 n 字节**：不够则 `EndOfStream` 错误。读取管道/子进程输出用 `Reader.allocRemaining(allocator, limit)` — 增量增长直到 EOF。
 
 ## Platform & Cross-Platform Gotchas
 
@@ -129,6 +132,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 ## Debugging Workflow (Crashes)
 
 - **For crashes, use lldb/debugger FIRST** — do not speculate about causes (WASM, stack sizes, threading). One backtrace is worth more than five hypotheses. Example command: `lldb -- ./zig-out/bin/yacd` then `run`.
+- **Linux coredump 分析**: `coredumpctl list | grep yacd` 查找崩溃记录，`coredumpctl debug <PID> -A "-batch -ex 'bt full'"` 获取完整栈回溯。检查局部变量中的 `0xAAAAAAAAAAAAAAAA`（Zig debug 未初始化标记）可快速定位悬空指针。
 - **Check macOS crash reports**: `ls -lt ~/Library/Logs/DiagnosticReports/yacd*` — these contain symbolicated backtraces even for release builds.
 - **Check daemon logs**: `ls -lt /tmp/yacd-$USER-*.log` — logs that end abruptly (no shutdown message) indicate a crash.
 
