@@ -77,6 +77,67 @@ pub const NavigationHandler = struct {
         return .{ .contents = try allocator.dupe(u8, contents) };
     }
 
+    pub fn signatureHelp(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.SignatureHelpResult {
+        log.info("signatureHelp {s}:{d}:{d}", .{ params.file, params.line, params.column });
+        const proxy = self.registry.resolve(params.file, null) catch
+            return .{};
+
+        const uri = try config.fileToUri(allocator, params.file);
+        const lang_config = config.detectConfig(params.file) orelse
+            return .{};
+
+        proxy.ensureOpen(uri, lang_config.language_id) catch {};
+
+        const lsp_result = proxy.signatureHelp(.{
+            .textDocument = .{ .uri = uri },
+            .position = .{ .line = params.line, .character = params.column },
+        }) catch return .{};
+
+        return convertSignatureHelp(allocator, lsp_result);
+    }
+
+    fn convertSignatureHelp(allocator: Allocator, maybe_result: lsp.ResultType("textDocument/signatureHelp")) vim.types.SignatureHelpResult {
+        const result = maybe_result orelse return .{};
+        var sigs: std.ArrayList(vim.types.SignatureInfo) = .empty;
+        for (result.signatures) |sig| {
+            var params_list: ?std.ArrayList(vim.types.SignatureParameter) = null;
+            if (sig.parameters) |lsp_params| {
+                var pl: std.ArrayList(vim.types.SignatureParameter) = .empty;
+                for (lsp_params) |p| {
+                    const label_str = switch (p.label) {
+                        .string => |s| s,
+                        .tuple_1 => |t| blk: {
+                            // [start, end] offset → extract substring from signature label
+                            const start = t[0];
+                            const end = t[1];
+                            if (start < sig.label.len and end <= sig.label.len) {
+                                break :blk sig.label[start..end];
+                            }
+                            break :blk "";
+                        },
+                    };
+                    pl.append(allocator, .{ .label = label_str }) catch continue;
+                }
+                params_list = pl;
+            }
+            const doc_text: ?[]const u8 = if (sig.documentation) |doc| switch (doc) {
+                .string => |s| s,
+                .markup_content => |mc| mc.value,
+            } else null;
+            sigs.append(allocator, .{
+                .label = sig.label,
+                .parameters = if (params_list) |pl| pl.items else null,
+                .documentation = doc_text,
+                .activeParameter = sig.activeParameter,
+            }) catch continue;
+        }
+        return .{
+            .signatures = sigs.items,
+            .activeSignature = result.activeSignature,
+            .activeParameter = result.activeParameter,
+        };
+    }
+
     pub fn references(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.ReferencesResult {
         log.info("references {s}:{d}:{d}", .{ params.file, params.line, params.column });
         const proxy = try self.registry.resolve(params.file, null);

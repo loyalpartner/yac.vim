@@ -118,6 +118,7 @@ pub const App = struct {
         try app.dispatcher.register("definition", &app.nav, NavigationHandler.definition);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
         try app.dispatcher.register("completion", &app.comp, CompletionHandler.completion);
+        try app.dispatcher.register("signature_help", &app.nav, NavigationHandler.signatureHelp);
         try app.dispatcher.register("did_open", &app.doc, DocumentHandler.didOpen);
         try app.dispatcher.register("did_change", &app.doc, DocumentHandler.didChange);
         try app.dispatcher.register("did_close", &app.doc, DocumentHandler.didClose);

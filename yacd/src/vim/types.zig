@@ -171,9 +171,21 @@ pub const CompletionResult = struct {
     is_incomplete: bool = false,
 };
 
-pub const SignatureHelpResult = struct {
+pub const SignatureParameter = struct {
     label: []const u8,
-    active_parameter: ?u32 = null,
+};
+
+pub const SignatureInfo = struct {
+    label: []const u8,
+    parameters: ?[]const SignatureParameter = null,
+    documentation: ?[]const u8 = null,
+    activeParameter: ?u32 = null,
+};
+
+pub const SignatureHelpResult = struct {
+    signatures: []const SignatureInfo = &.{},
+    activeSignature: ?u32 = null,
+    activeParameter: ?u32 = null,
 };
 
 pub const SymbolInfo = struct {
