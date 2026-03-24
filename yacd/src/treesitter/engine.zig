@@ -359,7 +359,10 @@ pub const Engine = struct {
                     const d = ctx.engine.findDynamicLangByName(lang) orelse
                         ctx.engine.findDynamicLangForFile(lang);
                     if (d) |dl2| return &dl2.state;
-                    return null;
+                    // Lazy load: language not yet registered, try loading from lang_dirs
+                    ctx.engine.lazyLoadLang(lang);
+                    const retry = ctx.engine.findDynamicLangByName(lang) orelse return null;
+                    return &retry.state;
                 }
             };
             const t1 = clockMs();
