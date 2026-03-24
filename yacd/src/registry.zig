@@ -24,6 +24,7 @@ pub const ProxyRegistry = struct {
     group: ?*Io.Group = null,
     proxies: std.StringHashMap(*LspProxy),
     failed_spawns: std.StringHashMap(void),
+    spawning: std.StringHashMap(void),
     installer: ?*Installer = null,
     on_notification: ?*const LspProxy.OnNotification = null,
     notify_ctx: ?*anyopaque = null,
@@ -35,6 +36,7 @@ pub const ProxyRegistry = struct {
             .io = io,
             .proxies = std.StringHashMap(*LspProxy).init(allocator),
             .failed_spawns = std.StringHashMap(void).init(allocator),
+            .spawning = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -51,6 +53,12 @@ pub const ProxyRegistry = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.failed_spawns.deinit();
+
+        var sit = self.spawning.iterator();
+        while (sit.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.spawning.deinit();
     }
 
     /// Resolve a file path to an LspProxy.
@@ -84,14 +92,22 @@ pub const ProxyRegistry = struct {
         else
             std.fmt.bufPrint(&key_buf, "{s}", .{language}) catch return error.KeyTooLong;
 
-        // Check existing under lock
+        // Check existing + mark as spawning (atomic under lock)
         {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
-            if (self.proxies.get(lookup_key)) |proxy| {
-                return proxy;
-            }
+            if (self.proxies.get(lookup_key)) |proxy| return proxy;
+            // Another coroutine is already spawning this — caller should retry later
+            if (self.spawning.get(lookup_key) != null) return error.Spawning;
+            // Mark as spawning to prevent concurrent duplicates
+            const spawning_key = self.allocator.dupe(u8, lookup_key) catch return error.OutOfMemory;
+            self.spawning.put(spawning_key, {}) catch {
+                self.allocator.free(spawning_key);
+                return error.OutOfMemory;
+            };
         }
+        // Ensure spawning marker is cleared on all exit paths
+        defer self.clearSpawning(lookup_key);
 
         // Create new proxy (outside lock — may block on LSP initialize)
         log.info("spawning LSP for {s}", .{language});
@@ -116,23 +132,23 @@ pub const ProxyRegistry = struct {
             self.markFailed(language);
             return err;
         };
-        errdefer proxy.deinit();
 
         // Store under lock
-        const owned_key = try self.allocator.dupe(u8, lookup_key);
-        errdefer self.allocator.free(owned_key);
-
-        self.lock.lockUncancelable(self.io);
-        defer self.lock.unlock(self.io);
-
-        // Double-check: another coroutine may have created it while we were spawning
-        if (self.proxies.get(lookup_key)) |existing| {
-            self.allocator.free(owned_key);
+        const owned_key = self.allocator.dupe(u8, lookup_key) catch {
             proxy.deinit();
-            return existing;
+            return error.OutOfMemory;
+        };
+
+        {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+            self.proxies.put(owned_key, proxy) catch {
+                self.allocator.free(owned_key);
+                proxy.deinit();
+                return error.OutOfMemory;
+            };
         }
 
-        try self.proxies.put(owned_key, proxy);
         log.info("LSP ready: {s}", .{owned_key});
         return proxy;
     }
@@ -202,6 +218,15 @@ pub const ProxyRegistry = struct {
         else
             null;
         return LspProxy.init(self.allocator, self.io, child, group, init_params, notify_cb);
+    }
+
+    /// Clear spawning marker for a lookup key. Thread-safe.
+    fn clearSpawning(self: *ProxyRegistry, key: []const u8) void {
+        self.lock.lockUncancelable(self.io);
+        defer self.lock.unlock(self.io);
+        if (self.spawning.fetchRemove(key)) |kv| {
+            self.allocator.free(kv.key);
+        }
     }
 
     /// Mark a language as permanently failed (until reset). Thread-safe.
