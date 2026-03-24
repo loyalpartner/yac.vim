@@ -203,6 +203,9 @@ endfunction
 
 function! s:_deferred_insert(text) abort
   call s:insert_text_at_cursor(a:text)
+  " setline() from timer doesn't trigger TextChangedI — explicitly notify
+  " so tree-sitter re-highlights the modified lines.
+  call yac#did_change()
 endfunction
 
 " Accept ghost text synchronously (for use inside popup filter callbacks).
