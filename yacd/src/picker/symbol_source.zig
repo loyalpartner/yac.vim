@@ -31,7 +31,7 @@ fn convertSymbols(allocator: Allocator, result: lsp.ResultType("workspace/symbol
     switch (symbols) {
         .symbol_informations => |infos| {
             for (infos) |info| {
-                const file = config.uriToFile(info.location.uri);
+                const file = config.uriToFile(allocator, info.location.uri) catch continue;
                 items.append(allocator, .{
                     .label = info.name,
                     .detail = file,
@@ -45,7 +45,7 @@ fn convertSymbols(allocator: Allocator, result: lsp.ResultType("workspace/symbol
             for (ws) |info| {
                 switch (info.location) {
                     .location => |loc| {
-                        const file = config.uriToFile(loc.uri);
+                        const file = config.uriToFile(allocator, loc.uri) catch continue;
                         items.append(allocator, .{
                             .label = info.name,
                             .detail = file,
@@ -55,7 +55,7 @@ fn convertSymbols(allocator: Allocator, result: lsp.ResultType("workspace/symbol
                         }) catch continue;
                     },
                     .location_uri_only => |uri_only| {
-                        const file = config.uriToFile(uri_only.uri);
+                        const file = config.uriToFile(allocator, uri_only.uri) catch continue;
                         items.append(allocator, .{
                             .label = info.name,
                             .detail = file,

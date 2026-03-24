@@ -104,7 +104,8 @@ pub const LspProxy = struct {
         if (self.opened_files.get(uri) != null) return;
 
         const config = @import("../config.zig");
-        const file_path = config.uriToFile(uri);
+        const file_path = config.uriToFile(self.allocator, uri) catch return;
+        defer self.allocator.free(file_path);
         const content = Io.Dir.cwd().readFileAlloc(self.io, file_path, self.allocator, .limited(10 * 1024 * 1024)) catch "";
         defer if (content.len > 0) self.allocator.free(content);
 

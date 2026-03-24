@@ -82,10 +82,17 @@ pub fn fileToUri(allocator: Allocator, file_path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "file://{s}", .{file_path});
 }
 
-/// Strip "file://" prefix from a URI. Returns the path portion.
-pub fn uriToFile(uri: []const u8) []const u8 {
+/// Strip "file://" prefix and percent-decode a URI to a file path.
+/// Caller owns the returned string.
+pub fn uriToFile(allocator: Allocator, uri: []const u8) ![]const u8 {
     const prefix = "file://";
-    return if (std.mem.startsWith(u8, uri, prefix)) uri[prefix.len..] else uri;
+    const path = if (std.mem.startsWith(u8, uri, prefix)) uri[prefix.len..] else uri;
+    const component: std.Uri.Component = .{ .percent_encoded = path };
+    const decoded = try component.toRawMaybeAlloc(allocator);
+    // toRawMaybeAlloc returns the original slice when no decoding needed;
+    // always return an owned copy so callers can safely free.
+    if (decoded.ptr == path.ptr) return try allocator.dupe(u8, decoded);
+    return decoded;
 }
 
 // ============================================================================

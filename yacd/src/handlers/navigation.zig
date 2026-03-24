@@ -36,7 +36,7 @@ pub const NavigationHandler = struct {
             return error.NoResult;
         };
 
-        const file = try allocator.dupe(u8, config.uriToFile(loc.uri));
+        const file = try config.uriToFile(allocator, loc.uri);
         log.debug("definition -> {s}:{d}:{d}", .{ file, loc.range.start.line, loc.range.start.character });
         return .{
             .file = file,
@@ -158,7 +158,7 @@ pub const NavigationHandler = struct {
 
         var locs: std.ArrayList(vim.types.LocationResult) = .empty;
         for (lsp_locs) |loc| {
-            const file = allocator.dupe(u8, config.uriToFile(loc.uri)) catch continue;
+            const file = config.uriToFile(allocator, loc.uri) catch continue;
             locs.append(allocator, .{
                 .file = file,
                 .line = loc.range.start.line,
