@@ -46,6 +46,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "load_language", LoadLanguageParams },
         .{ "ts_viewport", TsViewportParams },
         .{ "ts_hover_highlight", TsHoverHighlightParams },
+        .{ "ts_folding", TsFoldingParams },
         // Copilot
         .{ "copilot_complete", CopilotCompleteParams },
         .{ "copilot_sign_in", void },
@@ -86,6 +87,7 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "load_language", LoadLanguageResult },
         .{ "ts_viewport", void },
         .{ "ts_hover_highlight", TsHoverHighlightResult },
+        .{ "ts_folding", TsFoldingResult },
         // Copilot
         .{ "copilot_complete", CopilotCompleteResult },
         .{ "copilot_sign_in", CopilotSignInResult },
@@ -315,6 +317,17 @@ pub const TsHoverHighlightParams = struct {
 };
 
 pub const TsHoverHighlightResult = @import("../treesitter/markdown_highlight.zig").HighlightResult;
+
+/// ts_folding: request fold ranges from tree-sitter.
+pub const TsFoldingParams = struct {
+    file: []const u8,
+    text: ?[]const u8 = null,
+};
+
+pub const TsFoldingResult = struct {
+    pub const FoldRange = @import("../treesitter/folds.zig").FoldRange;
+    ranges: []const FoldRange,
+};
 
 /// Push: tree-sitter highlights for a buffer.
 /// Custom jsonStringify outputs highlights as {group: [[l,c,el,ec], ...]} dict.

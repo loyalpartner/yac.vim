@@ -7,6 +7,7 @@ const outline_mod = @import("outline.zig");
 const queries_mod = @import("queries.zig");
 const picker_source = @import("../picker/source.zig");
 const lang_config_mod = @import("lang_config.zig");
+const folds_mod = @import("folds.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
 const file_io = @import("file_io.zig");
 const log = std.log.scoped(.ts_engine);
@@ -21,6 +22,7 @@ pub const LangState = struct {
     highlights: ?*ts.Query,
     injections: ?*ts.Query,
     outline: ?*ts.Query,
+    folds: ?*ts.Query,
 
     fn initForDynamic(language: *const ts.Language, lang_name: []const u8, allocator: Allocator, query_dir: []const u8, wasm_loader: *WasmLoader) !LangState {
         const parser = ts.Parser.create();
@@ -32,12 +34,14 @@ pub const LangState = struct {
         const hl_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "highlights", language);
         const inj_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "injections", language);
         const outline_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "outline", language);
+        const folds_query = queries_mod.loadQuery(allocator, query_dir, lang_name, "folds", language);
 
-        log.info("LangState initialized for {s} (hl:{s} inj:{s} outline:{s})", .{
+        log.info("LangState initialized for {s} (hl:{s} inj:{s} outline:{s} folds:{s})", .{
             lang_name,
             if (hl_query != null) "ok" else "-",
             if (inj_query != null) "ok" else "-",
             if (outline_query != null) "ok" else "-",
+            if (folds_query != null) "ok" else "-",
         });
 
         return .{
@@ -46,6 +50,7 @@ pub const LangState = struct {
             .highlights = hl_query,
             .injections = inj_query,
             .outline = outline_query,
+            .folds = folds_query,
         };
     }
 
@@ -53,6 +58,7 @@ pub const LangState = struct {
         if (self.highlights) |q| q.destroy();
         if (self.injections) |q| q.destroy();
         if (self.outline) |q| q.destroy();
+        if (self.folds) |q| q.destroy();
         _ = self.parser.takeWasmStore();
         self.parser.destroy();
     }
@@ -407,6 +413,18 @@ pub const Engine = struct {
         const outline_query = dl.state.outline orelse return error.NoOutlineQuery;
 
         return try outline_mod.extractOutline(arena, outline_query, buf.tree, buf.source.items, file);
+    }
+
+    /// Extract fold ranges from tree-sitter @fold captures.
+    pub fn getFolds(self: *Engine, file: []const u8, allocator: Allocator) ![]const folds_mod.FoldRange {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const buf = self.buffers.getPtr(file) orelse return error.BufferNotFound;
+        const dl = self.findDynamicLangByName(buf.lang_name) orelse return error.UnsupportedLanguage;
+        const fq = dl.state.folds orelse return error.NoFoldsQuery;
+
+        return try folds_mod.extractFolds(allocator, fq, buf.tree);
     }
 
     /// Check if a buffer is tracked.

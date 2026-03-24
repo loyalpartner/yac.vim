@@ -107,6 +107,21 @@ pub const TreeSitterHandler = struct {
         return try markdown_highlight.highlight(allocator, self.engine, params.markdown, params.filetype);
     }
 
+    /// ts_folding: extract fold ranges from tree-sitter @fold captures.
+    pub fn tsFolding(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.TsFoldingParams) !vim.types.TsFoldingResult {
+        // If text is provided and buffer not yet parsed, parse it first
+        if (params.text) |text| {
+            _ = self.engine.openBuffer(params.file, null, text) catch |err| {
+                log.debug("tsFolding: openBuffer failed: {s}", .{@errorName(err)});
+            };
+        }
+        const ranges = self.engine.getFolds(params.file, allocator) catch |err| {
+            log.debug("tsFolding: {s}: {s}", .{ params.file, @errorName(err) });
+            return .{ .ranges = &.{} };
+        };
+        return .{ .ranges = ranges };
+    }
+
     /// load_language: load WASM grammar from a directory.
     pub fn loadLanguage(self: *TreeSitterHandler, _: Allocator, params: vim.types.LoadLanguageParams) !vim.types.LoadLanguageResult {
         self.engine.loadFromDir(params.lang_dir);
