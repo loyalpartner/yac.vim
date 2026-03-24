@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     mod.addImport("lsp", lsp_dep.module("lsp"));
+    mod.addImport("mvzr", b.dependency("mvzr", .{}).module("mvzr"));
     addTreeSitterDeps(b, mod, target, optimize);
     addMd4cDeps(b, mod);
 
@@ -45,6 +46,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     exe_mod.addImport("lsp", lsp_dep.module("lsp"));
+    exe_mod.addImport("mvzr", b.dependency("mvzr", .{}).module("mvzr"));
     addTreeSitterDeps(b, exe_mod, target, optimize);
     addMd4cDeps(b, exe_mod);
 

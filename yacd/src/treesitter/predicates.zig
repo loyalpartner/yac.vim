@@ -1,5 +1,6 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
+const mvzr = @import("mvzr");
 const log = std.log.scoped(.ts_predicates);
 
 /// Evaluate all predicates for a match. Returns true if all predicates pass.
@@ -50,7 +51,7 @@ fn evalLuaMatch(
     const capture_index = steps[1].value_id;
     const pattern = query.stringValueForId(steps[2].value_id) orelse return true;
     const text = getCaptureText(match, capture_index, source) orelse return false;
-    return simplePatternMatch(pattern, text);
+    return regexMatch(pattern, text);
 }
 
 fn evalEq(
@@ -126,101 +127,73 @@ fn getCaptureText(match: ts.Query.Match, capture_index: u32, source: []const u8)
     return null;
 }
 
-/// Hardcoded pattern matcher for patterns used in highlights.scm files.
-pub fn simplePatternMatch(pattern: []const u8, text: []const u8) bool {
-    if (std.mem.eql(u8, pattern, "^[A-Z_][a-zA-Z0-9_]*")) {
-        if (text.len == 0) return false;
-        return (isUpper(text[0]) or text[0] == '_') and allAlnumUnderscore(text[1..]);
-    } else if (std.mem.eql(u8, pattern, "^[A-Z][A-Z_0-9]+$") or
-        std.mem.eql(u8, pattern, "^[A-Z][A-Z\\d_]+$'"))
-    {
-        return isUpperSnakeCase(text);
-    } else if (std.mem.eql(u8, pattern, "^//!")) {
-        return std.mem.startsWith(u8, text, "//!");
-    } else if (std.mem.eql(u8, pattern, "^//(/|!)")) {
-        return std.mem.startsWith(u8, text, "///") or std.mem.startsWith(u8, text, "//!");
-    } else if (std.mem.eql(u8, pattern, "^[A-Z]")) {
-        return text.len > 0 and isUpper(text[0]);
-    } else if (std.mem.eql(u8, pattern, "^_*[A-Z][A-Z\\d_]*$")) {
-        return isLeadingUnderscoreUpperCase(text);
-    } else if (std.mem.eql(u8, pattern, "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$")) {
-        return isGoBuiltin(text);
-    } else if (std.mem.eql(u8, pattern, "^-")) {
-        return std.mem.startsWith(u8, text, "-");
-    } else if (std.mem.eql(u8, pattern, "^#![ \\t]*/")) {
-        if (!std.mem.startsWith(u8, text, "#!")) return false;
-        for (text[2..]) |c| {
-            if (c == '/') return true;
-            if (c != ' ' and c != '\t') return false;
+// ============================================================================
+// Regex matching with compiled-pattern cache
+// ============================================================================
+
+// Default Regex (64 ops) is too small for long alternations like Go builtins.
+const Regex = mvzr.SizedRegex(256, 16);
+const CacheEntry = union(enum) { compiled: Regex, failed: void };
+var regex_cache: std.StringHashMapUnmanaged(CacheEntry) = .empty;
+
+fn regexMatch(pattern: []const u8, text: []const u8) bool {
+    const entry = regex_cache.get(pattern) orelse blk: {
+        const new = if (Regex.compile(pattern)) |r|
+            CacheEntry{ .compiled = r }
+        else
+            CacheEntry{ .failed = {} };
+        if (new == .failed) {
+            log.warn("regexMatch: failed to compile pattern: {s}", .{pattern});
         }
-        return false;
-    }
-    log.warn("simplePatternMatch: unknown regex pattern, rejecting: {s}", .{pattern});
-    return false;
-}
-
-fn isUpperSnakeCase(text: []const u8) bool {
-    if (text.len < 2 or !isUpper(text[0])) return false;
-    for (text[1..]) |c| {
-        if (!isUpper(c) and !std.ascii.isDigit(c) and c != '_') return false;
-    }
-    return true;
-}
-
-fn isLeadingUnderscoreUpperCase(text: []const u8) bool {
-    if (text.len == 0) return false;
-    var i: usize = 0;
-    while (i < text.len and text[i] == '_') : (i += 1) {}
-    if (i >= text.len or !isUpper(text[i])) return false;
-    i += 1;
-    while (i < text.len) : (i += 1) {
-        const c = text[i];
-        if (!isUpper(c) and !std.ascii.isDigit(c) and c != '_') return false;
-    }
-    return true;
-}
-
-fn isGoBuiltin(text: []const u8) bool {
-    const builtins = [_][]const u8{
-        "append", "cap",   "close",   "complex", "copy",
-        "delete", "imag",  "len",     "make",    "new",
-        "panic",  "print", "println", "real",    "recover",
+        // pattern strings come from tree-sitter query data and are stable for the
+        // lifetime of the query, so we can use them as HashMap keys without duping.
+        regex_cache.put(std.heap.c_allocator, pattern, new) catch {};
+        break :blk new;
     };
-    for (builtins) |b| {
-        if (std.mem.eql(u8, text, b)) return true;
-    }
-    return false;
-}
-
-const isUpper = std.ascii.isUpper;
-
-fn allAlnumUnderscore(s: []const u8) bool {
-    for (s) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
-    }
-    return true;
+    return switch (entry) {
+        .compiled => |r| r.match(text) != null,
+        .failed => false,
+    };
 }
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-test "simplePatternMatch — type names" {
-    const pat = "^[A-Z_][a-zA-Z0-9_]*";
-    try std.testing.expect(simplePatternMatch(pat, "Allocator"));
-    try std.testing.expect(simplePatternMatch(pat, "_Foo"));
-    try std.testing.expect(!simplePatternMatch(pat, "allocator"));
-    try std.testing.expect(!simplePatternMatch(pat, ""));
+test "regexMatch — type names" {
+    try std.testing.expect(regexMatch("^[A-Z_][a-zA-Z0-9_]*", "Allocator"));
+    try std.testing.expect(regexMatch("^[A-Z_][a-zA-Z0-9_]*", "_Foo"));
+    try std.testing.expect(!regexMatch("^[A-Z_][a-zA-Z0-9_]*", "allocator"));
+    try std.testing.expect(!regexMatch("^[A-Z_][a-zA-Z0-9_]*", ""));
 }
 
-test "simplePatternMatch — UPPER_CASE constants" {
-    const pat = "^[A-Z][A-Z_0-9]+$";
-    try std.testing.expect(simplePatternMatch(pat, "MAX_SIZE"));
-    try std.testing.expect(simplePatternMatch(pat, "FOO"));
-    try std.testing.expect(!simplePatternMatch(pat, "A"));
-    try std.testing.expect(!simplePatternMatch(pat, "Foo"));
+test "regexMatch — UPPER_CASE constants" {
+    try std.testing.expect(regexMatch("^[A-Z][A-Z_0-9]+$", "MAX_SIZE"));
+    try std.testing.expect(regexMatch("^[A-Z][A-Z_0-9]+$", "FOO"));
+    try std.testing.expect(!regexMatch("^[A-Z][A-Z_0-9]+$", "A"));
+    try std.testing.expect(!regexMatch("^[A-Z][A-Z_0-9]+$", "Foo"));
 }
 
-test "simplePatternMatch — unknown patterns return false" {
-    try std.testing.expect(!simplePatternMatch("^some_unknown_regex$", "anything"));
+test "regexMatch — leading underscore constants" {
+    try std.testing.expect(regexMatch("^_*[A-Z][A-Z\\d_]*$", "_FOO"));
+    try std.testing.expect(regexMatch("^_*[A-Z][A-Z\\d_]*$", "__BAR"));
+    try std.testing.expect(regexMatch("^_*[A-Z_][A-Z\\d_]*$", "_FOO"));
+    try std.testing.expect(!regexMatch("^_*[A-Z][A-Z\\d_]*$", "foo"));
+}
+
+test "regexMatch — Go builtins" {
+    try std.testing.expect(regexMatch("^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$", "append"));
+    try std.testing.expect(regexMatch("^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$", "recover"));
+    try std.testing.expect(!regexMatch("^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$", "foo"));
+}
+
+test "regexMatch — doc comments" {
+    try std.testing.expect(regexMatch("^//(/|!)", "///"));
+    try std.testing.expect(regexMatch("^//(/|!)", "//!"));
+    try std.testing.expect(!regexMatch("^//(/|!)", "// comment"));
+}
+
+test "regexMatch — unknown patterns return false" {
+    // Invalid regex should compile-fail gracefully and return false
+    try std.testing.expect(!regexMatch("^[invalid", "anything"));
 }
