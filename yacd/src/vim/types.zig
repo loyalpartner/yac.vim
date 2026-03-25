@@ -16,6 +16,9 @@ pub fn ParamsType(comptime method: []const u8) type {
         // Requests (Vim -> yacd)
         .{ "hover", PositionParams },
         .{ "definition", PositionParams },
+        .{ "goto_type_definition", PositionParams },
+        .{ "goto_declaration", PositionParams },
+        .{ "goto_implementation", PositionParams },
         .{ "references", PositionParams },
         .{ "completion", CompletionParams },
         .{ "signature_help", PositionParams },
@@ -69,6 +72,9 @@ pub fn ResultType(comptime method: []const u8) type {
     const map = .{
         .{ "hover", HoverResult },
         .{ "definition", LocationResult },
+        .{ "goto_type_definition", LocationResult },
+        .{ "goto_declaration", LocationResult },
+        .{ "goto_implementation", LocationResult },
         .{ "references", ReferencesResult },
         .{ "completion", CompletionResult },
         .{ "signature_help", SignatureHelpResult },

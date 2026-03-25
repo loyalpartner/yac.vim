@@ -17,7 +17,23 @@ pub const NavigationHandler = struct {
     registry: *ProxyRegistry,
 
     pub fn definition(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.LocationResult {
-        log.info("definition {s}:{d}:{d}", .{ params.file, params.line, params.column });
+        return gotoLocation(self, allocator, params, "textDocument/definition");
+    }
+
+    pub fn gotoTypeDefinition(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.LocationResult {
+        return gotoLocation(self, allocator, params, "textDocument/typeDefinition");
+    }
+
+    pub fn gotoDeclaration(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.LocationResult {
+        return gotoLocation(self, allocator, params, "textDocument/declaration");
+    }
+
+    pub fn gotoImplementation(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams) !vim.types.LocationResult {
+        return gotoLocation(self, allocator, params, "textDocument/implementation");
+    }
+
+    fn gotoLocation(self: *NavigationHandler, allocator: Allocator, params: vim.types.PositionParams, comptime lsp_method: []const u8) !vim.types.LocationResult {
+        log.info("{s} {s}:{d}:{d}", .{ lsp_method, params.file, params.line, params.column });
         const proxy = try self.registry.resolve(params.file, null);
 
         const uri = try config.fileToUri(allocator, params.file);
@@ -25,19 +41,17 @@ pub const NavigationHandler = struct {
 
         try proxy.ensureOpen(uri, lang_config.language_id);
 
-        const lsp_params: lsp.ParamsType("textDocument/definition") = .{
+        const result = try proxy.connection.request(lsp_method, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = params.line, .character = params.column },
-        };
-
-        const result = try proxy.definition(lsp_params);
+        });
         const loc = extractLocation(result) orelse {
-            log.debug("definition: no result", .{});
+            log.debug("{s}: no result", .{lsp_method});
             return error.NoResult;
         };
 
         const file = try config.uriToFile(allocator, loc.uri);
-        log.debug("definition -> {s}:{d}:{d}", .{ file, loc.range.start.line, loc.range.start.character });
+        log.debug("{s} -> {s}:{d}:{d}", .{ lsp_method, file, loc.range.start.line, loc.range.start.character });
         return .{
             .file = file,
             .line = loc.range.start.line,

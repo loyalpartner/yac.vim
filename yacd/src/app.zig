@@ -125,6 +125,9 @@ pub const App = struct {
         // Register Vim request routes
         try app.dispatcher.register("hover", &app.nav, NavigationHandler.hover);
         try app.dispatcher.register("definition", &app.nav, NavigationHandler.definition);
+        try app.dispatcher.register("goto_type_definition", &app.nav, NavigationHandler.gotoTypeDefinition);
+        try app.dispatcher.register("goto_declaration", &app.nav, NavigationHandler.gotoDeclaration);
+        try app.dispatcher.register("goto_implementation", &app.nav, NavigationHandler.gotoImplementation);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
         try app.dispatcher.register("completion", &app.comp, CompletionHandler.completion);
         try app.dispatcher.register("signature_help", &app.nav, NavigationHandler.signatureHelp);
