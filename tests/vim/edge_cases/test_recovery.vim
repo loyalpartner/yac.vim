@@ -35,15 +35,9 @@ call yac#hover()
 call yac_test#wait_for({-> !empty(popup_list())}, 3000)
 call popup_clear()
 
-if exists('*yac#stop')
-  call yac#stop()
+if exists('*yac#restart')
   call yac_test#reset_lsp_ready()
-  " Wait for daemon to fully release socket (matches yac#restart() delay)
-  sleep 200m
-endif
-
-if exists('*yac#start')
-  call yac#start()
+  call yac#restart()
   call yac_test#open_test_file('test_data/src/main.zig', 8000)
 endif
 
