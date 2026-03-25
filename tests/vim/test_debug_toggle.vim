@@ -2,6 +2,7 @@
 " E2E Test: Debug Toggle and Log
 " ============================================================================
 " Tests YacDebugToggle, YacDebugStatus, and YacOpenLog commands.
+" Debug is enabled by default in E2E tests (g:yac_debug = 1 in vimrc).
 
 call yac_test#begin('debug_toggle')
 call yac_test#setup()
@@ -9,22 +10,21 @@ call yac_test#setup()
 call yac_test#open_test_file('test_data/src/main.zig', 8000)
 
 " ============================================================================
-" Test 1: Debug toggle command exists and works
+" Test 1: Debug toggle flips g:yac_debug without crashing
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: YacDebugToggle command')
 
 call yac_test#assert_true(exists('*yac#debug_toggle'),
   \ 'yac#debug_toggle function should exist')
 
-let v:errmsg = ''
+let s:before = get(g:, 'yac_debug', 0)
 call yac#debug_toggle()
-call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
-  \ 'First debug toggle should not crash: ' . v:errmsg)
+call yac_test#assert_true(get(g:, 'yac_debug', 0) != s:before,
+  \ 'debug_toggle should flip g:yac_debug')
 
-let v:errmsg = ''
 call yac#debug_toggle()
-call yac_test#assert_true(v:errmsg ==# '' || v:errmsg =~# 'E716',
-  \ 'Second debug toggle should not crash: ' . v:errmsg)
+call yac_test#assert_true(get(g:, 'yac_debug', 0) == s:before,
+  \ 'Second toggle should restore original value')
 
 " ============================================================================
 " Test 2: Debug status shows info
@@ -41,31 +41,9 @@ if exists('*yac#debug_status')
 endif
 
 " ============================================================================
-" Test 3: LSP operations work with debug mode on
+" Test 3: OpenLog command exists
 " ============================================================================
-call yac_test#log('INFO', 'Test 3: LSP works with debug on')
-
-" Enable debug — this reconnects the channel, may restart daemon
-call yac#debug_toggle()
-" Wait for LSP to become ready after reconnect
-sleep 3000m
-
-" Hover should still work
-call cursor(6, 1)
-call search('User', 'c', line('.'))
-call yac_test#clear_popups()
-call yac#hover()
-let hover_ok = yac_test#wait_hover_popup(8000)
-call yac_test#assert_true(hover_ok, 'Hover should work with debug mode enabled')
-call yac_test#clear_popups()
-
-" Disable debug
-call yac#debug_toggle()
-
-" ============================================================================
-" Test 4: OpenLog command exists
-" ============================================================================
-call yac_test#log('INFO', 'Test 4: YacOpenLog command')
+call yac_test#log('INFO', 'Test 3: YacOpenLog command')
 
 if exists('*yac#open_log')
   call yac_test#assert_true(1, 'yac#open_log function exists')
@@ -76,7 +54,6 @@ endif
 " ============================================================================
 " Cleanup
 " ============================================================================
-" Clear channel close race condition errors (E716 "local")
 let v:errmsg = ''
 call yac_test#teardown()
 call yac_test#end()

@@ -13,20 +13,9 @@ function! yac_debug#debug_toggle() abort
   let g:yac_debug = !get(g:, 'yac_debug', 0)
 
   if g:yac_debug
-    echo 'YacDebug: Debug mode ENABLED'
-    echo '  - Command send/receive logging enabled'
-    echo '  - Channel communication will be logged to /tmp/vim_channel.log'
-    echo '  - Use :YacDebugToggle to disable'
-
-    " Restart daemon so the new connection picks up ch_logfile()
-    if !empty(yac_connection#get_channel_pool())
-      call yac#_debug_log('Restarting daemon to enable channel logging...')
-      call yac_connection#restart()
-    endif
+    echo 'YacDebug: Debug mode ENABLED (channel logging takes effect on :YacRestart)'
   else
     echo 'YacDebug: Debug mode DISABLED'
-    echo '  - Command logging disabled'
-    echo '  - Channel logging will stop for new connections'
   endif
 endfunction
 
