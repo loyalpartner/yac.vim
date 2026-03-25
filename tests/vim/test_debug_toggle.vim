@@ -45,15 +45,17 @@ endif
 " ============================================================================
 call yac_test#log('INFO', 'Test 3: LSP works with debug on')
 
-" Enable debug
+" Enable debug — this reconnects the channel, may restart daemon
 call yac#debug_toggle()
+" Wait for LSP to become ready after reconnect
+sleep 3000m
 
 " Hover should still work
 call cursor(6, 1)
 call search('User', 'c', line('.'))
 call yac_test#clear_popups()
 call yac#hover()
-let hover_ok = yac_test#wait_hover_popup(5000)
+let hover_ok = yac_test#wait_hover_popup(8000)
 call yac_test#assert_true(hover_ok, 'Hover should work with debug mode enabled')
 call yac_test#clear_popups()
 

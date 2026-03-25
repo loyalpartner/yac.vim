@@ -191,6 +191,7 @@ pub const LspProxy = struct {
 
     pub fn didClose(self: *LspProxy, params: lsp.ParamsType("textDocument/didClose")) !void {
         try self.ensureReady();
+        _ = self.opened_files.remove(params.textDocument.uri);
         return self.connection.notify("textDocument/didClose", params);
     }
 

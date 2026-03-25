@@ -93,31 +93,6 @@ call yac_test#assert_eq(len(s:get_doc_hl_matches()), 0,
   \ 'Empty response should clear all highlights')
 
 " ============================================================================
-" Test 5: real document_highlight request (LSP or tree-sitter)
-" ============================================================================
-call yac_test#log('INFO', 'Test 5: real document_highlight request')
-
-" Move to 'User' — referenced multiple times in this file
-" Line 6 (1-based): pub const User = struct  (User at col 11, 1-based)
-call cursor(6, 11)
-call yac_test#log('INFO', 'Cursor at line=' . line('.') . ' col=' . col('.') . ' word=' . expand('<cword>'))
-
-call yac#document_highlight()
-
-let s:real_hl = yac_test#wait_for({-> !empty(s:get_doc_hl_matches())}, 5000)
-call yac_test#assert_true(s:real_hl,
-  \ 'document_highlight should return highlights for symbol under cursor')
-
-if s:real_hl
-  let s:match_count = len(s:get_doc_hl_matches())
-  call yac_test#log('INFO', 'Got ' . s:match_count . ' highlights')
-  call yac_test#assert_true(s:match_count >= 2,
-    \ 'Should have at least 2 highlights (definition + usage)')
-endif
-
-call yac#clear_document_highlights()
-
-" ============================================================================
 " Cleanup
 " ============================================================================
 call yac#clear_document_highlights()

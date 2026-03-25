@@ -141,24 +141,45 @@ class VimRunner:
             if f.exists():
                 f.unlink()
 
-        # Use PTY so outer Vim runs in a real terminal
-        master_fd, slave_fd = pty.openpty()
+        cmd = [self.vim_cmd, "-N", "-u", "NONE", "-S", str(driver_vim)]
+        master_fd = slave_fd = -1
 
         proc = None
         try:
-            proc = subprocess.Popen(
-                [self.vim_cmd, "-N", "-u", "NONE", "-S", str(driver_vim)],
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                cwd=workspace,
-                env=env,
-            )
-            os.close(slave_fd)
-            slave_fd = -1
+            if getattr(self, "visible", False):
+                # Visible mode: fork + open /dev/tty in child, exec Vim
+                # This bypasses any pytest fd redirection
+                pid = os.fork()
+                if pid == 0:
+                    # Child: attach to real terminal and exec Vim
+                    tty_fd = os.open("/dev/tty", os.O_RDWR)
+                    os.dup2(tty_fd, 0)  # stdin
+                    os.dup2(tty_fd, 1)  # stdout
+                    os.dup2(tty_fd, 2)  # stderr
+                    os.close(tty_fd)
+                    os.chdir(workspace)
+                    os.execvpe(cmd[0], cmd, env)
+                else:
+                    # Parent: wait for child
+                    _, status = os.waitpid(pid, 0)
+                proc = None
+            else:
+                # Headless: use PTY so outer Vim runs in a real terminal
+                master_fd, slave_fd = pty.openpty()
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    cwd=workspace,
+                    env=env,
+                )
+                os.close(slave_fd)
+                slave_fd = -1
 
             # Driver has its own timeout; give it extra margin
-            proc.wait(timeout=timeout + 15)
+            if proc is not None:
+                proc.wait(timeout=timeout + 15)
         except subprocess.TimeoutExpired:
             if proc is not None:
                 proc.kill()
@@ -175,9 +196,6 @@ class VimRunner:
                 output=f"Test timed out after {timeout}s",
             )
         except Exception as e:
-            if slave_fd >= 0:
-                os.close(slave_fd)
-            os.close(master_fd)
             if proc is not None:
                 proc.kill()
                 proc.wait()
@@ -193,10 +211,16 @@ class VimRunner:
                 output=str(e),
             )
         finally:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
+            if slave_fd >= 0:
+                try:
+                    os.close(slave_fd)
+                except OSError:
+                    pass
+            if master_fd >= 0:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
 
         # Read results
         output = ""
@@ -349,10 +373,26 @@ def shared_workspace():
     shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--visible", action="store_true", default=False,
+        help="Run E2E tests visibly in terminal (disables PTY, single process)",
+    )
+
+
+def pytest_configure(config):
+    if config.getoption("--visible", default=False):
+        # Force single process — multiple Vim instances can't share a terminal
+        workercount = config.getoption("numprocesses", default=None)
+        if workercount is not None and workercount != 0:
+            config.option.numprocesses = 0
+
+
 @pytest.fixture(scope="function")
-def vim_runner(shared_workspace):
+def vim_runner(shared_workspace, request):
     runner = VimRunner(PROJECT_ROOT)
     runner.shared_workspace = shared_workspace
+    runner.visible = request.config.getoption("--visible", default=False)
     return runner
 
 

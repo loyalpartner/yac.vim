@@ -263,6 +263,7 @@ function! yac_test#wait_for(condition, timeout_ms, ...) abort
       return 1
     endif
 
+    redraw
     execute 'sleep ' . interval_ms . 'm'
     let elapsed += interval_ms
   endwhile
@@ -406,6 +407,7 @@ function! s:log(level, message) abort
   let timestamp = strftime('%H:%M:%S')
   let prefix = '[' . timestamp . '] [' . a:level . '] '
   silent echom prefix . a:message
+  redraw
 endfunction
 
 " 公开日志函数

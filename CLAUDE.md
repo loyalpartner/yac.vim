@@ -11,14 +11,16 @@
 ## Build & Test
 
 ```bash
-cd yacd && zig build                        # debug build
-cd yacd && zig build -Doptimize=ReleaseFast # release build
-cd yacd && zig build test                   # run Zig unit tests
-uv run pytest                               # run E2E tests (tests/test_e2e.py)
+make build          # debug build (yacd/)
+make release        # ReleaseSafe build
+make test-unit      # Zig unit tests
+make test-e2e       # E2E tests (sequential, auto builds ReleaseSafe)
+make test-parallel  # E2E tests (parallel, -n auto)
+make test-visible   # E2E tests (visible in terminal, --visible)
+make test           # unit + E2E
+make clean          # remove build artifacts
 ```
 
-All Zig commands run from the `yacd/` subdirectory.
-E2E tests require ReleaseSafe build: `cd yacd && zig build -Doptimize=ReleaseSafe` before `uv run pytest`.
 - **不要用 ReleaseFast 跑测试** — 安全检查被禁用，UAF/整数溢出等 bug 会静默通过。
 
 - **E2E 测试调试**：失败测试会保留工作目录，输出 `workspace preserved: /tmp/yac_test_XXXXX`。读 `{workspace}/run/yacd-{pid}.log`（daemon 日志）和 `{workspace}/yac-vim-debug.log`（Vim 日志）排查问题，不要只看 pytest 截断输出。
