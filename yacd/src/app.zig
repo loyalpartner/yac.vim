@@ -171,6 +171,13 @@ pub const App = struct {
     pub fn serve(self: *App, transport: Transport, group: *Io.Group) !void {
         self.registry.group = group;
         try self.server.serve(transport, group, @ptrCast(self), onConnect);
+
+        // Warm up Copilot in background so first completion has no cold start
+        group.concurrent(self.copilot.io, warmUpCopilot, .{&self.copilot}) catch {};
+    }
+
+    fn warmUpCopilot(handler: *CopilotHandler) Io.Cancelable!void {
+        _ = handler.ensureProxy() catch {};
     }
 
     // ========================================================================

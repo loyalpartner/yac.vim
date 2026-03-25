@@ -441,7 +441,6 @@ function! yac_copilot#enable() abort
     autocmd InsertEnter  * call yac_copilot#on_text_changed()
     autocmd InsertLeave  * call yac_copilot#on_insert_leave()
     autocmd CompleteDone * call yac_copilot#on_complete_done()
-    autocmd BufEnter     * call s:notify_copilot_did_open()
   augroup END
 
   " Keymaps (insert mode)
@@ -454,19 +453,6 @@ function! yac_copilot#enable() abort
   " conflicting with popup filter's CR handler
   call yac#install_bs_mapping()
 
-  " Send didOpen for current buffer immediately
-  call s:notify_copilot_did_open()
-endfunction
-
-function! s:notify_copilot_did_open() abort
-  let l:file = expand('%:p')
-  if empty(l:file)
-    return
-  endif
-  call yac#_notify('file_open', {
-    \ 'file': l:file,
-    \ 'text': join(getline(1, '$'), "\n"),
-    \ })
 endfunction
 
 function! yac_copilot#disable() abort

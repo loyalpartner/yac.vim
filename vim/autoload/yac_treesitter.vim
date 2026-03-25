@@ -49,6 +49,13 @@ function! yac_treesitter#handle_push(params) abort
     return
   endif
 
+  " Defer if buffer is not visible — avoid blocking UI during window close.
+  " The push will be re-triggered when the buffer becomes visible again
+  " via CursorMoved/WinScrolled → ts_viewport.
+  if bufwinid(l:bufnr) == -1
+    return
+  endif
+
   let l:line_start = get(a:params, 'line_start', 0)
   let l:line_end = get(a:params, 'line_end', 0)
   let l:is_partial = l:line_start > 0 && l:line_end > 0
