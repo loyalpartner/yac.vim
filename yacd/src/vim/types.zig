@@ -42,6 +42,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "started", StartedPush },
         .{ "picker_progress", PickerProgressPush },
         .{ "ts_highlights", TsHighlightsPush },
+        .{ "ts_folds", TsFoldsPush },
         // Tree-sitter
         .{ "load_language", LoadLanguageParams },
         .{ "ts_viewport", TsViewportParams },
@@ -327,6 +328,12 @@ pub const TsFoldingParams = struct {
 pub const TsFoldingResult = struct {
     pub const FoldRange = @import("../treesitter/folds.zig").FoldRange;
     ranges: []const FoldRange,
+};
+
+/// Push: fold ranges for a buffer.
+pub const TsFoldsPush = struct {
+    file: []const u8,
+    ranges: []const @import("../treesitter/folds.zig").FoldRange,
 };
 
 /// Push: tree-sitter highlights for a buffer.

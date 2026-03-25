@@ -48,6 +48,7 @@ pub const TreeSitterHandler = struct {
         if (visible_top) |vt| self.recordViewport(file, vt);
         const t1 = clockMs();
         self.pushViewport(file, visible_top);
+        self.pushFolds(file);
         const push_ms = clockMs() - t1;
         const total = parse_ms + push_ms;
         if (total > slow_threshold_ms) {
@@ -149,6 +150,18 @@ pub const TreeSitterHandler = struct {
             // No viewport hint — push full file (small files or fallback)
             self.doPushHighlights(file, null, null);
         }
+    }
+
+    fn pushFolds(self: *TreeSitterHandler, file: []const u8) void {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const ranges = self.engine.getFolds(file, arena.allocator()) catch return;
+        self.notifier.send("ts_folds", .{
+            .file = file,
+            .ranges = ranges,
+        }) catch |err| {
+            log.warn("pushFolds: send failed: {s}", .{@errorName(err)});
+        };
     }
 
     fn doPushHighlights(self: *TreeSitterHandler, file: []const u8, start: ?u32, end: ?u32) void {
