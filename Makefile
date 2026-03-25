@@ -17,7 +17,7 @@ test-e2e: release
 
 # E2E tests (parallel)
 test-parallel: release
-	uv run pytest tests/ -n auto --maxprocesses=38
+	uv run pytest -v tests/ -n auto --maxprocesses=38
 
 # E2E tests (visible — watch in terminal)
 test-visible: release

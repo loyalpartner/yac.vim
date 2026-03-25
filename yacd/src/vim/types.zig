@@ -29,6 +29,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "did_save", FileParams },
         .{ "exit", void },
         .{ "status", void },
+        .{ "lsp_status", FileParams },
         // Picker
         .{ "picker_open", PickerOpenParams },
         .{ "picker_query", PickerQueryParams },
@@ -85,6 +86,7 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "did_save", void },
         .{ "exit", void },
         .{ "status", StatusResult },
+        .{ "lsp_status", LspStatusResult },
         // Picker
         .{ "picker_open", PickerResultsType },
         .{ "picker_query", PickerResultsType },
@@ -224,6 +226,10 @@ pub const SymbolInfo = struct {
 
 pub const DocumentSymbolResult = struct {
     symbols: []const SymbolInfo,
+};
+
+pub const LspStatusResult = struct {
+    ready: bool,
 };
 
 pub const StatusResult = struct {

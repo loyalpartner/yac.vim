@@ -136,6 +136,7 @@ pub const App = struct {
         try app.dispatcher.register("did_close", &app.doc, DocumentHandler.didClose);
         try app.dispatcher.register("did_save", &app.doc, DocumentHandler.didSave);
         try app.dispatcher.register("status", &app.sys, SystemHandler.status);
+        try app.dispatcher.register("lsp_status", &app.sys, SystemHandler.lspStatus);
         try app.dispatcher.register("exit", &app.sys, SystemHandler.exit);
         try app.dispatcher.register("install_lsp", &app.inst, InstallHandler.installLsp);
         try app.dispatcher.register("reset_failed", &app.inst, InstallHandler.resetFailed);

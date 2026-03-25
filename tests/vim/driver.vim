@@ -37,7 +37,7 @@ let s:inner_cmd = ['vim', '-N', '-u', s:vimrc, '-U', 'NONE',
       \ '-c', 'set nobackup',
       \ '-c', 'source ' . s:test_file]
 
-" 启动内层 Vim
+" 启动内层 Vim（curwin:1 — 全屏，不创建 split）
 let s:buf = term_start(s:inner_cmd, {
       \ 'curwin': 1,
       \ 'term_finish': 'open',
@@ -52,82 +52,72 @@ if s:buf <= 0
   qa!
 endif
 
-" ============================================================================
-" Polling: timer-based so Vim enters its main event loop and redraws
-" ============================================================================
-
+" 等待内层 Vim 完成
 let s:elapsed = 0
 let s:poll_interval = 500
+let s:visible = $YAC_DRIVER_VISIBLE != ''
 
-function! s:poll_check(timer_id) abort
+while s:elapsed < s:timeout_ms
+  call term_wait(s:buf, s:poll_interval)
+  if s:visible | redraw | endif
   let s:elapsed += s:poll_interval
 
   " 检查信号文件（内层测试完成后写入）
   if filereadable(s:signal_file)
+    " 给内层一点时间完成写入
     call term_wait(s:buf, 200)
-    call s:finish()
-    return
+    break
   endif
 
   " 检查内层 Vim 是否已退出
   if term_getstatus(s:buf) !~# 'running'
-    call s:finish()
-    return
+    break
   endif
+endwhile
 
-  " 超时检查
-  if s:elapsed >= s:timeout_ms
-    call s:finish()
-    return
+" 如果超时且内层仍在运行
+let s:timed_out = 0
+if s:elapsed >= s:timeout_ms && !filereadable(s:signal_file)
+  let s:timed_out = 1
+endif
+
+" 检查结果，如果有失败或超时就 dump 屏幕
+let s:need_dump = s:timed_out
+if !s:timed_out && filereadable(s:output_file)
+  let s:result_text = join(readfile(s:output_file), '')
+  if s:result_text =~# '"failed":\s*[1-9]' || s:result_text =~# '"success":\s*false'
+    let s:need_dump = 1
   endif
-endfunction
+endif
 
-function! s:finish() abort
-  " 如果超时且内层仍在运行
-  let s:timed_out = 0
-  if s:elapsed >= s:timeout_ms && !filereadable(s:signal_file)
-    let s:timed_out = 1
-  endif
+" 超时时写一个错误结果
+if s:timed_out && !filereadable(s:output_file)
+  let s:timeout_result = '::YAC_TEST_RESULT::{"suite":"driver","failed":1,"passed":0,"success":false,"tests":[{"name":"timeout","status":"fail","reason":"Driver timed out after ' . s:timeout_ms . 'ms"}]}'
+  call writefile([s:timeout_result], s:output_file)
+endif
 
-  " 检查结果，如果有失败或超时就 dump 屏幕
-  let s:need_dump = s:timed_out
-  if !s:timed_out && filereadable(s:output_file)
-    let s:result_text = join(readfile(s:output_file), '')
-    if s:result_text =~# '"failed":\s*[1-9]' || s:result_text =~# '"success":\s*false'
-      let s:need_dump = 1
-    endif
-  endif
+" Dump 屏幕快照
+if s:need_dump && !empty(s:screen_file)
+  let s:screen = []
+  let s:rows = term_getsize(s:buf)[0]
+  for s:i in range(1, s:rows)
+    let s:line = term_getline(s:buf, s:i)
+    call add(s:screen, printf('%2d|%s', s:i, s:line))
+  endfor
+  call writefile(s:screen, s:screen_file)
+endif
 
-  " 超时时写一个错误结果
-  if s:timed_out && !filereadable(s:output_file)
-    let s:timeout_result = '::YAC_TEST_RESULT::{"suite":"driver","failed":1,"passed":0,"success":false,"tests":[{"name":"timeout","status":"fail","reason":"Driver timed out after ' . s:timeout_ms . 'ms"}]}'
-    call writefile([s:timeout_result], s:output_file)
-  endif
-
-  " Dump 屏幕快照
-  if s:need_dump && !empty(s:screen_file)
-    let s:screen = []
-    for s:i in range(1, 24)
-      let s:line = term_getline(s:buf, s:i)
-      call add(s:screen, printf('%2d|%s', s:i, s:line))
-    endfor
-    call writefile(s:screen, s:screen_file)
-  endif
-
-  " 终止内层 Vim（如果还在运行）
+" 终止内层 Vim（如果还在运行）
+if term_getstatus(s:buf) =~# 'running'
+  call term_sendkeys(s:buf, "\<C-\>\<C-N>:qa!\<CR>")
+  call term_wait(s:buf, 1000)
+  " 如果还没退出就强杀
   if term_getstatus(s:buf) =~# 'running'
-    call term_sendkeys(s:buf, "\<C-\>\<C-N>:qa!\<CR>")
-    call term_wait(s:buf, 1000)
-    if term_getstatus(s:buf) =~# 'running'
-      let s:job = term_getjob(s:buf)
-      if type(s:job) == v:t_job
-        call job_stop(s:job, 'kill')
-      endif
+    let s:job = term_getjob(s:buf)
+    if type(s:job) == v:t_job
+      call job_stop(s:job, 'kill')
     endif
   endif
+endif
 
-  qa!
-endfunction
-
-" 启动轮询 timer — Vim 进入主事件循环后 timer 回调执行，屏幕正常渲染
-call timer_start(s:poll_interval, function('s:poll_check'), {'repeat': -1})
+qa!

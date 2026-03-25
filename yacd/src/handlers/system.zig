@@ -18,6 +18,11 @@ pub const SystemHandler = struct {
         return .{ .running = true, .language_servers = &.{} };
     }
 
+    pub fn lspStatus(self: *SystemHandler, _: Allocator, params: vim.types.FileParams) !vim.types.LspStatusResult {
+        _ = self.registry.resolve(params.file, null) catch return .{ .ready = false };
+        return .{ .ready = true };
+    }
+
     pub fn exit(self: *SystemHandler, allocator: Allocator, params: void) !void {
         _ = allocator;
         _ = params;

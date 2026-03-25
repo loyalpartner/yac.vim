@@ -149,6 +149,7 @@ class VimRunner:
             if getattr(self, "visible", False):
                 # Visible mode: fork + open /dev/tty in child, exec Vim
                 # This bypasses any pytest fd redirection
+                env["YAC_DRIVER_VISIBLE"] = "1"
                 pid = os.fork()
                 if pid == 0:
                     # Child: attach to real terminal and exec Vim
