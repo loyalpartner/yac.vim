@@ -8,6 +8,7 @@ const queries_mod = @import("queries.zig");
 const picker_source = @import("../picker/source.zig");
 const lang_config_mod = @import("lang_config.zig");
 const folds_mod = @import("folds.zig");
+const markdown_highlight = @import("markdown_highlight.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
 const file_io = @import("file_io.zig");
 const log = std.log.scoped(.ts_engine);
@@ -321,8 +322,10 @@ pub const Engine = struct {
         const dl = self.findDynamicLangByName(lang_name) orelse return error.UnsupportedLanguage;
         const ls: *LangState = &dl.state;
 
-        // Full re-parse with new text
-        const new_tree = ls.parser.parseString(new_text, null) orelse return error.ParseFailed;
+        // Incremental parse: tell old tree what changed, then re-parse with it
+        const input_edit = computeInputEdit(buf.source.items, new_text);
+        buf.tree.edit(input_edit);
+        const new_tree = ls.parser.parseString(new_text, buf.tree) orelse return error.ParseFailed;
 
         buf.tree.destroy();
         buf.tree = new_tree;
@@ -451,6 +454,25 @@ pub const Engine = struct {
 
     pub fn isWasmAvailable(self: *const Engine) bool {
         return self.wasm_loader != null;
+    }
+
+    /// Highlight markdown code blocks under mutex protection.
+    /// Prevents concurrent parser access that causes tree-sitter assertions.
+    pub fn highlightMarkdown(self: *Engine, allocator: Allocator, markdown: []const u8, filetype: []const u8) !markdown_highlight.HighlightResult {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        // Use private findDynamicLangByName (no lock) — Engine.findLangByName
+        // would deadlock since we already hold the mutex.
+        const finder = struct {
+            engine: *Engine,
+            pub fn findLangByName(ctx: @This(), name: []const u8) ?*const LangState {
+                const dl = ctx.engine.findDynamicLangByName(name) orelse return null;
+                return &dl.state;
+            }
+        }{ .engine = self };
+
+        return markdown_highlight.highlight(allocator, finder, markdown, filetype);
     }
 
     /// Find a loaded language by name. Returns null if not loaded.
@@ -663,6 +685,47 @@ fn freeDupedStringSlice(allocator: Allocator, strings: []const []const u8) void 
 fn trimTrailingNewline(s: []const u8) []const u8 {
     if (s.len > 0 and s[s.len - 1] == '\n') return s[0 .. s.len - 1];
     return s;
+}
+
+/// Compute a tree-sitter InputEdit by diffing old and new text.
+/// Scans common prefix and suffix to find the changed region.
+fn computeInputEdit(old: []const u8, new: []const u8) ts.InputEdit {
+    // Common prefix
+    const min_len = @min(old.len, new.len);
+    var prefix: usize = 0;
+    while (prefix < min_len and old[prefix] == new[prefix]) : (prefix += 1) {}
+
+    // Common suffix (don't overlap with prefix)
+    var old_suffix = old.len;
+    var new_suffix = new.len;
+    while (old_suffix > prefix and new_suffix > prefix and
+        old[old_suffix - 1] == new[new_suffix - 1])
+    {
+        old_suffix -= 1;
+        new_suffix -= 1;
+    }
+
+    return .{
+        .start_byte = @intCast(prefix),
+        .old_end_byte = @intCast(old_suffix),
+        .new_end_byte = @intCast(new_suffix),
+        .start_point = byteOffsetToPoint(old, prefix),
+        .old_end_point = byteOffsetToPoint(old, old_suffix),
+        .new_end_point = byteOffsetToPoint(new, new_suffix),
+    };
+}
+
+/// Convert a byte offset to a (row, column) Point by counting newlines.
+fn byteOffsetToPoint(text: []const u8, byte_pos: usize) ts.Point {
+    var row: u32 = 0;
+    var last_newline: usize = 0;
+    for (text[0..byte_pos], 0..) |c, i| {
+        if (c == '\n') {
+            row += 1;
+            last_newline = i + 1;
+        }
+    }
+    return .{ .row = row, .column = @intCast(byte_pos - last_newline) };
 }
 
 // ============================================================================

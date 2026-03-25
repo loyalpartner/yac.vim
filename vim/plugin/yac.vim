@@ -233,6 +233,8 @@ endfunction
 if get(g:, 'yac_auto_start', 1)
   augroup yac_auto
     autocmd!
+    " Start daemon once on VimEnter — no auto-restart on crash.
+    autocmd VimEnter * call yac#start()
     " BufReadPre: send did_open WITHOUT text — daemon reads from disk and
     " parses in parallel with Vim's own file loading (TS-only, no LSP).
     " visible_top: viewport hint for prioritized highlighting (0-based).

@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Engine = @import("../treesitter/root.zig").Engine;
-const markdown_highlight = @import("../treesitter/markdown_highlight.zig");
+
 const Notifier = @import("../notifier.zig").Notifier;
 const vim = @import("../vim/root.zig");
 
@@ -105,7 +105,7 @@ pub const TreeSitterHandler = struct {
 
     /// ts_hover_highlight: highlight markdown code blocks for popups.
     pub fn tsHoverHighlight(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.TsHoverHighlightParams) !vim.types.TsHoverHighlightResult {
-        return try markdown_highlight.highlight(allocator, self.engine, params.markdown, params.filetype);
+        return try self.engine.highlightMarkdown(allocator, params.markdown, params.filetype);
     }
 
     /// ts_symbols: extract document outline via tree-sitter @name/@function/etc captures.

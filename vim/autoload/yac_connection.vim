@@ -14,6 +14,7 @@ let s:daemon_channel = v:null
 let s:daemon_log_file = ''
 let s:loaded_langs = {}
 let s:log_started = 0
+let s:started_once = 0
 
 " === Internal helpers ===
 
@@ -46,6 +47,7 @@ function! s:start_daemon() abort
   endif
 
   let s:daemon_channel = job_getchannel(s:daemon_job)
+  let s:started_once = 1
   call yac#_debug_log('Started yacd daemon (stdio)')
   return v:true
 endfunction
@@ -80,7 +82,16 @@ endfunction
 
 " 处理 channel 关闭回调
 function! s:handle_close(channel) abort
+  " Check exit code before cleanup destroys job reference
+  let l:crashed = 0
+  if s:daemon_job isnot v:null
+    let l:info = job_info(s:daemon_job)
+    let l:crashed = get(l:info, 'exitval', 0) != 0
+  endif
   call s:cleanup()
+  if l:crashed
+    echohl WarningMsg | echom '[yac] yacd daemon crashed. Use :YacRestart to restart.' | echohl None
+  endif
 endfunction
 
 " Channel 回调：只处理服务器主动推送的通知
@@ -200,7 +211,19 @@ function! yac_connection#ensure_connection() abort
   return s:ensure_connection()
 endfunction
 
+function! yac_connection#get_channel() abort
+  return s:daemon_channel
+endfunction
+
 function! yac_connection#start() abort
+  " Already running
+  if s:daemon_channel isnot v:null && ch_status(s:daemon_channel) ==# 'open'
+    return v:true
+  endif
+  " Crashed — don't auto-restart, require :YacRestart
+  if s:started_once
+    return v:false
+  endif
   return s:ensure_connection() isnot v:null
 endfunction
 
@@ -220,6 +243,7 @@ endfunction
 
 function! yac_connection#restart() abort
   call yac_connection#stop()
+  let s:started_once = 0
   sleep 100m
   call yac_connection#start()
 endfunction

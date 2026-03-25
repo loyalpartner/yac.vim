@@ -322,6 +322,10 @@ endif
 execute "normal! \<Esc>"
 call popup_clear()
 normal! u
+" Flush pending did_change from undo and let stale responses drain,
+" otherwise 10b's completion response gets skipped as stale.
+call yac#_flush_did_change()
+sleep 200m
 
 " --- 10b: 'const x = std.' 带前缀 ---
 call cursor(56, 1)
@@ -352,10 +356,14 @@ endif
 call yac_test#assert_true(s:dot_ok, 'std. should show completion popup')
 call yac_test#assert_true(s:ctx_ok, 'const x = std. should show completion popup')
 
-" 两种方式的补全项数量应该相同（或至少 std. 也能补出成员）
-if s:dot_ok && s:ctx_ok
-  call yac_test#assert_eq(len(s:dot_items), len(s:ctx_items),
-    \ printf('std. (%d items) should match const x = std. (%d items)', len(s:dot_items), len(s:ctx_items)))
+" 两种方式都应该能补出足够多的成员（zls 在不同上下文可能返回不同数量）
+if s:dot_ok
+  call yac_test#assert_true(len(s:dot_items) >= 50,
+    \ printf('std. should have >= 50 items, got %d', len(s:dot_items)))
+endif
+if s:ctx_ok
+  call yac_test#assert_true(len(s:ctx_items) >= 50,
+    \ printf('const x = std. should have >= 50 items, got %d', len(s:ctx_items)))
 endif
 
 execute "normal! \<Esc>"

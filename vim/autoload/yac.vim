@@ -135,9 +135,8 @@ function! yac#ensure_language(lang_dir) abort
 endfunction
 
 function! s:request(method, params, callback_func) abort
-  let l:ch = yac_connection#ensure_connection()
+  let l:ch = yac_connection#get_channel()
   if l:ch is v:null || ch_status(l:ch) != 'open'
-    echoerr printf('yacd not running for %s', yac_connection#get_connection_key())
     return
   endif
 
@@ -157,7 +156,7 @@ function! s:notify(method, params) abort
     \ 'params': a:params
     \ }
 
-  let l:ch = yac_connection#ensure_connection()
+  let l:ch = yac_connection#get_channel()
 
   if l:ch isnot v:null && ch_status(l:ch) == 'open'
     call s:debug_log(printf('[NOTIFY][%s]: %s -> %s:%d:%d',
@@ -169,8 +168,6 @@ function! s:notify(method, params) abort
     " 发送通知（不需要回调）
     call ch_sendraw(l:ch, json_encode([jsonrpc_msg]) . "\n")
     return 1
-  else
-    echoerr printf('yacd not running for %s', yac_connection#get_connection_key())
   endif
   return 0
 endfunction
@@ -785,7 +782,7 @@ function! yac#_reset_loaded_langs() abort
 endfunction
 
 function! yac#_ts_ensure_connection() abort
-  return yac_connection#ensure_connection()
+  return yac_connection#get_channel()
 endfunction
 
 function! yac#_ts_flush_did_change() abort
@@ -815,10 +812,6 @@ endfunction
 
 function! yac#_flush_did_change() abort
   call s:flush_did_change()
-endfunction
-
-function! yac#_ensure_connection() abort
-  return yac_connection#ensure_connection()
 endfunction
 
 function! yac#_completion_popup_visible() abort
