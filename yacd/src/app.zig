@@ -147,6 +147,7 @@ pub const App = struct {
         try app.dispatcher.register("ts_viewport", &app.ts_handler, TreeSitterHandler.onViewport);
         try app.dispatcher.register("ts_hover_highlight", &app.ts_handler, TreeSitterHandler.tsHoverHighlight);
         try app.dispatcher.register("ts_folding", &app.ts_handler, TreeSitterHandler.tsFolding);
+        try app.dispatcher.register("ts_symbols", &app.ts_handler, TreeSitterHandler.tsSymbols);
 
         // Copilot
         try app.dispatcher.register("copilot_complete", &app.copilot, CopilotHandler.copilotComplete);

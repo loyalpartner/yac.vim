@@ -108,6 +108,26 @@ pub const TreeSitterHandler = struct {
         return try markdown_highlight.highlight(allocator, self.engine, params.markdown, params.filetype);
     }
 
+    /// ts_symbols: extract document outline via tree-sitter @name/@function/etc captures.
+    pub fn tsSymbols(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.FileParams) !vim.types.TsSymbolsResult {
+        const items = self.engine.getOutline(params.file, allocator) catch |err| {
+            log.debug("tsSymbols: {s}: {s}", .{ params.file, @errorName(err) });
+            return .{ .symbols = &.{} };
+        };
+        var symbols: std.ArrayList(vim.types.TsSymbol) = .empty;
+        for (items) |item| {
+            try symbols.append(allocator, .{
+                .name = item.label,
+                .kind = item.kind orelse "variable",
+                .file = item.file,
+                .detail = item.detail,
+                .selection_line = item.line,
+                .selection_column = item.column,
+            });
+        }
+        return .{ .symbols = symbols.items };
+    }
+
     /// ts_folding: extract fold ranges from tree-sitter @fold captures.
     pub fn tsFolding(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.TsFoldingParams) !vim.types.TsFoldingResult {
         // If text is provided and buffer not yet parsed, parse it first

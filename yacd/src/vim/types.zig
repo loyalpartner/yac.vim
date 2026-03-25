@@ -30,6 +30,7 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "exit", void },
         .{ "status", void },
         .{ "lsp_status", FileParams },
+        .{ "ts_symbols", FileParams },
         // Picker
         .{ "picker_open", PickerOpenParams },
         .{ "picker_query", PickerQueryParams },
@@ -87,6 +88,7 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "exit", void },
         .{ "status", StatusResult },
         .{ "lsp_status", LspStatusResult },
+        .{ "ts_symbols", TsSymbolsResult },
         // Picker
         .{ "picker_open", PickerResultsType },
         .{ "picker_query", PickerResultsType },
@@ -230,6 +232,19 @@ pub const DocumentSymbolResult = struct {
 
 pub const LspStatusResult = struct {
     ready: bool,
+};
+
+pub const TsSymbol = struct {
+    name: []const u8,
+    kind: []const u8,
+    file: []const u8,
+    detail: []const u8 = "",
+    selection_line: i32,
+    selection_column: i32,
+};
+
+pub const TsSymbolsResult = struct {
+    symbols: []const TsSymbol,
 };
 
 pub const StatusResult = struct {
