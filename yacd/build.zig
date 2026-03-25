@@ -1,7 +1,7 @@
 const std = @import("std");
 
 fn addMd4cDeps(b: *std.Build, mod: *std.Build.Module) void {
-    const md4c_root = b.path("../vendor/md4c");
+    const md4c_root = b.path("vendor/md4c");
     mod.addIncludePath(md4c_root);
     mod.addCSourceFile(.{ .file = md4c_root.path(b, "md4c.c") });
 }

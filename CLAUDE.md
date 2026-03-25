@@ -11,13 +11,14 @@
 ## Build & Test
 
 ```bash
-zig build                        # debug build
-zig build -Doptimize=ReleaseFast # release build
-zig build test                   # run Zig unit tests
-uv run pytest                    # run E2E tests (tests/test_e2e.py)
+cd yacd && zig build                        # debug build
+cd yacd && zig build -Doptimize=ReleaseFast # release build
+cd yacd && zig build test                   # run Zig unit tests
+uv run pytest                               # run E2E tests (tests/test_e2e.py)
 ```
 
-E2E tests require ReleaseSafe build: `zig build -Doptimize=ReleaseSafe` before `uv run pytest`.
+All Zig commands run from the `yacd/` subdirectory.
+E2E tests require ReleaseSafe build: `cd yacd && zig build -Doptimize=ReleaseSafe` before `uv run pytest`.
 - **不要用 ReleaseFast 跑测试** — 安全检查被禁用，UAF/整数溢出等 bug 会静默通过。
 
 - **E2E 测试调试**：失败测试会保留工作目录，输出 `workspace preserved: /tmp/yac_test_XXXXX`。读 `{workspace}/run/yacd-{pid}.log`（daemon 日志）和 `{workspace}/yac-vim-debug.log`（Vim 日志）排查问题，不要只看 pytest 截断输出。
@@ -31,14 +32,13 @@ Vim (VimScript) ←JSON-RPC (Unix socket)→ yacd (Zig daemon) ←LSP/DAP→ Lan
 ```
 
 - **Vim side**: `vim/autoload/yac*.vim` — UI, popups, channel bridge
-- **Zig daemon (active)**: `yacd/src/` — event loop, handler dispatch, LSP/DAP clients, tree-sitter, picker
-- **Zig daemon (legacy)**: `src/` — 旧版本，不再开发。所有新功能在 `yacd/` 目录
+- **Zig daemon**: `yacd/src/` — event loop, handler dispatch, LSP/DAP clients, tree-sitter, picker
+- **Vendor deps**: `yacd/vendor/` — zig-tree-sitter, tree-sitter-core, md4c
 - **Language plugins**: `languages/{lang}/` — tree-sitter queries, grammar config
 - **Themes**: `themes/` — color theme JSON files
 
 Architecture is under active refactoring. Read the actual source for current structure.
 
-- **LSP typed API**: `src/lsp/types.zig` 集中定义 LSP 类型（`ResultType("method")` 派生）和 Copilot 类型。Handler 返回具体 LSP 类型（如 `?Hover`），`VimServer.wrapResult` 自动序列化。`LspClient.request()` 用 comptime method，`requestTyped()`/`notifyTyped()` 用 runtime method + 显式类型（Copilot 等非标准方法）。
 
 ## Reference
 
@@ -86,6 +86,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **VimScript `str[0:-1]` 是整个字符串，不是空字符串**：负索引从末尾计数。处理 LSP 0-based column 转 1-based 后做 `str[0 : col-2]` 时，col=1 得到 `str[0:-1]`。必须加 `col <= 1 ? '' : str[0 : col-2]` 守卫。
 - **Never use `mapping: 0` on completion popup** — mapping suppression lingers after `popup_close()`, blocking `<expr>` mappings for one event loop cycle. Use default `mapping: 1` (same as coc.nvim). Note: picker input popup intentionally uses `mapping: 0` to avoid `>` character timeoutlen delay — this is safe because the picker restores mappings on close and the input popup uses its own filter.
 - `<expr>` mappings cannot call `setline()` (E565) — use `timer_start(0, ...)` to defer buffer modification.
+- **`timer_start(0)` 中 `setline()` 不触发 `TextChangedI`**：从 timer 回调中修改 buffer 后，需显式调用 `yac#did_change()` 通知 tree-sitter 重新高亮。
 - Test helpers (e.g. `test_do_tab()`) must simulate the real mapping:1 flow (`<expr>` first, then filter), not call filter directly.
 
 ## Code Quality
@@ -98,7 +99,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 
 ## Tree-sitter Gotchas
 
-- **`simplePatternMatch` only supports hardcoded patterns**: `src/treesitter/predicates.zig` does NOT use a regex engine. Each `#match?` pattern in highlights.scm must have a corresponding case in `simplePatternMatch()`. Unknown patterns return `false` (conservative) and log a warning. Currently supported: `^[A-Z_]...` (type names), `^[A-Z][A-Z_0-9]+$` (UPPER_CASE), `^//!` (doc comments), `^[A-Z]` (starts upper), `^_*[A-Z]...` (C/C++ constants), Go builtins, `^-` (bash flags), `^#![ \t]*/` (shebang).
+- **`#match?` predicates use mvzr regex**: `yacd/src/treesitter/predicates.zig` uses the `mvzr` library (pure Zig regex, `SizedRegex(256, 16)`). Compiled patterns are cached in a `StringHashMap`. No manual pattern additions needed when adding new languages.
 - **`captureToGroup` registration required**: New `@capture` names in highlights.scm must be added to `captureToGroup()` in `src/treesitter/highlights.zig`. Unregistered captures are silently ignored (no highlighting).
 - **Theme group registration**: New `YacTs*` highlight groups need 3 places: `captureToGroup` (Zig), `s:TS_GROUPS` list + `s:default_groups` dict (`yac_theme.vim`), `hi def link` (`yac.vim`), and theme JSON files.
 - **highlights.scm sourced from Zed**: Query files match Zed's tree-sitter queries exactly. When comparing rendering, note that Zed also applies LSP semantic tokens which yac.vim does not.
@@ -113,6 +114,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **shutdown 顺序**：发 LSP shutdown/exit → cancel readLoop group → free 资源。
 - **`DebugAllocator` 在 `Io.Threaded` 多线程下 heap corruption**（ziglang/zig#25025, #24970）：`thread_safe = true` 不完全解决。用 `std.heap.c_allocator` 代替。
 - **TreeSitter 需要 Io.Mutex**：coroutine 模型下多个 client coroutine 在不同 worker 线程上并发访问。所有 public mutable 方法必须加 `Io.Mutex`。
+- **`ProxyRegistry.resolve()` 并发安全**：用 `spawning` 集合防止两个协程同时为同一语言 spawn proxy。`deinit()` 一个 proxy 时其 `drainNotifications` 协程可能还在运行 → UAF。
 - **`Io.File` 异步写入用 `writeStreamingAll(io, data)`**：没有 `writeAll` 方法。`writeStreamingAll` 内部处理 partial write，pipe buffer 满时 yield 协程而非阻塞线程。
 - **`Reader.readAlloc(n)` 读取恰好 n 字节**：不够则 `EndOfStream` 错误。读取管道/子进程输出用 `Reader.allocRemaining(allocator, limit)` — 增量增长直到 EOF。
 
@@ -122,6 +124,7 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **wasmtime mach ports crash on macOS 26**: Wasmtime's default mach exception handler (`machports::handler_thread`) panics on macOS 26. Fix: create engine with `wasmtime_config_macos_use_mach_ports_set(config, false)` to fall back to Unix signal-based trap handling. See `src/treesitter/wasm_loader.zig`.
 - **macOS `/tmp` ↔ `/private/tmp` symlink**: Vim's `glob()` fails on `/tmp` paths on macOS 26 due to security hardening. Use `readdir()` + regex filter instead. `resolve()` alone is not sufficient.
 - **After fixing a platform-specific bug, grep for similar patterns**: e.g. after finding `std.os.linux.getpid()`, search the entire codebase for other `std.os.linux.*` usages that need cross-platform alternatives.
+- **`std.Uri.Component.toRawMaybeAlloc` 不总是分配内存**：当输入无 percent 编码时，直接返回原始 slice（非 owned）。如果调用者需要 `free()`，必须检查 `decoded.ptr == input.ptr` 并 `dupe`。
 
 ## Daemon Lifecycle
 

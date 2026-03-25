@@ -7,7 +7,7 @@
             .hash = "lsp_kit-0.1.0-bi_PLwozDAApVpvVJHz80NPklig5biWlZCkyxjFbOtiD",
         },
         .tree_sitter = .{
-            .path = "../vendor/zig-tree-sitter",
+            .path = "vendor/zig-tree-sitter",
         },
         .mvzr = .{
             .url = "https://github.com/mnemnion/mvzr/archive/refs/tags/v0.3.8.tar.gz",
