@@ -18,11 +18,10 @@ function! yac_debug#debug_toggle() abort
     echo '  - Channel communication will be logged to /tmp/vim_channel.log'
     echo '  - Use :YacDebugToggle to disable'
 
-    " 如果有活跃的连接，断开以启用channel日志
+    " Restart daemon so the new connection picks up ch_logfile()
     if !empty(yac_connection#get_channel_pool())
-      call yac#_debug_log('Reconnecting to enable channel logging...')
-      call yac_connection#stop_all_channels()
-      " 下次调用 LSP 命令时会自动重新连接
+      call yac#_debug_log('Restarting daemon to enable channel logging...')
+      call yac_connection#restart()
     endif
   else
     echo 'YacDebug: Debug mode DISABLED'
