@@ -306,7 +306,6 @@ while s:dot_elapsed < 10000
   call yac#complete()
   if yac_test#wait_for({-> !empty(popup_list())}, 2000)
     let s:dot_ok = 1
-    " 收集补全项
     let s:dot_items = yac#get_completion_state().items
     break
   endif
@@ -322,10 +321,6 @@ endif
 execute "normal! \<Esc>"
 call popup_clear()
 normal! u
-" Flush pending did_change from undo and let stale responses drain,
-" otherwise 10b's completion response gets skipped as stale.
-call yac#_flush_did_change()
-sleep 200m
 
 " --- 10b: 'const x = std.' 带前缀 ---
 call cursor(56, 1)

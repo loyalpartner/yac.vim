@@ -167,8 +167,14 @@ function! yac_completion#auto_complete_trigger() abort
 
   " 触发字符 → 立即 flush did_change 并直接请求，跳过 timer
   if l:is_trigger
+    " A pending timer from earlier keystrokes (e.g. 's','t','d' before '.')
+    " would fire after our request and call complete() again, bumping seq
+    " and making our response stale.
+    if s:completion.timer_id != -1
+      call timer_stop(s:completion.timer_id)
+      let s:completion.timer_id = -1
+    endif
     call yac#_flush_did_change()
-    let s:completion.seq += 1
     call yac_completion#complete()
     return
   endif
