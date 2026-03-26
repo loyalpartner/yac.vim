@@ -294,25 +294,17 @@ normal! u
 call yac_test#log('INFO', 'Test 10: std. member completion context comparison')
 
 " --- 10a: 'std.' 不带前缀 ---
+" ZLS is already warm from previous tests — single request + wait for LSP items.
+" yac#complete() may show cache/buffer-word items first; LSP response updates them.
 call cursor(56, 1)
 normal! O
 execute "normal! i    std."
 
-let s:dot_ok = 0
-let s:dot_items = []
-let s:dot_elapsed = 0
-while s:dot_elapsed < 10000
-  call popup_clear()
-  call yac#complete()
-  if yac_test#wait_for({-> !empty(popup_list())}, 2000)
-    let s:dot_ok = 1
-    let s:dot_items = yac#get_completion_state().items
-    break
-  endif
-  let s:dot_elapsed += 2000
-endwhile
+call yac#complete()
+let s:dot_ok = yac_test#wait_for({-> len(yac#get_completion_state().items) >= 50}, 5000)
+let s:dot_items = s:dot_ok ? yac#get_completion_state().items : []
 
-call yac_test#log('INFO', printf('10a: std. popup=%d items=%d', s:dot_ok, len(s:dot_items)))
+call yac_test#log('INFO', printf('10a: std. ok=%d items=%d', s:dot_ok, len(s:dot_items)))
 if s:dot_ok && !empty(s:dot_items)
   let s:dot_labels = map(copy(s:dot_items), {_, v -> v.label})
   call yac_test#log('INFO', printf('10a labels: %s', string(s:dot_labels[:min([9, len(s:dot_labels)-1])])))
@@ -327,21 +319,11 @@ call cursor(56, 1)
 normal! O
 execute "normal! i    const x = std."
 
-let s:ctx_ok = 0
-let s:ctx_items = []
-let s:ctx_elapsed = 0
-while s:ctx_elapsed < 10000
-  call popup_clear()
-  call yac#complete()
-  if yac_test#wait_for({-> !empty(popup_list())}, 2000)
-    let s:ctx_ok = 1
-    let s:ctx_items = yac#get_completion_state().items
-    break
-  endif
-  let s:ctx_elapsed += 2000
-endwhile
+call yac#complete()
+let s:ctx_ok = yac_test#wait_for({-> len(yac#get_completion_state().items) >= 50}, 5000)
+let s:ctx_items = s:ctx_ok ? yac#get_completion_state().items : []
 
-call yac_test#log('INFO', printf('10b: const x = std. popup=%d items=%d', s:ctx_ok, len(s:ctx_items)))
+call yac_test#log('INFO', printf('10b: const x = std. ok=%d items=%d', s:ctx_ok, len(s:ctx_items)))
 if s:ctx_ok && !empty(s:ctx_items)
   let s:ctx_labels = map(copy(s:ctx_items), {_, v -> v.label})
   call yac_test#log('INFO', printf('10b labels: %s', string(s:ctx_labels[:min([9, len(s:ctx_labels)-1])])))
@@ -351,7 +333,7 @@ endif
 call yac_test#assert_true(s:dot_ok, 'std. should show completion popup')
 call yac_test#assert_true(s:ctx_ok, 'const x = std. should show completion popup')
 
-" 两种方式都应该能补出足够多的成员（zls 在不同上下文可能返回不同数量）
+" 两种方式都应该能补出足够多的成员
 if s:dot_ok
   call yac_test#assert_true(len(s:dot_items) >= 50,
     \ printf('std. should have >= 50 items, got %d', len(s:dot_items)))

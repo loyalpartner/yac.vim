@@ -20,7 +20,16 @@ const log = std.log.scoped(.vim_server);
 //     → VimChannel + writer coroutine + on_connect + inline reader
 // ============================================================================
 
-pub const VimChannel = Channel(VimMessage, VimMessage);
+/// VimMessage with owned arena — the arena contains all parsed JSON data.
+/// Reader creates one arena per inbound message; consumer takes ownership.
+pub const OwnedVimMessage = struct {
+    msg: VimMessage,
+    arena: *std.heap.ArenaAllocator,
+};
+
+/// Outbound messages are pre-encoded bytes (wire format).
+/// Senders encode while their data is alive; the writer just writes + frees.
+pub const VimChannel = Channel(OwnedVimMessage, []const u8);
 
 pub const Transport = union(enum) {
     stdio: void,
@@ -126,8 +135,26 @@ pub const VimServer = struct {
 
             while (true) {
                 const line = framer.next() orelse break;
-                const msg = protocol.parse(self.allocator, line) catch continue;
-                ch.inbound.send(msg) catch return;
+                // Per-message arena: owns all parsed JSON data.
+                // Consumer takes ownership — no clone needed.
+                const arena_ptr = self.allocator.create(std.heap.ArenaAllocator) catch continue;
+                arena_ptr.* = std.heap.ArenaAllocator.init(self.allocator);
+                // Dupe line into arena so parsed string slices survive framer compaction
+                const owned_line = arena_ptr.allocator().dupe(u8, line) catch {
+                    arena_ptr.deinit();
+                    self.allocator.destroy(arena_ptr);
+                    continue;
+                };
+                const msg = protocol.parseLeaky(arena_ptr.allocator(), owned_line) catch {
+                    arena_ptr.deinit();
+                    self.allocator.destroy(arena_ptr);
+                    continue;
+                };
+                ch.inbound.send(.{ .msg = msg, .arena = arena_ptr }) catch {
+                    arena_ptr.deinit();
+                    self.allocator.destroy(arena_ptr);
+                    return;
+                };
             }
         }
     }
@@ -137,8 +164,7 @@ pub const VimServer = struct {
             ch.outbound.wait() catch return;
             const msgs = ch.outbound.drain() orelse continue;
             defer ch.allocator.free(msgs);
-            for (msgs) |msg| {
-                const encoded = protocol.encodeMessage(ch.allocator, msg) catch continue;
+            for (msgs) |encoded| {
                 defer ch.allocator.free(encoded);
                 // Log what we're writing to Vim (strip trailing \n)
                 const trimmed = if (encoded.len > 0 and encoded[encoded.len - 1] == '\n') encoded[0 .. encoded.len - 1] else encoded;

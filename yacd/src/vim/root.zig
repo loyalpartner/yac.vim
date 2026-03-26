@@ -10,6 +10,7 @@ pub const LineFramer = framer.LineFramer;
 pub const Transport = server.Transport;
 pub const VimServer = server.VimServer;
 pub const VimChannel = server.VimChannel;
+pub const OwnedVimMessage = server.OwnedVimMessage;
 
 test {
     _ = @import("types.zig");

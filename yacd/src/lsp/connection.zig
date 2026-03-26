@@ -34,7 +34,9 @@ pub const LspConnection = struct {
     /// Notifications from LSP server, consumed by upper layers.
     notifications: Queue(JsonRPCMessage.Notification),
 
-    const LspChannel = Channel(JsonRPCMessage, JsonRPCMessage);
+    /// Outbound messages are pre-encoded framed bytes (Content-Length + JSON body).
+    /// Senders encode while their data is alive; the writer just writes + frees.
+    const LspChannel = Channel(JsonRPCMessage, []const u8);
 
     pub const ResponseWaiter = struct {
         response: ?JsonRPCMessage.Response = null,
@@ -126,6 +128,8 @@ pub const LspConnection = struct {
     // ====================================================================
 
     /// Send a typed LSP request, block until response, return typed result.
+    /// Result memory is allocated from self.allocator — caller must ensure
+    /// proper lifetime (typically via the per-request arena in dispatch).
     pub fn request(
         self: *LspConnection,
         comptime method: []const u8,
@@ -141,8 +145,11 @@ pub const LspConnection = struct {
         method: []const u8,
         params: anytype,
     ) !T {
-        const params_value = try toValue(self.allocator, params);
+        var params_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer params_arena.deinit();
+        const params_value = try toValue(params_arena.allocator(), params);
         const response = try self.requestRaw(method, params_value);
+
         return switch (response.result_or_error) {
             .@"error" => error.LspError,
             .result => |result| try fromValue(T, self.allocator, result),
@@ -164,8 +171,19 @@ pub const LspConnection = struct {
         method: []const u8,
         params: anytype,
     ) !void {
-        const params_value = try toValue(self.allocator, params);
-        try self.notifyRaw(method, params_value);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const params_value = try toValue(arena.allocator(), params);
+        // Pre-encode while arena is alive
+        const msg: JsonRPCMessage = .{ .notification = .{
+            .method = method,
+            .params = params_value,
+        } };
+        const framed = try encodeFramed(self.allocator, msg);
+        self.channel.send(framed) catch {
+            self.allocator.free(framed);
+            return error.SendFailed;
+        };
     }
 
     /// Respond to a server-initiated request.
@@ -174,7 +192,11 @@ pub const LspConnection = struct {
             .id = id,
             .result_or_error = .{ .result = result },
         } };
-        try self.channel.send(msg);
+        const framed = try encodeFramed(self.allocator, msg);
+        self.channel.send(framed) catch {
+            self.allocator.free(framed);
+            return error.SendFailed;
+        };
     }
 
     // ====================================================================
@@ -203,7 +225,11 @@ pub const LspConnection = struct {
             .params = params,
         } };
         log.debug("-> [{d}] {s}", .{ id, method });
-        try self.channel.send(msg);
+        const framed = try encodeFramed(self.allocator, msg);
+        self.channel.send(framed) catch {
+            self.allocator.free(framed);
+            return error.SendFailed;
+        };
 
         // Block coroutine until dispatch loop signals us
         waiter.event.wait(self.io) catch return error.Canceled;
@@ -217,7 +243,11 @@ pub const LspConnection = struct {
             .method = method,
             .params = params,
         } };
-        try self.channel.send(msg);
+        const framed = try encodeFramed(self.allocator, msg);
+        self.channel.send(framed) catch {
+            self.allocator.free(framed);
+            return error.SendFailed;
+        };
     }
 
     // ====================================================================
@@ -357,31 +387,39 @@ pub const LspConnection = struct {
     }
 
     // ====================================================================
-    // Channel writer: JsonRPCMessage → serialize → frame → stdin
+    // Channel writer: pre-encoded framed bytes → stdin
     // ====================================================================
 
-    fn writeLsp(ctx: *anyopaque, io: Io, msg: JsonRPCMessage) void {
+    fn writeLsp(ctx: *anyopaque, io: Io, framed: []const u8) void {
         const pipe: *Pipe = @ptrCast(@alignCast(ctx));
-        const stdin = pipe.child.stdin orelse return;
-
-        // Serialize message to JSON
-        var aw: Writer.Allocating = .init(pipe.allocator);
-        std.json.Stringify.value(msg, .{ .emit_null_optional_fields = false }, &aw.writer) catch return;
-        const body = aw.toOwnedSlice() catch return;
-        defer pipe.allocator.free(body);
-
-        // Log outbound messages (truncated for readability)
-        if (body.len <= 500) {
-            log.debug("-> LSP: {s}", .{body});
-        } else {
-            log.debug("-> LSP: {s}... ({d} bytes)", .{ body[0..200], body.len });
-        }
-
-        // Frame with Content-Length header
-        const framed = Framer.frame(pipe.allocator, body) catch return;
+        const stdin = pipe.child.stdin orelse {
+            pipe.allocator.free(framed);
+            return;
+        };
         defer pipe.allocator.free(framed);
 
+        // Log outbound (extract body after "Content-Length: N\r\n\r\n" header)
+        if (std.mem.indexOf(u8, framed, "\r\n\r\n")) |header_end| {
+            const body = framed[header_end + 4 ..];
+            if (body.len <= 500) {
+                log.debug("-> LSP: {s}", .{body});
+            } else {
+                log.debug("-> LSP: {s}... ({d} bytes)", .{ body[0..200], body.len });
+            }
+        }
+
         stdin.writeStreamingAll(io, framed) catch {};
+    }
+
+    /// Serialize a JsonRPCMessage to framed bytes (Content-Length header + JSON body).
+    /// Caller owns the returned slice.
+    fn encodeFramed(allocator: Allocator, msg: JsonRPCMessage) ![]const u8 {
+        var aw: Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        std.json.Stringify.value(msg, .{ .emit_null_optional_fields = false }, &aw.writer) catch return error.EncodeFailed;
+        const body = aw.toOwnedSlice() catch return error.EncodeFailed;
+        defer allocator.free(body);
+        return Framer.frame(allocator, body);
     }
 
     // ====================================================================

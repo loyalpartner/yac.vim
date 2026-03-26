@@ -45,6 +45,19 @@ pub fn parse(allocator: Allocator, json_line: []const u8) !VimMessage {
     return parseArray(arr);
 }
 
+/// Parse a raw JSON line into a VimMessage using the caller's allocator directly.
+/// Unlike `parse()`, does NOT create a hidden internal arena — all memory lives
+/// in `allocator`. Caller must ensure `json_line` outlives the returned VimMessage
+/// (or dupe it into the allocator beforehand).
+pub fn parseLeaky(allocator: Allocator, json_line: []const u8) !VimMessage {
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, json_line, .{});
+    const arr = switch (value) {
+        .array => |a| a.items,
+        else => return error.InvalidProtocol,
+    };
+    return parseArray(arr);
+}
+
 /// Parse a JSON array (already decoded) into a VimMessage.
 fn parseArray(arr: []const std.json.Value) !VimMessage {
     switch (arr.len) {
@@ -204,6 +217,36 @@ test "parse: request" {
         .request => |r| {
             try std.testing.expectEqual(@as(u32, 1), r.id);
             try std.testing.expectEqualStrings("hover", r.method);
+        },
+        else => return error.TestWrongVariant,
+    }
+}
+
+test "parseLeaky: request — all memory in caller arena" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Dupe input so parsed strings reference arena memory, not the comptime literal
+    const input = try arena.allocator().dupe(u8, "[1,{\"method\":\"hover\",\"params\":{\"file\":\"test.rs\"}}]");
+    const msg = try parseLeaky(arena.allocator(), input);
+
+    switch (msg) {
+        .request => |r| {
+            try std.testing.expectEqual(@as(u32, 1), r.id);
+            try std.testing.expectEqualStrings("hover", r.method);
+        },
+        else => return error.TestWrongVariant,
+    }
+}
+
+test "parseLeaky: notification" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const input = try arena.allocator().dupe(u8, "[{\"method\":\"did_change\",\"params\":{\"file\":\"test.rs\"}}]");
+    const msg = try parseLeaky(arena.allocator(), input);
+
+    switch (msg) {
+        .notification => |n| {
+            try std.testing.expectEqualStrings("did_change", n.action);
         },
         else => return error.TestWrongVariant,
     }

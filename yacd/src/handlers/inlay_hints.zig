@@ -37,14 +37,16 @@ pub const InlayHintsHandler = struct {
         }
         // Push immediately — bypass dedup (user explicitly requested)
         self.pushInlayHints(params.file, params.visible_top);
-        self.last_pushed.put(params.file, params.visible_top) catch {};
+        self.recordLastPushed(params.file, params.visible_top);
     }
 
     pub fn disable(self: *InlayHintsHandler, _: Allocator, params: vim.types.FileParams) !void {
         log.info("disable {s}", .{params.file});
         const kv = self.enabled_files.fetchRemove(params.file) orelse return;
         self.allocator.free(kv.key);
-        _ = self.last_pushed.remove(params.file);
+        if (self.last_pushed.fetchRemove(params.file)) |lpkv| {
+            self.allocator.free(lpkv.key);
+        }
         self.notifier.send("inlay_hints", .{
             .file = params.file,
             .hints = &[0]vim.types.InlayHint{},
@@ -60,7 +62,7 @@ pub const InlayHintsHandler = struct {
             if (delta < viewport_dedup_threshold) return;
         }
         self.pushInlayHints(file, visible_top);
-        self.last_pushed.put(file, visible_top) catch {};
+        self.recordLastPushed(file, visible_top);
     }
 
     /// Called by TreeSitterHandler on didChange — always re-push (content changed).
@@ -68,14 +70,28 @@ pub const InlayHintsHandler = struct {
         if (self.enabled_files.get(file) == null) return;
         const vt = visible_top orelse return;
         self.pushInlayHints(file, vt);
-        self.last_pushed.put(file, vt) catch {};
+        self.recordLastPushed(file, vt);
     }
 
     /// Called on didClose — cleanup.
     pub fn onClose(self: *InlayHintsHandler, file: []const u8) void {
         const kv = self.enabled_files.fetchRemove(file) orelse return;
         self.allocator.free(kv.key);
-        _ = self.last_pushed.remove(file);
+        if (self.last_pushed.fetchRemove(file)) |lpkv| {
+            self.allocator.free(lpkv.key);
+        }
+    }
+
+    /// Store viewport in last_pushed with an owned key.
+    fn recordLastPushed(self: *InlayHintsHandler, file: []const u8, vt: u32) void {
+        if (self.last_pushed.getPtr(file)) |ptr| {
+            ptr.* = vt;
+        } else {
+            const owned = self.allocator.dupe(u8, file) catch return;
+            self.last_pushed.put(owned, vt) catch {
+                self.allocator.free(owned);
+            };
+        }
     }
 
     fn pushInlayHints(self: *InlayHintsHandler, file: []const u8, visible_top: u32) void {

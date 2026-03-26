@@ -107,7 +107,9 @@ pub const TreeSitterHandler = struct {
     /// did_close: cleanup buffer + viewport tracking.
     pub fn onClose(self: *TreeSitterHandler, file: []const u8) void {
         self.engine.closeBuffer(file);
-        _ = self.last_viewport.remove(file);
+        if (self.last_viewport.fetchRemove(file)) |kv| {
+            self.allocator.free(kv.key);
+        }
         if (self.inlay_handler) |ih| ih.onClose(file);
     }
 
@@ -191,7 +193,14 @@ pub const TreeSitterHandler = struct {
     }
 
     fn recordViewport(self: *TreeSitterHandler, file: []const u8, vt: u32) void {
-        self.last_viewport.put(file, vt) catch {};
+        if (self.last_viewport.getPtr(file)) |ptr| {
+            ptr.* = vt;
+        } else {
+            const owned = self.allocator.dupe(u8, file) catch return;
+            self.last_viewport.put(owned, vt) catch {
+                self.allocator.free(owned);
+            };
+        }
     }
 
     /// Push highlights for ±viewport_margin lines around visible_top.

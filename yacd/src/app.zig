@@ -229,37 +229,24 @@ pub const App = struct {
             ch.waitInbound() catch return;
             const msgs = ch.recv() orelse continue;
             defer ch.allocator.free(msgs);
-            for (msgs) |msg| {
-                switch (msg) {
+            for (msgs) |owned| {
+                switch (owned.msg) {
                     .request => |req| {
-                        // Clone request data into a per-request arena so the
-                        // concurrent coroutine owns its data independently of msgs.
-                        const arena_ptr = ch.allocator.create(std.heap.ArenaAllocator) catch continue;
-                        arena_ptr.* = std.heap.ArenaAllocator.init(ch.allocator);
-                        const owned = cloneRequest(arena_ptr.allocator(), req) catch {
-                            arena_ptr.deinit();
-                            ch.allocator.destroy(arena_ptr);
-                            continue;
-                        };
-                        group.concurrent(ch.io, handleRequest, .{ self, ch, owned, arena_ptr }) catch {
-                            arena_ptr.deinit();
-                            ch.allocator.destroy(arena_ptr);
+                        group.concurrent(ch.io, handleRequest, .{ self, ch, req, owned.arena }) catch {
+                            owned.arena.deinit();
+                            ch.allocator.destroy(owned.arena);
                         };
                     },
                     .notification => |n| {
-                        const a = ch.allocator.create(std.heap.ArenaAllocator) catch continue;
-                        a.* = std.heap.ArenaAllocator.init(ch.allocator);
-                        const owned = cloneNotification(a.allocator(), n) catch {
-                            a.deinit();
-                            ch.allocator.destroy(a);
-                            continue;
-                        };
-                        group.concurrent(ch.io, handleNotification, .{ self, ch, owned, a }) catch {
-                            a.deinit();
-                            ch.allocator.destroy(a);
+                        group.concurrent(ch.io, handleNotification, .{ self, ch, n, owned.arena }) catch {
+                            owned.arena.deinit();
+                            ch.allocator.destroy(owned.arena);
                         };
                     },
-                    .response => {},
+                    .response => {
+                        owned.arena.deinit();
+                        ch.allocator.destroy(owned.arena);
+                    },
                 }
             }
         }
@@ -271,14 +258,7 @@ pub const App = struct {
             ch.allocator.destroy(arena_ptr);
         }
         log.info("notification {s}", .{n.action});
-        _ = self.dispatcher.dispatch(ch.allocator, n.action, n.params);
-    }
-
-    fn cloneNotification(arena: std.mem.Allocator, n: VimMessage.Notification) !VimMessage.Notification {
-        return .{
-            .action = try arena.dupe(u8, n.action),
-            .params = try cloneJsonValue(arena, n.params),
-        };
+        _ = self.dispatcher.dispatch(arena_ptr.allocator(), n.action, n.params);
     }
 
     fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
@@ -288,49 +268,18 @@ pub const App = struct {
         }
         log.info("request [{d}] {s}", .{ req.id, req.method });
         const result = self.dispatcher.dispatch(
-            ch.allocator,
+            arena_ptr.allocator(),
             req.method,
             req.params,
         ) orelse blk: {
             log.warn("unknown method: {s}", .{req.method});
             break :blk .null;
         };
-        ch.send(.{ .response = .{
-            .id = req.id,
-            .result = result,
-        } }) catch {};
-    }
-
-    fn cloneRequest(arena: std.mem.Allocator, req: VimMessage.Request) !VimMessage.Request {
-        return .{
-            .id = req.id,
-            .method = try arena.dupe(u8, req.method),
-            .params = try cloneJsonValue(arena, req.params),
+        // Pre-encode response while arena is alive — the writer just writes bytes.
+        const encoded = vim.protocol.encodeResponse(ch.allocator, req.id, result) catch return;
+        ch.send(encoded) catch {
+            ch.allocator.free(encoded);
         };
     }
 
-    fn cloneJsonValue(alloc: std.mem.Allocator, v: std.json.Value) std.mem.Allocator.Error!std.json.Value {
-        return switch (v) {
-            .string => |s| .{ .string = try alloc.dupe(u8, s) },
-            .object => |obj| blk: {
-                var new_obj = std.json.ObjectMap.init(alloc);
-                var it = obj.iterator();
-                while (it.next()) |entry| {
-                    try new_obj.put(
-                        try alloc.dupe(u8, entry.key_ptr.*),
-                        try cloneJsonValue(alloc, entry.value_ptr.*),
-                    );
-                }
-                break :blk .{ .object = new_obj };
-            },
-            .array => |arr| blk: {
-                var new_arr = try std.json.Array.initCapacity(alloc, arr.items.len);
-                for (arr.items) |item| {
-                    new_arr.appendAssumeCapacity(try cloneJsonValue(alloc, item));
-                }
-                break :blk .{ .array = new_arr };
-            },
-            else => v,
-        };
-    }
 };

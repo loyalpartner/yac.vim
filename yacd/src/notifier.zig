@@ -3,7 +3,6 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const vim = @import("vim/root.zig");
 const protocol = vim.protocol;
-const VimMessage = vim.protocol.VimMessage;
 const VimChannel = vim.VimChannel;
 
 // ============================================================================
@@ -52,7 +51,9 @@ pub const Notifier = struct {
 
     /// Broadcast a typed notification to all connected Vim clients.
     pub fn send(self: *Notifier, comptime action: []const u8, params: vim.types.ParamsType(action)) !void {
-        const params_value = try protocol.toJsonValue(self.allocator, params);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const params_value = try protocol.toJsonValue(arena.allocator(), params);
         try self.broadcast(action, params_value);
     }
 
@@ -62,12 +63,17 @@ pub const Notifier = struct {
     }
 
     fn broadcast(self: *Notifier, action: []const u8, params: std.json.Value) !void {
-        const msg: VimMessage = .{ .notification = .{ .action = action, .params = params } };
+        // Encode once, dupe to each channel (channels may drain at different speeds).
+        const encoded = protocol.encodeNotification(self.allocator, action, params) catch return;
+        defer self.allocator.free(encoded);
 
         self.lock.lockUncancelable(self.io);
         defer self.lock.unlock(self.io);
         for (self.channels.items) |ch| {
-            ch.send(msg) catch {};
+            const copy = ch.allocator.dupe(u8, encoded) catch continue;
+            ch.send(copy) catch {
+                ch.allocator.free(copy);
+            };
         }
     }
 };
