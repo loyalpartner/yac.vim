@@ -112,18 +112,18 @@ nnoremap <silent> <Plug>(YacDapRepl)             :call yac#dap_repl()<CR>
 nnoremap <silent> <Plug>(YacDapAttach)           :call yac_dap#attach()<CR>
 
 " <Plug> mappings — tree-sitter navigation
-nnoremap <silent> <Plug>(YacTsNextFunction) :call yac#ts_next_function()<CR>
-nnoremap <silent> <Plug>(YacTsPrevFunction) :call yac#ts_prev_function()<CR>
-nnoremap <silent> <Plug>(YacTsNextStruct)   :call yac#ts_next_struct()<CR>
-nnoremap <silent> <Plug>(YacTsPrevStruct)   :call yac#ts_prev_struct()<CR>
+nnoremap <silent> <Plug>(YacNextFunction) :call yac#ts_next_function()<CR>
+nnoremap <silent> <Plug>(YacPrevFunction) :call yac#ts_prev_function()<CR>
+nnoremap <silent> <Plug>(YacNextStruct)   :call yac#ts_next_struct()<CR>
+nnoremap <silent> <Plug>(YacPrevStruct)   :call yac#ts_prev_struct()<CR>
 
 " <Plug> mappings — tree-sitter text objects
-xnoremap <silent> <Plug>(YacTsFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
-xnoremap <silent> <Plug>(YacTsFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
-xnoremap <silent> <Plug>(YacTsClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
-onoremap <silent> <Plug>(YacTsFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
-onoremap <silent> <Plug>(YacTsFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
-onoremap <silent> <Plug>(YacTsClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
+xnoremap <silent> <Plug>(YacFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
+xnoremap <silent> <Plug>(YacFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
+xnoremap <silent> <Plug>(YacClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
+onoremap <silent> <Plug>(YacFunctionOuter) :<C-u>call yac#ts_select('function.outer')<CR>
+onoremap <silent> <Plug>(YacFunctionInner) :<C-u>call yac#ts_select('function.inner')<CR>
+onoremap <silent> <Plug>(YacClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
 
 " Default key mappings (use nmap so <Plug> triggers; user can override)
 nmap <silent> gd         <Plug>(YacDefinition)
@@ -167,18 +167,18 @@ nmap <silent> <leader>dr  <Plug>(YacDapRepl)
 nmap <silent> <leader>da  <Plug>(YacDapAttach)
 
 " Tree-sitter navigation defaults
-nmap <silent> ]f <Plug>(YacTsNextFunction)
-nmap <silent> [f <Plug>(YacTsPrevFunction)
-nmap <silent> ]s <Plug>(YacTsNextStruct)
-nmap <silent> [s <Plug>(YacTsPrevStruct)
+nmap <silent> ]f <Plug>(YacNextFunction)
+nmap <silent> [f <Plug>(YacPrevFunction)
+nmap <silent> ]s <Plug>(YacNextStruct)
+nmap <silent> [s <Plug>(YacPrevStruct)
 
 " Tree-sitter text object defaults
-xmap <silent> af <Plug>(YacTsFunctionOuter)
-xmap <silent> if <Plug>(YacTsFunctionInner)
-xmap <silent> ac <Plug>(YacTsClassOuter)
-omap <silent> af <Plug>(YacTsFunctionOuter)
-omap <silent> if <Plug>(YacTsFunctionInner)
-omap <silent> ac <Plug>(YacTsClassOuter)
+xmap <silent> af <Plug>(YacFunctionOuter)
+xmap <silent> if <Plug>(YacFunctionInner)
+xmap <silent> ac <Plug>(YacClassOuter)
+omap <silent> af <Plug>(YacFunctionOuter)
+omap <silent> if <Plug>(YacFunctionInner)
+omap <silent> ac <Plug>(YacClassOuter)
 
 " Build extension-to-plugin mapping from g:yac_lang_plugins.
 " Each plugin has a languages.json with {"lang": {"extensions": [".ext", ...], ...}}.

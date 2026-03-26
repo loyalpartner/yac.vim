@@ -151,6 +151,32 @@ pub const TreeSitterHandler = struct {
         return .{ .ranges = ranges };
     }
 
+    /// ts_navigate: jump to next/prev function/struct.
+    pub fn tsNavigate(self: *TreeSitterHandler, _: Allocator, params: vim.types.TsNavigateParams) !vim.types.TsNavigateResult {
+        const result = self.engine.getNavigationTarget(params.file, params.target, params.direction, params.line) catch |err| {
+            log.debug("tsNavigate: {s}: {s}", .{ params.file, @errorName(err) });
+            return .{};
+        };
+        return .{
+            .line = @intCast(result.line),
+            .column = @intCast(result.col),
+        };
+    }
+
+    /// ts_textobjects: find enclosing function/class text object.
+    pub fn tsTextObjects(self: *TreeSitterHandler, _: Allocator, params: vim.types.TsTextObjectParams) !vim.types.TsTextObjectResult {
+        const result = self.engine.getTextObject(params.file, params.target, params.line, params.column) catch |err| {
+            log.debug("tsTextObjects: {s}: {s}", .{ params.file, @errorName(err) });
+            return .{};
+        };
+        return .{
+            .start_line = @intCast(result.start_line),
+            .start_col = @intCast(result.start_col),
+            .end_line = @intCast(result.end_line),
+            .end_col = @intCast(result.end_col),
+        };
+    }
+
     /// load_language: load WASM grammar from a directory.
     pub fn loadLanguage(self: *TreeSitterHandler, _: Allocator, params: vim.types.LoadLanguageParams) !vim.types.LoadLanguageResult {
         self.engine.loadFromDir(params.lang_dir);

@@ -158,6 +158,8 @@ pub const App = struct {
         try app.dispatcher.register("ts_hover_highlight", &app.ts_handler, TreeSitterHandler.tsHoverHighlight);
         try app.dispatcher.register("ts_folding", &app.ts_handler, TreeSitterHandler.tsFolding);
         try app.dispatcher.register("ts_symbols", &app.ts_handler, TreeSitterHandler.tsSymbols);
+        try app.dispatcher.register("ts_textobjects", &app.ts_handler, TreeSitterHandler.tsTextObjects);
+        try app.dispatcher.register("ts_navigate", &app.ts_handler, TreeSitterHandler.tsNavigate);
 
         // Inlay hints
         try app.dispatcher.register("inlay_hints_enable", &app.inlay_handler, InlayHintsHandler.enable);

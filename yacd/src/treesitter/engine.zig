@@ -8,6 +8,7 @@ const queries_mod = @import("queries.zig");
 const picker_source = @import("../picker/source.zig");
 const lang_config_mod = @import("lang_config.zig");
 const folds_mod = @import("folds.zig");
+const textobjects = @import("textobjects.zig");
 const markdown_highlight = @import("markdown_highlight.zig");
 const wasm_loader_mod = @import("wasm_loader.zig");
 const file_io = @import("file_io.zig");
@@ -428,6 +429,22 @@ pub const Engine = struct {
         const fq = dl.state.folds orelse return error.NoFoldsQuery;
 
         return try folds_mod.extractFolds(allocator, fq, buf.tree);
+    }
+
+    /// Find enclosing text object (function/class) at cursor position.
+    pub fn getTextObject(self: *Engine, file: []const u8, target: []const u8, line: u32, col: u32) !textobjects.TextObjectResult {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const buf = self.buffers.getPtr(file) orelse return error.BufferNotFound;
+        return textobjects.findTextObject(buf.tree, target, line, col) orelse error.NoMatch;
+    }
+
+    /// Find next/prev function or struct from cursor line.
+    pub fn getNavigationTarget(self: *Engine, file: []const u8, target: []const u8, direction: []const u8, cursor_line: u32) !textobjects.NavigateResult {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const buf = self.buffers.getPtr(file) orelse return error.BufferNotFound;
+        return textobjects.findNavigationTarget(buf.tree, target, direction, cursor_line) orelse error.NoMatch;
     }
 
     /// Check if a buffer is tracked.

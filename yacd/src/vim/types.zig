@@ -53,6 +53,8 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "ts_viewport", TsViewportParams },
         .{ "ts_hover_highlight", TsHoverHighlightParams },
         .{ "ts_folding", TsFoldingParams },
+        .{ "ts_textobjects", TsTextObjectParams },
+        .{ "ts_navigate", TsNavigateParams },
         // Inlay hints
         .{ "inlay_hints_enable", InlayHintsEnableParams },
         .{ "inlay_hints_disable", FileParams },
@@ -105,6 +107,8 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "ts_viewport", void },
         .{ "ts_hover_highlight", TsHoverHighlightResult },
         .{ "ts_folding", TsFoldingResult },
+        .{ "ts_textobjects", TsTextObjectResult },
+        .{ "ts_navigate", TsNavigateResult },
         .{ "inlay_hints_enable", void },
         .{ "inlay_hints_disable", void },
         // Copilot
@@ -398,6 +402,34 @@ pub const TsFoldingParams = struct {
 pub const TsFoldingResult = struct {
     pub const FoldRange = @import("../treesitter/folds.zig").FoldRange;
     ranges: []const FoldRange,
+};
+
+/// ts_textobjects: find enclosing function/class at cursor.
+pub const TsTextObjectParams = struct {
+    file: []const u8,
+    target: []const u8, // "function.outer", "function.inner", "class.outer"
+    line: u32,
+    column: u32,
+};
+
+pub const TsTextObjectResult = struct {
+    start_line: i32 = -1,
+    start_col: i32 = -1,
+    end_line: i32 = -1,
+    end_col: i32 = -1,
+};
+
+/// ts_navigate: jump to next/prev function/struct.
+pub const TsNavigateParams = struct {
+    file: []const u8,
+    target: []const u8, // "function", "struct"
+    direction: []const u8, // "next", "prev"
+    line: u32,
+};
+
+pub const TsNavigateResult = struct {
+    line: i32 = -1,
+    column: i32 = -1,
 };
 
 /// Push: fold ranges for a buffer.

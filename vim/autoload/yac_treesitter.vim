@@ -147,7 +147,7 @@ endfunction
 
 function! yac_treesitter#_handle_ts_navigate_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: ts_navigate response: %s', string(a:response)))
-  if type(a:response) == v:t_dict && has_key(a:response, 'line')
+  if type(a:response) == v:t_dict && get(a:response, 'line', -1) >= 0
     let lnum = a:response.line + 1
     let col = get(a:response, 'column', 0) + 1
     call cursor(lnum, col)
@@ -178,7 +178,7 @@ function! yac_treesitter#select(target) abort
   let l:response = ch_evalexpr(l:ch, l:msg, {'timeout': 2000})
   call yac#_debug_log(printf('[RECV]: ts_textobjects response: %s', string(l:response)))
 
-  if type(l:response) == v:t_dict && has_key(l:response, 'start_line')
+  if type(l:response) == v:t_dict && get(l:response, 'start_line', -1) >= 0
     let start_line = l:response.start_line + 1
     let start_col = l:response.start_col + 1
     let end_line = l:response.end_line + 1
