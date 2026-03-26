@@ -17,6 +17,9 @@ let g:yac_auto_complete_triggers = get(g:, 'yac_auto_complete_triggers', ['.', '
 " Tree-sitter highlights (auto-enable for supported filetypes)
 let g:yac_ts_highlights = get(g:, 'yac_ts_highlights', 1)
 
+" Subtle PmenuSel: dark gray background, preserve foreground colors
+highlight! PmenuSel ctermfg=NONE guifg=NONE ctermbg=238 guibg=#3a3a3a cterm=NONE gui=NONE
+
 " Semantic tokens from LSP (overlays on tree-sitter highlights)
 let g:yac_semantic_tokens = get(g:, 'yac_semantic_tokens', 1)
 
@@ -123,7 +126,8 @@ onoremap <silent> <Plug>(YacTsFunctionInner) :<C-u>call yac#ts_select('function.
 onoremap <silent> <Plug>(YacTsClassOuter)    :<C-u>call yac#ts_select('class.outer')<CR>
 
 " Default key mappings (use nmap so <Plug> triggers; user can override)
-nmap <silent> gd <Plug>(YacDefinition)
+nmap <silent> gd         <Plug>(YacDefinition)
+nmap <silent> <C-LeftMouse> <LeftMouse><Plug>(YacDefinition)
 nmap <silent> gD <Plug>(YacPeek)
 nmap <silent> gy <Plug>(YacTypeDefinition)
 nmap <silent> gi <Plug>(YacImplementation)

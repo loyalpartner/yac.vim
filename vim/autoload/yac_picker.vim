@@ -138,6 +138,10 @@ function! s:picker_create_ui(opts) abort
 
   " Results popup — initial height capped so bottom stays 4 lines from screen edge
   let results_h = max([3, min([15, &lines - (row + 2) - 4])])
+  highlight default link YacPickerBorder Comment
+  highlight default link YacPickerInput Normal
+  highlight default link YacPickerNormal Normal
+
   let s:picker.results_popup = popup_create([], {
     \ 'line': row + 2,
     \ 'col': col,
@@ -154,10 +158,6 @@ function! s:picker_create_ui(opts) abort
     \ 'zindex': 100,
     \ 'cursorline': 1,
     \ })
-
-  highlight default link YacPickerBorder Comment
-  highlight default link YacPickerInput Normal
-  highlight default link YacPickerNormal Normal
   highlight default YacPickerSelected term=underline cterm=underline gui=underline
   highlight default link YacPickerHeader Directory
   highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
