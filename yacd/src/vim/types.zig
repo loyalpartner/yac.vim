@@ -53,6 +53,10 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "ts_viewport", TsViewportParams },
         .{ "ts_hover_highlight", TsHoverHighlightParams },
         .{ "ts_folding", TsFoldingParams },
+        // Inlay hints
+        .{ "inlay_hints_enable", InlayHintsEnableParams },
+        .{ "inlay_hints_disable", FileParams },
+        .{ "inlay_hints", InlayHintsPush },
         // Copilot
         .{ "copilot_complete", CopilotCompleteParams },
         .{ "copilot_sign_in", void },
@@ -99,6 +103,8 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "ts_viewport", void },
         .{ "ts_hover_highlight", TsHoverHighlightResult },
         .{ "ts_folding", TsFoldingResult },
+        .{ "inlay_hints_enable", void },
+        .{ "inlay_hints_disable", void },
         // Copilot
         .{ "copilot_complete", CopilotCompleteResult },
         .{ "copilot_sign_in", CopilotSignInResult },
@@ -318,6 +324,29 @@ pub const StartedPush = struct {
 pub const PickerProgressPush = struct {
     file_count: u32,
     done: bool,
+};
+
+// ============================================================================
+// Inlay hints types
+// ============================================================================
+
+pub const InlayHintsEnableParams = struct {
+    file: []const u8,
+    visible_top: u32,
+};
+
+pub const InlayHint = struct {
+    line: u32,
+    column: u32,
+    label: []const u8,
+    kind: []const u8, // "type", "parameter", "other"
+    padding_left: bool = false,
+    padding_right: bool = false,
+};
+
+pub const InlayHintsPush = struct {
+    file: []const u8,
+    hints: []const InlayHint,
 };
 
 // ============================================================================

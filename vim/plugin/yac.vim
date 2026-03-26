@@ -243,11 +243,9 @@ if get(g:, 'yac_auto_start', 1)
     autocmd BufWritePre * if s:not_preview_loading() | call yac#will_save(1) | endif
     autocmd BufWritePost * if s:not_preview_loading() | call yac#did_save() | endif
     autocmd TextChanged,TextChangedI * if s:not_preview_loading() | call yac#did_change() | endif
-    autocmd TextChanged * if s:not_preview_loading() | call yac#inlay_hints_on_text_changed() | endif
     autocmd BufUnload * if s:not_preview_loading() | call yac#did_close(expand('<afile>:p')) | endif
     autocmd TextChangedI * if s:not_preview_loading() | call yac#auto_complete_trigger() | call yac#signature_help_trigger() | endif
-    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | call yac#inlay_hints_on_insert_leave() | endif
-    autocmd InsertEnter * if s:not_preview_loading() | call yac#inlay_hints_on_insert_enter() | endif
+    autocmd InsertLeave * if s:not_preview_loading() | call yac#close_completion() | call yac#close_signature() | endif
     autocmd CursorMoved * if s:not_preview_loading() | call yac#document_highlight_debounce() | call yac#ts_viewport_debounce() | endif
     autocmd WinScrolled * if s:not_preview_loading() | call yac#ts_viewport_debounce() | endif
     autocmd CursorMovedI,InsertEnter * if s:not_preview_loading() | call yac#clear_document_highlights() | endif

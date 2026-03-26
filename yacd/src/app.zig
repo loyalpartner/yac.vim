@@ -20,6 +20,7 @@ const PickerHandler = @import("handlers/picker.zig").PickerHandler;
 const NotificationHandler = @import("handlers/notification.zig").NotificationHandler;
 const NotifyDispatcher = @import("handlers/notification.zig").NotifyDispatcher;
 const TreeSitterHandler = @import("handlers/treesitter.zig").TreeSitterHandler;
+const InlayHintsHandler = @import("handlers/inlay_hints.zig").InlayHintsHandler;
 const CopilotHandler = @import("handlers/copilot.zig").CopilotHandler;
 const CopilotProxy = @import("lsp/root.zig").CopilotProxy;
 const Engine = @import("treesitter/root.zig").Engine;
@@ -56,6 +57,7 @@ pub const App = struct {
     pick: PickerHandler,
     lsp_notify: NotificationHandler,
     ts_handler: TreeSitterHandler,
+    inlay_handler: InlayHintsHandler,
     copilot_proxy: ?*CopilotProxy = null,
     copilot: CopilotHandler,
 
@@ -83,6 +85,7 @@ pub const App = struct {
             .pick = .{ .picker = undefined, .registry = undefined },
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
             .ts_handler = .{ .engine = undefined, .notifier = undefined, .allocator = allocator, .last_viewport = std.StringHashMap(u32).init(allocator) },
+            .inlay_handler = .{ .registry = undefined, .notifier = undefined, .allocator = allocator, .enabled_files = std.StringHashMap(void).init(allocator), .last_pushed = std.StringHashMap(u32).init(allocator) },
             .copilot = .{ .proxy = undefined, .allocator = allocator, .io = io, .group = undefined },
         };
 
@@ -110,7 +113,12 @@ pub const App = struct {
         // Tree-sitter handler wiring
         app.ts_handler.engine = &app.engine;
         app.ts_handler.notifier = &app.notifier;
+        app.ts_handler.inlay_handler = &app.inlay_handler;
         app.doc.ts_handler = &app.ts_handler;
+
+        // Inlay hints handler wiring
+        app.inlay_handler.registry = &app.registry;
+        app.inlay_handler.notifier = &app.notifier;
 
         // Wire installer into registry
         app.registry.installer = &app.installer;
@@ -148,6 +156,10 @@ pub const App = struct {
         try app.dispatcher.register("ts_hover_highlight", &app.ts_handler, TreeSitterHandler.tsHoverHighlight);
         try app.dispatcher.register("ts_folding", &app.ts_handler, TreeSitterHandler.tsFolding);
         try app.dispatcher.register("ts_symbols", &app.ts_handler, TreeSitterHandler.tsSymbols);
+
+        // Inlay hints
+        try app.dispatcher.register("inlay_hints_enable", &app.inlay_handler, InlayHintsHandler.enable);
+        try app.dispatcher.register("inlay_hints_disable", &app.inlay_handler, InlayHintsHandler.disable);
 
         // Copilot
         try app.dispatcher.register("copilot_complete", &app.copilot, CopilotHandler.copilotComplete);

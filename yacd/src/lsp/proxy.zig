@@ -166,6 +166,11 @@ pub const LspProxy = struct {
         return self.connection.request("textDocument/signatureHelp", params);
     }
 
+    pub fn inlayHint(self: *LspProxy, params: lsp.ParamsType("textDocument/inlayHint")) !lsp.ResultType("textDocument/inlayHint") {
+        try self.ensureCapability(.inlayHintProvider);
+        return self.connection.request("textDocument/inlayHint", params);
+    }
+
     // ====================================================================
     // Workspace — requests
     // ====================================================================

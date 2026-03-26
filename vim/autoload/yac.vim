@@ -231,22 +231,6 @@ function! yac#_peek_drill(file, line, col, symbol) abort
   call yac_lsp#peek_drill(a:file, a:line, a:col, a:symbol)
 endfunction
 
-function! yac#inlay_hints() abort
-  call yac_inlay#hints()
-endfunction
-
-function! yac#inlay_hints_on_insert_leave() abort
-  call yac_inlay#on_insert_leave()
-endfunction
-
-function! yac#inlay_hints_on_insert_enter() abort
-  call yac_inlay#on_insert_enter()
-endfunction
-
-function! yac#inlay_hints_on_text_changed() abort
-  call yac_inlay#on_text_changed()
-endfunction
-
 function! yac#inlay_hints_toggle() abort
   call yac_inlay#toggle()
 endfunction

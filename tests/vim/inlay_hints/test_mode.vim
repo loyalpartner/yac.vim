@@ -1,5 +1,5 @@
 " ============================================================================
-" E2E Test: Inlay Hints — Mode (insert/leave, disabled)
+" E2E Test: Inlay Hints — Mode (disabled state)
 " ============================================================================
 
 call yac_test#begin('inlay_hints_mode')
@@ -20,11 +20,12 @@ endfunction
 " ============================================================================
 " Feature probe
 " ============================================================================
-call yac#inlay_hints()
+call yac#inlay_hints_toggle()
 let s:hints_available = yac_test#wait_for({-> s:has_inlay_props()}, 5000)
 
 if !s:hints_available
   call yac_test#log('INFO', 'Inlay hints not available, skipping')
+  call yac_inlay#clear()
   call yac_test#skip('inlay_hints_mode', 'Feature not available from LSP')
   call yac_test#teardown()
   call yac_test#end()
@@ -32,44 +33,24 @@ if !s:hints_available
 endif
 
 " ============================================================================
-" Test 4: InsertEnter clears hints, InsertLeave restores
+" Test 4: Hints not shown when disabled
 " ============================================================================
-call yac_test#log('INFO', 'Test 4: InsertLeave restores hints')
+call yac_test#log('INFO', 'Test 4: Hints not shown when disabled')
 
-" Enable hints
-if !get(b:, 'yac_inlay_hints', 0)
-  call yac#inlay_hints_toggle()
-endif
-call yac_test#wait_for({-> s:has_inlay_props()}, 3000)
-
-" Simulate InsertEnter -> hints should clear
-call yac#inlay_hints_on_insert_enter()
+" Disable via clear
+call yac_inlay#clear()
 call yac_test#wait_assert(
   \ {-> s:no_inlay_props()},
-  \ 1000, 'Hints should clear on InsertEnter')
+  \ 3000, 'Hints should be cleared after disable')
 
-" Simulate InsertLeave -> hints should reappear
-call yac#inlay_hints_on_insert_leave()
-call yac_test#wait_assert(
-  \ {-> s:has_inlay_props()},
-  \ 3000, 'Hints should reappear on InsertLeave')
+call yac_test#assert_eq(get(b:, 'yac_inlay_hints', 0), 0,
+  \ 'b:yac_inlay_hints should be 0 after clear')
 
-call yac#clear_inlay_hints()
-
-" ============================================================================
-" Test 5: Hints not shown when disabled
-" ============================================================================
-call yac_test#log('INFO', 'Test 5: Hints not shown when disabled')
-
-let b:yac_inlay_hints = 0
-call yac#clear_inlay_hints()
-
-" InsertLeave should NOT trigger hints when disabled
-call yac#inlay_hints_on_insert_leave()
-sleep 200m
+" Wait a bit — no hints should appear since disabled
+sleep 500m
 call yac_test#assert_true(s:no_inlay_props(),
-  \ 'InsertLeave should not show hints when b:yac_inlay_hints=0')
+  \ 'No hints should appear when disabled')
 
-call yac#clear_inlay_hints()
+call yac_inlay#clear()
 call yac_test#teardown()
 call yac_test#end()

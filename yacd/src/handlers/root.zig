@@ -8,6 +8,7 @@ pub const SystemHandler = @import("system.zig").SystemHandler;
 pub const InstallHandler = @import("install.zig").InstallHandler;
 pub const PickerHandler = @import("picker.zig").PickerHandler;
 pub const TreeSitterHandler = @import("treesitter.zig").TreeSitterHandler;
+pub const InlayHintsHandler = @import("inlay_hints.zig").InlayHintsHandler;
 
 test {
     _ = @import("dispatch.zig");

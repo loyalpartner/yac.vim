@@ -141,6 +141,9 @@ function! s:handle_push(channel, msg) abort
   elseif a:msg.action ==# 'ts_folds'
     let params = get(a:msg, 'params', {})
     call yac_folding#_handle_response(a:channel, params)
+  elseif a:msg.action ==# 'inlay_hints'
+    let params = get(a:msg, 'params', {})
+    call yac_inlay#handle_push(params)
   elseif a:msg.action ==# 'install_complete'
     let params = get(a:msg, 'params', {})
     let l:lang = get(params, 'language', '')

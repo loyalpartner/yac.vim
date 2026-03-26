@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const Engine = @import("../treesitter/root.zig").Engine;
 
 const Notifier = @import("../notifier.zig").Notifier;
+const InlayHintsHandler = @import("inlay_hints.zig").InlayHintsHandler;
 const vim = @import("../vim/root.zig");
 
 const log = std.log.scoped(.ts_handler);
@@ -28,6 +29,8 @@ pub const TreeSitterHandler = struct {
     last_viewport: std.StringHashMap(u32),
     /// Monotonically increasing push version — ensures Vim never skips a viewport push.
     push_version: u32 = 0,
+    /// Inlay hints handler — notified on viewport/edit to push LSP inlay hints.
+    inlay_handler: ?*InlayHintsHandler = null,
 
     /// did_open: parse + push highlights.
     /// text=null → daemon reads file from disk (BufReadPre optimization).
@@ -77,6 +80,8 @@ pub const TreeSitterHandler = struct {
         if (total > slow_threshold_ms) {
             log.warn("onEdit: {s} took {d}ms (parse={d}ms highlight+push={d}ms)", .{ file, total, parse_ms, push_ms });
         }
+        // Re-push inlay hints for the visible area
+        if (self.inlay_handler) |ih| ih.onEdit(file, self.last_viewport.get(file));
     }
 
     /// ts_viewport: Vim scrolled/jumped — push highlights for visible area only.
@@ -88,6 +93,7 @@ pub const TreeSitterHandler = struct {
             _ = self.engine.openBufferFromFile(params.file) catch return;
             // First time — do full chunked push
             self.pushViewport(params.file, params.visible_top);
+            if (self.inlay_handler) |ih| ih.onViewport(params.file, params.visible_top);
             return;
         }
         // Viewport-only push (no chunked full — file already covered)
@@ -95,12 +101,14 @@ pub const TreeSitterHandler = struct {
         const start: u32 = if (vt > viewport_margin) vt - viewport_margin else 0;
         const end: u32 = vt + viewport_margin;
         self.doPushHighlights(params.file, start, end);
+        if (self.inlay_handler) |ih| ih.onViewport(params.file, params.visible_top);
     }
 
     /// did_close: cleanup buffer + viewport tracking.
     pub fn onClose(self: *TreeSitterHandler, file: []const u8) void {
         self.engine.closeBuffer(file);
         _ = self.last_viewport.remove(file);
+        if (self.inlay_handler) |ih| ih.onClose(file);
     }
 
     /// ts_hover_highlight: highlight markdown code blocks for popups.
