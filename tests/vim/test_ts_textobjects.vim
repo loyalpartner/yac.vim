@@ -14,11 +14,11 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: open test file and wait for LSP + tree-sitter parse
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 3000)
 
 " Give tree-sitter time to parse after LSP handshake.
 " The daemon parses the file on first file_open / did_change.
-sleep 1000m
+sleep 200m
 
 " Helper: call ts_select, exit visual mode, return [start_line, end_line].
 " Returns [0, 0] if no selection was made (response had start_line < 0).

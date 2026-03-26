@@ -323,7 +323,6 @@ class VimRunner:
             for f in test_files
         ]
 
-
 @pytest.fixture(scope="session")
 def shared_workspace():
     """Session-scoped shared workspace: one daemon + one LSP instance for all tests."""

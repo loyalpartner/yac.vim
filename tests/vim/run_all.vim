@@ -19,9 +19,15 @@ silent! %bwipeout!
 let s:project_root = getcwd()
 let s:test_file_path = s:project_root . '/test_data/src/main.zig'
 
-" 收集所有测试文件
+" 收集所有测试文件（只收集顶层 test_*.vim，不含子目录）
 let s:test_dir = expand('<sfile>:p:h')
 let s:test_files = sort(glob(s:test_dir . '/test_*.vim', 0, 1))
+
+" 如果设置了 YAC_BATCH_FILTER 环境变量，只跑匹配的测试
+if $YAC_BATCH_FILTER != ''
+  let s:filter = split($YAC_BATCH_FILTER, ',')
+  call filter(s:test_files, {_, f -> index(s:filter, fnamemodify(f, ":t:r")) >= 0})
+endif
 
 for s:test_file in s:test_files
   try

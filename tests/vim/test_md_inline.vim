@@ -13,7 +13,7 @@ call yac#ts_highlights_enable()
 " Scroll to bottom to ensure all lines are in visible range for tree-sitter
 call cursor(line('$'), 1)
 execute 'normal! zz'
-sleep 500m
+sleep 200m
 
 " Wait for inline highlights on L16: **bold** and *italic*
 let s:has_inline = yac_test#wait_for(

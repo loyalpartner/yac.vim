@@ -8,7 +8,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: open test file, wait for LSP
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 3000)
 
 " ============================================================================
 " Test 1: prepare_accept returns insertText and clears state

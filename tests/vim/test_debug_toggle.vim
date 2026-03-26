@@ -7,7 +7,7 @@
 call yac_test#begin('debug_toggle')
 call yac_test#setup()
 
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 3000)
 
 " ============================================================================
 " Test 1: Debug toggle flips g:yac_debug without crashing

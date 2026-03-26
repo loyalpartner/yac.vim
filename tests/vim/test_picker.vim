@@ -6,7 +6,7 @@ call yac_test#begin('picker')
 call yac_test#setup()
 
 " Wait for daemon connection
-sleep 1000m
+sleep 200m
 
 " ============================================================================
 " Unit tests: file display label (no daemon needed)
@@ -100,7 +100,7 @@ call yac_test#log('INFO', 'Test 2: Picker open creates popups')
 call yac#picker_open()
 
 " Wait for picker to appear (precise check, ignores toast popups)
-let picker_opened = yac_test#wait_picker(3000)
+let picker_opened = yac_test#wait_picker(1000)
 call yac_test#assert_true(picker_opened, 'Picker popups should appear')
 
 " Check that we have at least one popup
@@ -116,7 +116,7 @@ call yac_test#log('INFO', 'Test 3: Picker close via Esc')
 call feedkeys("\<Esc>", 'xt')
 
 " Wait for picker to close (precise check)
-let picker_closed = yac_test#wait_picker_closed(2000)
+let picker_closed = yac_test#wait_picker_closed(1000)
 call yac_test#assert_true(picker_closed, 'All popups should be closed after Esc')
 
 " ============================================================================
@@ -125,12 +125,12 @@ call yac_test#assert_true(picker_closed, 'All popups should be closed after Esc'
 call yac_test#log('INFO', 'Test 4: Picker toggle')
 
 call yac#picker_open()
-let picker_opened = yac_test#wait_picker(3000)
+let picker_opened = yac_test#wait_picker(1000)
 call yac_test#assert_true(picker_opened, 'Picker should open')
 
 " Call again to toggle off
 call yac#picker_open()
-let picker_closed = yac_test#wait_picker_closed(2000)
+let picker_closed = yac_test#wait_picker_closed(1000)
 call yac_test#assert_true(picker_closed, 'Picker should toggle off')
 
 " ============================================================================

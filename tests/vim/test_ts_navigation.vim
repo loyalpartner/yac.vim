@@ -10,7 +10,7 @@ call yac_test#setup()
 " ----------------------------------------------------------------------------
 " Setup: open test file and wait for tree-sitter to be ready
 " ----------------------------------------------------------------------------
-call yac_test#open_test_file('test_data/src/main.zig', 8000)
+call yac_test#open_test_file('test_data/src/main.zig', 3000)
 
 " main.zig function layout (1-based lines):
 "   14: pub fn init(...)         (User method)
@@ -88,7 +88,7 @@ function! s:test_prev_from_top() abort
   call yac#ts_prev_function()
 
   " Give daemon time to respond (even if no movement expected)
-  sleep 1000m
+  sleep 200m
   redraw
 
   call yac_test#assert_eq(line('.'), start_line,
@@ -108,7 +108,7 @@ function! s:test_next_from_last() abort
   call yac#ts_next_function()
 
   " Give daemon time to respond (even if no movement expected)
-  sleep 1000m
+  sleep 200m
   redraw
 
   call yac_test#assert_eq(line('.'), start_line,
