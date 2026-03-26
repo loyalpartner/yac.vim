@@ -14,7 +14,8 @@ let s:original_content = getline(1, '$')
 " ============================================================================
 call yac_test#log('INFO', 'Test 1: Clean file diagnostics')
 
-call yac_test#wait_for({-> exists('b:yac_diagnostics') && !empty(b:yac_diagnostics)}, 500)
+" Wait briefly to confirm no diagnostics appear (not wait_for, which expects them)
+sleep 500m
 call yac_test#assert_true(!exists('b:yac_diagnostics') || empty(b:yac_diagnostics), 'Clean file should have no diagnostics')
 
 " ============================================================================

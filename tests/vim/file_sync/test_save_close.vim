@@ -44,14 +44,5 @@ let popups = popup_list()
 call yac_test#assert_true(!empty(popups), 'LSP should still work after buffer close')
 call popup_clear()
 
-" ============================================================================
-" Test 7: External file modification
-" ============================================================================
-call yac_test#log('INFO', 'Test 7: External file modification')
-
-checktime
-
-call yac_test#log('INFO', 'External modification check completed')
-
 call yac_test#teardown()
 call yac_test#end()
