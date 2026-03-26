@@ -51,7 +51,7 @@ pub const CopilotProxy = struct {
     }
 
     fn asyncInitialize(self: *CopilotProxy) Io.Cancelable!void {
-        sendInitialize(self.connection) catch |err| {
+        sendInitialize(self.allocator, self.connection) catch |err| {
             log.warn("copilot async init failed: {s}", .{@errorName(err)});
             self.state = .shutdown;
             return;
@@ -79,7 +79,7 @@ pub const CopilotProxy = struct {
 
     pub fn signIn(self: *CopilotProxy) !copilot.SignInResult {
         try self.ensureReady();
-        return self.connection.requestAs(copilot.SignInResult, "signIn", copilot.SignInParams{}) catch |err| {
+        return self.connection.requestAs(copilot.SignInResult, self.allocator, "signIn", copilot.SignInParams{}) catch |err| {
             log.warn("signIn failed: {s}", .{@errorName(err)});
             return .{};
         };
@@ -87,7 +87,7 @@ pub const CopilotProxy = struct {
 
     pub fn signInConfirm(self: *CopilotProxy, user_code: ?[]const u8) !copilot.SignInConfirmResult {
         try self.ensureReady();
-        return self.connection.requestAs(copilot.SignInConfirmResult, "signInConfirm", copilot.SignInConfirmParams{
+        return self.connection.requestAs(copilot.SignInConfirmResult, self.allocator, "signInConfirm", copilot.SignInConfirmParams{
             .userCode = user_code,
         }) catch |err| {
             log.warn("signInConfirm failed: {s}", .{@errorName(err)});
@@ -97,7 +97,7 @@ pub const CopilotProxy = struct {
 
     pub fn signOut(self: *CopilotProxy) !copilot.SignOutResult {
         try self.ensureReady();
-        return self.connection.requestAs(copilot.SignOutResult, "signOut", copilot.SignOutParams{}) catch |err| {
+        return self.connection.requestAs(copilot.SignOutResult, self.allocator, "signOut", copilot.SignOutParams{}) catch |err| {
             log.warn("signOut failed: {s}", .{@errorName(err)});
             return .{};
         };
@@ -105,7 +105,7 @@ pub const CopilotProxy = struct {
 
     pub fn checkStatus(self: *CopilotProxy) !copilot.CheckStatusResult {
         try self.ensureReady();
-        return self.connection.requestAs(copilot.CheckStatusResult, "checkStatus", copilot.CheckStatusParams{}) catch |err| {
+        return self.connection.requestAs(copilot.CheckStatusResult, self.allocator, "checkStatus", copilot.CheckStatusParams{}) catch |err| {
             log.warn("checkStatus failed: {s}", .{@errorName(err)});
             return .{};
         };
@@ -117,7 +117,7 @@ pub const CopilotProxy = struct {
 
     pub fn inlineCompletion(self: *CopilotProxy, params: copilot.InlineCompletionParams) !copilot.InlineCompletionResult {
         try self.ensureReady();
-        return self.connection.requestAs(copilot.InlineCompletionResult, "textDocument/inlineCompletion", params) catch |err| {
+        return self.connection.requestAs(copilot.InlineCompletionResult, self.allocator, "textDocument/inlineCompletion", params) catch |err| {
             log.warn("inlineCompletion failed: {s}", .{@errorName(err)});
             return .{ .items = &.{} };
         };
@@ -184,11 +184,11 @@ pub const CopilotProxy = struct {
         if (self.state != .initialized and self.state != .ready) return error.NotInitialized;
     }
 
-    fn sendInitialize(conn: *LspConnection) !void {
+    fn sendInitialize(allocator: Allocator, conn: *LspConnection) !void {
         log.info("sending initialize to copilot-language-server", .{});
 
         // Copilot uses void result — we only care about success/error
-        _ = try conn.requestAs(struct {}, "initialize", .{
+        _ = try conn.requestAs(struct {}, allocator, "initialize", .{
             .processId = @as(i32, @intCast(std.c.getpid())),
             .clientInfo = .{ .name = "yac.vim", .version = "0.1.0" },
             .capabilities = .{
@@ -213,9 +213,13 @@ pub const CopilotProxy = struct {
             const msgs = self.connection.notifications.drain() orelse continue;
             defer self.allocator.free(msgs);
             for (msgs) |n| {
+                defer {
+                    n.arena.deinit();
+                    self.allocator.destroy(n.arena);
+                }
                 // Detect statusNotification: Normal → mark as ready
-                if (std.mem.eql(u8, n.method, "statusNotification")) {
-                    if (n.params) |params| {
+                if (std.mem.eql(u8, n.notification.method, "statusNotification")) {
+                    if (n.notification.params) |params| {
                         if (params == .object) {
                             if (params.object.get("status")) |status| {
                                 if (status == .string and std.mem.eql(u8, status.string, "Normal")) {
@@ -227,10 +231,10 @@ pub const CopilotProxy = struct {
                             }
                         }
                     }
-                } else if (std.mem.eql(u8, n.method, "window/logMessage") or
-                    std.mem.eql(u8, n.method, "window/showMessage"))
+                } else if (std.mem.eql(u8, n.notification.method, "window/logMessage") or
+                    std.mem.eql(u8, n.notification.method, "window/showMessage"))
                 {
-                    if (n.params) |params| {
+                    if (n.notification.params) |params| {
                         if (params == .object) {
                             if (params.object.get("message")) |msg| {
                                 if (msg == .string) {
@@ -241,7 +245,7 @@ pub const CopilotProxy = struct {
                         }
                     }
                 }
-                log.debug("copilot notification: {s}", .{n.method});
+                log.debug("copilot notification: {s}", .{n.notification.method});
             }
         }
     }

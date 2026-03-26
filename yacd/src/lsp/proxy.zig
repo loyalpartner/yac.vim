@@ -23,6 +23,7 @@ pub const LspProxy = struct {
     allocator: Allocator,
     io: Io,
     connection: *LspConnection,
+    init_arena: std.heap.ArenaAllocator,
     init_result: lsp.ResultType("initialize"),
     opened_files: std.StringHashMap(void),
     on_notification: ?*const OnNotification = null,
@@ -55,7 +56,10 @@ pub const LspProxy = struct {
         const conn = try LspConnection.init(allocator, io, child, group);
         errdefer conn.deinit();
 
-        const result = try conn.request("initialize", init_params);
+        // initialize result lives for the proxy's lifetime — use dedicated arena
+        var init_arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer init_arena.deinit();
+        const result = try conn.request(init_arena.allocator(), "initialize", init_params);
         try conn.notify("initialized", .{});
 
         const self = try allocator.create(LspProxy);
@@ -63,6 +67,7 @@ pub const LspProxy = struct {
             .allocator = allocator,
             .io = io,
             .connection = conn,
+            .init_arena = init_arena,
             .init_result = result,
             .opened_files = std.StringHashMap(void).init(allocator),
             .on_notification = if (notify_cb) |cb| cb.func else null,
@@ -81,9 +86,13 @@ pub const LspProxy = struct {
             self.connection.notifications.wait() catch return;
             const msgs = self.connection.notifications.drain() orelse continue;
             defer self.allocator.free(msgs);
-            for (msgs) |n| {
+            for (msgs) |owned| {
+                defer {
+                    owned.arena.deinit();
+                    self.allocator.destroy(owned.arena);
+                }
                 if (self.on_notification) |cb| {
-                    cb(self.notify_ctx.?, n.method, n.params);
+                    cb(self.notify_ctx.?, owned.notification.method, owned.notification.params);
                 }
             }
         }
@@ -95,6 +104,7 @@ pub const LspProxy = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.opened_files.deinit();
+        self.init_arena.deinit();
         self.connection.deinit();
         self.allocator.destroy(self);
     }
@@ -128,7 +138,7 @@ pub const LspProxy = struct {
     pub fn shutdownAndExit(self: *LspProxy) !void {
         try self.ensureReady();
         self.state = .shutdown; // Mark shutdown before sending — no more requests allowed
-        _ = try self.connection.request("shutdown", null);
+        _ = try self.connection.request(self.allocator, "shutdown", null);
         try self.connection.notify("exit", null);
     }
 
@@ -136,48 +146,48 @@ pub const LspProxy = struct {
     // Text Document — requests
     // ====================================================================
 
-    pub fn hover(self: *LspProxy, params: lsp.ParamsType("textDocument/hover")) !lsp.ResultType("textDocument/hover") {
+    pub fn hover(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/hover")) !lsp.ResultType("textDocument/hover") {
         try self.ensureCapability(.hoverProvider);
-        return self.connection.request("textDocument/hover", params);
+        return self.connection.request(allocator, "textDocument/hover", params);
     }
 
-    pub fn definition(self: *LspProxy, params: lsp.ParamsType("textDocument/definition")) !lsp.ResultType("textDocument/definition") {
+    pub fn definition(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/definition")) !lsp.ResultType("textDocument/definition") {
         try self.ensureCapability(.definitionProvider);
-        return self.connection.request("textDocument/definition", params);
+        return self.connection.request(allocator, "textDocument/definition", params);
     }
 
-    pub fn completion(self: *LspProxy, params: lsp.ParamsType("textDocument/completion")) !lsp.ResultType("textDocument/completion") {
+    pub fn completion(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/completion")) !lsp.ResultType("textDocument/completion") {
         try self.ensureCapability(.completionProvider);
-        return self.connection.request("textDocument/completion", params);
+        return self.connection.request(allocator, "textDocument/completion", params);
     }
 
-    pub fn references(self: *LspProxy, params: lsp.ParamsType("textDocument/references")) !lsp.ResultType("textDocument/references") {
+    pub fn references(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/references")) !lsp.ResultType("textDocument/references") {
         try self.ensureCapability(.referencesProvider);
-        return self.connection.request("textDocument/references", params);
+        return self.connection.request(allocator, "textDocument/references", params);
     }
 
-    pub fn documentSymbol(self: *LspProxy, params: lsp.ParamsType("textDocument/documentSymbol")) !lsp.ResultType("textDocument/documentSymbol") {
+    pub fn documentSymbol(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/documentSymbol")) !lsp.ResultType("textDocument/documentSymbol") {
         try self.ensureCapability(.documentSymbolProvider);
-        return self.connection.request("textDocument/documentSymbol", params);
+        return self.connection.request(allocator, "textDocument/documentSymbol", params);
     }
 
-    pub fn signatureHelp(self: *LspProxy, params: lsp.ParamsType("textDocument/signatureHelp")) !lsp.ResultType("textDocument/signatureHelp") {
+    pub fn signatureHelp(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/signatureHelp")) !lsp.ResultType("textDocument/signatureHelp") {
         try self.ensureCapability(.signatureHelpProvider);
-        return self.connection.request("textDocument/signatureHelp", params);
+        return self.connection.request(allocator, "textDocument/signatureHelp", params);
     }
 
-    pub fn inlayHint(self: *LspProxy, params: lsp.ParamsType("textDocument/inlayHint")) !lsp.ResultType("textDocument/inlayHint") {
+    pub fn inlayHint(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/inlayHint")) !lsp.ResultType("textDocument/inlayHint") {
         try self.ensureCapability(.inlayHintProvider);
-        return self.connection.request("textDocument/inlayHint", params);
+        return self.connection.request(allocator, "textDocument/inlayHint", params);
     }
 
     // ====================================================================
     // Workspace — requests
     // ====================================================================
 
-    pub fn workspaceSymbol(self: *LspProxy, params: lsp.ParamsType("workspace/symbol")) !lsp.ResultType("workspace/symbol") {
+    pub fn workspaceSymbol(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("workspace/symbol")) !lsp.ResultType("workspace/symbol") {
         try self.ensureCapability(.workspaceSymbolProvider);
-        return self.connection.request("workspace/symbol", params);
+        return self.connection.request(allocator, "workspace/symbol", params);
     }
 
     // ====================================================================
@@ -196,7 +206,9 @@ pub const LspProxy = struct {
 
     pub fn didClose(self: *LspProxy, params: lsp.ParamsType("textDocument/didClose")) !void {
         try self.ensureReady();
-        _ = self.opened_files.remove(params.textDocument.uri);
+        if (self.opened_files.fetchRemove(params.textDocument.uri)) |kv| {
+            self.allocator.free(kv.key);
+        }
         return self.connection.notify("textDocument/didClose", params);
     }
 

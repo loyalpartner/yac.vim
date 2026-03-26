@@ -32,14 +32,36 @@ pub const LspConnection = struct {
     waiters_lock: Io.Mutex = .init,
     next_id: std.atomic.Value(u32),
     /// Notifications from LSP server, consumed by upper layers.
-    notifications: Queue(JsonRPCMessage.Notification),
+    /// Each notification carries its own arena — consumer must deinit after use.
+    notifications: Queue(OwnedNotification),
 
     /// Outbound messages are pre-encoded framed bytes (Content-Length + JSON body).
     /// Senders encode while their data is alive; the writer just writes + frees.
-    const LspChannel = Channel(JsonRPCMessage, []const u8);
+    const LspChannel = Channel(OwnedJsonRPCMessage, []const u8);
+
+    /// Inbound message with owned arena — arena contains all parsed JSON data.
+    /// Reader creates one arena per message; dispatch loop transfers ownership.
+    pub const OwnedJsonRPCMessage = struct {
+        msg: JsonRPCMessage,
+        arena: *std.heap.ArenaAllocator,
+    };
+
+    /// Notification with owned arena.
+    pub const OwnedNotification = struct {
+        notification: JsonRPCMessage.Notification,
+        arena: *std.heap.ArenaAllocator,
+    };
+
+    /// Response with owned arena — requestRaw returns this so the caller
+    /// can read result fields while arena is alive, then deinit.
+    pub const OwnedResponse = struct {
+        response: JsonRPCMessage.Response,
+        arena: *std.heap.ArenaAllocator,
+    };
 
     pub const ResponseWaiter = struct {
         response: ?JsonRPCMessage.Response = null,
+        arena: ?*std.heap.ArenaAllocator = null,
         event: Io.Event = .unset,
     };
 
@@ -47,7 +69,7 @@ pub const LspConnection = struct {
     const Pipe = struct {
         framer: Framer,
         child: std.process.Child,
-        buffered: std.ArrayList(JsonRPCMessage),
+        buffered: std.ArrayList(OwnedJsonRPCMessage),
         read_head: usize = 0,
         allocator: Allocator,
 
@@ -61,12 +83,17 @@ pub const LspConnection = struct {
         }
 
         fn deinit(self: *Pipe) void {
+            // Free any unconsumed arenas
+            for (self.buffered.items[self.read_head..]) |owned| {
+                owned.arena.deinit();
+                self.allocator.destroy(owned.arena);
+            }
             self.buffered.deinit(self.allocator);
             self.framer.deinit(self.allocator);
         }
 
         /// O(1) dequeue from buffered messages.
-        fn nextBuffered(self: *Pipe) ?JsonRPCMessage {
+        fn nextBuffered(self: *Pipe) ?OwnedJsonRPCMessage {
             if (self.read_head >= self.buffered.items.len) return null;
             const msg = self.buffered.items[self.read_head];
             self.read_head += 1;
@@ -89,7 +116,7 @@ pub const LspConnection = struct {
             .pipe = Pipe.init(allocator, child),
             .waiters = std.AutoHashMap(u32, *ResponseWaiter).init(allocator),
             .next_id = std.atomic.Value(u32).init(1),
-            .notifications = Queue(JsonRPCMessage.Notification).init(allocator, io),
+            .notifications = Queue(OwnedNotification).init(allocator, io),
         };
         self.channel.start(
             group,
@@ -113,6 +140,11 @@ pub const LspConnection = struct {
         self.channel.deinit();
         self.pipe.deinit();
         self.waiters.deinit();
+        // Drain unconsumed notifications — free their arenas
+        if (self.notifications.drain()) |items| {
+            for (items) |n| self.freeArena(n.arena);
+            self.allocator.free(items);
+        }
         self.notifications.deinit();
         self.allocator.destroy(self);
     }
@@ -128,31 +160,38 @@ pub const LspConnection = struct {
     // ====================================================================
 
     /// Send a typed LSP request, block until response, return typed result.
-    /// Result memory is allocated from self.allocator — caller must ensure
-    /// proper lifetime (typically via the per-request arena in dispatch).
+    /// Result is allocated into `result_allocator` (typically the handler's arena).
     pub fn request(
         self: *LspConnection,
+        result_allocator: Allocator,
         comptime method: []const u8,
         params: anytype,
     ) !lsp.ResultType(method) {
-        return self.requestAs(lsp.ResultType(method), method, params);
+        return self.requestAs(lsp.ResultType(method), result_allocator, method, params);
     }
 
     /// Send a request with explicit result type (for non-standard methods).
+    /// Result is allocated into `result_allocator`; response arena is freed before return.
     pub fn requestAs(
         self: *LspConnection,
         comptime T: type,
+        result_allocator: Allocator,
         method: []const u8,
         params: anytype,
     ) !T {
         var params_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer params_arena.deinit();
         const params_value = try toValue(params_arena.allocator(), params);
-        const response = try self.requestRaw(method, params_value);
+        const owned = try self.requestRaw(method, params_value);
+        // Response arena is alive during fromValue; freed after.
+        defer {
+            owned.arena.deinit();
+            self.allocator.destroy(owned.arena);
+        }
 
-        return switch (response.result_or_error) {
+        return switch (owned.response.result_or_error) {
             .@"error" => error.LspError,
-            .result => |result| try fromValue(T, self.allocator, result),
+            .result => |result| try fromValue(T, result_allocator, result),
         };
     }
 
@@ -203,7 +242,7 @@ pub const LspConnection = struct {
     // Internal: raw JSON-RPC send
     // ====================================================================
 
-    pub fn requestRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !JsonRPCMessage.Response {
+    pub fn requestRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !OwnedResponse {
         const id = self.nextId();
 
         // Register waiter BEFORE sending (response may arrive instantly)
@@ -232,10 +271,21 @@ pub const LspConnection = struct {
         };
 
         // Block coroutine until dispatch loop signals us
-        waiter.event.wait(self.io) catch return error.Canceled;
+        waiter.event.wait(self.io) catch {
+            // Cancel race: handleResponse may have already set arena — clean up
+            if (waiter.arena) |a| self.freeArena(a);
+            return error.Canceled;
+        };
 
         log.debug("<- [{d}] {s}", .{ id, method });
-        return waiter.response orelse error.NullResponse;
+        const arena = waiter.arena orelse return error.NullResponse;
+        return .{
+            .response = waiter.response orelse {
+                self.freeArena(arena);
+                return error.NullResponse;
+            },
+            .arena = arena,
+        };
     }
 
     pub fn notifyRaw(self: *LspConnection, method: []const u8, params: ?std.json.Value) !void {
@@ -273,9 +323,9 @@ pub const LspConnection = struct {
         const json = try aw.toOwnedSlice();
         defer allocator.free(json);
 
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
-        // Intentionally not deinit'd — Value references the parsed arena.
-        return parsed.value;
+        return try std.json.parseFromSliceLeaky(std.json.Value, allocator, json, .{
+            .allocate = .alloc_always, // json buffer is about to be freed — strings must be independent copies
+        });
     }
 
     /// std.json.Value → typed result via JSON round-trip.
@@ -293,11 +343,12 @@ pub const LspConnection = struct {
         errdefer aw.deinit();
         try std.json.Stringify.value(value, .{}, &aw.writer);
         const json = try aw.toOwnedSlice();
-        // NOT freed — parseFromSlice may reference strings in this buffer (zero-copy).
+        defer allocator.free(json); // Safe: .alloc_always makes independent copies
 
-        const parsed = try std.json.parseFromSlice(T, allocator, json, .{ .ignore_unknown_fields = true });
-        // Intentionally not deinit'd — result references the parsed arena.
-        return parsed.value;
+        return try std.json.parseFromSliceLeaky(T, allocator, json, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
     }
 
     // ====================================================================
@@ -310,22 +361,36 @@ pub const LspConnection = struct {
             const msgs = self.channel.recv() orelse continue;
             defer self.allocator.free(msgs);
 
-            for (msgs) |msg| {
-                switch (msg) {
+            for (msgs) |owned| {
+                switch (owned.msg) {
                     .response => |r| {
-                        const id_num: i64 = switch (r.id orelse continue) {
+                        const id_num: i64 = switch (r.id orelse {
+                            self.freeArena(owned.arena);
+                            continue;
+                        }) {
                             .number => |i| i,
-                            .string => continue,
+                            .string => {
+                                self.freeArena(owned.arena);
+                                continue;
+                            },
                         };
                         log.debug("dispatch: response id={d}", .{id_num});
-                        self.handleResponse(r);
+                        if (!self.handleResponse(r, owned.arena)) {
+                            self.freeArena(owned.arena);
+                        }
                     },
                     .notification => |n| {
                         if (!std.mem.eql(u8, n.method, "$/progress"))
                             log.debug("dispatch: notification {s}", .{n.method});
-                        self.notifications.send(n) catch {};
+                        self.notifications.send(.{
+                            .notification = n,
+                            .arena = owned.arena,
+                        }) catch {
+                            self.freeArena(owned.arena);
+                        };
                     },
                     .request => |r| {
+                        defer self.freeArena(owned.arena);
                         log.debug("dispatch: server request {s}", .{r.method});
                         self.respond(r.id, null) catch {};
                     },
@@ -334,25 +399,33 @@ pub const LspConnection = struct {
         }
     }
 
-    fn handleResponse(self: *LspConnection, response: JsonRPCMessage.Response) void {
-        const id: u32 = switch (response.id orelse return) {
+    /// Transfer response + arena ownership to waiter. Returns true if transferred.
+    fn handleResponse(self: *LspConnection, response: JsonRPCMessage.Response, arena: *std.heap.ArenaAllocator) bool {
+        const id: u32 = switch (response.id orelse return false) {
             .number => |i| @intCast(i),
-            .string => return,
+            .string => return false,
         };
 
         self.waiters_lock.lockUncancelable(self.io);
         defer self.waiters_lock.unlock(self.io);
 
-        const waiter = self.waiters.get(id) orelse return;
+        const waiter = self.waiters.get(id) orelse return false;
         waiter.response = response;
+        waiter.arena = arena;
         waiter.event.set(self.io);
+        return true;
+    }
+
+    fn freeArena(self: *LspConnection, arena: *std.heap.ArenaAllocator) void {
+        arena.deinit();
+        self.allocator.destroy(arena);
     }
 
     // ====================================================================
     // Channel reader: stdout → Framer → parse JsonRPCMessage
     // ====================================================================
 
-    fn readLsp(ctx: *anyopaque, io: Io) ?JsonRPCMessage {
+    fn readLsp(ctx: *anyopaque, io: Io) ?OwnedJsonRPCMessage {
         const pipe: *Pipe = @ptrCast(@alignCast(ctx));
 
         // Return buffered messages first (O(1) via index cursor)
@@ -367,19 +440,37 @@ pub const LspConnection = struct {
             const data = reader.interface.peekGreedy(1) catch return null;
             var raw_messages = pipe.framer.feed(pipe.allocator, data) catch return null;
             reader.interface.toss(data.len);
-            // Note: raw_messages items are NOT freed — parsed JSON values
-            // reference strings in these buffers (parseFromSlice uses zero-copy
-            // for unescaped strings). Only free the ArrayList container.
-            defer raw_messages.deinit(pipe.allocator);
+            defer {
+                // Free raw message buffers — strings are copied into per-message arenas
+                for (raw_messages.items) |raw_msg| pipe.allocator.free(raw_msg);
+                raw_messages.deinit(pipe.allocator);
+            }
 
             for (raw_messages.items) |raw_msg| {
-                const parsed = std.json.parseFromSlice(
+                // Per-message arena: owns all parsed JSON data
+                const arena_ptr = pipe.allocator.create(std.heap.ArenaAllocator) catch continue;
+                arena_ptr.* = std.heap.ArenaAllocator.init(pipe.allocator);
+                // Dupe raw_msg into arena so parsed strings survive raw_msg free
+                const owned_raw = arena_ptr.allocator().dupe(u8, raw_msg) catch {
+                    arena_ptr.deinit();
+                    pipe.allocator.destroy(arena_ptr);
+                    continue;
+                };
+                const msg = std.json.parseFromSliceLeaky(
                     JsonRPCMessage,
-                    pipe.allocator,
-                    raw_msg,
+                    arena_ptr.allocator(),
+                    owned_raw,
                     .{ .ignore_unknown_fields = true },
-                ) catch continue;
-                pipe.buffered.append(pipe.allocator, parsed.value) catch continue;
+                ) catch {
+                    arena_ptr.deinit();
+                    pipe.allocator.destroy(arena_ptr);
+                    continue;
+                };
+                pipe.buffered.append(pipe.allocator, .{ .msg = msg, .arena = arena_ptr }) catch {
+                    arena_ptr.deinit();
+                    pipe.allocator.destroy(arena_ptr);
+                    continue;
+                };
             }
 
             if (pipe.nextBuffered()) |msg| return msg;
@@ -591,7 +682,7 @@ test "LspConnection: nextId skips zero" {
         .pipe = undefined,
         .waiters = std.AutoHashMap(u32, *LspConnection.ResponseWaiter).init(allocator),
         .next_id = std.atomic.Value(u32).init(1),
-        .notifications = Queue(JsonRPCMessage.Notification).init(allocator, io),
+        .notifications = Queue(LspConnection.OwnedNotification).init(allocator, io),
     };
     defer transport.channel.deinit();
     defer transport.waiters.deinit();

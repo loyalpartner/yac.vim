@@ -260,6 +260,7 @@ pub const Engine = struct {
 
         var src_list: std.ArrayList(u8) = .empty;
         try src_list.appendSlice(self.allocator, source);
+        errdefer src_list.deinit(self.allocator);
 
         const gop = self.buffers.getOrPut(file) catch return error.OutOfMemory;
         if (gop.found_existing) {
@@ -449,11 +450,15 @@ pub const Engine = struct {
 
     /// Check if a buffer is tracked.
     pub fn hasBuffer(self: *Engine, file: []const u8) bool {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.buffers.contains(file);
     }
 
     /// Get total line count for a buffer.
     pub fn getTotalLines(self: *Engine, file: []const u8) ?u32 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         const buf = self.buffers.getPtr(file) orelse return null;
         return @intCast(std.mem.count(u8, buf.source.items, "\n") + 1);
     }

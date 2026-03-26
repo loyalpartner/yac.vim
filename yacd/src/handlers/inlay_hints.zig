@@ -107,7 +107,7 @@ pub const InlayHintsHandler = struct {
         const start_line: u32 = if (visible_top > viewport_margin) visible_top - viewport_margin else 0;
         const end_line: u32 = visible_top + viewport_margin;
 
-        const lsp_result = proxy.inlayHint(.{
+        const lsp_result = proxy.inlayHint(alloc, .{
             .textDocument = .{ .uri = uri },
             .range = .{
                 .start = .{ .line = start_line, .character = 0 },

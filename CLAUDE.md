@@ -98,6 +98,10 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - Zig `HashMap.get()` returns a value copy; use `getPtr()` when you need a stable pointer into the map.
 - **`&.{...}` 含运行时值时是 dangling pointer**：`&.{comptime_val, runtime_val}` 创建栈上临时数组。函数返回后栈帧释放，slice 悬空。Debug 构建中栈被 `0xAA` 覆写，触发 integerOverflow；Release 中可能碰巧正常（UB）。修复：用调用者提供的 buffer 或数据驱动的 prefix/suffix 模式。
 - **Prefer `std.ArrayList` over `std.ArrayListUnmanaged`**: In Zig 0.16, `ArrayList` uses the same API pattern (allocator passed per-call). Use `var list: std.ArrayList(T) = .empty;` (not `std.ArrayListUnmanaged(T){}`). `ArrayListUnmanaged` still exists but `.empty` is the correct init, not `{}`.
+- **禁止 `parseFromSlice` 生产代码**：`parseFromSlice` 返回 `Parsed(T)` 含隐藏 `ArenaAllocator`，只取 `.value` 丢弃 `Parsed` = 必泄漏。统一用 `parseFromSliceLeaky`，中间 json buffer 会被 free 时必须加 `.allocate = .alloc_always`。
+- **Channel/Queue 禁止传 `std.json.Value`**：Value 含内部指针（string slice, object map），跨协程传递后 sender 释放 arena = UAF。outbound 统一传 `[]const u8`（预编码字节），inbound 传 `OwnedMessage{msg, arena}`。
+- **长生命周期 `StringHashMap` 的 key 必须 dupe**：`put` 前 `getPtr` 检查已存在则更新 value，否则 `allocator.dupe(key)` 后 put。`remove` 必须用 `fetchRemove` + `allocator.free(kv.key)`。`deinit` 时遍历释放所有 key。
+- **LSP request 结果的 allocator 穿透**：`connection.request(result_allocator, method, params)` — handler arena 一路传到 `requestAs` → `fromValue`，结果分配在 handler arena 中，handler 结束时一起释放。`LspProxy.init_result` 例外：用 `self.init_arena` 持有，proxy deinit 时释放。
 
 ## Tree-sitter Gotchas
 
@@ -119,6 +123,9 @@ When requirements are unclear, don't spend excessive time analyzing. Write the s
 - **`ProxyRegistry.resolve()` 并发安全**：用 `spawning` 集合防止两个协程同时为同一语言 spawn proxy。`deinit()` 一个 proxy 时其 `drainNotifications` 协程可能还在运行 → UAF。
 - **`Io.File` 异步写入用 `writeStreamingAll(io, data)`**：没有 `writeAll` 方法。`writeStreamingAll` 内部处理 partial write，pipe buffer 满时 yield 协程而非阻塞线程。
 - **`Reader.readAlloc(n)` 读取恰好 n 字节**：不够则 `EndOfStream` 错误。读取管道/子进程输出用 `Reader.allocRemaining(allocator, limit)` — 增量增长直到 EOF。
+- **Per-message arena 所有权转移**：Vim inbound 和 LSP inbound 都用 `OwnedMessage{msg, *ArenaAllocator}` 模式。reader 创建 arena → Queue 传递 → dispatch loop 转给 consumer（handler/waiter）→ consumer defer deinit。所有权链上有且仅有一个持有者。
+- **`ResponseWaiter` cancel 竞态**：`waiter.event.wait(io)` 返回 Canceled 时，`handleResponse` 可能已设置 `waiter.arena`。必须检查并释放：`if (waiter.arena) |a| freeArena(a)`。
+- **`std.atomic.Mutex`（非 `Io.Mutex`）用于全局变量**：如 `predicates.zig` 的 `regex_cache`。不持 `Io` 引用的代码无法用 `Io.Mutex`，用 `std.atomic.Mutex` + `tryLock` spin-lock。Zig 0.16 的 `std.atomic.Mutex` 只有 `tryLock()`/`unlock()`，无阻塞 `lock()`。
 
 ## Platform & Cross-Platform Gotchas
 

@@ -21,7 +21,7 @@ pub fn queryWorkspaceSymbol(allocator: Allocator, proxy: *LspProxy, query_str: [
     const params: lsp.ParamsType("workspace/symbol") = .{
         .query = query_str,
     };
-    const result = proxy.workspaceSymbol(params) catch return null;
+    const result = proxy.workspaceSymbol(allocator, params) catch return null;
     return convertSymbols(allocator, result);
 }
 

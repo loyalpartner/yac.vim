@@ -187,6 +187,19 @@ pub const App = struct {
         self.notifier.deinit();
         self.installer.deinit();
         self.registry.deinit();
+
+        // Release owned HashMap keys in handlers
+        var vp_it = self.ts_handler.last_viewport.iterator();
+        while (vp_it.next()) |entry| self.ts_handler.allocator.free(entry.key_ptr.*);
+        self.ts_handler.last_viewport.deinit();
+
+        var ef_it = self.inlay_handler.enabled_files.iterator();
+        while (ef_it.next()) |entry| self.inlay_handler.allocator.free(entry.key_ptr.*);
+        self.inlay_handler.enabled_files.deinit();
+
+        var lp_it = self.inlay_handler.last_pushed.iterator();
+        while (lp_it.next()) |entry| self.inlay_handler.allocator.free(entry.key_ptr.*);
+        self.inlay_handler.last_pushed.deinit();
     }
 
     pub fn serve(self: *App, transport: Transport, group: *Io.Group) !void {

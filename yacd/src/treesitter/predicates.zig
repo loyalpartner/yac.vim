@@ -135,8 +135,15 @@ fn getCaptureText(match: ts.Query.Match, capture_index: u32, source: []const u8)
 const Regex = mvzr.SizedRegex(256, 16);
 const CacheEntry = union(enum) { compiled: Regex, failed: void };
 var regex_cache: std.StringHashMapUnmanaged(CacheEntry) = .empty;
+var regex_lock: std.atomic.Mutex = .unlocked;
+
+fn regexLock() void {
+    while (!regex_lock.tryLock()) std.atomic.spinLoopHint();
+}
 
 fn regexMatch(pattern: []const u8, text: []const u8) bool {
+    regexLock();
+    defer regex_lock.unlock();
     const entry = regex_cache.get(pattern) orelse blk: {
         const new = if (Regex.compile(pattern)) |r|
             CacheEntry{ .compiled = r }

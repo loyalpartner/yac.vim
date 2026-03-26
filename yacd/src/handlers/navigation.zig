@@ -41,7 +41,7 @@ pub const NavigationHandler = struct {
 
         try proxy.ensureOpen(uri, lang_config.language_id);
 
-        const result = try proxy.connection.request(lsp_method, .{
+        const result = try proxy.connection.request(allocator, lsp_method, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = params.line, .character = params.column },
         });
@@ -70,7 +70,7 @@ pub const NavigationHandler = struct {
 
         proxy.ensureOpen(uri, lang_config.language_id) catch {};
 
-        const result = proxy.hover(.{
+        const result = proxy.hover(allocator, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = params.line, .character = params.column },
         }) catch return .{ .contents = "" };
@@ -102,7 +102,7 @@ pub const NavigationHandler = struct {
 
         proxy.ensureOpen(uri, lang_config.language_id) catch {};
 
-        const lsp_result = proxy.signatureHelp(.{
+        const lsp_result = proxy.signatureHelp(allocator, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = params.line, .character = params.column },
         }) catch return .{};
@@ -167,7 +167,7 @@ pub const NavigationHandler = struct {
             .context = .{ .includeDeclaration = true },
         };
 
-        const result = try proxy.references(lsp_params);
+        const result = try proxy.references(allocator, lsp_params);
         const lsp_locs = result orelse return .{ .locations = &.{} };
 
         var locs: std.ArrayList(vim.types.LocationResult) = .empty;

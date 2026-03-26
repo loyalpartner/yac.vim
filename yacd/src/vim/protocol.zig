@@ -33,18 +33,6 @@ pub const VimMessage = union(enum) {
     };
 };
 
-/// Parse a raw JSON line into a VimMessage.
-/// The line must be a JSON array in Vim channel format.
-pub fn parse(allocator: Allocator, json_line: []const u8) !VimMessage {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_line, .{});
-    // Note: we intentionally do NOT deinit parsed — the VimMessage references its memory.
-    const arr = switch (parsed.value) {
-        .array => |a| a.items,
-        else => return error.InvalidProtocol,
-    };
-    return parseArray(arr);
-}
-
 /// Parse a raw JSON line into a VimMessage using the caller's allocator directly.
 /// Unlike `parse()`, does NOT create a hidden internal arena — all memory lives
 /// in `allocator`. Caller must ensure `json_line` outlives the returned VimMessage
@@ -181,8 +169,9 @@ pub fn toJsonValue(allocator: Allocator, value: anytype) !std.json.Value {
     const json = try aw.toOwnedSlice();
     defer allocator.free(json);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
-    return parsed.value;
+    return try std.json.parseFromSliceLeaky(std.json.Value, allocator, json, .{
+        .allocate = .alloc_always, // json buffer is about to be freed — strings must be independent copies
+    });
 }
 
 /// Decode a std.json.Value to a typed value via JSON round-trip.
@@ -208,10 +197,11 @@ pub fn fromJsonValue(comptime T: type, allocator: Allocator, value: std.json.Val
 // Tests
 // ============================================================================
 
-test "parse: request" {
+test "parseLeaky: request with params" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const msg = try parse(arena.allocator(), "[1,{\"method\":\"hover\",\"params\":{\"file\":\"test.rs\",\"line\":10,\"col\":5}}]");
+    const input = try arena.allocator().dupe(u8, "[1,{\"method\":\"hover\",\"params\":{\"file\":\"test.rs\",\"line\":10,\"col\":5}}]");
+    const msg = try parseLeaky(arena.allocator(), input);
 
     switch (msg) {
         .request => |r| {
@@ -252,27 +242,15 @@ test "parseLeaky: notification" {
     }
 }
 
-test "parse: response" {
+test "parseLeaky: response" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const msg = try parse(arena.allocator(), "[-42,{\"result\":\"ok\"}]");
+    const input = try arena.allocator().dupe(u8, "[-42,{\"result\":\"ok\"}]");
+    const msg = try parseLeaky(arena.allocator(), input);
 
     switch (msg) {
         .response => |r| {
             try std.testing.expectEqual(@as(u32, 42), r.id);
-        },
-        else => return error.TestWrongVariant,
-    }
-}
-
-test "parse: notification" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const msg = try parse(arena.allocator(), "[{\"method\":\"did_change\",\"params\":{\"file\":\"test.rs\"}}]");
-
-    switch (msg) {
-        .notification => |n| {
-            try std.testing.expectEqualStrings("did_change", n.action);
         },
         else => return error.TestWrongVariant,
     }

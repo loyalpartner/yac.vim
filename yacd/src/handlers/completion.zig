@@ -38,7 +38,7 @@ pub const CompletionHandler = struct {
 
         proxy.ensureOpen(uri, lang_config.language_id) catch {};
 
-        const lsp_result = proxy.completion(.{
+        const lsp_result = proxy.completion(allocator, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = params.line, .character = params.column },
         }) catch |err| {
@@ -77,7 +77,7 @@ pub const CompletionHandler = struct {
         const lang_config = config.detectConfig(file) orelse return;
         proxy.ensureOpen(uri, lang_config.language_id) catch {};
 
-        const lsp_result = proxy.completion(.{
+        const lsp_result = proxy.completion(alloc, .{
             .textDocument = .{ .uri = uri },
             .position = .{ .line = cursor_line, .character = cursor_col },
             .context = .{
