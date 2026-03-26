@@ -57,6 +57,8 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "inlay_hints_enable", InlayHintsEnableParams },
         .{ "inlay_hints_disable", FileParams },
         .{ "inlay_hints", InlayHintsPush },
+        // Completion push (daemon → Vim)
+        .{ "completion_push", CompletionPush },
         // Copilot
         .{ "copilot_complete", CopilotCompleteParams },
         .{ "copilot_sign_in", void },
@@ -139,7 +141,6 @@ pub const CompletionParams = struct {
     file: []const u8,
     line: u32,
     column: u32,
-    trigger_character: ?[]const u8 = null,
 };
 
 pub const DidOpenParams = struct {
@@ -152,6 +153,9 @@ pub const DidOpenParams = struct {
 pub const DidChangeParams = struct {
     file: []const u8,
     text: []const u8,
+    /// Cursor position (insert mode). null if not in insert mode.
+    cursor_line: ?u32 = null,
+    cursor_col: ?u32 = null,
 };
 
 pub const InstallLspParams = struct {
@@ -324,6 +328,16 @@ pub const StartedPush = struct {
 pub const PickerProgressPush = struct {
     file_count: u32,
     done: bool,
+};
+
+// ============================================================================
+// Completion push types
+// ============================================================================
+
+pub const CompletionPush = struct {
+    file: []const u8,
+    items: []const CompletionItem,
+    is_incomplete: bool = false,
 };
 
 // ============================================================================

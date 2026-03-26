@@ -5,6 +5,7 @@ const vim = @import("../vim/root.zig");
 const config = @import("../config.zig");
 const ProxyRegistry = @import("../registry.zig").ProxyRegistry;
 const TreeSitterHandler = @import("treesitter.zig").TreeSitterHandler;
+const CompletionHandler = @import("completion.zig").CompletionHandler;
 
 const log = std.log.scoped(.document);
 
@@ -17,6 +18,7 @@ const log = std.log.scoped(.document);
 pub const DocumentHandler = struct {
     registry: *ProxyRegistry,
     ts_handler: ?*TreeSitterHandler = null,
+    comp_handler: ?*CompletionHandler = null,
 
     pub fn didOpen(self: *DocumentHandler, allocator: Allocator, params: vim.types.DidOpenParams) !void {
         log.info("didOpen {s} (text={s})", .{ params.file, if (params.text != null) "yes" else "no" });
@@ -71,6 +73,15 @@ pub const DocumentHandler = struct {
         // Tree-sitter: re-parse and push highlights
         if (self.ts_handler) |ts| {
             ts.onEdit(params.file, params.text);
+        }
+
+        // Push completion if cursor is after a trigger character
+        if (params.cursor_line) |cl| {
+            if (params.cursor_col) |cc| {
+                if (self.comp_handler) |ch| {
+                    ch.onEdit(params.file, params.text, cl, cc);
+                }
+            }
         }
     }
 

@@ -303,7 +303,7 @@ function! yac#did_change(...) abort
   let l:file_path = expand('%:p')
   let l:text_content = a:0 > 0 ? a:1 : join(getline(1, '$'), "\n")
 
-  " Debounce: cancel previous pending didChange, send after 300ms
+  " Debounce: cancel previous pending didChange, send after 50ms
   if s:did_change_timer != -1
     call timer_stop(s:did_change_timer)
   endif
@@ -311,16 +311,20 @@ function! yac#did_change(...) abort
 endfunction
 
 " NOTE: Full document sync (TextDocumentSyncKind.Full) is used intentionally.
-" Combined with the 300ms debounce above, this is sufficient for most use cases.
+" Combined with the 50ms debounce above, this is sufficient for most use cases.
 " Incremental sync could be implemented in the future for very large files.
 function! s:send_did_change(file_path, text_content) abort
   let s:did_change_timer = -1
-  call s:notify('did_change', {
+  let l:params = {
     \   'file': a:file_path,
-    \   'line': 0,
-    \   'column': 0,
     \   'text': a:text_content
-    \ })
+    \ }
+  " Include cursor position in insert mode for trigger char detection
+  if mode() ==# 'i'
+    let l:params.cursor_line = line('.') - 1
+    let l:params.cursor_col = col('.') - 1
+  endif
+  call s:notify('did_change', l:params)
 endfunction
 
 function! yac#auto_complete_trigger() abort

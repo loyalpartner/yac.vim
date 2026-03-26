@@ -78,7 +78,7 @@ pub const App = struct {
             .notify_dispatch = NotifyDispatcher.init(allocator),
             .engine = engine,
             .nav = .{ .registry = undefined },
-            .comp = .{ .registry = undefined },
+            .comp = .{ .registry = undefined, .notifier = undefined, .allocator = allocator },
             .doc = .{ .registry = undefined },
             .sys = .{ .registry = undefined, .shutdown_requested = undefined },
             .inst = .{ .installer = undefined, .registry = undefined },
@@ -96,7 +96,9 @@ pub const App = struct {
         // Self-referential pointers (safe: App is heap-allocated)
         app.nav.registry = &app.registry;
         app.comp.registry = &app.registry;
+        app.comp.notifier = &app.notifier;
         app.doc.registry = &app.registry;
+        app.doc.comp_handler = &app.comp;
         app.sys.registry = &app.registry;
         app.sys.shutdown_requested = &app.shutdown_requested;
         app.inst.installer = &app.installer;

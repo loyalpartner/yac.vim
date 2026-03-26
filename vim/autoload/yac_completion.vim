@@ -78,17 +78,14 @@ let s:saved_bs_map = {}
 function! yac_completion#complete() abort
   call yac#_flush_did_change()
 
-  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤
+  " 补全窗口已存在 — 就地过滤
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    if !yac#_at_trigger_char()
-      call s:filter_completions()
-      return
-    endif
-    call s:close_completion_popup()
+    call s:filter_completions()
+    return
   endif
 
   " 即时弹出：缓存 → buffer words → 等 LSP
-  if s:completion.popup_id == -1 && !yac#_at_trigger_char()
+  if s:completion.popup_id == -1
     let l:instant_items = []
     if !empty(s:completion.cache) && s:completion.cache_file ==# expand('%:p')
       let l:instant_items = s:completion.cache
@@ -116,6 +113,8 @@ function! yac_completion#complete() abort
 endfunction
 
 " 自动补全触发检查
+" Trigger-char completions are push-based (daemon detects and pushes).
+" This function only handles prefix-based (word) completions.
 function! yac_completion#auto_complete_trigger() abort
   if !get(g:, 'yac_auto_complete', 1) || !get(b:, 'yac_lsp_supported', 0)
     return
@@ -130,23 +129,16 @@ function! yac_completion#auto_complete_trigger() abort
     endif
   endif
 
-  " 补全窗口已存在 — 触发字符则重新请求，否则就地过滤 + 后台 racing
+  " 补全窗口已存在 — 就地过滤 + 后台 racing
   if s:completion.popup_id != -1 && !empty(s:completion.original_items)
-    if yac#_at_trigger_char()
-      call s:close_completion_popup()
-      " 触发字符继续走下面的完整请求流程
+    let l:line = getline('.')
+    let l:cc = yac#_cursor_lsp_col() - 1
+    if l:cc >= 0 && l:line[l:cc] =~ '\w'
+      call s:filter_completions()
+      call s:schedule_background_completion()
+      return
     else
-      let l:line = getline('.')
-      let l:cc = yac#_cursor_lsp_col() - 1
-      if l:cc >= 0 && l:line[l:cc] =~ '\w'
-        " 即时本地过滤
-        call s:filter_completions()
-        " 同时安排后台 LSP 请求（200ms debounce），带来更精确的结果
-        call s:schedule_background_completion()
-        return
-      else
-        call s:close_completion_popup()
-      endif
+      call s:close_completion_popup()
     endif
   endif
 
@@ -158,24 +150,9 @@ function! yac_completion#auto_complete_trigger() abort
     return
   endif
 
-  " 前缀不够长且不在触发字符后 → 跳过
+  " 前缀不够长 → 跳过（trigger-char completions handled by daemon push）
   let prefix = yac#_get_current_word_prefix()
-  let l:is_trigger = yac#_at_trigger_char()
-  if len(prefix) < get(g:, 'yac_auto_complete_min_chars', 1) && !l:is_trigger
-    return
-  endif
-
-  " 触发字符 → 立即 flush did_change 并直接请求，跳过 timer
-  if l:is_trigger
-    " A pending timer from earlier keystrokes (e.g. 's','t','d' before '.')
-    " would fire after our request and call complete() again, bumping seq
-    " and making our response stale.
-    if s:completion.timer_id != -1
-      call timer_stop(s:completion.timer_id)
-      let s:completion.timer_id = -1
-    endif
-    call yac#_flush_did_change()
-    call yac_completion#complete()
+  if len(prefix) < get(g:, 'yac_auto_complete_min_chars', 1)
     return
   endif
 
@@ -423,6 +400,33 @@ function! s:handle_completion_response(channel, response, ...) abort
     call s:show_completion_popup(a:response.items)
   else
     " Close completion popup when no completions available
+    call s:close_completion_popup()
+  endif
+endfunction
+
+" === Push Handler (daemon pushes trigger-char completions) ===
+
+function! yac_completion#handle_push(params) abort
+  if mode() !=# 'i' | return | endif
+
+  " Discard if suppressed (user just accepted/closed a completion)
+  if type(s:completion.suppress_until) != v:t_number
+    if reltimefloat(reltime(s:completion.suppress_until)) < 0.3
+      return
+    endif
+  endif
+
+  let l:file = get(a:params, 'file', '')
+  let l:items = get(a:params, 'items', [])
+
+  " Discard if for a different buffer
+  if l:file !=# expand('%:p') | return | endif
+
+  call yac#_debug_log(printf('[RECV]: completion push: %d items for %s', len(l:items), l:file))
+
+  if !empty(l:items)
+    call s:show_completion_popup(l:items)
+  else
     call s:close_completion_popup()
   endif
 endfunction
