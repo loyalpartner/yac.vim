@@ -42,22 +42,19 @@ jobs:
         name: yacd
         path: yacd/zig-out/bin
     - run: chmod +x yacd/zig-out/bin/yacd
-    - name: Install ZLS (master — matches Zig master)
+    - name: Install ZLS (matching Zig version)
       run: |
-        curl -L "https://builds.zigtools.org/zls-linux-x86_64-0.16.0-dev.master.tar.xz" -o zls.tar.xz \
-          || curl -L "https://zigtools-releases.s3.amazonaws.com/zls/master/x86_64-linux/zls" -o zls
-        if [ -f zls.tar.xz ]; then tar -xf zls.tar.xz; fi
+        ZIG_VER=$(zig version)
+        ZIG_VER_ENC=$(echo "$ZIG_VER" | sed 's/+/%2B/g')
+        ZLS_URL=$(curl -s "https://releases.zigtools.org/v1/zls/select-version?zig_version=${ZIG_VER_ENC}&compatibility=only-runtime" \
+          | jq -r '."x86_64-linux".tarball')
+        echo "Zig: $ZIG_VER → ZLS: $ZLS_URL"
+        curl -L "$ZLS_URL" | tar -xJ
         chmod +x zls && sudo mv zls /usr/local/bin/
         zls --version || true
     - uses: astral-sh/setup-uv@v5
     - name: Run daemon integration tests
-      run: uv run pytest tests/daemon/ -v --junitxml=daemon-results.xml
-    - name: Test report
-      uses: mikepenz/action-junit-report@v4
-      if: always()
-      with:
-        report_paths: daemon-results.xml
-        check_name: Daemon Tests
+      run: uv run pytest tests/daemon/ -v
 
   e2e:
     name: Vim E2E Tests
@@ -74,25 +71,24 @@ jobs:
         name: yacd
         path: yacd/zig-out/bin
     - run: chmod +x yacd/zig-out/bin/yacd
+    - name: Install Vim with +terminal
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq vim-gtk3
     - name: Install LSP servers
       run: |
-        # ZLS (Zig)
-        ZLS_TAG=$(curl -s https://api.github.com/repos/zigtools/zls/releases/latest | jq -r .tag_name)
-        curl -L "https://github.com/zigtools/zls/releases/download/${ZLS_TAG}/zls-x86_64-linux.tar.xz" | tar -xJ
-        sudo mv zls /usr/local/bin/
-        zls --version
+        ZIG_VER=$(zig version)
+        ZIG_VER_ENC=$(echo "$ZIG_VER" | sed 's/+/%2B/g')
+        ZLS_URL=$(curl -s "https://releases.zigtools.org/v1/zls/select-version?zig_version=${ZIG_VER_ENC}&compatibility=only-runtime" \
+          | jq -r '."x86_64-linux".tarball')
+        echo "Zig: $ZIG_VER → ZLS: $ZLS_URL"
+        curl -L "$ZLS_URL" | tar -xJ
+        chmod +x zls && sudo mv zls /usr/local/bin/
+        zls --version || true
         # clangd (C/C++)
-        sudo apt-get update -qq && sudo apt-get install -y -qq clangd
+        sudo apt-get install -y -qq clangd
         clangd --version
     - uses: astral-sh/setup-uv@v5
     - name: Run Vim E2E tests (parallel)
-      run: uv run pytest tests/test_e2e.py -v -n auto --junitxml=e2e-results.xml
-    - name: Test report
-      uses: mikepenz/action-junit-report@v4
-      if: always()
-      with:
-        report_paths: e2e-results.xml
-        check_name: Vim E2E Tests
+      run: uv run pytest tests/test_e2e.py -v -n auto
 
   ci-status:
     name: CI Status
