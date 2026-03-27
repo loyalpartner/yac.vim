@@ -3,7 +3,7 @@
 let s:picker_mru = []
 
 function! s:mru_file() abort
-  return expand('~/.local/share/yac.vim/history')
+  return expand('~/.local/share/yac/history')
 endfunction
 
 function! yac_picker_mru#load() abort

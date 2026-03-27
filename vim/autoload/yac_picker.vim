@@ -112,6 +112,7 @@ endfunction
 
 function! s:highlight_footer_prefixes() abort
   if s:picker.footer_popup == -1 | return | endif
+  if empty(hlget('YacPickerPrefix')) | return | endif
   let text = s:make_footer_hint()
   let positions = []
   let i = 0
@@ -163,11 +164,21 @@ function! s:picker_create_ui(opts) abort
     \ 'zindex': 100,
     \ })
 
-  " Results popup — initial height capped so bottom stays 4 lines from screen edge
-  let results_h = max([3, min([15, &lines - (row + 2) - 4])])
+  " Highlight defaults — must be defined before popup creation and matchaddpos
   highlight default YacPickerBorder    guifg=#73ade9 guibg=#21252b ctermfg=75 ctermbg=235
   highlight default YacPickerInput     guifg=#dce0e5 guibg=#21252b ctermfg=253 ctermbg=235
   highlight default YacPickerNormal    guifg=#acb2be guibg=#21252b ctermfg=145 ctermbg=235
+  highlight default YacPickerSelected  guibg=#2c313a ctermbg=236
+  highlight default YacPickerHeader    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
+  highlight default YacPickerCursor    gui=reverse cterm=reverse
+  highlight default YacPickerPrefix    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
+  highlight default YacPickerMatch     guifg=#b477cf gui=bold ctermfg=176 cterm=bold
+  highlight default YacPickerDetail    guifg=#5d636f ctermfg=59
+  highlight default YacPickerFooter    guifg=#5d636f guibg=#21252b ctermfg=59 ctermbg=235
+  highlight default YacPickerFilename  gui=bold cterm=bold
+
+  " Results popup — initial height capped so bottom stays 4 lines from screen edge
+  let results_h = max([3, min([15, &lines - (row + 2) - 4])])
 
   let s:picker.results_popup = popup_create([], {
     \ 'line': row + 2,
@@ -204,15 +215,6 @@ function! s:picker_create_ui(opts) abort
     \ })
   " Highlight prefix characters in footer
   call s:highlight_footer_prefixes()
-
-  highlight default YacPickerSelected  guibg=#2c313a ctermbg=236
-  highlight default YacPickerHeader    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
-  highlight default YacPickerCursor    gui=reverse cterm=reverse
-  highlight default YacPickerPrefix    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
-  highlight default YacPickerMatch     guifg=#b477cf gui=bold ctermfg=176 cterm=bold
-  highlight default YacPickerDetail    guifg=#5d636f ctermfg=59
-  highlight default YacPickerFooter    guifg=#5d636f guibg=#21252b ctermfg=59 ctermbg=235
-  highlight default YacPickerFilename term=bold cterm=bold gui=bold
 
   " Suppress autocmds that can break popup cursorline rendering.
   let s:picker.saved_eventignore = &eventignore

@@ -3,3 +3,4 @@
 (struct_declaration) @fold
 (enum_declaration) @fold
 (union_declaration) @fold
+(initializer_list) @fold

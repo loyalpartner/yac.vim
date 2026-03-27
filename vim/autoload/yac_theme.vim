@@ -1,6 +1,6 @@
 " yac_theme.vim — Tree-sitter highlight theme management
 "
-" Theme file format (JSON, stored in ~/.config/yac/themes/<name>.json):
+" Theme file format (JSON, stored in ~/.local/share/yac/themes/<name>.json):
 " {
 "   "name": "One Dark",
 "   "groups": {
@@ -136,7 +136,7 @@ let s:default_groups = {
 let s:current_theme = ''
 
 function! yac_theme#theme_dir() abort
-  return expand('~/.config/yac/themes')
+  return expand('~/.local/share/yac/themes')
 endfunction
 
 function! s:collect_themes(dir, items) abort
@@ -262,7 +262,7 @@ endfunction
 
 " Persist current theme selection
 function! yac_theme#save_selection(file) abort
-  let cfg = expand('~/.config/yac/theme.txt')
+  let cfg = expand('~/.local/share/yac/theme.txt')
   let dir = fnamemodify(cfg, ':h')
   if !isdirectory(dir) | call mkdir(dir, 'p') | endif
   call writefile([a:file], cfg)
@@ -270,7 +270,7 @@ endfunction
 
 " Load saved theme on startup
 function! yac_theme#autoload() abort
-  let cfg = expand('~/.config/yac/theme.txt')
+  let cfg = expand('~/.local/share/yac/theme.txt')
   if !filereadable(cfg) | return | endif
   let saved = get(readfile(cfg), 0, '')
   if !empty(saved) && filereadable(saved)
@@ -280,7 +280,7 @@ endfunction
 
 " Get saved theme file path (for preview restore)
 function! yac_theme#saved_file() abort
-  let cfg = expand('~/.config/yac/theme.txt')
+  let cfg = expand('~/.local/share/yac/theme.txt')
   if !filereadable(cfg) | return '' | endif
   return get(readfile(cfg), 0, '')
 endfunction

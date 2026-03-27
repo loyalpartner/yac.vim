@@ -262,8 +262,8 @@ call yac_picker#register_mode({
   \ 'accept_fn': function('s:accept_theme'),
   \ 'grouped': 0,
   \ 'has_preview': 0,
-  \ 'empty_msg': '  (no themes found in ~/.config/yac/themes/)',
-  \ 'empty_query_msg': '  (no themes found in ~/.config/yac/themes/)',
+  \ 'empty_msg': '  (no themes found in ~/.local/share/yac/themes/)',
+  \ 'empty_query_msg': '  (no themes found in ~/.local/share/yac/themes/)',
   \ })
 
 call yac_picker#register_mode({

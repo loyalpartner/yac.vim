@@ -70,18 +70,13 @@ function! yac_treesitter#handle_push(params) abort
 
   let l:new_types = s:ts_apply_highlights(l:new_gen, a:params.highlights, l:bufnr)
 
-  " Remove old generation props — only in the pushed line range (viewport mode)
-  " or the entire buffer (full mode). This prevents flash on scroll.
-  for prop_type in l:old_types
-    if l:is_partial
-      " prop_remove with line range removes one at a time — loop until done
-      while prop_remove({'type': prop_type, 'bufnr': l:bufnr},
-        \ l:line_start, l:line_end) > 0
-      endwhile
-    else
-      silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
-    endif
-  endfor
+  " Remove old generation props in the background via timer to avoid flash.
+  " New props are already applied above, so visually there's no gap.
+  if !empty(l:old_types)
+    let ctx = {'types': l:old_types, 'bufnr': l:bufnr,
+      \ 'partial': l:is_partial, 'start': l:line_start, 'end': l:line_end}
+    call timer_start(0, {-> s:remove_old_props(ctx)})
+  endif
 
   call setbufvar(l:bufnr, 'yac_ts_hl_gen', l:new_gen)
   call setbufvar(l:bufnr, 'yac_ts_hl_prop_types', l:new_types)
@@ -250,6 +245,19 @@ function! s:clear_ts_highlights() abort
   let l:bufnr = bufnr('%')
   for prop_type in get(b:, 'yac_ts_hl_prop_types', [])
     silent! call prop_remove({'type': prop_type, 'bufnr': l:bufnr, 'all': 1})
+  endfor
+endfunction
+
+function! s:remove_old_props(ctx) abort
+  if !bufexists(a:ctx.bufnr) | return | endif
+  for prop_type in a:ctx.types
+    if a:ctx.partial
+      while prop_remove({'type': prop_type, 'bufnr': a:ctx.bufnr},
+        \ a:ctx.start, a:ctx.end) > 0
+      endwhile
+    else
+      silent! call prop_remove({'type': prop_type, 'bufnr': a:ctx.bufnr, 'all': 1})
+    endif
   endfor
 endfunction
 
