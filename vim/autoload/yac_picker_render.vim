@@ -58,6 +58,7 @@ function! s:ensure_prop_types() abort
   for [l:name, l:hl] in [
     \ ['YacPickerSelected',   'YacPickerSelected'],
     \ ['YacTsFunction',       'YacTsFunction'],
+    \ ['YacTsFunctionMacro', 'YacTsFunctionMacro'],
     \ ['YacTsFunctionMethod', 'YacTsFunctionMethod'],
     \ ['YacTsType',           'YacTsType'],
     \ ['YacTsVariable',       'YacTsVariable'],
