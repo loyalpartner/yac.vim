@@ -14,6 +14,7 @@
 let s:picker = {
   \ 'input_popup': -1,
   \ 'results_popup': -1,
+  \ 'footer_popup': -1,
   \ 'items': [],
   \ 'selected': 0,
   \ 'timer_id': -1,
@@ -100,6 +101,32 @@ function! s:current_mode_spec() abort
   return get(s:modes, '', {})
 endfunction
 
+function! s:make_footer_hint() abort
+  let hints = []
+  for [prefix, spec] in items(yac_picker#get_modes())
+    if empty(prefix) | continue | endif
+    call add(hints, prefix . ' ' . spec.label)
+  endfor
+  return ' ' . join(sort(hints), '   ') . ' '
+endfunction
+
+function! s:highlight_footer_prefixes() abort
+  if s:picker.footer_popup == -1 | return | endif
+  let text = s:make_footer_hint()
+  let positions = []
+  let i = 0
+  while i < len(text)
+    if has_key(s:modes, text[i])
+      call add(positions, [1, i + 1, 1])
+    endif
+    let i += 1
+  endwhile
+  if !empty(positions)
+    call win_execute(s:picker.footer_popup,
+      \ 'call matchaddpos("YacPickerPrefix", ' . string(positions) . ', 10)')
+  endif
+endfunction
+
 " ============================================================================
 " Popup create / eventignore management
 " ============================================================================
@@ -138,9 +165,9 @@ function! s:picker_create_ui(opts) abort
 
   " Results popup — initial height capped so bottom stays 4 lines from screen edge
   let results_h = max([3, min([15, &lines - (row + 2) - 4])])
-  highlight default link YacPickerBorder Comment
-  highlight default link YacPickerInput Normal
-  highlight default link YacPickerNormal Normal
+  highlight default YacPickerBorder    guifg=#73ade9 guibg=#21252b ctermfg=75 ctermbg=235
+  highlight default YacPickerInput     guifg=#dce0e5 guibg=#21252b ctermfg=253 ctermbg=235
+  highlight default YacPickerNormal    guifg=#acb2be guibg=#21252b ctermfg=145 ctermbg=235
 
   let s:picker.results_popup = popup_create([], {
     \ 'line': row + 2,
@@ -149,21 +176,42 @@ function! s:picker_create_ui(opts) abort
     \ 'maxwidth': width,
     \ 'minheight': results_h,
     \ 'maxheight': results_h,
-    \ 'border': [0, 1, 1, 1],
+    \ 'border': [0, 1, 0, 1],
     \ 'borderchars': ['─', '│', '─', '│', '├', '┤', '╯', '╰'],
     \ 'borderhighlight': ['YacPickerBorder'],
     \ 'highlight': 'YacPickerNormal',
+    \ 'cursorlinehighlight': 'YacPickerSelected',
     \ 'scrollbar': 0,
     \ 'wrap': 0,
     \ 'zindex': 100,
     \ 'cursorline': 1,
     \ })
-  highlight default YacPickerSelected term=underline cterm=underline gui=underline
-  highlight default link YacPickerHeader Directory
-  highlight default YacPickerCursor term=reverse cterm=reverse gui=reverse
-  highlight default link YacPickerPrefix Function
-  highlight default link YacPickerMatch Keyword
-  highlight default link YacPickerDetail Comment
+
+  " Footer popup — prefix hints, visually continues the results panel
+  let footer_row = row + 2 + results_h
+  let s:picker.footer_popup = popup_create(s:make_footer_hint(), {
+    \ 'line': footer_row,
+    \ 'col': col,
+    \ 'minwidth': width,
+    \ 'maxwidth': width,
+    \ 'minheight': 1,
+    \ 'maxheight': 1,
+    \ 'border': [0, 1, 1, 1],
+    \ 'borderchars': ['─', '│', '─', '│', '│', '│', '╯', '╰'],
+    \ 'borderhighlight': ['YacPickerBorder'],
+    \ 'highlight': 'YacPickerFooter',
+    \ 'zindex': 100,
+    \ })
+  " Highlight prefix characters in footer
+  call s:highlight_footer_prefixes()
+
+  highlight default YacPickerSelected  guibg=#2c313a ctermbg=236
+  highlight default YacPickerHeader    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
+  highlight default YacPickerCursor    gui=reverse cterm=reverse
+  highlight default YacPickerPrefix    guifg=#73ade9 gui=bold ctermfg=75 cterm=bold
+  highlight default YacPickerMatch     guifg=#b477cf gui=bold ctermfg=176 cterm=bold
+  highlight default YacPickerDetail    guifg=#5d636f ctermfg=59
+  highlight default YacPickerFooter    guifg=#5d636f guibg=#21252b ctermfg=59 ctermbg=235
   highlight default YacPickerFilename term=bold cterm=bold gui=bold
 
   " Suppress autocmds that can break popup cursorline rendering.
@@ -207,6 +255,10 @@ function! s:picker_close_popups() abort
   if s:picker.results_popup != -1
     call popup_close(s:picker.results_popup)
     let s:picker.results_popup = -1
+  endif
+  if s:picker.footer_popup != -1
+    call popup_close(s:picker.footer_popup)
+    let s:picker.footer_popup = -1
   endif
   let s:picker.items = []
   let s:picker.selected = 0

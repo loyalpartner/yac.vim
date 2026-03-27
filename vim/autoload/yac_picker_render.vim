@@ -84,6 +84,10 @@ function! s:resize_results(line_count) abort
   let max_h = max([3, &lines - top - 4])
   let h = max([3, min([max_h, a:line_count])])
   call popup_setoptions(p.results_popup, #{minheight: h, maxheight: h})
+  " Move footer to stay below results
+  if p.footer_popup != -1
+    call popup_setoptions(p.footer_popup, #{line: top + h})
+  endif
 endfunction
 
 function! s:empty_message() abort
@@ -165,9 +169,8 @@ function! yac_picker_render#highlight_selected() abort
     return
   endif
   let lnum = p.selected >= 0 ? p.selected + 1 : 1
-  call win_execute(p.results_popup, 'call cursor(' . lnum . ', 1)')
+  call win_execute(p.results_popup, 'call cursor(' . lnum . ', 1) | redraw')
   call yac#_debug_log(printf('[PICKER] highlight: lnum=%d, actual=%d', lnum, line('.', p.results_popup)))
-  redraw
 endfunction
 
 function! yac_picker_render#preview() abort
