@@ -268,15 +268,15 @@ fn nodeText(node: ts.Node, source: []const u8) ?[]const u8 {
 
 fn captureToKind(cap_name: []const u8) ?[]const u8 {
     const map = .{
-        .{ "function", "Function" }, .{ "struct", "Struct" },
-        .{ "class", "Class" },       .{ "enum", "Enum" },
-        .{ "union", "Union" },       .{ "test", "Test" },
-        .{ "method", "Method" },     .{ "trait", "Interface" },
+        .{ "function", "Function" },   .{ "struct", "Struct" },
+        .{ "class", "Class" },         .{ "enum", "Enum" },
+        .{ "union", "Union" },         .{ "test", "Test" },
+        .{ "method", "Method" },       .{ "trait", "Interface" },
         .{ "interface", "Interface" }, .{ "module", "Module" },
         .{ "namespace", "Namespace" }, .{ "macro", "Macro" },
-        .{ "typedef", "Type" },      .{ "type", "Type" },
-        .{ "type_alias", "Type" },   .{ "variable", "Variable" },
-        .{ "field", "Field" },       .{ "constant", "Constant" },
+        .{ "typedef", "Type" },        .{ "type", "Type" },
+        .{ "type_alias", "Type" },     .{ "variable", "Variable" },
+        .{ "field", "Field" },         .{ "constant", "Constant" },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, cap_name, entry[0])) return entry[1];

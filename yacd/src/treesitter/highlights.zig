@@ -175,12 +175,10 @@ pub fn extractHighlights(
     if (total_ms > 50) {
         log.info("extractHighlights: lines {d}-{d} captures={d} entries={d} " ++
             "cursor={d}ms pred={d}ms lineLen={d}ms(x{d}) err={d}ms group={d}ms total={d}ms", .{
-            start_line,       end_line,        capture_count,
-            entries.items.len,
-            cursor_ns / 1_000_000,  pred_ns / 1_000_000,
-            linelen_ns / 1_000_000, linelen_count,
-            err_ns / 1_000_000,     group_ns / 1_000_000,
-            total_ms,
+            start_line,             end_line,              capture_count,
+            entries.items.len,      cursor_ns / 1_000_000, pred_ns / 1_000_000,
+            linelen_ns / 1_000_000, linelen_count,         err_ns / 1_000_000,
+            group_ns / 1_000_000,   total_ms,
         });
     }
 

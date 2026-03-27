@@ -2,16 +2,16 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|NotebookEdit",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$CLAUDE_FILE_PATHS\" in *.zig) zig fmt $CLAUDE_FILE_PATHS ;; esac",
+            "command": "filepath=$(cat - | jq -r '.tool_input.file_path // empty') && case \"$filepath\" in *.zig) cd yacd && zig fmt \"$filepath\" ;; esac",
             "timeout": 10000
           },
           {
             "type": "command",
-            "command": "case \"$CLAUDE_FILE_PATHS\" in *.zig) zig build 2>&1 | head -30 ;; esac",
+            "command": "filepath=$(cat - | jq -r '.tool_input.file_path // empty') && case \"$filepath\" in *.zig) cd yacd && zig build 2>&1 | head -30 ;; esac",
             "timeout": 30000
           }
         ]

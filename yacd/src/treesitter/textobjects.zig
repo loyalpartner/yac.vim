@@ -97,9 +97,9 @@ fn collectTargets(node: ts.Node, target: []const u8, cursor_line: u32, is_next: 
 pub fn matchesKind(node_kind: []const u8, target: []const u8) bool {
     if (std.mem.eql(u8, target, "function")) {
         return isAnyOf(node_kind, &.{
-            "function_declaration",   "function_definition", "function_item",
-            "method_declaration",     "method_definition",   "arrow_function",
-            "lambda_expression",      "fn_proto",            "test_declaration",
+            "function_declaration", "function_definition", "function_item",
+            "method_declaration",   "method_definition",   "arrow_function",
+            "lambda_expression",    "fn_proto",            "test_declaration",
             "TopLevelDecl",
         }) or
             std.mem.indexOf(u8, node_kind, "fn") != null or
@@ -107,10 +107,10 @@ pub fn matchesKind(node_kind: []const u8, target: []const u8) bool {
     }
     if (std.mem.eql(u8, target, "class") or std.mem.eql(u8, target, "struct")) {
         return isAnyOf(node_kind, &.{
-            "struct_declaration",    "class_declaration",    "class_definition",
-            "interface_declaration", "enum_declaration",     "union_declaration",
-            "impl_item",            "trait_item",           "type_declaration",
-            "ContainerDecl",        "ContainerDeclAuto",
+            "struct_declaration",    "class_declaration", "class_definition",
+            "interface_declaration", "enum_declaration",  "union_declaration",
+            "impl_item",             "trait_item",        "type_declaration",
+            "ContainerDecl",         "ContainerDeclAuto",
         }) or
             std.mem.indexOf(u8, node_kind, "struct") != null or
             std.mem.indexOf(u8, node_kind, "class") != null or

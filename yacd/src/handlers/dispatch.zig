@@ -71,11 +71,10 @@ pub const Dispatcher = struct {
                 // Log raw params
                 logValue("params", allocator, raw_params);
 
-                const params: Params = if (Params == void) {} else
-                    protocol.fromJsonValue(Params, allocator, raw_params) catch |err| {
-                        log.warn("params parse error: {s}", .{@errorName(err)});
-                        return null;
-                    };
+                const params: Params = if (Params == void) {} else protocol.fromJsonValue(Params, allocator, raw_params) catch |err| {
+                    log.warn("params parse error: {s}", .{@errorName(err)});
+                    return null;
+                };
                 const result: Result = func(self, allocator, params) catch |err| {
                     log.warn("handler error: {s}", .{@errorName(err)});
                     return null;

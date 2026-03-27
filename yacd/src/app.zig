@@ -294,5 +294,4 @@ pub const App = struct {
             ch.allocator.free(encoded);
         };
     }
-
 };

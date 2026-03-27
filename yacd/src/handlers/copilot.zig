@@ -39,7 +39,7 @@ pub const CopilotHandler = struct {
         const content = params.text orelse
             Io.Dir.cwd().readFileAlloc(self.io, params.file, allocator, .limited(10 * 1024 * 1024)) catch "";
         log.info("copilotComplete: file={s} len={d} pos={d}:{d} src={s}", .{
-            params.file, content.len, params.line, params.column,
+            params.file,                                   content.len, params.line, params.column,
             if (params.text != null) "buffer" else "disk",
         });
         try proxy.ensureOpen(uri, detectLanguage(params.file), content);

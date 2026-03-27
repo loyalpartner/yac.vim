@@ -130,8 +130,10 @@ const SpanCollector = struct {
 
     fn addLine(self: *SpanCollector, group: []const u8, lnum: u32, len: usize) !void {
         try self.add(group, .{
-            .lnum = @as(i32, @intCast(lnum)) + 1, .col = 1,
-            .end_lnum = @as(i32, @intCast(lnum)) + 1, .end_col = @as(i32, @intCast(len)) + 1,
+            .lnum = @as(i32, @intCast(lnum)) + 1,
+            .col = 1,
+            .end_lnum = @as(i32, @intCast(lnum)) + 1,
+            .end_col = @as(i32, @intCast(len)) + 1,
         });
     }
 
@@ -328,8 +330,10 @@ pub const MarkdownRenderer = struct {
             const lnum: i32 = @as(i32, @intCast(self.lines.items.len)) + 1;
             self.line_buf.appendSlice(self.alloc, text) catch {};
             self.inline_code_spans.append(self.alloc, .{
-                .lnum = lnum, .col = col,
-                .end_lnum = lnum, .end_col = col + @as(i32, @intCast(text.len)),
+                .lnum = lnum,
+                .col = col,
+                .end_lnum = lnum,
+                .end_col = col + @as(i32, @intCast(text.len)),
             }) catch {};
             return 0;
         }
@@ -348,12 +352,12 @@ fn normalizeLang(raw: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     if (trimmed.len == 0) return trimmed;
     const aliases = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "rs", "rust" },      .{ "js", "javascript" },
-        .{ "ts", "typescript" }, .{ "py", "python" },
-        .{ "c++", "cpp" },      .{ "tsx", "typescript" },
+        .{ "rs", "rust" },        .{ "js", "javascript" },
+        .{ "ts", "typescript" },  .{ "py", "python" },
+        .{ "c++", "cpp" },        .{ "tsx", "typescript" },
         .{ "jsx", "javascript" }, .{ "sh", "bash" },
-        .{ "shell", "bash" },   .{ "zsh", "bash" },
-        .{ "vimscript", "vim" }, .{ "viml", "vim" },
+        .{ "shell", "bash" },     .{ "zsh", "bash" },
+        .{ "vimscript", "vim" },  .{ "viml", "vim" },
     });
     return aliases.get(trimmed) orelse trimmed;
 }
