@@ -168,17 +168,71 @@ function! yac_theme#apply_file(file) abort
   endif
   try
     let data = json_decode(join(readfile(a:file), "\n"))
+
+    " Apply Vim colorscheme if specified (before groups, so yac groups override)
+    " Guard against recursion: ColorScheme autocmd calls autoload() → apply_file()
+    let cs = get(data, 'colorscheme', '')
+    if !empty(cs) && cs !=# get(g:, 'colors_name', '') && !get(s:, 'applying_cs', 0)
+      let s:applying_cs = 1
+      try
+        execute 'colorscheme ' . cs
+      catch /E185/
+        " Colorscheme not installed — skip silently
+      finally
+        let s:applying_cs = 0
+      endtry
+    endif
+
     let groups = get(data, 'groups', {})
     call s:apply_groups(groups)
+    call s:apply_vim_syntax_links()
     let s:current_theme = get(data, 'name', fnamemodify(a:file, ':t:r'))
   catch
     echohl ErrorMsg | echo 'yac: failed to load theme: ' . a:file | echohl None
   endtry
 endfunction
 
+" Auto-derive Vim syntax highlights from YacTs* groups.
+" This makes the yac theme influence Vim's built-in syntax highlighting
+" so the entire editor matches the chosen theme.
+function! s:apply_vim_syntax_links() abort
+  let map = [
+    \ ['Comment',       'YacTsComment'],
+    \ ['String',        'YacTsString'],
+    \ ['Character',     'YacTsCharacter'],
+    \ ['Number',        'YacTsNumber'],
+    \ ['Float',         'YacTsNumberFloat'],
+    \ ['Boolean',       'YacTsBoolean'],
+    \ ['Function',      'YacTsFunction'],
+    \ ['Identifier',    'YacTsVariable'],
+    \ ['Statement',     'YacTsKeyword'],
+    \ ['Keyword',       'YacTsKeyword'],
+    \ ['Conditional',   'YacTsKeywordConditional'],
+    \ ['Repeat',        'YacTsKeywordRepeat'],
+    \ ['Exception',     'YacTsKeywordException'],
+    \ ['Operator',      'YacTsOperator'],
+    \ ['Type',          'YacTsType'],
+    \ ['StorageClass',  'YacTsKeywordModifier'],
+    \ ['Constant',      'YacTsConstant'],
+    \ ['PreProc',       'YacTsPreproc'],
+    \ ['Include',       'YacTsKeywordImport'],
+    \ ['Label',         'YacTsLabel'],
+    \ ['Special',       'YacTsConstantBuiltin'],
+    \ ['SpecialChar',   'YacTsStringEscape'],
+    \ ['Macro',         'YacTsFunctionMacro'],
+    \ ['Tag',           'YacTsAttribute'],
+    \ ['Delimiter',     'YacTsPunctuationDelimiter'],
+    \ ['Title',         'YacTsMarkupHeading'],
+    \ ]
+  for [vim_group, yac_group] in map
+    execute 'hi! link ' . vim_group . ' ' . yac_group
+  endfor
+endfunction
+
 " Restore default theme (hi def link mappings)
 function! yac_theme#apply_default() abort
   call s:apply_groups(s:default_groups)
+  call s:apply_vim_syntax_links()
   let s:current_theme = ''
 endfunction
 

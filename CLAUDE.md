@@ -41,7 +41,4 @@ Vim (VimScript) ←JSON-RPC (stdio)→ yacd (Zig daemon) ←LSP/DAP→ Language 
 
 ## Working Style
 
-- Prioritize implementation over analysis. Produce working code first.
-- When asked for code changes, deliver code, not analysis.
-- Exploratory tasks: write the simplest compilable implementation first, read at most 3 files before coding.
 - Bug fix: write a test to reproduce first, then fix. "Hard to test" = improve test infra.

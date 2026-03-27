@@ -1,47 +1,171 @@
 {
   "name": "Catppuccin Mocha",
+  "colorscheme": "catppuccin-mocha",
   "groups": {
-    "YacTsVariable":             {},
-    "YacTsVariableParameter":    {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsVariableBuiltin":      {"guifg": "#f38ba8", "ctermfg": "211"},
-    "YacTsVariableMember":       {"guifg": "#cdd6f4", "ctermfg": "189"},
-    "YacTsType":                 {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsTypeBuiltin":          {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsConstant":             {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsConstantBuiltin":      {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsLabel":                {"guifg": "#f38ba8", "ctermfg": "211"},
-    "YacTsFunction":             {"guifg": "#89b4fa", "ctermfg": "111"},
-    "YacTsFunctionBuiltin":      {"guifg": "#94e2d5", "ctermfg": "116"},
-    "YacTsFunctionCall":         {"guifg": "#89b4fa", "ctermfg": "111"},
-    "YacTsModule":               {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsKeyword":              {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordType":          {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsKeywordCoroutine":     {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordFunction":      {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordOperator":      {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordReturn":        {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordConditional":   {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordRepeat":        {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordImport":        {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordException":     {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsKeywordModifier":      {"guifg": "#cba6f7", "ctermfg": "183"},
-    "YacTsOperator":             {"guifg": "#89dceb", "ctermfg": "117"},
-    "YacTsCharacter":            {"guifg": "#a6e3a1", "ctermfg": "150"},
-    "YacTsString":               {"guifg": "#a6e3a1", "ctermfg": "150"},
-    "YacTsStringEscape":         {"guifg": "#94e2d5", "ctermfg": "116"},
-    "YacTsNumber":               {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsNumberFloat":          {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsBoolean":              {"guifg": "#fab387", "ctermfg": "216"},
-    "YacTsComment":              {"guifg": "#6c7086", "ctermfg": "60", "gui": "italic"},
-    "YacTsCommentDocumentation": {"guifg": "#6c7086", "ctermfg": "60", "gui": "italic"},
-    "YacTsPunctuationBracket":   {"guifg": "#89dceb", "ctermfg": "117"},
-    "YacTsPunctuationDelimiter": {"guifg": "#89dceb", "ctermfg": "117"},
-    "YacTsAttribute":            {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsConstructor":          {"guifg": "#f9e2af", "ctermfg": "223"},
-    "YacTsFunctionMacro":        {"guifg": "#89b4fa", "ctermfg": "111"},
-    "YacTsFunctionMethod":       {"guifg": "#89b4fa", "ctermfg": "111"},
-    "YacTsProperty":             {"guifg": "#cdd6f4", "ctermfg": "189"},
-    "YacPickerMatch":            {"link": "YacTsKeyword"},
-    "YacPickerPrefix":           {"link": "YacTsFunction"}
+    "YacTsVariable": {},
+    "YacTsVariableParameter": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsVariableBuiltin": {
+      "guifg": "#f38ba8",
+      "ctermfg": "211"
+    },
+    "YacTsVariableMember": {
+      "guifg": "#cdd6f4",
+      "ctermfg": "189"
+    },
+    "YacTsType": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsTypeBuiltin": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsConstant": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsConstantBuiltin": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsLabel": {
+      "guifg": "#f38ba8",
+      "ctermfg": "211"
+    },
+    "YacTsFunction": {
+      "guifg": "#89b4fa",
+      "ctermfg": "111"
+    },
+    "YacTsFunctionBuiltin": {
+      "guifg": "#94e2d5",
+      "ctermfg": "116"
+    },
+    "YacTsFunctionCall": {
+      "guifg": "#89b4fa",
+      "ctermfg": "111"
+    },
+    "YacTsModule": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsKeyword": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordType": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsKeywordCoroutine": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordFunction": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordOperator": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordReturn": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordConditional": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordRepeat": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordImport": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordException": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsKeywordModifier": {
+      "guifg": "#cba6f7",
+      "ctermfg": "183"
+    },
+    "YacTsOperator": {
+      "guifg": "#89dceb",
+      "ctermfg": "117"
+    },
+    "YacTsCharacter": {
+      "guifg": "#a6e3a1",
+      "ctermfg": "150"
+    },
+    "YacTsString": {
+      "guifg": "#a6e3a1",
+      "ctermfg": "150"
+    },
+    "YacTsStringEscape": {
+      "guifg": "#94e2d5",
+      "ctermfg": "116"
+    },
+    "YacTsNumber": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsNumberFloat": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsBoolean": {
+      "guifg": "#fab387",
+      "ctermfg": "216"
+    },
+    "YacTsComment": {
+      "guifg": "#6c7086",
+      "ctermfg": "60",
+      "gui": "italic"
+    },
+    "YacTsCommentDocumentation": {
+      "guifg": "#6c7086",
+      "ctermfg": "60",
+      "gui": "italic"
+    },
+    "YacTsPunctuationBracket": {
+      "guifg": "#89dceb",
+      "ctermfg": "117"
+    },
+    "YacTsPunctuationDelimiter": {
+      "guifg": "#89dceb",
+      "ctermfg": "117"
+    },
+    "YacTsAttribute": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsConstructor": {
+      "guifg": "#f9e2af",
+      "ctermfg": "223"
+    },
+    "YacTsFunctionMacro": {
+      "guifg": "#89b4fa",
+      "ctermfg": "111"
+    },
+    "YacTsFunctionMethod": {
+      "guifg": "#89b4fa",
+      "ctermfg": "111"
+    },
+    "YacTsProperty": {
+      "guifg": "#cdd6f4",
+      "ctermfg": "189"
+    },
+    "YacPickerMatch": {
+      "link": "YacTsKeyword"
+    },
+    "YacPickerPrefix": {
+      "link": "YacTsFunction"
+    }
   }
 }
