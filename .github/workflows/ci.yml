@@ -14,34 +14,66 @@ jobs:
     - uses: actions/checkout@v4
     - uses: mlugg/setup-zig@v2
       with:
-        version: 0.15.2
+        version: master
     - name: Check formatting
-      run: zig fmt --check src/
-    - name: Build
-      run: zig build
+      run: cd yacd && zig fmt --check src/
+    - name: Build (ReleaseSafe)
+      run: make release
     - name: Unit tests
-      run: zig build test
+      run: make test-unit
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
         name: yacd
-        path: zig-out/bin/yacd
+        path: yacd/zig-out/bin/yacd
 
-  e2e:
-    name: E2E Tests
+  daemon-tests:
+    name: Daemon Integration Tests
     runs-on: ubuntu-latest
     needs: zig
     steps:
     - uses: actions/checkout@v4
     - uses: mlugg/setup-zig@v2
       with:
-        version: 0.15.2
+        version: master
     - name: Download binary
       uses: actions/download-artifact@v4
       with:
         name: yacd
-        path: zig-out/bin
-    - run: chmod +x zig-out/bin/yacd
+        path: yacd/zig-out/bin
+    - run: chmod +x yacd/zig-out/bin/yacd
+    - name: Install ZLS (master — matches Zig master)
+      run: |
+        curl -L "https://builds.zigtools.org/zls-linux-x86_64-0.16.0-dev.master.tar.xz" -o zls.tar.xz \
+          || curl -L "https://zigtools-releases.s3.amazonaws.com/zls/master/x86_64-linux/zls" -o zls
+        if [ -f zls.tar.xz ]; then tar -xf zls.tar.xz; fi
+        chmod +x zls && sudo mv zls /usr/local/bin/
+        zls --version || true
+    - uses: astral-sh/setup-uv@v5
+    - name: Run daemon integration tests
+      run: uv run pytest tests/daemon/ -v --junitxml=daemon-results.xml
+    - name: Test report
+      uses: mikepenz/action-junit-report@v4
+      if: always()
+      with:
+        report_paths: daemon-results.xml
+        check_name: Daemon Tests
+
+  e2e:
+    name: Vim E2E Tests
+    runs-on: ubuntu-latest
+    needs: zig
+    steps:
+    - uses: actions/checkout@v4
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: master
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: yacd
+        path: yacd/zig-out/bin
+    - run: chmod +x yacd/zig-out/bin/yacd
     - name: Install LSP servers
       run: |
         # ZLS (Zig)
@@ -53,21 +85,25 @@ jobs:
         sudo apt-get update -qq && sudo apt-get install -y -qq clangd
         clangd --version
     - uses: astral-sh/setup-uv@v5
-    - name: Run E2E tests
-      run: uv run pytest -v --junitxml=test-results.xml
+    - name: Run Vim E2E tests (parallel)
+      run: uv run pytest tests/test_e2e.py -v -n auto --junitxml=e2e-results.xml
     - name: Test report
       uses: mikepenz/action-junit-report@v4
       if: always()
       with:
-        report_paths: 'test-results.xml'
+        report_paths: e2e-results.xml
+        check_name: Vim E2E Tests
 
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [zig, e2e]
+    needs: [zig, daemon-tests, e2e]
     if: always()
     steps:
     - name: Check results
-      if: needs.zig.result != 'success' || needs.e2e.result != 'success'
+      if: >-
+        needs.zig.result != 'success' ||
+        needs.daemon-tests.result != 'success' ||
+        needs.e2e.result != 'success'
       run: exit 1
     - run: echo "All checks passed"
