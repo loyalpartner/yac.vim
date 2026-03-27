@@ -82,8 +82,35 @@ pub const ProxyRegistry = struct {
             if (inst.isInstalling(language)) return error.Installing;
         }
 
-        const workspace_uri = config.findWorkspaceUri(self.allocator, lang_config, file_path);
+        // Library path detection: reuse existing proxy for dependency/stdlib files.
+        // This prevents spawning new LSP servers when jumping to /usr/lib/zig/std/,
+        // ~/.cargo/registry/, node_modules/, etc.
+        if (config.isLibraryPath(lang_config, file_path)) {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+            var it = self.proxies.iterator();
+            while (it.next()) |entry| {
+                if (std.mem.startsWith(u8, entry.key_ptr.*, language) and
+                    (entry.key_ptr.*.len == language.len or entry.key_ptr.*[language.len] == 0))
+                {
+                    return entry.value_ptr.*;
+                }
+            }
+            // No existing proxy for this language — can't serve a library file alone
+            return error.NoWorkspace;
+        }
+
+        var workspace_uri = config.findWorkspaceUri(self.allocator, lang_config, file_path);
         defer if (workspace_uri) |uri| self.allocator.free(uri);
+
+        // For Rust: resolve Cargo workspace root via `cargo metadata`.
+        // Sub-crates in a workspace share one rust-analyzer instance.
+        if (workspace_uri != null and std.mem.eql(u8, language, "rust")) {
+            if (self.resolveCargoWorkspace(workspace_uri.?)) |ws_uri| {
+                self.allocator.free(workspace_uri.?);
+                workspace_uri = ws_uri;
+            }
+        }
 
         // Build lookup key: "language\0workspace_uri" or just "language"
         var key_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
@@ -97,6 +124,7 @@ pub const ProxyRegistry = struct {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
             if (self.proxies.get(lookup_key)) |proxy| return proxy;
+
             // Another coroutine is already spawning this — caller should retry later
             if (self.spawning.get(lookup_key) != null) return error.Spawning;
             // Mark as spawning to prevent concurrent duplicates
@@ -249,6 +277,92 @@ pub const ProxyRegistry = struct {
         if (self.failed_spawns.fetchRemove(language)) |kv| {
             self.allocator.free(kv.key);
         }
+    }
+
+    /// Resolve Cargo workspace root via `cargo metadata --no-deps`.
+    /// Extracts workspace_root from JSON output, returns file:// URI.
+    /// Results cached to avoid repeated subprocess calls.
+    fn resolveCargoWorkspace(self: *ProxyRegistry, workspace_uri: []const u8) ?[]const u8 {
+        // Extract file path from file:// URI to build manifest path
+        const prefix = "file://";
+        const dir = if (std.mem.startsWith(u8, workspace_uri, prefix)) workspace_uri[prefix.len..] else return null;
+        const manifest = std.fmt.allocPrint(self.allocator, "{s}/Cargo.toml", .{dir}) catch return null;
+        defer self.allocator.free(manifest);
+
+        // Check cache
+        {
+            cargo_cache_lock();
+            defer cargo_cache_mutex.unlock();
+            for (cargo_cache_keys[0..cargo_cache_len], cargo_cache_vals[0..cargo_cache_len]) |k, v| {
+                if (std.mem.eql(u8, k, manifest)) return self.allocator.dupe(u8, v) catch null;
+            }
+        }
+
+        // Run cargo metadata (blocking — acceptable, resolve already blocks on LSP init)
+        var child = std.process.spawn(self.io, .{
+            .argv = &.{ "cargo", "metadata", "--no-deps", "--format-version", "1", "--manifest-path", manifest },
+            .stdout = .pipe,
+            .stderr = .close,
+            .stdin = .close,
+        }) catch return null;
+        defer child.kill(self.io); // ensure cleanup on all paths (kill includes wait)
+
+        const stdout = child.stdout orelse return null;
+        var read_buf: [8192]u8 = undefined;
+        var reader = stdout.readerStreaming(self.io, &read_buf);
+        const output = reader.interface.allocRemaining(self.allocator, Io.Limit.limited(1024 * 1024)) catch return null;
+        defer self.allocator.free(output);
+
+        // Parse workspace_root from JSON
+        var json_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer json_arena.deinit();
+        const value = std.json.parseFromSliceLeaky(std.json.Value, json_arena.allocator(), output, .{}) catch return null;
+        const ws_root = switch (value) {
+            .object => |obj| switch (obj.get("workspace_root") orelse return null) {
+                .string => |s| s,
+                else => return null,
+            },
+            else => return null,
+        };
+
+        const uri = std.fmt.allocPrint(self.allocator, "file://{s}", .{ws_root}) catch return null;
+
+        // Cache result
+        {
+            cargo_cache_lock();
+            defer cargo_cache_mutex.unlock();
+            if (cargo_cache_len < CARGO_CACHE_MAX) {
+                const key = self.allocator.dupe(u8, manifest) catch return uri;
+                const val = self.allocator.dupe(u8, uri) catch {
+                    self.allocator.free(key);
+                    return uri;
+                };
+                cargo_cache_keys[cargo_cache_len] = key;
+                cargo_cache_vals[cargo_cache_len] = val;
+                cargo_cache_len += 1;
+            }
+        }
+
+        // If same as input, no workspace nesting → return null (don't override)
+        if (std.mem.eql(u8, uri, workspace_uri)) {
+            self.allocator.free(uri);
+            return null;
+        }
+
+        log.info("cargo workspace: {s} → {s}", .{ workspace_uri, uri });
+        return uri;
+    }
+
+    const CARGO_CACHE_MAX = 16;
+    var cargo_cache_keys: [CARGO_CACHE_MAX][]const u8 = .{&.{}} ** CARGO_CACHE_MAX;
+    var cargo_cache_vals: [CARGO_CACHE_MAX][]const u8 = .{&.{}} ** CARGO_CACHE_MAX;
+    var cargo_cache_len: usize = 0;
+    // std.atomic.Mutex (non-Io) for global state — tryLock + spinLoopHint is the
+    // only option in Zig 0.16 for code without Io access (same pattern as predicates.zig).
+    var cargo_cache_mutex: std.atomic.Mutex = .unlocked;
+
+    fn cargo_cache_lock() void {
+        while (!cargo_cache_mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
     /// Get all active proxies (for status reporting).

@@ -24,6 +24,11 @@ pub const LangConfig = struct {
     args: []const []const u8,
     file_extensions: []const []const u8,
     workspace_markers: []const []const u8,
+    /// Known library/dependency paths. Files under these paths should reuse
+    /// an existing LSP proxy rather than spawning a new server.
+    /// Patterns starting with "$" are expanded as environment variables.
+    /// Others are matched as substrings of the file path.
+    library_patterns: []const []const u8 = &.{},
     install: ?InstallInfo = null,
 };
 
@@ -53,6 +58,39 @@ pub fn getConfig(language_id: []const u8) ?*const LangConfig {
         }
     }
     return null;
+}
+
+fn getenv(name: []const u8) ?[]const u8 {
+    var buf: [256]u8 = undefined;
+    if (name.len >= buf.len) return null;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    const result = std.c.getenv(@ptrCast(buf[0..name.len :0])) orelse return null;
+    return std.mem.sliceTo(result, 0);
+}
+
+/// Check if a file is in a known library/dependency path for its language.
+/// These files should reuse an existing LSP proxy rather than spawning a new server.
+pub fn isLibraryPath(cfg: *const LangConfig, file_path: []const u8) bool {
+    for (cfg.library_patterns) |pattern| {
+        if (pattern.len > 0 and pattern[0] == '$') {
+            // $ENV_VAR/suffix → expand env var, check startsWith
+            const rest = pattern[1..];
+            // Split on first '/' after the var name
+            const slash = std.mem.indexOfScalar(u8, rest, '/');
+            const var_name = if (slash) |s| rest[0..s] else rest;
+            const suffix = if (slash) |s| rest[s..] else "";
+            const env_val = getenv(var_name) orelse continue;
+            // Build expanded path: env_val + suffix
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const expanded = std.fmt.bufPrint(&buf, "{s}{s}", .{ env_val, suffix }) catch continue;
+            if (expanded.len > 0 and std.mem.startsWith(u8, file_path, expanded)) return true;
+        } else {
+            // Plain substring match (e.g. "/lib/zig/std/", "node_modules/", "site-packages/")
+            if (std.mem.indexOf(u8, file_path, pattern) != null) return true;
+        }
+    }
+    return false;
 }
 
 /// Find workspace root URI by walking up directory tree looking for markers.
@@ -106,6 +144,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{},
         .file_extensions = &.{".rs"},
         .workspace_markers = &.{"Cargo.toml"},
+        .library_patterns = &.{ "$RUSTUP_HOME/", "$HOME/.rustup/", "$CARGO_HOME/registry/", "$HOME/.cargo/registry/", "$CARGO_HOME/git/", "$HOME/.cargo/git/" },
         .install = .{ .method = .github_release, .repo = "rust-lang/rust-analyzer", .asset = "rust-analyzer-{ARCH}-{PLATFORM}.gz", .bin_name = "rust-analyzer" },
     },
     .{
@@ -114,6 +153,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{"--stdio"},
         .file_extensions = &.{".py"},
         .workspace_markers = &.{ "pyproject.toml", "setup.py" },
+        .library_patterns = &.{ "site-packages/", "$HOME/.pyenv/", "$VIRTUAL_ENV/lib/" },
         .install = .{ .method = .npm, .package = "pyright", .bin_name = "pyright-langserver" },
     },
     .{
@@ -122,6 +162,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{"--stdio"},
         .file_extensions = &.{ ".ts", ".tsx" },
         .workspace_markers = &.{ "package.json", "tsconfig.json" },
+        .library_patterns = &.{"node_modules/"},
         .install = .{ .method = .npm, .package = "typescript-language-server typescript", .bin_name = "typescript-language-server" },
     },
     .{
@@ -130,6 +171,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{"--stdio"},
         .file_extensions = &.{ ".js", ".jsx" },
         .workspace_markers = &.{"package.json"},
+        .library_patterns = &.{"node_modules/"},
         .install = .{ .method = .npm, .package = "typescript-language-server typescript", .bin_name = "typescript-language-server" },
     },
     .{
@@ -137,7 +179,8 @@ pub const builtin_configs = [_]LangConfig{
         .command = "gopls",
         .args = &.{},
         .file_extensions = &.{".go"},
-        .workspace_markers = &.{"go.mod"},
+        .workspace_markers = &.{ "go.work", "go.mod" },
+        .library_patterns = &.{ "$GOMODCACHE/", "$GOPATH/pkg/mod/", "$HOME/go/pkg/mod/" },
         .install = .{ .method = .go_install, .package = "golang.org/x/tools/gopls@latest", .bin_name = "gopls" },
     },
     .{
@@ -146,6 +189,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{},
         .file_extensions = &.{".zig"},
         .workspace_markers = &.{"build.zig"},
+        .library_patterns = &.{ "/lib/zig/std/", "$HOME/.cache/zig/" },
         .install = .{ .method = .github_release, .repo = "zigtools/zls", .asset = "zls-{ARCH}-{PLATFORM}.tar.xz", .bin_name = "zls" },
     },
     .{
@@ -154,6 +198,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{},
         .file_extensions = &.{".c"},
         .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
+        .library_patterns = &.{ "/usr/include/", "/usr/local/include/" },
         .install = .{ .method = .system, .package = "clangd" },
     },
     .{
@@ -162,6 +207,7 @@ pub const builtin_configs = [_]LangConfig{
         .args = &.{},
         .file_extensions = &.{ ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".h" },
         .workspace_markers = &.{ "compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile" },
+        .library_patterns = &.{ "/usr/include/", "/usr/local/include/" },
         .install = .{ .method = .system, .package = "clangd" },
     },
 };
