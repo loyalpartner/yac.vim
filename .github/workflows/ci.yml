@@ -88,7 +88,13 @@ jobs:
         clangd --version
     - uses: astral-sh/setup-uv@v5
     - name: Run Vim E2E tests (parallel, limited workers for CI)
-      run: uv run pytest tests/test_e2e.py -v -n 4
+      run: uv run pytest tests/test_e2e.py -v -n 4 2>&1 | tee e2e-output.txt
+    - name: Upload test output on failure
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: e2e-test-output
+        path: e2e-output.txt
 
   ci-status:
     name: CI Status
