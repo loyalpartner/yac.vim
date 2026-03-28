@@ -283,18 +283,7 @@ endfunction
 " Rendering
 " ============================================================================
 
-function! s:render() abort
-  let node = s:cur_node()
-  if empty(node.locations) | return | endif
-
-  let loc = node.locations[node.selected]
-  let target_line = get(loc, 'line', 0)
-  let vis_lines = s:get_visible_lines()
-
-  let display = []
-  let hl_list = []
-
-  " --- Tree path breadcrumb ---
+function! s:render_breadcrumb(node, display, hl_list) abort
   let path = s:tree_path()
   if len(path) > 0
     let parts = []
@@ -310,25 +299,27 @@ function! s:render() abort
     let crumb = ' ' . join(parts, ' → ')
 
     " Show sibling info if has siblings
-    if node.parent >= 0
-      let parent = s:tree.nodes[node.parent]
+    if a:node.parent >= 0
+      let parent = s:tree.nodes[a:node.parent]
       let my_ci = index(parent.children, s:tree.current)
       if len(parent.children) > 1
         let crumb .= '  (' . (my_ci + 1) . '/' . len(parent.children) . ')'
       endif
     endif
 
-    call add(display, crumb)
-    call add(hl_list, {'line': len(display), 'type': 'breadcrumb',
+    call add(a:display, crumb)
+    call add(a:hl_list, {'line': len(a:display), 'type': 'breadcrumb',
       \ 'col': 1, 'len': strlen(crumb)})
   endif
 
-  let s:peek.breadcrumb_lines = len(display)
+  let s:peek.breadcrumb_lines = len(a:display)
+  return path
+endfunction
 
-  " --- Code preview ---
-  let lnum = node.scroll_top + 1
-  for i in range(len(vis_lines))
-    let line = vis_lines[i]
+function! s:render_preview(node, vis_lines, target_line, display, hl_list) abort
+  let lnum = a:node.scroll_top + 1
+  for i in range(len(a:vis_lines))
+    let line = a:vis_lines[i]
 
     " In ace mode, replace first char of labeled words with label letter
     if s:peek.ace_active
@@ -341,19 +332,19 @@ function! s:render() abort
     endif
 
     let prefix = printf('%4d │ ', lnum)
-    call add(display, prefix . line)
+    call add(a:display, prefix . line)
 
     " Target line background
-    if lnum == target_line + 1
-      call add(hl_list, {'line': len(display), 'type': 'target',
-        \ 'col': 1, 'len': strlen(display[-1])})
+    if lnum == a:target_line + 1
+      call add(a:hl_list, {'line': len(a:display), 'type': 'target',
+        \ 'col': 1, 'len': strlen(a:display[-1])})
     endif
 
     " Ace label highlights
     if s:peek.ace_active
       for lbl in s:peek.ace_labels
         if lbl.row == i
-          call add(hl_list, {'line': len(display), 'type': 'ace_label',
+          call add(a:hl_list, {'line': len(a:display), 'type': 'ace_label',
             \ 'col': s:PREFIX_BYTES + lbl.col + 1, 'len': 1})
         endif
       endfor
@@ -361,18 +352,20 @@ function! s:render() abort
 
     let lnum += 1
   endfor
+endfunction
 
+function! s:render_locations(node, display, hl_list) abort
   " --- Separator + max width (single pass) ---
   let max_w = 50
-  for dl in display
+  for dl in a:display
     let w = strdisplaywidth(dl)
     if w > max_w | let max_w = w | endif
   endfor
-  call add(display, repeat('─', max_w))
+  call add(a:display, repeat('─', max_w))
 
   " --- Location list (max 5 visible) ---
-  let locs = node.locations
-  let sel = node.selected
+  let locs = a:node.locations
+  let sel = a:node.selected
   let list_max = min([len(locs), 5])
   let list_start = max([0, sel - 2])
   let list_end = min([list_start + list_max, len(locs)])
@@ -386,9 +379,9 @@ function! s:render() abort
     let c = get(rloc, 'column', 0) + 1
     let marker = idx == sel ? '▸ ' : '  '
     let entry = marker . f . ':' . l . ':' . c
-    call add(display, entry)
+    call add(a:display, entry)
     if idx == sel
-      call add(hl_list, {'line': len(display), 'type': 'selected',
+      call add(a:hl_list, {'line': len(a:display), 'type': 'selected',
         \ 'col': 1, 'len': strlen(entry)})
     endif
     let idx += 1
@@ -400,19 +393,58 @@ function! s:render() abort
     let status .= 'press letter to drill'
   else
     let status .= 'j/k:ref  u/d:scroll  s:ace'
-    if node.parent >= 0
+    if a:node.parent >= 0
       let status .= '  C-o:parent'
     endif
-    if !empty(node.children)
+    if !empty(a:node.children)
       let status .= '  C-i:child'
     endif
-    if node.parent >= 0 && len(s:tree.nodes[node.parent].children) > 1
+    if a:node.parent >= 0 && len(s:tree.nodes[a:node.parent].children) > 1
       let status .= '  J/K:sibling'
     endif
     let status .= '  Enter:jump'
   endif
   let status .= '  q:close'
-  call add(display, status)
+  call add(a:display, status)
+
+  return max_w
+endfunction
+
+function! s:apply_highlights(hl_list, popup_id) abort
+  let bufnr = winbufnr(a:popup_id)
+  call s:ensure_hl_props(bufnr)
+  for h in a:hl_list
+    try
+      call prop_add(h.line, h.col, {
+        \ 'type': 'yac_peek_' . h.type,
+        \ 'length': h.len,
+        \ 'bufnr': bufnr,
+        \ })
+    catch
+    endtry
+  endfor
+
+  " Syntax highlighting: apply cache immediately, then request fresh
+  if !s:peek.ace_active
+    call s:apply_hl_cache(bufnr)
+    call s:request_preview_highlights()
+  endif
+endfunction
+
+function! s:render() abort
+  let node = s:cur_node()
+  if empty(node.locations) | return | endif
+
+  let loc = node.locations[node.selected]
+  let target_line = get(loc, 'line', 0)
+  let vis_lines = s:get_visible_lines()
+
+  let display = []
+  let hl_list = []
+
+  let path = s:render_breadcrumb(node, display, hl_list)
+  call s:render_preview(node, vis_lines, target_line, display, hl_list)
+  let max_w = s:render_locations(node, display, hl_list)
 
   " --- Popup dimensions ---
   let width = min([max_w + 2, &columns - 4])
@@ -460,25 +492,7 @@ function! s:render() abort
     let s:peek.popup_col = pos.col
   endif
 
-  " --- Apply text properties (popup_settext clears old ones) ---
-  let bufnr = winbufnr(s:peek.popup_id)
-  call s:ensure_hl_props(bufnr)
-  for h in hl_list
-    try
-      call prop_add(h.line, h.col, {
-        \ 'type': 'yac_peek_' . h.type,
-        \ 'length': h.len,
-        \ 'bufnr': bufnr,
-        \ })
-    catch
-    endtry
-  endfor
-
-  " --- Syntax highlighting: apply cache immediately, then request fresh ---
-  if !s:peek.ace_active
-    call s:apply_hl_cache(bufnr)
-    call s:request_preview_highlights()
-  endif
+  call s:apply_highlights(hl_list, s:peek.popup_id)
 endfunction
 
 " ============================================================================

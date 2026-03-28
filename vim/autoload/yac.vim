@@ -765,6 +765,20 @@ function! yac#_debug_log(msg) abort
   call s:debug_log(a:msg)
 endfunction
 
+" Check if response is an error. Returns 1 if error, 0 otherwise.
+" Optional 3rd arg 'silent' logs instead of showing toast (for high-frequency handlers).
+function! yac#_check_error(response, label, ...) abort
+  if type(a:response) == v:t_dict && has_key(a:response, 'error')
+    if a:0 > 0 && a:1 ==# 'silent'
+      call yac#_debug_log('[yac] ' . a:label . ' error: ' . string(a:response.error))
+    else
+      call yac#toast('[yac] ' . a:label . ' error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
+    endif
+    return 1
+  endif
+  return 0
+endfunction
+
 function! yac#_reset_loaded_langs() abort
   call yac_connection#reset_loaded_langs()
 endfunction

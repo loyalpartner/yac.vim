@@ -53,10 +53,10 @@ endfunction
 function! yac_lsp_hierarchy#_handle_type_hierarchy_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: type_hierarchy response: %s', string(a:response)))
 
+  if yac#_check_error(a:response, 'Type hierarchy') | return | endif
+
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     call s:show_call_hierarchy(a:response.items)
-  elseif type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Type hierarchy error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
   else
     call yac#toast('No type hierarchy found')
   endif

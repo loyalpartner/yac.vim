@@ -50,21 +50,9 @@ pub const Notifier = struct {
     }
 
     /// Broadcast a typed notification to all connected Vim clients.
+    /// Direct serialization: typed struct → wire bytes in one pass (no json.Value intermediate).
     pub fn send(self: *Notifier, comptime action: []const u8, params: vim.types.ParamsType(action)) !void {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const params_value = try protocol.toJsonValue(arena.allocator(), params);
-        try self.broadcast(action, params_value);
-    }
-
-    /// Broadcast a raw JSON notification to all connected Vim clients.
-    pub fn sendRaw(self: *Notifier, action: []const u8, params: std.json.Value) !void {
-        try self.broadcast(action, params);
-    }
-
-    fn broadcast(self: *Notifier, action: []const u8, params: std.json.Value) !void {
-        // Encode once, dupe to each channel (channels may drain at different speeds).
-        const encoded = protocol.encodeNotification(self.allocator, action, params) catch return;
+        const encoded = try protocol.encodeNotificationTyped(self.allocator, action, params);
         defer self.allocator.free(encoded);
 
         self.lock.lockUncancelable(self.io);

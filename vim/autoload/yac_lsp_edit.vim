@@ -37,10 +37,7 @@ endfunction
 function! yac_lsp_edit#_handle_rename_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: rename response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Rename error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'Rename') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call yac_lsp_edit#apply_workspace_edit(a:response.edits)
@@ -199,10 +196,7 @@ endfunction
 function! yac_lsp_edit#_handle_formatting_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: formatting response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Format error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'Format') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'edits')
     call s:apply_text_edits(a:response.edits)

@@ -174,8 +174,8 @@ pub const VimServer = struct {
                     log.debug("-> Vim: {s}... ({d} bytes)", .{ trimmed[0..200], trimmed.len });
                 }
                 iface.writeAll(encoded) catch return;
-                iface.flush() catch return;
             }
+            iface.flush() catch return;
         }
     }
 };

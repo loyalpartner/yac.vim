@@ -40,10 +40,7 @@ endfunction
 function! yac_lsp#_handle_goto_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: goto response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Goto error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'Goto') | return | endif
 
   let l:loc = a:response
 
@@ -137,14 +134,8 @@ endfunction
 function! yac_lsp#_handle_hover_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: hover response: %s', string(a:response)))
 
-  if type(a:response) != v:t_dict
-    return
-  endif
-
-  if has_key(a:response, 'error')
-    call yac#toast('[yac] Hover error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if type(a:response) != v:t_dict | return | endif
+  if yac#_check_error(a:response, 'Hover') | return | endif
 
   " Extract hover text from LSP response
   let l:md = ''
@@ -313,10 +304,7 @@ endfunction
 function! yac_lsp#_handle_references_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: references response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] References error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'References') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call yac_picker#open_references(a:response.locations)
@@ -329,10 +317,7 @@ endfunction
 function! yac_lsp#_handle_peek_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: peek response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'Peek') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call yac_peek#show(a:response.locations, s:peek_initial_symbol)
@@ -347,10 +332,7 @@ function! yac_lsp#_handle_peek_drill_response(channel, response) abort
 
   let symbol = s:peek_drill_symbol
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#toast('[yac] Peek error: ' . string(a:response.error), {'highlight': 'ErrorMsg'})
-    return
-  endif
+  if yac#_check_error(a:response, 'Peek') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'locations')
     call yac_peek#drill_response(a:response.locations, symbol)

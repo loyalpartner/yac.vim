@@ -94,9 +94,7 @@ endfunction
 function! s:handle_signature_help_response(channel, response) abort
   call yac#_debug_log(printf('[RECV]: signature_help response: %s', string(a:response)))
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    return
-  endif
+  if yac#_check_error(a:response, 'Signature help', 'silent') | return | endif
 
   " Handle null/empty response
   if type(a:response) != v:t_dict || a:response is v:null

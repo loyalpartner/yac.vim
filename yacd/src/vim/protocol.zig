@@ -149,6 +149,27 @@ pub fn encodeNotification(allocator: Allocator, action: []const u8, params: std.
     return aw.toOwnedSlice();
 }
 
+/// Encode a server push notification directly from a typed struct: [0, {"action": action, "params": ...}]\n
+/// Skips the json.Value intermediate — one-pass serialization from typed struct to wire bytes.
+/// Caller owns the returned slice.
+pub fn encodeNotificationTyped(allocator: Allocator, comptime action: []const u8, params: anytype) ![]const u8 {
+    comptime for (action) |c| {
+        if (c == '"' or c == '\\' or c < 0x20)
+            @compileError("action must be a simple ASCII identifier, got: " ++ action);
+    };
+    var aw: Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
+
+    try w.writeAll("[0,{\"action\":\"");
+    try w.writeAll(action);
+    try w.writeAll("\",\"params\":");
+    try std.json.Stringify.value(params, .{ .emit_null_optional_fields = false }, w);
+    try w.writeAll("}]\n");
+
+    return aw.toOwnedSlice();
+}
+
 /// Encode a typed value to std.json.Value via JSON round-trip.
 pub fn toJsonValue(allocator: Allocator, value: anytype) !std.json.Value {
     const T = @TypeOf(value);
@@ -270,6 +291,30 @@ test "encodeNotification: action + params" {
     defer allocator.free(encoded);
 
     try std.testing.expectEqualStrings("[0,{\"action\":\"diagnostics\",\"params\":null}]\n", encoded);
+}
+
+test "encodeNotificationTyped: struct params" {
+    const allocator = std.testing.allocator;
+    const S = struct { file: []const u8, version: u32 };
+    const encoded = try encodeNotificationTyped(allocator, "ts_highlights", S{ .file = "test.zig", .version = 1 });
+    defer allocator.free(encoded);
+
+    try std.testing.expectEqualStrings(
+        "[0,{\"action\":\"ts_highlights\",\"params\":{\"file\":\"test.zig\",\"version\":1}}]\n",
+        encoded,
+    );
+}
+
+test "encodeNotificationTyped: empty slice params" {
+    const allocator = std.testing.allocator;
+    const S = struct { file: []const u8, hints: []const u8 };
+    const encoded = try encodeNotificationTyped(allocator, "inlay_hints", S{ .file = "test.rs", .hints = "" });
+    defer allocator.free(encoded);
+
+    try std.testing.expectEqualStrings(
+        "[0,{\"action\":\"inlay_hints\",\"params\":{\"file\":\"test.rs\",\"hints\":\"\"}}]\n",
+        encoded,
+    );
 }
 
 test "toJsonValue: struct" {

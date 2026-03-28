@@ -391,10 +391,7 @@ function! s:handle_completion_response(channel, response, ...) abort
     endif
   endif
 
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#_debug_log('[yac] Completion error: ' . string(a:response.error))
-    return
-  endif
+  if yac#_check_error(a:response, 'Completion', 'silent') | return | endif
 
   if type(a:response) == v:t_dict && has_key(a:response, 'items') && !empty(a:response.items)
     call s:show_completion_popup(a:response.items)

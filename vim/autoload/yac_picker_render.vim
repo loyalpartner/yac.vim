@@ -429,10 +429,7 @@ function! yac_picker_render#handle_query_response(channel, response) abort
     call yac#_debug_log('[PICKER] ignoring stale daemon response (local mode active)')
     return
   endif
-  if type(a:response) == v:t_dict && has_key(a:response, 'error')
-    call yac#_debug_log('[yac] Picker error: ' . string(a:response.error))
-    return
-  endif
+  if yac#_check_error(a:response, 'Picker', 'silent') | return | endif
   if type(a:response) == v:t_dict && has_key(a:response, 'items')
     if text =~# '^@'
       let p.all_locations = a:response.items
