@@ -239,3 +239,96 @@ test "getConfig: known language" {
 test "getConfig: unknown language" {
     try std.testing.expect(getConfig("haskell") == null);
 }
+
+// ── isLibraryPath tests ──
+
+test "isLibraryPath: plain substring match" {
+    const cfg = LangConfig{
+        .language_id = "test",
+        .command = "test",
+        .args = &.{},
+        .file_extensions = &.{},
+        .workspace_markers = &.{},
+        .library_patterns = &.{ "node_modules/", "/usr/include/" },
+    };
+    // Positive matches
+    try std.testing.expect(isLibraryPath(&cfg, "/home/user/project/node_modules/@types/node/index.d.ts"));
+    try std.testing.expect(isLibraryPath(&cfg, "/usr/include/stdio.h"));
+    try std.testing.expect(isLibraryPath(&cfg, "/usr/include/c++/12/string"));
+    // Negative
+    try std.testing.expect(!isLibraryPath(&cfg, "/home/user/project/src/main.ts"));
+    try std.testing.expect(!isLibraryPath(&cfg, "/usr/local/bin/node"));
+}
+
+test "isLibraryPath: env var expansion with $HOME" {
+    const cfg = LangConfig{
+        .language_id = "test",
+        .command = "test",
+        .args = &.{},
+        .file_extensions = &.{},
+        .workspace_markers = &.{},
+        .library_patterns = &.{ "$HOME/.rustup/", "$HOME/.cargo/registry/" },
+    };
+    const home = getenv("HOME") orelse return; // skip if HOME not set
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    // $HOME/.rustup/toolchains/stable/lib/rustlib/src/rust/library/core/src/lib.rs
+    const rustup_path = std.fmt.bufPrint(&buf, "{s}/.rustup/toolchains/stable/lib.rs", .{home}) catch return;
+    try std.testing.expect(isLibraryPath(&cfg, rustup_path));
+    // $HOME/.cargo/registry/src/index.crates.io/serde-1.0/src/lib.rs
+    const cargo_path = std.fmt.bufPrint(&buf, "{s}/.cargo/registry/src/serde/lib.rs", .{home}) catch return;
+    try std.testing.expect(isLibraryPath(&cfg, cargo_path));
+    // Project file — not a library path
+    const project_path = std.fmt.bufPrint(&buf, "{s}/project/src/main.rs", .{home}) catch return;
+    try std.testing.expect(!isLibraryPath(&cfg, project_path));
+}
+
+test "isLibraryPath: empty patterns" {
+    const cfg = LangConfig{
+        .language_id = "test",
+        .command = "test",
+        .args = &.{},
+        .file_extensions = &.{},
+        .workspace_markers = &.{},
+        .library_patterns = &.{},
+    };
+    try std.testing.expect(!isLibraryPath(&cfg, "/any/path/file.rs"));
+}
+
+test "isLibraryPath: undefined env var skipped" {
+    const cfg = LangConfig{
+        .language_id = "test",
+        .command = "test",
+        .args = &.{},
+        .file_extensions = &.{},
+        .workspace_markers = &.{},
+        .library_patterns = &.{"$NONEXISTENT_YAC_TEST_VAR_12345/lib/"},
+    };
+    // Should not match (env var doesn't exist → pattern skipped)
+    try std.testing.expect(!isLibraryPath(&cfg, "/any/path"));
+}
+
+test "isLibraryPath: builtin configs - Zig std" {
+    const cfg = getConfig("zig").?;
+    try std.testing.expect(isLibraryPath(cfg, "/usr/lib/zig/std/mem.zig"));
+    try std.testing.expect(isLibraryPath(cfg, "/usr/local/lib/zig/std/fs.zig"));
+    try std.testing.expect(!isLibraryPath(cfg, "/home/user/project/src/main.zig"));
+}
+
+test "isLibraryPath: builtin configs - C includes" {
+    const cfg = getConfig("c").?;
+    try std.testing.expect(isLibraryPath(cfg, "/usr/include/stdio.h"));
+    try std.testing.expect(isLibraryPath(cfg, "/usr/local/include/curl/curl.h"));
+    try std.testing.expect(!isLibraryPath(cfg, "/home/user/project/src/main.c"));
+}
+
+test "isLibraryPath: builtin configs - TS node_modules" {
+    const cfg = getConfig("typescript").?;
+    try std.testing.expect(isLibraryPath(cfg, "/project/node_modules/@types/node/index.d.ts"));
+    try std.testing.expect(!isLibraryPath(cfg, "/project/src/app.ts"));
+}
+
+test "isLibraryPath: builtin configs - Python site-packages" {
+    const cfg = getConfig("python").?;
+    try std.testing.expect(isLibraryPath(cfg, "/usr/lib/python3/site-packages/requests/__init__.py"));
+    try std.testing.expect(!isLibraryPath(cfg, "/home/user/project/main.py"));
+}
