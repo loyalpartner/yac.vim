@@ -83,11 +83,13 @@ pub fn extractOutline(
 
         try b.addSymbol(name, k, pos, depth, prefix, detail);
 
-        // Expand container fields at depth=1
+        // Expand container fields at depth=1 and record container row
+        // so emitContainerHeader (from @method matches) won't duplicate it.
         if (std.mem.eql(u8, k, "Struct") or
             std.mem.eql(u8, k, "Enum") or
             std.mem.eql(u8, k, "Union"))
         {
+            try b.seen_containers.put(node.startPoint().row, {});
             try b.addContainerFields(node);
         }
     }

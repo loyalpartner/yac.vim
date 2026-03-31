@@ -25,25 +25,12 @@ A lightweight LSP bridge and tree-sitter integration for Vim, powered by a Zig d
 ### With vim-plug
 
 ```vim
-" Core plugin
 Plug 'loyalpartner/yac.vim', { 'do': 'zig build -Doptimize=ReleaseFast' }
-
-" Language support — install the ones you need
-Plug 'yac-vim/zig'
-Plug 'yac-vim/rust'
-Plug 'yac-vim/go'
-Plug 'yac-vim/python'
-Plug 'yac-vim/javascript'
-Plug 'yac-vim/typescript'
-Plug 'yac-vim/c'
-Plug 'yac-vim/cpp'
-Plug 'yac-vim/lua'
-Plug 'yac-vim/vim'
 ```
 
-Each language plugin provides a tree-sitter WASM grammar and query files (highlights, symbols, folds, text objects). The daemon loads them on demand when you open a matching file.
+18 languages are bundled (bash, c, cpp, css, go, html, javascript, json, lua, markdown, python, rust, toml, typescript, vim, yaml, zig, etc.) — no separate language plugin installation needed. The daemon loads grammars on demand when you open a matching file.
 
-You also need the LSP servers installed for the languages you use (e.g. `rust-analyzer`, `zls`, `gopls`, `pyright`). Use `<C-p>` command palette → "LSP Install" to auto-install supported servers.
+LSP servers are installed automatically on first use, or via `<C-p>` command palette → "LSP Install".
 
 ## Key Mappings
 
