@@ -32,6 +32,9 @@ function! s:start_daemon() abort
   if exists('g:yac_log_file')
     let l:cmd += ['--log-file', g:yac_log_file]
   endif
+  if !get(g:, 'yac_copilot_enabled', 1)
+    let l:cmd += ['--no-copilot']
+  endif
 
   let s:daemon_job = job_start(l:cmd, {
     \ 'mode': 'json',

@@ -36,7 +36,9 @@ pub const LspProxy = struct {
     };
 
     /// Callback type for LSP notifications.
-    pub const OnNotification = fn (ctx: *anyopaque, method: []const u8, params: ?std.json.Value) void;
+    /// Receives pre-serialized params_json (JSON bytes) instead of ?std.json.Value
+    /// to avoid passing large tagged unions across Queue/channel boundaries.
+    pub const OnNotification = fn (ctx: *anyopaque, method: []const u8, params_json: ?[]const u8) void;
 
     /// Create connection, perform LSP initialize handshake, return ready proxy.
     /// Must be called from a coroutine context (blocks on initialize request).
@@ -92,7 +94,7 @@ pub const LspProxy = struct {
                     self.allocator.destroy(owned.arena);
                 }
                 if (self.on_notification) |cb| {
-                    cb(self.notify_ctx.?, owned.notification.method, owned.notification.params);
+                    cb(self.notify_ctx.?, owned.method, owned.params_json);
                 }
             }
         }

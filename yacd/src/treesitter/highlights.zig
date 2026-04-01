@@ -26,7 +26,9 @@ const HlEntry = struct {
 };
 
 /// Extract syntax highlights for a visible line range.
-pub fn extractHighlights(
+/// noinline: LLVM ReleaseFast inlines this into doPushHighlights creating an
+/// 8000+ byte function that triggers codegen bugs in register allocation.
+pub noinline fn extractHighlights(
     allocator: Allocator,
     query: *const ts.Query,
     tree: *const ts.Tree,

@@ -5,7 +5,7 @@ build:
 	cd yacd && zig build
 
 release:
-	cd yacd && zig build -Doptimize=ReleaseSafe
+	cd yacd && zig build -Doptimize=ReleaseFast
 
 # Unit tests (Zig)
 test-unit:
@@ -17,7 +17,7 @@ test-e2e: release
 
 # E2E tests (parallel)
 test-parallel: release
-	uv run pytest -v tests/ -n auto --maxprocesses=38
+	uv run pytest -v tests/ -n auto --maxprocesses=12
 
 # E2E tests (visible — watch in terminal)
 test-visible: release

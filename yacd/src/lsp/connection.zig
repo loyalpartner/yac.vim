@@ -47,8 +47,11 @@ pub const LspConnection = struct {
     };
 
     /// Notification with owned arena.
+    /// Stores pre-serialized params_json instead of ?std.json.Value to avoid
+    /// LLVM O2 miscompilation of large tagged unions in ArrayList/Queue copies.
     pub const OwnedNotification = struct {
-        notification: JsonRPCMessage.Notification,
+        method: []const u8, // points into arena
+        params_json: ?[]const u8, // JSON-serialized params, allocated in arena; null if no params
         arena: *std.heap.ArenaAllocator,
     };
 
@@ -382,8 +385,20 @@ pub const LspConnection = struct {
                     .notification => |n| {
                         if (!std.mem.eql(u8, n.method, "$/progress"))
                             log.debug("dispatch: notification {s}", .{n.method});
+                        // Serialize params to JSON bytes while arena is alive.
+                        // Avoids storing ?std.json.Value (large tagged union) in Queue —
+                        // LLVM O2 generates incorrect code when copying it by value.
+                        const params_json: ?[]const u8 = if (n.params) |params| blk: {
+                            var aw: Writer.Allocating = .init(owned.arena.allocator());
+                            std.json.Stringify.value(params, .{}, &aw.writer) catch {
+                                aw.deinit();
+                                break :blk null;
+                            };
+                            break :blk aw.toOwnedSlice() catch null;
+                        } else null;
                         self.notifications.send(.{
-                            .notification = n,
+                            .method = n.method,
+                            .params_json = params_json,
                             .arena = owned.arena,
                         }) catch {
                             self.freeArena(owned.arena);
@@ -693,6 +708,73 @@ test "LspConnection: nextId skips zero" {
 
     try std.testing.expect(id1 >= 1);
     try std.testing.expect(id2 > id1);
+}
+
+test "OwnedNotification: params_json slice survives Queue round-trip" {
+    // RED → GREEN: OwnedNotification must store params_json: ?[]const u8
+    // not ?std.json.Value, to avoid LLVM O2 miscompilation of large tagged unions.
+    const allocator = std.testing.allocator;
+    const io = testIo();
+
+    var q = Queue(LspConnection.OwnedNotification).init(allocator, io);
+    defer q.deinit();
+
+    // Build an arena-owned notification (simulates dispatchLoop serializing params)
+    const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
+    arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
+    const method = try arena_ptr.allocator().dupe(u8, "textDocument/publishDiagnostics");
+    const params_json = try arena_ptr.allocator().dupe(u8, "{\"uri\":\"file:///test.zig\"}");
+
+    try q.send(.{
+        .method = method,
+        .params_json = params_json,
+        .arena = arena_ptr,
+    });
+
+    const msgs = q.drain() orelse return error.TestQueueEmpty;
+    defer allocator.free(msgs);
+
+    try std.testing.expectEqual(@as(usize, 1), msgs.len);
+    const got = msgs[0];
+    defer {
+        got.arena.deinit();
+        allocator.destroy(got.arena);
+    }
+
+    try std.testing.expectEqualStrings("textDocument/publishDiagnostics", got.method);
+    const pj = got.params_json orelse return error.TestNullParamsJson;
+    try std.testing.expectEqualStrings("{\"uri\":\"file:///test.zig\"}", pj);
+}
+
+test "OwnedNotification: null params_json round-trips as null" {
+    const allocator = std.testing.allocator;
+    const io = testIo();
+
+    var q = Queue(LspConnection.OwnedNotification).init(allocator, io);
+    defer q.deinit();
+
+    const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
+    arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
+    const method = try arena_ptr.allocator().dupe(u8, "initialized");
+
+    try q.send(.{
+        .method = method,
+        .params_json = null,
+        .arena = arena_ptr,
+    });
+
+    const msgs = q.drain() orelse return error.TestQueueEmpty;
+    defer allocator.free(msgs);
+
+    try std.testing.expectEqual(@as(usize, 1), msgs.len);
+    const got = msgs[0];
+    defer {
+        got.arena.deinit();
+        allocator.destroy(got.arena);
+    }
+
+    try std.testing.expectEqualStrings("initialized", got.method);
+    try std.testing.expectEqual(@as(?[]const u8, null), got.params_json);
 }
 
 fn testIo() Io {

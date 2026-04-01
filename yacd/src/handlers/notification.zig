@@ -62,8 +62,21 @@ pub const NotifyDispatcher = struct {
     }
 
     /// LspProxy.OnNotification-compatible static callback.
-    pub fn onNotification(ctx: *anyopaque, method: []const u8, params: ?std.json.Value) void {
+    /// Receives pre-serialized params_json; re-parses into std.json.Value
+    /// using a local arena before dispatching to typed handlers.
+    pub fn onNotification(ctx: *anyopaque, method: []const u8, params_json: ?[]const u8) void {
         const self: *NotifyDispatcher = @ptrCast(@alignCast(ctx));
+        var parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer parse_arena.deinit();
+        const params: ?std.json.Value = if (params_json) |json_bytes|
+            std.json.parseFromSliceLeaky(
+                std.json.Value,
+                parse_arena.allocator(),
+                json_bytes,
+                .{ .allocate = .alloc_always },
+            ) catch null
+        else
+            null;
         self.dispatch(method, params);
     }
 

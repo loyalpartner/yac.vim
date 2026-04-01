@@ -210,7 +210,7 @@ pub const Engine = struct {
 
     /// Open a buffer: store full text + parse + ready for getHighlights.
     /// Returns true if buffer was actually parsed (false = unchanged, skipped).
-    pub fn openBuffer(self: *Engine, file: []const u8, lang_name: ?[]const u8, source: []const u8) !bool {
+    pub noinline fn openBuffer(self: *Engine, file: []const u8, lang_name: ?[]const u8, source: []const u8) !bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -291,6 +291,43 @@ pub const Engine = struct {
             file, source.len, gop.value_ptr.lang_name, parse_ms,
         });
         return true;
+    }
+
+    /// Returns the current buffer version, or 0 if not found. Thread-safe.
+    pub noinline fn getBufferVersion(self: *Engine, file: []const u8) u32 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return if (self.buffers.getPtr(file)) |b| b.version else 0;
+    }
+
+    /// Safe wrappers: always returns true after successful parse.
+    /// Does NOT rely on openBuffer's !bool return value — LLVM ReleaseFast
+    /// corrupts error union returns from functions with C FFI calls.
+    /// Instead, checks if the buffer exists with matching content after the call.
+    pub noinline fn openBufferSafe(self: *Engine, file: []const u8, lang_name: ?[]const u8, source: []const u8) bool {
+        self.mutex.lockUncancelable(self.io);
+        const before = if (self.buffers.getPtr(file)) |b| b.version else 0;
+        self.mutex.unlock(self.io);
+
+        _ = self.openBuffer(file, lang_name, source) catch return false;
+
+        self.mutex.lockUncancelable(self.io);
+        const after = if (self.buffers.getPtr(file)) |b| b.version else 0;
+        self.mutex.unlock(self.io);
+        return after != before;
+    }
+
+    pub noinline fn openBufferFromFileSafe(self: *Engine, file: []const u8) bool {
+        self.mutex.lockUncancelable(self.io);
+        const before = if (self.buffers.getPtr(file)) |b| b.version else 0;
+        self.mutex.unlock(self.io);
+
+        _ = self.openBufferFromFile(file) catch return false;
+
+        self.mutex.lockUncancelable(self.io);
+        const after = if (self.buffers.getPtr(file)) |b| b.version else 0;
+        self.mutex.unlock(self.io);
+        return after != before;
     }
 
     /// Open a buffer by reading the file from disk. No IPC text transfer needed.
