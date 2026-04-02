@@ -139,6 +139,8 @@ pub const App = struct {
         try app.dispatcher.register("goto_declaration", &app.nav, NavigationHandler.gotoDeclaration);
         try app.dispatcher.register("goto_implementation", &app.nav, NavigationHandler.gotoImplementation);
         try app.dispatcher.register("references", &app.nav, NavigationHandler.references);
+        try app.dispatcher.register("code_action", &app.nav, NavigationHandler.codeAction);
+        try app.dispatcher.register("execute_command", &app.nav, NavigationHandler.executeCommand);
         try app.dispatcher.register("completion", &app.comp, CompletionHandler.completion);
         try app.dispatcher.register("signature_help", &app.nav, NavigationHandler.signatureHelp);
         try app.dispatcher.register("did_open", &app.doc, DocumentHandler.didOpen);

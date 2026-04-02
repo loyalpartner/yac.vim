@@ -70,6 +70,9 @@ pub fn ParamsType(comptime method: []const u8) type {
         .{ "copilot_accept", CopilotAcceptParams },
         .{ "copilot_partial_accept", CopilotPartialAcceptParams },
         .{ "copilot_did_focus", FileParams },
+        // Code actions
+        .{ "code_action", CodeActionParams },
+        .{ "execute_command", ExecuteCommandParams },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -120,6 +123,9 @@ pub fn ResultType(comptime method: []const u8) type {
         .{ "copilot_accept", void },
         .{ "copilot_partial_accept", void },
         .{ "copilot_did_focus", void },
+        // Code actions
+        .{ "code_action", CodeActionResult },
+        .{ "execute_command", void },
     };
     inline for (map) |entry| {
         if (comptime std.mem.eql(u8, method, entry[0])) return entry[1];
@@ -527,6 +533,47 @@ pub const CopilotAcceptParams = struct {
 pub const CopilotPartialAcceptParams = struct {
     item_id: ?[]const u8 = null,
     accepted_text: ?[]const u8 = null,
+};
+
+// ============================================================================
+// Code Action types
+// ============================================================================
+
+pub const CodeActionParams = struct {
+    file: []const u8,
+    line: u32,
+    column: u32,
+};
+
+pub const TextEdit = struct {
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+    new_text: []const u8,
+};
+
+pub const FileEdits = struct {
+    file: []const u8,
+    edits: []const TextEdit,
+};
+
+pub const CodeActionItem = struct {
+    title: []const u8,
+    kind: []const u8 = "",
+    edits: []const FileEdits = &.{},
+    command: []const u8 = "",
+    arguments: []const std.json.Value = &.{},
+};
+
+pub const CodeActionResult = struct {
+    actions: []const CodeActionItem,
+};
+
+pub const ExecuteCommandParams = struct {
+    file: []const u8,
+    command_name: []const u8,
+    arguments: []const std.json.Value = &.{},
 };
 
 // ============================================================================

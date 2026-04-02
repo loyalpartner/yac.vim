@@ -183,7 +183,112 @@ pub const NavigationHandler = struct {
         log.debug("references: {d} locations", .{locs.items.len});
         return .{ .locations = locs.items };
     }
+
+    pub fn codeAction(self: *NavigationHandler, allocator: Allocator, params: vim.types.CodeActionParams) !vim.types.CodeActionResult {
+        log.info("codeAction {s}:{d}:{d}", .{ params.file, params.line, params.column });
+        const proxy = self.registry.resolve(params.file, null) catch
+            return .{ .actions = &.{} };
+
+        const uri = try config.fileToUri(allocator, params.file);
+        const lang_config = config.detectConfig(params.file) orelse
+            return .{ .actions = &.{} };
+
+        proxy.ensureOpen(uri, lang_config.language_id) catch {};
+
+        const pos: lsp.types.Position = .{ .line = params.line, .character = params.column };
+        const result = proxy.codeAction(allocator, .{
+            .textDocument = .{ .uri = uri },
+            .range = .{ .start = pos, .end = pos },
+            .context = .{ .diagnostics = &.{} },
+        }) catch return .{ .actions = &.{} };
+
+        const lsp_actions = result orelse return .{ .actions = &.{} };
+
+        var actions: std.ArrayList(vim.types.CodeActionItem) = .empty;
+        for (lsp_actions) |action| {
+            switch (action) {
+                .code_action => |ca| {
+                    actions.append(allocator, convertCodeAction(allocator, ca)) catch continue;
+                },
+                .command => |cmd| {
+                    actions.append(allocator, .{
+                        .title = cmd.title,
+                        .command = cmd.command,
+                        .arguments = if (cmd.arguments) |args| args else &.{},
+                    }) catch continue;
+                },
+            }
+        }
+
+        return .{ .actions = actions.items };
+    }
+
+    pub fn executeCommand(self: *NavigationHandler, allocator: Allocator, params: vim.types.ExecuteCommandParams) !void {
+        log.info("executeCommand {s}", .{params.command_name});
+        const proxy = self.registry.resolve(params.file, null) catch return;
+
+        _ = proxy.executeCommand(allocator, .{
+            .command = params.command_name,
+            .arguments = if (params.arguments.len > 0) params.arguments else null,
+        }) catch |err| {
+            log.warn("executeCommand failed: {s}", .{@errorName(err)});
+        };
+    }
 };
+
+/// Convert an LSP CodeAction to a Vim-friendly CodeActionItem.
+fn convertCodeAction(allocator: Allocator, ca: lsp.types.CodeAction) vim.types.CodeActionItem {
+    const cmd_name = if (ca.command) |cmd| cmd.command else "";
+    const cmd_args: []const std.json.Value = if (ca.command) |cmd|
+        if (cmd.arguments) |args| args else &.{}
+    else
+        &.{};
+
+    const kind_str: []const u8 = if (ca.kind) |k| switch (k) {
+        .quickfix => "quickfix",
+        .refactor => "refactor",
+        .@"refactor.extract" => "refactor.extract",
+        .@"refactor.inline" => "refactor.inline",
+        .@"refactor.rewrite" => "refactor.rewrite",
+        .source => "source",
+        .@"source.organizeImports" => "source.organizeImports",
+        .@"source.fixAll" => "source.fixAll",
+        .custom_value => |s| s,
+        else => "",
+    } else "";
+
+    // Group edits by file to match VimScript apply_workspace_edit's expected format
+    var file_edits_list: std.ArrayList(vim.types.FileEdits) = .empty;
+    if (ca.edit) |workspace_edit| {
+        if (workspace_edit.changes) |changes| {
+            for (changes.map.keys(), changes.map.values()) |file_uri, lsp_edits| {
+                const file = config.uriToFile(allocator, file_uri) catch continue;
+                var text_edits: std.ArrayList(vim.types.TextEdit) = .empty;
+                for (lsp_edits) |te| {
+                    text_edits.append(allocator, .{
+                        .start_line = te.range.start.line,
+                        .start_column = te.range.start.character,
+                        .end_line = te.range.end.line,
+                        .end_column = te.range.end.character,
+                        .new_text = te.newText,
+                    }) catch continue;
+                }
+                file_edits_list.append(allocator, .{
+                    .file = file,
+                    .edits = text_edits.items,
+                }) catch continue;
+            }
+        }
+    }
+
+    return .{
+        .title = ca.title,
+        .kind = kind_str,
+        .edits = file_edits_list.items,
+        .command = cmd_name,
+        .arguments = cmd_args,
+    };
+}
 
 /// Extract a single Location from an LSP Definition result.
 fn extractLocation(result: lsp.ResultType("textDocument/definition")) ?lsp.types.Location {

@@ -121,23 +121,19 @@ function! s:code_action_callback(id, result) abort
 endfunction
 
 function! s:execute_code_action(action) abort
-  if has_key(a:action, 'has_edit') && a:action.has_edit
-    " This action has a direct workspace edit - we need to request it again
-    " For now, show a message that this isn't fully implemented
-    echo "Direct edit actions not yet supported. Use command-based actions."
-    return
+  " Apply workspace edits if present (LSP spec: edit before command)
+  if has_key(a:action, 'edits') && !empty(a:action.edits)
+    call yac_lsp_edit#apply_workspace_edit(a:action.edits)
   endif
 
+  " Execute command if present
   if has_key(a:action, 'command') && !empty(a:action.command)
-    " Execute the command
     let arguments = has_key(a:action, 'arguments') ? a:action.arguments : []
     call yac#_request('execute_command', {
+      \ 'file': expand('%:p'),
       \ 'command_name': a:action.command,
       \ 'arguments': arguments
-      \ }, '')
-    echo "Executing: " . a:action.title
-  else
-    echo "Action has no executable command"
+      \ }, 'yac_lsp_edit#_handle_execute_command_response')
   endif
 endfunction
 
