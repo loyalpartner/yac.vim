@@ -168,6 +168,15 @@ pub const LspProxy = struct {
         return self.connection.request(allocator, "textDocument/references", params);
     }
 
+    pub fn codeAction(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/codeAction")) !lsp.ResultType("textDocument/codeAction") {
+        try self.ensureCapability(.codeActionProvider);
+        return self.connection.request(allocator, "textDocument/codeAction", params);
+    }
+
+    pub fn executeCommand(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("workspace/executeCommand")) !lsp.ResultType("workspace/executeCommand") {
+        return self.connection.request(allocator, "workspace/executeCommand", params);
+    }
+
     pub fn documentSymbol(self: *LspProxy, allocator: Allocator, params: lsp.ParamsType("textDocument/documentSymbol")) !lsp.ResultType("textDocument/documentSymbol") {
         try self.ensureCapability(.documentSymbolProvider);
         return self.connection.request(allocator, "textDocument/documentSymbol", params);
