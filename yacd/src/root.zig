@@ -9,6 +9,7 @@ pub const handlers = @import("handlers/root.zig");
 pub const picker = @import("picker/root.zig");
 pub const treesitter = @import("treesitter/root.zig");
 pub const App = @import("app.zig").App;
+pub const RpcServer = @import("rpc_server.zig").RpcServer;
 pub const log = @import("log.zig");
 
 test {
@@ -22,5 +23,6 @@ test {
     _ = @import("picker/root.zig");
     _ = @import("treesitter/root.zig");
     _ = @import("app.zig");
+    _ = @import("rpc_server.zig");
     _ = @import("log.zig");
 }

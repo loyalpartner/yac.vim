@@ -5,8 +5,8 @@ const Allocator = std.mem.Allocator;
 const vim = @import("vim/root.zig");
 const Transport = vim.Transport;
 const VimChannel = vim.VimChannel;
-const VimMessage = vim.protocol.VimMessage;
 const VimServer = vim.VimServer;
+const RpcServer = @import("rpc_server.zig").RpcServer;
 const Notifier = @import("notifier.zig").Notifier;
 const ProxyRegistry = @import("registry.zig").ProxyRegistry;
 const Installer = @import("lsp/root.zig").Installer;
@@ -39,6 +39,7 @@ const log = std.log.scoped(.app);
 
 pub const App = struct {
     server: VimServer,
+    rpc: RpcServer,
     notifier: Notifier,
     dispatcher: Dispatcher,
     registry: ProxyRegistry,
@@ -70,6 +71,7 @@ pub const App = struct {
         }
         app.* = .{
             .server = .{ .allocator = allocator, .io = io },
+            .rpc = .{ .dispatcher = undefined },
             .notifier = Notifier.init(allocator, io),
             .dispatcher = Dispatcher.init(allocator),
             .registry = ProxyRegistry.init(allocator, io),
@@ -177,6 +179,9 @@ pub const App = struct {
         try app.dispatcher.register("copilot_partial_accept", &app.copilot, CopilotHandler.copilotPartialAccept);
         try app.dispatcher.register("copilot_did_focus", &app.copilot, CopilotHandler.copilotDidFocus);
 
+        // Wire RpcServer to Dispatcher (after all routes registered)
+        app.rpc.dispatcher = &app.dispatcher;
+
         return app;
     }
 
@@ -233,96 +238,15 @@ pub const App = struct {
             .log_file = log_mod.getLogFilePath() orelse "",
         }) catch {};
 
-        group.concurrent(ch.io, consumeLoop, .{ self, ch, group }) catch {};
+        group.concurrent(ch.io, serveClient, .{ self, ch, group }) catch {};
     }
 
-    fn consumeLoop(self: *App, ch: *VimChannel, group: *Io.Group) Io.Cancelable!void {
+    fn serveClient(self: *App, ch: *VimChannel, group: *Io.Group) Io.Cancelable!void {
         defer {
             log.info("vim client disconnected, requesting shutdown", .{});
             self.notifier.removeChannel(ch);
             self.shutdown_requested.store(true, .release); // single client — disconnect → exit
         }
-        while (true) {
-            ch.waitInbound() catch return;
-            const msgs = ch.recv() orelse continue;
-            defer ch.allocator.free(msgs);
-            for (msgs) |owned| {
-                switch (owned.msg) {
-                    .request => |req| {
-                        // Pre-encode params to avoid copying std.json.Value by value
-                        // through group.concurrent (triggers LLVM codegen bugs in ReleaseFast).
-                        const params_json = encodeParams(owned.arena.allocator(), req.params);
-                        group.concurrent(ch.io, handleRequest, .{ self, ch, req.id, req.method, params_json, owned.arena }) catch {
-                            owned.arena.deinit();
-                            ch.allocator.destroy(owned.arena);
-                        };
-                    },
-                    .notification => |n| {
-                        const params_json = encodeParams(owned.arena.allocator(), n.params);
-                        group.concurrent(ch.io, handleNotification, .{ self, ch, n.action, params_json, owned.arena }) catch {
-                            owned.arena.deinit();
-                            ch.allocator.destroy(owned.arena);
-                        };
-                    },
-                    .response => {
-                        owned.arena.deinit();
-                        ch.allocator.destroy(owned.arena);
-                    },
-                }
-            }
-        }
-    }
-
-    /// Serialize std.json.Value to JSON bytes in the given allocator.
-    /// Returns null on encoding failure.
-    fn encodeParams(allocator: Allocator, params: std.json.Value) ?[]const u8 {
-        var aw: std.Io.Writer.Allocating = .init(allocator);
-        std.json.Stringify.value(params, .{}, &aw.writer) catch return null;
-        return aw.toOwnedSlice() catch null;
-    }
-
-    fn handleNotification(self: *App, ch: *VimChannel, action: []const u8, params_json: ?[]const u8, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
-        defer {
-            arena_ptr.deinit();
-            ch.allocator.destroy(arena_ptr);
-        }
-        log.info("notification {s}", .{action});
-        // Re-parse params from pre-encoded JSON bytes
-        const params = decodeParams(arena_ptr.allocator(), params_json);
-        _ = self.dispatcher.dispatch(arena_ptr.allocator(), action, params);
-    }
-
-    fn handleRequest(self: *App, ch: *VimChannel, id: u32, method: []const u8, params_json: ?[]const u8, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
-        defer {
-            arena_ptr.deinit();
-            ch.allocator.destroy(arena_ptr);
-        }
-        log.info("request [{d}] {s}", .{ id, method });
-        // Re-parse params from pre-encoded JSON bytes
-        const params = decodeParams(arena_ptr.allocator(), params_json);
-        const result = self.dispatcher.dispatch(
-            arena_ptr.allocator(),
-            method,
-            params,
-        ) orelse blk: {
-            log.warn("unknown method: {s}", .{method});
-            break :blk .null;
-        };
-        // Pre-encode response while arena is alive — the writer just writes bytes.
-        const encoded = vim.protocol.encodeResponse(ch.allocator, id, result) catch return;
-        ch.send(encoded) catch {
-            ch.allocator.free(encoded);
-        };
-    }
-
-    /// Decode pre-encoded JSON params back to std.json.Value.
-    fn decodeParams(allocator: Allocator, params_json: ?[]const u8) std.json.Value {
-        const json_bytes = params_json orelse return .null;
-        return std.json.parseFromSliceLeaky(
-            std.json.Value,
-            allocator,
-            json_bytes,
-            .{ .allocate = .alloc_always },
-        ) catch .null;
+        try self.rpc.consumeLoop(ch, group);
     }
 };
