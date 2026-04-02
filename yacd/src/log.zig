@@ -91,6 +91,16 @@ pub fn init() void {
     initWithArgs(null, null);
 }
 
+/// Safe error ID for logging. Returns the numeric error code as a string.
+/// Avoids @errorName which can SIGSEGV in ReleaseFast on garbage error codes
+/// produced by LLVM codegen bugs in functions with C FFI calls.
+pub noinline fn safeErrorName(err: anyerror) []const u8 {
+    const S = struct {
+        threadlocal var buf: [12]u8 = undefined;
+    };
+    return std.fmt.bufPrint(&S.buf, "E{d}", .{@intFromError(err)}) catch "error";
+}
+
 pub fn deinit() void {
     if (log_fd >= 0) _ = std.c.close(log_fd);
     log_fd = -1;

@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     var group: Io.Group = .init;
-    try app.serve(cli.transport, &group);
+    try app.serve(cli.transport, &group, cli.copilot);
     log.info("serving, waiting for connections", .{});
 
     // Block until shutdown requested
@@ -55,6 +55,7 @@ const CliArgs = struct {
     log_level: ?log_mod.Level,
     log_file: ?[]const u8,
     languages_dir: ?[]const u8,
+    copilot: bool = true,
 };
 
 fn parseCli(args: std.process.Args) CliArgs {
@@ -87,6 +88,8 @@ fn parseCli(args: std.process.Args) CliArgs {
             result.log_file = iter.next();
         } else if (std.mem.eql(u8, arg, "--languages-dir")) {
             result.languages_dir = iter.next();
+        } else if (std.mem.eql(u8, arg, "--no-copilot")) {
+            result.copilot = false;
         }
     }
 

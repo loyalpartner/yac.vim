@@ -218,34 +218,38 @@ pub const CopilotProxy = struct {
                     self.allocator.destroy(n.arena);
                 }
                 // Detect statusNotification: Normal → mark as ready
-                if (std.mem.eql(u8, n.notification.method, "statusNotification")) {
-                    if (n.notification.params) |params| {
-                        if (params == .object) {
-                            if (params.object.get("status")) |status| {
-                                if (status == .string and std.mem.eql(u8, status.string, "Normal")) {
-                                    if (self.state == .initialized) {
-                                        self.state = .ready;
-                                        log.info("copilot ready (statusNotification: Normal)", .{});
+                if (std.mem.eql(u8, n.method, "statusNotification")) {
+                    if (n.params_json) |json_bytes| {
+                        if (std.json.parseFromSliceLeaky(std.json.Value, n.arena.allocator(), json_bytes, .{})) |params| {
+                            if (params == .object) {
+                                if (params.object.get("status")) |status| {
+                                    if (status == .string and std.mem.eql(u8, status.string, "Normal")) {
+                                        if (self.state == .initialized) {
+                                            self.state = .ready;
+                                            log.info("copilot ready (statusNotification: Normal)", .{});
+                                        }
                                     }
                                 }
                             }
-                        }
+                        } else |_| {}
                     }
-                } else if (std.mem.eql(u8, n.notification.method, "window/logMessage") or
-                    std.mem.eql(u8, n.notification.method, "window/showMessage"))
+                } else if (std.mem.eql(u8, n.method, "window/logMessage") or
+                    std.mem.eql(u8, n.method, "window/showMessage"))
                 {
-                    if (n.notification.params) |params| {
-                        if (params == .object) {
-                            if (params.object.get("message")) |msg| {
-                                if (msg == .string) {
-                                    log.info("Copilot: {s}", .{msg.string});
-                                    continue;
+                    if (n.params_json) |json_bytes| {
+                        if (std.json.parseFromSliceLeaky(std.json.Value, n.arena.allocator(), json_bytes, .{})) |params| {
+                            if (params == .object) {
+                                if (params.object.get("message")) |msg| {
+                                    if (msg == .string) {
+                                        log.info("Copilot: {s}", .{msg.string});
+                                        continue;
+                                    }
                                 }
                             }
-                        }
+                        } else |_| {}
                     }
                 }
-                log.debug("copilot notification: {s}", .{n.notification.method});
+                log.debug("copilot notification: {s}", .{n.method});
             }
         }
     }

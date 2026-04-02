@@ -84,7 +84,7 @@ pub const App = struct {
             .inst = .{ .installer = undefined, .registry = undefined },
             .pick = .{ .picker = undefined, .registry = undefined },
             .lsp_notify = .{ .notifier = undefined, .allocator = allocator },
-            .ts_handler = .{ .engine = undefined, .notifier = undefined, .allocator = allocator, .last_viewport = std.StringHashMap(u32).init(allocator) },
+            .ts_handler = .{ .engine = undefined, .notifier = undefined, .allocator = allocator, .io = io, .last_viewport = std.StringHashMap(u32).init(allocator) },
             .inlay_handler = .{ .registry = undefined, .notifier = undefined, .allocator = allocator, .enabled_files = std.StringHashMap(void).init(allocator), .last_pushed = std.StringHashMap(u32).init(allocator) },
             .copilot = .{ .proxy = undefined, .allocator = allocator, .io = io, .group = undefined },
         };
@@ -202,12 +202,14 @@ pub const App = struct {
         self.inlay_handler.last_pushed.deinit();
     }
 
-    pub fn serve(self: *App, transport: Transport, group: *Io.Group) !void {
+    pub fn serve(self: *App, transport: Transport, group: *Io.Group, copilot_enabled: bool) !void {
         self.registry.group = group;
         try self.server.serve(transport, group, @ptrCast(self), onConnect);
 
         // Warm up Copilot in background so first completion has no cold start
-        group.concurrent(self.copilot.io, warmUpCopilot, .{&self.copilot}) catch {};
+        if (copilot_enabled) {
+            group.concurrent(self.copilot.io, warmUpCopilot, .{&self.copilot}) catch {};
+        }
     }
 
     fn warmUpCopilot(handler: *CopilotHandler) Io.Cancelable!void {
@@ -245,13 +247,17 @@ pub const App = struct {
             for (msgs) |owned| {
                 switch (owned.msg) {
                     .request => |req| {
-                        group.concurrent(ch.io, handleRequest, .{ self, ch, req, owned.arena }) catch {
+                        // Pre-encode params to avoid copying std.json.Value by value
+                        // through group.concurrent (triggers LLVM codegen bugs in ReleaseFast).
+                        const params_json = encodeParams(owned.arena.allocator(), req.params);
+                        group.concurrent(ch.io, handleRequest, .{ self, ch, req.id, req.method, params_json, owned.arena }) catch {
                             owned.arena.deinit();
                             ch.allocator.destroy(owned.arena);
                         };
                     },
                     .notification => |n| {
-                        group.concurrent(ch.io, handleNotification, .{ self, ch, n, owned.arena }) catch {
+                        const params_json = encodeParams(owned.arena.allocator(), n.params);
+                        group.concurrent(ch.io, handleNotification, .{ self, ch, n.action, params_json, owned.arena }) catch {
                             owned.arena.deinit();
                             ch.allocator.destroy(owned.arena);
                         };
@@ -265,33 +271,56 @@ pub const App = struct {
         }
     }
 
-    fn handleNotification(self: *App, ch: *VimChannel, n: VimMessage.Notification, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
-        defer {
-            arena_ptr.deinit();
-            ch.allocator.destroy(arena_ptr);
-        }
-        log.info("notification {s}", .{n.action});
-        _ = self.dispatcher.dispatch(arena_ptr.allocator(), n.action, n.params);
+    /// Serialize std.json.Value to JSON bytes in the given allocator.
+    /// Returns null on encoding failure.
+    fn encodeParams(allocator: Allocator, params: std.json.Value) ?[]const u8 {
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        std.json.Stringify.value(params, .{}, &aw.writer) catch return null;
+        return aw.toOwnedSlice() catch null;
     }
 
-    fn handleRequest(self: *App, ch: *VimChannel, req: VimMessage.Request, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
+    fn handleNotification(self: *App, ch: *VimChannel, action: []const u8, params_json: ?[]const u8, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
         defer {
             arena_ptr.deinit();
             ch.allocator.destroy(arena_ptr);
         }
-        log.info("request [{d}] {s}", .{ req.id, req.method });
+        log.info("notification {s}", .{action});
+        // Re-parse params from pre-encoded JSON bytes
+        const params = decodeParams(arena_ptr.allocator(), params_json);
+        _ = self.dispatcher.dispatch(arena_ptr.allocator(), action, params);
+    }
+
+    fn handleRequest(self: *App, ch: *VimChannel, id: u32, method: []const u8, params_json: ?[]const u8, arena_ptr: *std.heap.ArenaAllocator) Io.Cancelable!void {
+        defer {
+            arena_ptr.deinit();
+            ch.allocator.destroy(arena_ptr);
+        }
+        log.info("request [{d}] {s}", .{ id, method });
+        // Re-parse params from pre-encoded JSON bytes
+        const params = decodeParams(arena_ptr.allocator(), params_json);
         const result = self.dispatcher.dispatch(
             arena_ptr.allocator(),
-            req.method,
-            req.params,
+            method,
+            params,
         ) orelse blk: {
-            log.warn("unknown method: {s}", .{req.method});
+            log.warn("unknown method: {s}", .{method});
             break :blk .null;
         };
         // Pre-encode response while arena is alive — the writer just writes bytes.
-        const encoded = vim.protocol.encodeResponse(ch.allocator, req.id, result) catch return;
+        const encoded = vim.protocol.encodeResponse(ch.allocator, id, result) catch return;
         ch.send(encoded) catch {
             ch.allocator.free(encoded);
         };
+    }
+
+    /// Decode pre-encoded JSON params back to std.json.Value.
+    fn decodeParams(allocator: Allocator, params_json: ?[]const u8) std.json.Value {
+        const json_bytes = params_json orelse return .null;
+        return std.json.parseFromSliceLeaky(
+            std.json.Value,
+            allocator,
+            json_bytes,
+            .{ .allocate = .alloc_always },
+        ) catch .null;
     }
 };

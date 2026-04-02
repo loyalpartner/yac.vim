@@ -198,7 +198,7 @@ def daemon(workspace, test_file) -> DaemonClient:
     langs_dir = PROJECT_ROOT / "languages"
     log_file = workspace / "run" / "yacd-daemon-test.log"
 
-    cmd = [str(yacd_bin), "--log-level=debug", f"--log-file={log_file}"]
+    cmd = [str(yacd_bin), "--log-level=debug", f"--log-file={log_file}", "--no-copilot"]
     if langs_dir.exists():
         cmd.append(f"--languages-dir={langs_dir}")
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Engine = @import("../treesitter/root.zig").Engine;
 
@@ -7,6 +8,7 @@ const InlayHintsHandler = @import("inlay_hints.zig").InlayHintsHandler;
 const vim = @import("../vim/root.zig");
 
 const log = std.log.scoped(.ts_handler);
+const log_mod = @import("../log.zig");
 
 const slow_threshold_ms = 200;
 const viewport_margin = 300; // highlight ±300 lines around visible_top
@@ -25,29 +27,29 @@ pub const TreeSitterHandler = struct {
     engine: *Engine,
     notifier: *Notifier,
     allocator: Allocator,
+    io: Io,
     /// Last known viewport per file — used by onEdit to re-highlight the visible area.
     last_viewport: std.StringHashMap(u32),
     /// Monotonically increasing push version — ensures Vim never skips a viewport push.
     push_version: u32 = 0,
     /// Inlay hints handler — notified on viewport/edit to push LSP inlay hints.
     inlay_handler: ?*InlayHintsHandler = null,
+    /// Guards mutable state (last_viewport, push_version) from concurrent access.
+    /// onOpen/onEdit/onViewport/onClose may run on different Io.Threaded workers.
+    mutex: Io.Mutex = .init,
 
     /// did_open: parse + push highlights.
     /// text=null → daemon reads file from disk (BufReadPre optimization).
     pub fn onOpen(self: *TreeSitterHandler, file: []const u8, lang: ?[]const u8, text: ?[]const u8, visible_top: ?u32) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
         const t0 = clockMs();
-        const changed = if (text) |t|
-            self.engine.openBuffer(file, lang, t) catch |err| {
-                log.debug("onOpen: {s}: {s}", .{ file, @errorName(err) });
-                return;
-            }
-        else
-            self.engine.openBufferFromFile(file) catch |err| {
-                log.debug("onOpen(fromFile): {s}: {s}", .{ file, @errorName(err) });
-                return;
-            };
+        _ = openBufferSafe(self.engine, file, lang, text);
         const parse_ms = clockMs() - t0;
-        if (!changed) return; // buffer unchanged, highlights already pushed
+        // Always push highlights on did_open — even if buffer content is unchanged,
+        // Vim needs props applied when the buffer becomes visible.
+        // (The "unchanged" skip is only for did_change/onEdit.)
         if (visible_top) |vt| self.recordViewport(file, vt);
         const t1 = clockMs();
         self.pushViewport(file, visible_top);
@@ -61,16 +63,24 @@ pub const TreeSitterHandler = struct {
 
     /// did_change: update source + re-parse + push highlights for current viewport.
     pub fn onEdit(self: *TreeSitterHandler, file: []const u8, text: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const version_before = self.engine.getBufferVersion(file);
         const t0 = clockMs();
         self.engine.editBuffer(file, text) catch |err| {
             if (err == error.BufferNotFound) {
-                const changed = self.engine.openBuffer(file, null, text) catch return;
-                if (changed) self.pushViewport(file, self.last_viewport.get(file));
+                if (self.engine.openBufferSafe(file, null, text))
+                    self.pushViewport(file, self.last_viewport.get(file));
                 return;
             }
-            log.debug("onEdit: {s}: {s}", .{ file, @errorName(err) });
+            log.debug("onEdit: {s}: {s}", .{ file, log_mod.safeErrorName(err) });
             return;
         };
+        // Skip re-highlight if content unchanged (editBuffer skipped re-parse).
+        // Without this check, unchanged did_change messages cause prop_remove+prop_add
+        // cycles that make highlights flash then disappear.
+        if (self.engine.getBufferVersion(file) == version_before) return;
         const parse_ms = clockMs() - t0;
         const t1 = clockMs();
         // Re-highlight around last known viewport (editBuffer resets hl range)
@@ -88,6 +98,9 @@ pub const TreeSitterHandler = struct {
     /// Does NOT trigger full chunked push (that's done by onOpen/onEdit).
     /// If the buffer doesn't exist yet (e.g. session restore), auto-create from disk.
     pub fn onViewport(self: *TreeSitterHandler, _: Allocator, params: vim.types.TsViewportParams) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
         self.recordViewport(params.file, params.visible_top);
         if (!self.engine.hasBuffer(params.file)) {
             _ = self.engine.openBufferFromFile(params.file) catch return;
@@ -106,6 +119,9 @@ pub const TreeSitterHandler = struct {
 
     /// did_close: cleanup buffer + viewport tracking.
     pub fn onClose(self: *TreeSitterHandler, file: []const u8) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
         self.engine.closeBuffer(file);
         if (self.last_viewport.fetchRemove(file)) |kv| {
             self.allocator.free(kv.key);
@@ -121,7 +137,7 @@ pub const TreeSitterHandler = struct {
     /// ts_symbols: extract document outline via tree-sitter @name/@function/etc captures.
     pub fn tsSymbols(self: *TreeSitterHandler, allocator: Allocator, params: vim.types.FileParams) !vim.types.TsSymbolsResult {
         const items = self.engine.getOutline(params.file, allocator) catch |err| {
-            log.debug("tsSymbols: {s}: {s}", .{ params.file, @errorName(err) });
+            log.debug("tsSymbols: {s}: {s}", .{ params.file, log_mod.safeErrorName(err) });
             return .{ .symbols = &.{} };
         };
         var symbols: std.ArrayList(vim.types.TsSymbol) = .empty;
@@ -143,11 +159,11 @@ pub const TreeSitterHandler = struct {
         // If text is provided and buffer not yet parsed, parse it first
         if (params.text) |text| {
             _ = self.engine.openBuffer(params.file, null, text) catch |err| {
-                log.debug("tsFolding: openBuffer failed: {s}", .{@errorName(err)});
+                log.debug("tsFolding: openBuffer failed: {s}", .{log_mod.safeErrorName(err)});
             };
         }
         const ranges = self.engine.getFolds(params.file, allocator) catch |err| {
-            log.debug("tsFolding: {s}: {s}", .{ params.file, @errorName(err) });
+            log.debug("tsFolding: {s}: {s}", .{ params.file, log_mod.safeErrorName(err) });
             return .{ .ranges = &.{} };
         };
         return .{ .ranges = ranges };
@@ -156,7 +172,7 @@ pub const TreeSitterHandler = struct {
     /// ts_navigate: jump to next/prev function/struct.
     pub fn tsNavigate(self: *TreeSitterHandler, _: Allocator, params: vim.types.TsNavigateParams) !vim.types.TsNavigateResult {
         const result = self.engine.getNavigationTarget(params.file, params.target, params.direction, params.line) catch |err| {
-            log.debug("tsNavigate: {s}: {s}", .{ params.file, @errorName(err) });
+            log.debug("tsNavigate: {s}: {s}", .{ params.file, log_mod.safeErrorName(err) });
             return .{};
         };
         return .{
@@ -168,7 +184,7 @@ pub const TreeSitterHandler = struct {
     /// ts_textobjects: find enclosing function/class text object.
     pub fn tsTextObjects(self: *TreeSitterHandler, _: Allocator, params: vim.types.TsTextObjectParams) !vim.types.TsTextObjectResult {
         const result = self.engine.getTextObject(params.file, params.target, params.line, params.column) catch |err| {
-            log.debug("tsTextObjects: {s}: {s}", .{ params.file, @errorName(err) });
+            log.debug("tsTextObjects: {s}: {s}", .{ params.file, log_mod.safeErrorName(err) });
             return .{};
         };
         return .{
@@ -216,23 +232,27 @@ pub const TreeSitterHandler = struct {
     }
 
     fn pushFolds(self: *TreeSitterHandler, file: []const u8) void {
+        const engine = self.engine;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
-        const ranges = self.engine.getFolds(file, arena.allocator()) catch return;
+        const ranges = engine.getFolds(file, arena.allocator()) catch return;
         self.notifier.send("ts_folds", .{
             .file = file,
             .ranges = ranges,
         }) catch |err| {
-            log.warn("pushFolds: send failed: {s}", .{@errorName(err)});
+            log.warn("pushFolds: send failed: {s}", .{log_mod.safeErrorName(err)});
         };
     }
 
-    fn doPushHighlights(self: *TreeSitterHandler, file: []const u8, start: ?u32, end: ?u32) void {
+    noinline fn doPushHighlights(self: *TreeSitterHandler, file: []const u8, start: ?u32, end: ?u32) void {
+        // Capture engine pointer at function entry to prevent LLVM ReleaseFast
+        // from miscompiling the self.engine field read after arena init/defer.
+        const engine = self.engine;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const t0 = clockMs();
-        const groups = self.engine.getHighlights(file, arena.allocator(), start, end) catch |err| {
-            log.debug("pushHighlights: {s}: {s}", .{ file, @errorName(err) });
+        const groups = engine.getHighlights(file, arena.allocator(), start, end) catch |err| {
+            log.debug("pushHighlights: {s}: {s}", .{ file, log_mod.safeErrorName(err) });
             return;
         };
         const hl_ms = clockMs() - t0;
@@ -246,13 +266,26 @@ pub const TreeSitterHandler = struct {
             .line_end = if (end) |e| e else @as(u32, 0),
             .highlights = groups,
         }) catch |err| {
-            log.warn("pushHighlights: send failed: {s}", .{@errorName(err)});
+            log.warn("pushHighlights: send failed: {s}", .{log_mod.safeErrorName(err)});
         };
         const send_ms = clockMs() - t1;
         if (hl_ms + send_ms > 50) {
             log.info("pushHighlights: {s} range={?d}-{?d} highlights={d}ms serialize+send={d}ms", .{
                 file, start, end, hl_ms, send_ms,
             });
+        }
+    }
+
+    /// noinline: prevents LLVM ReleaseFast from inlining openBuffer/openBufferFromFile
+    /// into onOpen, which would create a large function triggering codegen bugs.
+    /// Wraps openBuffer/openBufferFromFile. Returns true if buffer was parsed.
+    /// Uses Engine.openBufferSafe which returns ?bool (no error union) to avoid
+    /// LLVM ReleaseFast miscompiling error union discriminants in C FFI paths.
+    noinline fn openBufferSafe(engine: *Engine, file: []const u8, lang: ?[]const u8, text: ?[]const u8) bool {
+        if (text) |t| {
+            return engine.openBufferSafe(file, lang, t);
+        } else {
+            return engine.openBufferFromFileSafe(file);
         }
     }
 };

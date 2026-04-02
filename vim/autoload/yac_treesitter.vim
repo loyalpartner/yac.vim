@@ -37,8 +37,12 @@ function! yac_treesitter#handle_push(params) abort
   let l:file = a:params.file
   let l:version = get(a:params, 'version', 0)
 
-  " Find the buffer number for this file
+  " Find the buffer number for this file.
+  " Daemon sends absolute paths; try exact match first, then fnamemodify.
   let l:bufnr = bufnr(l:file)
+  if l:bufnr == -1
+    let l:bufnr = bufnr(fnamemodify(l:file, ':p'))
+  endif
   if l:bufnr == -1 || !bufexists(l:bufnr)
     return
   endif

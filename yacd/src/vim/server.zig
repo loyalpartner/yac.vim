@@ -69,16 +69,19 @@ pub const VimServer = struct {
         ctx: *anyopaque,
         on_connect: OnConnect,
     ) Io.Cancelable!void {
-        var ch = VimChannel.init(self.allocator, self.io);
-        defer ch.deinit();
+        // Heap-allocate channel so it outlives this function.
+        // serveStdio returns when stdin closes, but writeLoop and consumeLoop
+        // may still be running — stack-local channel would be UAF.
+        const ch = self.allocator.create(VimChannel) catch return;
+        ch.* = VimChannel.init(self.allocator, self.io);
 
-        group.concurrent(self.io, stdioWriteLoop, .{&ch}) catch return;
-        on_connect(ctx, &ch, group);
+        group.concurrent(self.io, stdioWriteLoop, .{ch}) catch return;
+        on_connect(ctx, ch, group);
 
         // Read from stdin (blocks until EOF or cancel)
         var read_buf: [4096]u8 = undefined;
         var reader = Io.File.stdin().readerStreaming(self.io, &read_buf);
-        readInbound(self, &reader.interface, &ch);
+        readInbound(self, &reader.interface, ch);
     }
 
     fn stdioWriteLoop(ch: *VimChannel) Io.Cancelable!void {
@@ -102,16 +105,19 @@ pub const VimServer = struct {
         var server = addr.listen(self.io, .{ .reuse_address = true }) catch return;
         const stream = server.accept(self.io) catch return;
 
-        var ch = VimChannel.init(self.allocator, self.io);
-        defer ch.deinit();
+        // Heap-allocate channel so it outlives this function.
+        // serveTcpOnce returns when the TCP stream closes, but writeLoop and
+        // consumeLoop may still be running — stack-local channel would be UAF.
+        const ch = self.allocator.create(VimChannel) catch return;
+        ch.* = VimChannel.init(self.allocator, self.io);
 
-        group.concurrent(self.io, tcpWriteLoop, .{ &ch, stream }) catch return;
-        on_connect(ctx, &ch, group);
+        group.concurrent(self.io, tcpWriteLoop, .{ ch, stream }) catch return;
+        on_connect(ctx, ch, group);
 
         // Read from TCP stream (blocks until EOF or cancel)
         var read_buf: [4096]u8 = undefined;
         var reader = stream.reader(self.io, &read_buf);
-        readInbound(self, &reader.interface, &ch);
+        readInbound(self, &reader.interface, ch);
     }
 
     fn tcpWriteLoop(ch: *VimChannel, stream: net.Stream) Io.Cancelable!void {
@@ -164,14 +170,16 @@ pub const VimServer = struct {
             ch.outbound.wait() catch return;
             const msgs = ch.outbound.drain() orelse continue;
             defer ch.allocator.free(msgs);
-            for (msgs) |encoded| {
+            // Use index access instead of `for (msgs) |encoded|` value iteration.
+            // LLVM ReleaseFast miscompiles slice .len when copying from ArrayList.
+            var i: usize = 0;
+            while (i < msgs.len) : (i += 1) {
+                const encoded = msgs[i];
                 defer ch.allocator.free(encoded);
-                // Log what we're writing to Vim (strip trailing \n)
-                const trimmed = if (encoded.len > 0 and encoded[encoded.len - 1] == '\n') encoded[0 .. encoded.len - 1] else encoded;
-                if (trimmed.len <= 500) {
-                    log.debug("-> Vim: {s}", .{trimmed});
+                if (encoded.len <= 500) {
+                    log.debug("-> Vim ({d}): {s}", .{ encoded.len, encoded });
                 } else {
-                    log.debug("-> Vim: {s}... ({d} bytes)", .{ trimmed[0..200], trimmed.len });
+                    log.debug("-> Vim ({d}): {s}...", .{ encoded.len, encoded[0..200] });
                 }
                 iface.writeAll(encoded) catch return;
             }

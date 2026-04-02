@@ -13,6 +13,7 @@ globs: yacd/src/**/*.zig
 - **shutdown 顺序**：发 LSP shutdown/exit → cancel readLoop group → free 资源。
 - **`DebugAllocator` 在 `Io.Threaded` 多线程下 heap corruption**：用 `std.heap.c_allocator` 代替。
 - **TreeSitter 需要 Io.Mutex**：所有 public mutable 方法必须加 `Io.Mutex`。
+- **Handler struct 需要 `Io.Mutex`**：`TreeSitterHandler` 的 `onOpen`/`onEdit`/`onViewport`/`onClose` 从不同 `group.concurrent` 任务调用，可并发执行。所有修改 mutable 状态的 public 方法必须加 `Io.Mutex`。
 - **`ProxyRegistry.resolve()` 并发安全**：用 `spawning` 集合防止并发 spawn。
 - **`Io.File` 异步写入用 `writeStreamingAll(io, data)`**，无 `writeAll`。
 - **`Reader.readAlloc(n)` 读恰好 n 字节**；读管道用 `Reader.allocRemaining(allocator, limit)`。
