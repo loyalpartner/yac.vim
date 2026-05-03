@@ -181,7 +181,7 @@ pub fn toJsonValue(allocator: Allocator, value: anytype) !std.json.Value {
     // Zig serializes zero-field structs as [], but JSON-RPC expects {}.
     const info = @typeInfo(T);
     if (info == .@"struct" and info.@"struct".fields.len == 0) {
-        return .{ .object = std.json.ObjectMap.init(allocator) };
+        return .{ .object = try std.json.ObjectMap.init(allocator, &.{}, &.{}) };
     }
 
     var aw: Writer.Allocating = .init(allocator);

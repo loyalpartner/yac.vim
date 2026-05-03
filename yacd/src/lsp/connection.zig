@@ -317,7 +317,7 @@ pub const LspConnection = struct {
         // Empty struct (.{}) → empty object {} instead of empty array []
         const info = @typeInfo(T);
         if (info == .@"struct" and info.@"struct".fields.len == 0) {
-            return .{ .object = std.json.ObjectMap.init(allocator) };
+            return .{ .object = try std.json.ObjectMap.init(allocator, &.{}, &.{}) };
         }
 
         var aw: Writer.Allocating = .init(allocator);
